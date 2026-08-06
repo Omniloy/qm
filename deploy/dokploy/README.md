@@ -60,6 +60,13 @@ Set these on the Dokploy Compose application. Nothing here belongs in git.
 | `HARNESS`                   | `pi`, `claude`, `codex`, or `opencode`                      |
 | `HARNESS_SECURITY_POSTURE`  | `strict`, `auto`, or `dangerous`                            |
 | `LOCAL_SANDBOX_IMAGE`       | `qm-sandbox-local:latest`                                   |
+| `ADMIN_GRANTS`              | `someone@example.com:org_admin`, comma-separated             |
+
+`ADMIN_GRANTS` is the only source of admin identity. `org_admin` is the sole accepted
+role, and the principal is whatever `OIDC_PRINCIPAL_CLAIM` yields — the lowercased
+email under the default wiring. It seeds the roster only while the `admin_grants`
+table is empty; once anyone holds a grant, edit the roster at `${PUBLIC_URL}/admin`
+instead, since changing the variable will no longer have any effect.
 
 ### Sign-in
 

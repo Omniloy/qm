@@ -52,6 +52,11 @@ services:
       # Agent computers are containers on this host's Docker daemon.
       SANDBOX_BACKEND: local
       LOCAL_SANDBOX_IMAGE: ${LOCAL_SANDBOX_IMAGE}
+      # The one source of admin identity: `<principal>:org_admin`, comma
+      # separated. With OIDC_PRINCIPAL_CLAIM=email the principal is the
+      # lowercased email. Seeded only while admin_grants is empty — after that
+      # the roster is durable and changes go through /admin.
+      ADMIN_GRANTS: ${ADMIN_GRANTS}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET}
       CAPABILITY_SECRET: ${CAPABILITY_SECRET}
