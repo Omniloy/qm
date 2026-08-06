@@ -9,6 +9,14 @@ export interface DockerDeployProviderOptions {
   image?: string;
   docker?: string;
   basePort?: number;
+  /**
+   * Container name or id core itself runs as, when core is containerised.
+   *
+   * Apps publish on the host's loopback, which only core-on-the-host can reach.
+   * Set this and core joins the deploy network instead, addressing each app by
+   * container name. See CORE_CONTAINER.
+   */
+  coreContainer?: string;
 }
 
 export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {}): DeployProvider {
@@ -41,6 +49,12 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
 
     async apply(d: Deployment, version: DeploymentVersion): Promise<DeployEndpoint> {
       await dexec(["network", "create", NETWORK]);
+      if (opts.coreContainer) {
+        const c = await dexec(["network", "connect", NETWORK, opts.coreContainer]);
+        if (c.code !== 0 && !/already exists|already connected/i.test(c.stderr)) {
+          throw new Error(`docker network connect ${NETWORK} ${opts.coreContainer} failed: ${c.stderr.trim()}`);
+        }
+      }
       await dexec(["rm", "-f", name(d)]);
       const hostPort = allocPort(name(d));
       const envArgs = Object.entries(version.env ?? {}).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
@@ -75,6 +89,9 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
         freePort(name(d));
         throw new Error(`deploy run failed: ${r.stderr.trim()}`);
       }
+      // Containerised core shares the deploy network, so it reaches the app at
+      // its container name; the published host port is for humans only.
+      if (opts.coreContainer) return { host: name(d), port: APP_PORT };
       return { host: "127.0.0.1", port: hostPort };
     },
 

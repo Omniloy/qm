@@ -34,6 +34,8 @@ export interface Config {
   sandboxBackend: "aws" | "local" | "sprites";
   sandboxSecondaryBackend?: "aws" | "local" | "sprites";
   deployProvider: "docker" | "aws";
+  /** Container core runs as, when core is containerised. See CORE_CONTAINER. */
+  coreContainer?: string;
   egressServiceHosts?: string[];
   brandingDefault?: { accent?: string; mark?: string; selfLabel?: string };
   modelId?: string;
@@ -242,7 +244,6 @@ function awsSandboxEnv(env: NodeJS.ProcessEnv): AwsSandboxEnv {
 interface LocalSandboxEnv {
   image?: string;
   dockerBin?: string;
-  coreContainer?: string;
   cpus?: number;
   memoryMb?: number;
   defaultTimeoutSec?: number;
@@ -252,7 +253,6 @@ function localSandboxEnv(env: NodeJS.ProcessEnv): LocalSandboxEnv {
   return {
     ...(env.LOCAL_SANDBOX_IMAGE ? { image: env.LOCAL_SANDBOX_IMAGE } : {}),
     ...(env.LOCAL_SANDBOX_DOCKER_BIN ? { dockerBin: env.LOCAL_SANDBOX_DOCKER_BIN } : {}),
-    ...(env.LOCAL_SANDBOX_CORE_CONTAINER ? { coreContainer: env.LOCAL_SANDBOX_CORE_CONTAINER } : {}),
     ...(numEnvStrict("LOCAL_SANDBOX_CPUS", env.LOCAL_SANDBOX_CPUS) !== undefined
       ? { cpus: numEnvStrict("LOCAL_SANDBOX_CPUS", env.LOCAL_SANDBOX_CPUS) }
       : {}),
@@ -710,6 +710,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     sandboxBackend,
     ...(sandboxSecondaryBackend ? { sandboxSecondaryBackend } : {}),
     deployProvider,
+    ...(env.CORE_CONTAINER ? { coreContainer: env.CORE_CONTAINER } : {}),
     ...(env.EGRESS_SERVICE_HOSTS
       ? {
           egressServiceHosts: env.EGRESS_SERVICE_HOSTS.split(",")

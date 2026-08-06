@@ -30,7 +30,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/dokploy/core.Dockerfile
-    # Pinned because LOCAL_SANDBOX_CORE_CONTAINER below must name this
+    # Pinned because CORE_CONTAINER below must name this
     # container; keep the two in step.
     container_name: qm-omniloy-core
     restart: unless-stopped
@@ -55,10 +55,10 @@ services:
       # Agent computers are containers on this host's Docker daemon.
       SANDBOX_BACKEND: local
       LOCAL_SANDBOX_IMAGE: ${LOCAL_SANDBOX_IMAGE}
-      # The sandbox publishes its exec daemon on the *host's* loopback, which
-      # only a core running on the host could dial. Naming core here makes it
-      # join each sandbox's network and reach the daemon by container name.
-      LOCAL_SANDBOX_CORE_CONTAINER: qm-omniloy-core
+      # Sandboxes and deployed apps publish on the *host's* loopback, which only
+      # a core running on the host could dial. Naming core here makes it join
+      # their networks and address them by container name instead.
+      CORE_CONTAINER: qm-omniloy-core
       # The one source of admin identity: `<principal>:org_admin`, comma
       # separated. With OIDC_PRINCIPAL_CLAIM=email the principal is the
       # lowercased email. Seeded only while admin_grants is empty — after that
@@ -71,7 +71,12 @@ services:
       CONNECTOR_SECRET_KEY: ${CONNECTOR_SECRET_KEY}
       SKILL_SIGNING_SECRET: ${SKILL_SIGNING_SECRET}
     volumes:
-      - coredata:/data
+      # A host bind at the identical path, NOT a named volume. Core hands
+      # DATA_DIR paths (a deployed app's snapshot dir) to the host daemon as
+      # bind sources, so they have to mean the same thing on both sides —
+      # otherwise the daemon silently creates an empty dir and the app starts
+      # with nothing in /app.
+      - ${DATA_HOST_DIR}:/data
       - /var/run/docker.sock:/var/run/docker.sock
     networks: [qm]
 
@@ -170,6 +175,9 @@ services:
       # The portal reads the broker client credential under its OIDC name
       # (cli/src/secrets.ts maps AUTH_CLIENT_SECRET -> OIDC_CLIENT_SECRET).
       OIDC_CLIENT_SECRET: ${AUTH_CLIENT_SECRET}
+      # Without this the portal 404s /d/* itself and core never sees the
+      # request, so every app the agent publishes looks like it does not exist.
+      PORTAL_DEPLOYMENTS_ENABLED: "1"
       PORTAL_SESSION_SECRET: ${PORTAL_SESSION_SECRET}
       PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET}
       CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET}
@@ -184,7 +192,6 @@ services:
 
 volumes:
   pgdata:
-  coredata:
 
 networks:
   qm:

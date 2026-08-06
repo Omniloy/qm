@@ -46,22 +46,37 @@ LOCAL_SANDBOX_IMAGE=qm-sandbox-local:latest bash scripts/local-sandbox-build.sh
 A fingerprint mismatch only logs `[local-sandbox] sandbox image … is stale`; a missing
 image is a hard failure.
 
-### Reaching the sandbox from a containerised core
+## The containerised-core constraint
 
-`SANDBOX_BACKEND=local` is built for a core running directly on the Docker host: each
-sandbox publishes its exec daemon on the host's loopback (`-p 127.0.0.1:0:8080`) and
-core dials `127.0.0.1:<published port>`. Here core is itself a container, so that
-address is core's own loopback and every exec fails with
-`exec daemon never became reachable: fetch failed` — while the sandbox logs show the
-daemon listening perfectly well.
+**Read this before changing anything about core's networking or `DATA_DIR`.** QM's two
+`docker` backends — `SANDBOX_BACKEND=local` and `DEPLOY_PROVIDER=docker`, the default —
+are written for a core running *directly on the Docker host*. Core drives the host
+daemon over the mounted socket, so anything it hands that daemon is interpreted from
+the host's point of view, not core's. Here core is itself a container, which breaks
+that assumption in two distinct ways. Both have already bitten this deployment.
 
-`LOCAL_SANDBOX_CORE_CONTAINER` names core's container. When set, core joins each
-sandbox's network and reaches the daemon at the container's own name on port 8080, so
-nothing depends on the published host port. It must match `container_name` on the
-`core` service.
+**Addresses.** Both backends publish their workload on the host's loopback
+(`-p 127.0.0.1:<port>:8080`) and hand core back `127.0.0.1:<port>`. From inside core
+that is core's *own* loopback, so nothing is reachable: sandboxes fail with
+`exec daemon never became reachable: fetch failed` and deployed apps 404, while both
+are demonstrably healthy when curled from the host.
 
-Host networking would also fix it, but this host has no firewall — core would be
-exposed on port 8080 to the Internet.
+`CORE_CONTAINER` names core's own container. When set, core joins the workload's
+network and addresses it by container name, so nothing depends on the published host
+port. It must match `container_name` on the `core` service. Host networking would also
+fix it, but this host has no firewall — core would be exposed on port 8080 publicly.
+
+**Paths.** `DATA_DIR` must be a **host bind mount at the identical path inside and
+out** — never a named volume. A deployed app is started by bind-mounting its snapshot
+directory, and core passes that path (`/data/deployments/<id>`) to the host daemon
+verbatim. With a named volume the real files live under
+`/var/lib/docker/volumes/…/_data/`, the daemon finds nothing at `/data/...`, silently
+creates an empty directory, and the app starts with an empty `/app` and dies with
+`MODULE_NOT_FOUND`. `DATA_HOST_DIR` supplies that path; keep it equal to `DATA_DIR`.
+
+A third, unrelated trap: the portal 404s `/d/*` on its own unless
+`PORTAL_DEPLOYMENTS_ENABLED=1`, so published apps look like they do not exist and core
+never sees the request.
 
 ## Application env
 
@@ -77,6 +92,7 @@ Set these on the Dokploy Compose application. Nothing here belongs in git.
 | `HARNESS`                   | `pi`, `claude`, `codex`, or `opencode`                      |
 | `HARNESS_SECURITY_POSTURE`  | `strict`, `auto`, or `dangerous`                            |
 | `LOCAL_SANDBOX_IMAGE`       | `qm-sandbox-local:latest`                                   |
+| `DATA_HOST_DIR`             | host path bound at `DATA_DIR`, e.g. `/opt/qm/data` — see above |
 | `ADMIN_GRANTS`              | `someone@example.com:org_admin`, comma-separated             |
 
 `ADMIN_GRANTS` is the only source of admin identity. `org_admin` is the sole accepted
