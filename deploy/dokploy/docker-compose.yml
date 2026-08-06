@@ -39,7 +39,9 @@ services:
         condition: service_healthy
     environment:
       PORT: "8080"
-      DATA_DIR: /data
+      # Deliberately the same value as the bind's host side below — core hands
+      # DATA_DIR paths to the host daemon, so the two must be one path, not two.
+      DATA_DIR: ${DATA_HOST_DIR}
       ORG_ID: ${ORG_ID}
       HARNESS: ${HARNESS}
       HARNESS_SECURITY_POSTURE: ${HARNESS_SECURITY_POSTURE}
@@ -71,12 +73,13 @@ services:
       CONNECTOR_SECRET_KEY: ${CONNECTOR_SECRET_KEY}
       SKILL_SIGNING_SECRET: ${SKILL_SIGNING_SECRET}
     volumes:
-      # A host bind at the identical path, NOT a named volume. Core hands
-      # DATA_DIR paths (a deployed app's snapshot dir) to the host daemon as
-      # bind sources, so they have to mean the same thing on both sides —
-      # otherwise the daemon silently creates an empty dir and the app starts
-      # with nothing in /app.
-      - ${DATA_HOST_DIR}:/data
+      # A host bind at the identical path on both sides, NOT a named volume.
+      # Core hands DATA_DIR paths (a deployed app's snapshot dir) to the host
+      # daemon as bind sources, so they must mean the same thing to both —
+      # otherwise the daemon creates an empty dir and the app starts with
+      # nothing in /app. Mapping it to a different container path reintroduces
+      # exactly that bug, so both sides read from one variable.
+      - ${DATA_HOST_DIR}:${DATA_HOST_DIR}
       - /var/run/docker.sock:/var/run/docker.sock
     networks: [qm]
 

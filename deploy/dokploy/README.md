@@ -70,9 +70,11 @@ fix it, but this host has no firewall — core would be exposed on port 8080 pub
 out** — never a named volume. A deployed app is started by bind-mounting its snapshot
 directory, and core passes that path (`/data/deployments/<id>`) to the host daemon
 verbatim. With a named volume the real files live under
-`/var/lib/docker/volumes/…/_data/`, the daemon finds nothing at `/data/...`, silently
-creates an empty directory, and the app starts with an empty `/app` and dies with
-`MODULE_NOT_FOUND`. `DATA_HOST_DIR` supplies that path; keep it equal to `DATA_DIR`.
+`/var/lib/docker/volumes/…/_data/`, the daemon finds nothing there, silently creates an
+empty directory, and the app starts with an empty `/app` and dies with
+`MODULE_NOT_FOUND`. Binding the host path to a *different* container path fails the
+same way, so `DATA_HOST_DIR` is used for both sides of the bind and for `DATA_DIR`
+itself — there is deliberately no second value to keep in sync.
 
 A third, unrelated trap: the portal 404s `/d/*` on its own unless
 `PORTAL_DEPLOYMENTS_ENABLED=1`, so published apps look like they do not exist and core
@@ -92,7 +94,7 @@ Set these on the Dokploy Compose application. Nothing here belongs in git.
 | `HARNESS`                   | `pi`, `claude`, `codex`, or `opencode`                      |
 | `HARNESS_SECURITY_POSTURE`  | `strict`, `auto`, or `dangerous`                            |
 | `LOCAL_SANDBOX_IMAGE`       | `qm-sandbox-local:latest`                                   |
-| `DATA_HOST_DIR`             | host path bound at `DATA_DIR`, e.g. `/opt/qm/data` — see above |
+| `DATA_HOST_DIR`             | host path for core's data, e.g. `/opt/qm/data`; it *is* `DATA_DIR` — see above |
 | `ADMIN_GRANTS`              | `someone@example.com:org_admin`, comma-separated             |
 
 `ADMIN_GRANTS` is the only source of admin identity. `org_admin` is the sole accepted
