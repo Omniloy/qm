@@ -85,7 +85,13 @@ services:
       AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET}
       AUTH_CLIENT_SECRET: ${AUTH_CLIENT_SECRET}
       CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET}
-    networks: [qm]
+    networks:
+      qm:
+        # The portal refuses to address the broker over a name that could be
+        # public (plugins/portal/src/index.ts:isPrivateNetworkUrl). Compose's
+        # bare service name is not on its allowlist, so publish the broker
+        # under an unroutable `.internal` alias as well.
+        aliases: [auth.internal]
 
   web-ui:
     build:
@@ -132,18 +138,22 @@ services:
       ADMIN_UPSTREAM: http://admin:8080
       # Built-in sign-in broker. Browser-facing routes are republished under
       # /idp on the portal's own origin; token/userinfo/JWKS stay private.
-      AUTH_BROKER_UPSTREAM: http://auth:8080
+      # These three must share one origin with AUTH_BROKER_UPSTREAM, and that
+      # origin must be unroutable — see the alias on the auth service.
+      AUTH_BROKER_UPSTREAM: http://auth.internal:8080
       AUTH_BROKER_PREFIX: /idp
       OIDC_CLIENT_ID: qm-portal
       OIDC_ISSUER: ${PUBLIC_URL}/idp
       OIDC_AUTH_ENDPOINT: ${PUBLIC_URL}/idp/authorize
-      OIDC_TOKEN_ENDPOINT: http://auth:8080/token
-      OIDC_USERINFO_ENDPOINT: http://auth:8080/userinfo
-      OIDC_JWKS_URI: http://auth:8080/.well-known/jwks.json
+      OIDC_TOKEN_ENDPOINT: http://auth.internal:8080/token
+      OIDC_USERINFO_ENDPOINT: http://auth.internal:8080/userinfo
+      OIDC_JWKS_URI: http://auth.internal:8080/.well-known/jwks.json
       OIDC_SCOPES: openid email
       OIDC_PRINCIPAL_CLAIM: email
       OIDC_ALLOWED_EMAIL_DOMAIN: ${AUTH_ALLOWED_EMAIL_DOMAIN}
-      AUTH_CLIENT_SECRET: ${AUTH_CLIENT_SECRET}
+      # The portal reads the broker client credential under its OIDC name
+      # (cli/src/secrets.ts maps AUTH_CLIENT_SECRET -> OIDC_CLIENT_SECRET).
+      OIDC_CLIENT_SECRET: ${AUTH_CLIENT_SECRET}
       PORTAL_SESSION_SECRET: ${PORTAL_SESSION_SECRET}
       PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET}
       CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET}
