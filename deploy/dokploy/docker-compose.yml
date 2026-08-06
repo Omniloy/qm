@@ -30,6 +30,9 @@ services:
     build:
       context: ../..
       dockerfile: deploy/dokploy/core.Dockerfile
+    # Pinned because LOCAL_SANDBOX_CORE_CONTAINER below must name this
+    # container; keep the two in step.
+    container_name: qm-omniloy-core
     restart: unless-stopped
     depends_on:
       pg:
@@ -52,6 +55,10 @@ services:
       # Agent computers are containers on this host's Docker daemon.
       SANDBOX_BACKEND: local
       LOCAL_SANDBOX_IMAGE: ${LOCAL_SANDBOX_IMAGE}
+      # The sandbox publishes its exec daemon on the *host's* loopback, which
+      # only a core running on the host could dial. Naming core here makes it
+      # join each sandbox's network and reach the daemon by container name.
+      LOCAL_SANDBOX_CORE_CONTAINER: qm-omniloy-core
       # The one source of admin identity: `<principal>:org_admin`, comma
       # separated. With OIDC_PRINCIPAL_CLAIM=email the principal is the
       # lowercased email. Seeded only while admin_grants is empty — after that

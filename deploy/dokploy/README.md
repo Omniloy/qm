@@ -46,6 +46,23 @@ LOCAL_SANDBOX_IMAGE=qm-sandbox-local:latest bash scripts/local-sandbox-build.sh
 A fingerprint mismatch only logs `[local-sandbox] sandbox image … is stale`; a missing
 image is a hard failure.
 
+### Reaching the sandbox from a containerised core
+
+`SANDBOX_BACKEND=local` is built for a core running directly on the Docker host: each
+sandbox publishes its exec daemon on the host's loopback (`-p 127.0.0.1:0:8080`) and
+core dials `127.0.0.1:<published port>`. Here core is itself a container, so that
+address is core's own loopback and every exec fails with
+`exec daemon never became reachable: fetch failed` — while the sandbox logs show the
+daemon listening perfectly well.
+
+`LOCAL_SANDBOX_CORE_CONTAINER` names core's container. When set, core joins each
+sandbox's network and reaches the daemon at the container's own name on port 8080, so
+nothing depends on the published host port. It must match `container_name` on the
+`core` service.
+
+Host networking would also fix it, but this host has no firewall — core would be
+exposed on port 8080 to the Internet.
+
 ## Application env
 
 Set these on the Dokploy Compose application. Nothing here belongs in git.
