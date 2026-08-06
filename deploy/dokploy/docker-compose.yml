@@ -85,6 +85,10 @@ services:
       AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET}
       AUTH_CLIENT_SECRET: ${AUTH_CLIENT_SECRET}
       CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET}
+      # Not in the CLI's secret table for auth, but the shared chassis signs
+      # portal identity with it and otherwise falls back to CORE_SIGNING_SECRET
+      # — which would not match what core verifies.
+      PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET}
     networks:
       qm:
         # The portal refuses to address the broker over a name that could be
