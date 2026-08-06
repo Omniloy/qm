@@ -4,6 +4,11 @@ import { spawnDockerExec } from "../sandbox/docker-exec.ts";
 
 const NETWORK = "agent-deploynet";
 const APP_PORT = 8080;
+// The snapshot is mounted read-only, so an app has nowhere to keep state unless
+// it gets one. The AWS provider gives apps a writable /data; this is the local
+// equivalent — a per-deployment named volume that survives redeploys.
+const APP_DATA_DIR = "/data";
+const dataVolume = (id: string) => `agent-deploy-data-${id.slice(0, 12)}`;
 
 export interface DockerDeployProviderOptions {
   image?: string;
@@ -75,10 +80,14 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
         `127.0.0.1:${hostPort}:${APP_PORT}`,
         "-v",
         `${version.snapshotDir}:/app:ro`,
+        "-v",
+        `${dataVolume(d.id)}:${APP_DATA_DIR}`,
         "-w",
         "/app",
         "-e",
         `PORT=${APP_PORT}`,
+        "-e",
+        `DATA_DIR=${APP_DATA_DIR}`,
         ...envArgs,
         image,
         "sh",
@@ -97,6 +106,7 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
 
     async destroy(d: Deployment): Promise<void> {
       await dexec(["rm", "-f", name(d)]);
+      await dexec(["volume", "rm", dataVolume(d.id)]);
       freePort(name(d));
     },
   };
