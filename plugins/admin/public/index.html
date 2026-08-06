@@ -4900,11 +4900,19 @@
       const API_BASE = "__ADMIN_BASE__";
 
       async function api(method, path, body) {
-        const res = await fetch(API_BASE + path, {
-          method,
-          headers: body ? { "content-type": "application/json" } : {},
-          ...(body ? { body: JSON.stringify(body) } : {}),
-        });
+        let res;
+        try {
+          res = await fetch(API_BASE + path, {
+            method,
+            headers: body ? { "content-type": "application/json" } : {},
+            ...(body ? { body: JSON.stringify(body) } : {}),
+          });
+        } catch {
+          // A dropped connection (server restart, offline, TLS reset) must read
+          // as a failed call, not a rejected promise — callers that await this
+          // mid-save would otherwise unwind and strand the UI as "Saving...".
+          return { ok: false, status: 0, data: null };
+        }
         const text = await res.text();
         let data = null;
         try {
@@ -5570,7 +5578,7 @@
         }
         $("header-controls").textContent = "";
         view = st.view;
-        scope = st.scope;
+        scope = st.scope || scope;
         page = st.page || 1;
         historyKind = st.historyKind || "conversation";
         $("app-view").classList.toggle("history-view", view === "history");
@@ -5620,6 +5628,10 @@
         render(st);
       }
       function go(st) {
+        // Org-wide views (slack, judgments) navigate without naming a scope.
+        // Carry the current one, or `scope` becomes undefined and every later
+        // scoped request addresses the literal string "undefined".
+        if (!st.scope) st = { ...st, scope };
         const leavingDraft = hasGovernanceDraft() && (st.view !== view || st.scope !== scope);
         if (!leavingDraft) return commitGo(st);
         if (governanceSaveInFlight()) {
@@ -8068,68 +8080,80 @@
         return Promise.resolve(true);
       }
       let governanceSaveSeq = 0;
-      document.querySelectorAll("[data-save]").forEach((btn) => {
-        btn.onclick = async () => {
-          const key = btn.dataset.save;
-          const requestedScope = scope;
-          let body;
-          try {
-            body = SAVE[key]();
-          } catch (err) {
-            setStatus(SAVE_ST[key], err instanceof Error ? err.message : "Could not save.", "err");
-            return;
+      async function saveSection(btn) {
+        const key = btn.dataset.save;
+        const requestedScope = scope;
+        let body;
+        try {
+          body = SAVE[key]();
+        } catch (err) {
+          setStatus(SAVE_ST[key], err instanceof Error ? err.message : "Could not save.", "err");
+          return;
+        }
+        if (!(await governanceSaveReview(key, body)) || requestedScope !== scope) return;
+        const saveRequest = String(++governanceSaveSeq);
+        btn.dataset.saveRequest = saveRequest;
+        btn.disabled = true;
+        setStatus(SAVE_ST[key], "Saving...", "saving", true);
+        const r = await api("PUT", "/api/scopes/" + encodeURIComponent(requestedScope) + "/" + key, body);
+        if (requestedScope !== scope) {
+          if (btn.dataset.saveRequest === saveRequest) {
+            delete btn.dataset.saveRequest;
+            btn.disabled = !btn.classList.contains("dirty");
+            setStatus(SAVE_ST[key], "", "");
           }
-          if (!(await governanceSaveReview(key, body)) || requestedScope !== scope) return;
-          const saveRequest = String(++governanceSaveSeq);
-          btn.dataset.saveRequest = saveRequest;
-          btn.disabled = true;
-          setStatus(SAVE_ST[key], "Saving...", "saving", true);
-          const r = await api("PUT", "/api/scopes/" + encodeURIComponent(requestedScope) + "/" + key, body);
-          if (requestedScope !== scope) {
-            if (btn.dataset.saveRequest === saveRequest) {
-              delete btn.dataset.saveRequest;
-              btn.disabled = !btn.classList.contains("dirty");
-              setStatus(SAVE_ST[key], "", "");
-            }
-            return;
-          }
-          if (btn.dataset.saveRequest === saveRequest) delete btn.dataset.saveRequest;
-          if (r.ok) {
-            if (key === "security-posture" || key === "ambient-policy") {
-              const fresh = await api("GET", "/api/scopes/" + encodeURIComponent(scope));
-              if (!fresh.ok) {
-                updateSectionDirty(key);
-                setStatus(SAVE_ST[key], "Saved, but could not refresh the applied value.", "err");
-                return;
-              }
-              renderGovernanceOverview(fresh.data);
-              if (key === "security-posture") $("security-posture").value = fresh.data.securityPosture || "auto";
-              else renderAmbientPolicy(fresh.data.ambientPolicy);
-              captureSection(key);
-            } else if (key === "branding") {
-              location.reload();
+          return;
+        }
+        if (btn.dataset.saveRequest === saveRequest) delete btn.dataset.saveRequest;
+        if (r.ok) {
+          if (key === "security-posture" || key === "ambient-policy") {
+            const fresh = await api("GET", "/api/scopes/" + encodeURIComponent(scope));
+            if (!fresh.ok) {
+              updateSectionDirty(key);
+              setStatus(SAVE_ST[key], "Saved, but could not refresh the applied value.", "err");
               return;
-            } else if (SAVE_RELOADS.has(key)) await loadScope();
-            else {
-              if (key === "egress") {
-                renderGovernanceOverview({ ...governanceOverviewData, egress: body });
-                renderEgressValidation();
-              }
-              if (key === "command-policy") loadedCommandPolicyPresent = true;
-              captureSection(key);
             }
-            setStatus(SAVE_ST[key], "Saved", "ok");
-          } else {
-            if (key === "soul" && r.status === 409) await refreshSoulConflict();
-            updateSectionDirty(key);
-            let message = r.data?.message || "Save failed.";
-            if (key === "soul" && r.status === 409) {
-              message = "SOUL changed; latest revision loaded and your draft was preserved.";
-            } else if (r.status === 403) {
-              message = "Not authorized for this scope.";
+            renderGovernanceOverview(fresh.data);
+            if (key === "security-posture") $("security-posture").value = fresh.data.securityPosture || "auto";
+            else renderAmbientPolicy(fresh.data.ambientPolicy);
+            captureSection(key);
+          } else if (key === "branding") {
+            location.reload();
+            return;
+          } else if (SAVE_RELOADS.has(key)) await loadScope();
+          else {
+            if (key === "egress") {
+              renderGovernanceOverview({ ...governanceOverviewData, egress: body });
+              renderEgressValidation();
             }
-            setStatus(SAVE_ST[key], message, "err");
+            if (key === "command-policy") loadedCommandPolicyPresent = true;
+            captureSection(key);
           }
+          setStatus(SAVE_ST[key], "Saved", "ok");
+        } else {
+          if (key === "soul" && r.status === 409) await refreshSoulConflict();
+          updateSectionDirty(key);
+          let message = r.data?.message || "Save failed.";
+          if (key === "soul" && r.status === 409) {
+            message = "SOUL changed; latest revision loaded and your draft was preserved.";
+          } else if (r.status === 403) {
+            message = "Not authorized for this scope.";
+          }
+          setStatus(SAVE_ST[key], message, "err");
+        }
+      }
+      document.querySelectorAll("[data-save]").forEach((btn) => {
+        btn.onclick = () => {
+          // The "Saving..." status is sticky, and governanceSaveInFlight() reads
+          // it to block navigation. If anything above throws, that status has to
+          // be cleared or the page traps the user on this section for good.
+          void saveSection(btn).catch((err) => {
+            const key = btn.dataset.save;
+            delete btn.dataset.saveRequest;
+            updateSectionDirty(key);
+            setStatus(SAVE_ST[key], "Save failed unexpectedly — reload to confirm what was applied.", "err");
+            console.error("[admin] save failed", key, err);
+          });
         };
       });
       $("view-governance").addEventListener("input", (e) => {
