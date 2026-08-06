@@ -1,0 +1,167 @@
+# QM on Dokploy — single-host Docker target.
+#
+# Mirrors the wiring the `qm` CLI's docker backend applies
+# (cli/src/backends/docker.ts, cli/src/services.ts): core plus the four surface
+# plugins on a private network, Postgres for durable state, and the portal as
+# the only Internet-facing service. Traefik reaches the portal over Dokploy's
+# shared overlay; nothing else joins it.
+#
+# Every secret and the public URL come from the Dokploy application env — this
+# file holds no credentials. See ./README.md for the required keys.
+
+services:
+  pg:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: qm
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d qm"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks: [qm]
+
+  core:
+    build:
+      context: ../..
+      dockerfile: deploy/dokploy/core.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      pg:
+        condition: service_healthy
+    environment:
+      PORT: "8080"
+      DATA_DIR: /data
+      ORG_ID: ${ORG_ID}
+      HARNESS: ${HARNESS}
+      HARNESS_SECURITY_POSTURE: ${HARNESS_SECURITY_POSTURE}
+      MODEL_PROVIDER: anthropic
+      SESSION_STORE: postgres
+      RUN_STORE: postgres
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@pg:5432/qm
+      # publicUrl is the portal origin; the portal proxies core's public API,
+      # which is what agent sandboxes call back on.
+      PUBLIC_WEB_URL: ${PUBLIC_URL}
+      WEB_UI_PUBLIC_URL: ${PUBLIC_URL}
+      PUBLIC_API_URL: ${PUBLIC_URL}
+      # Agent computers are containers on this host's Docker daemon.
+      SANDBOX_BACKEND: local
+      LOCAL_SANDBOX_IMAGE: ${LOCAL_SANDBOX_IMAGE}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET}
+      CAPABILITY_SECRET: ${CAPABILITY_SECRET}
+      PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET}
+      CONNECTOR_SECRET_KEY: ${CONNECTOR_SECRET_KEY}
+      SKILL_SIGNING_SECRET: ${SKILL_SIGNING_SECRET}
+    volumes:
+      - coredata:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks: [qm]
+
+  auth:
+    build:
+      context: ../..
+      dockerfile: deploy/auth/Dockerfile
+    restart: unless-stopped
+    depends_on: [core]
+    environment:
+      PORT: "8080"
+      CORE_API_URL: http://core:8080
+      CORE_ORG_ID: ${ORG_ID}
+      AUTH_ISSUER: ${PUBLIC_URL}/idp
+      AUTH_CLIENT_ID: qm-portal
+      AUTH_REDIRECT_URI: ${PUBLIC_URL}/auth/callback
+      AUTH_BRAND_NAME: ${AUTH_BRAND_NAME}
+      AUTH_EMAIL_TRANSPORT: resend
+      AUTH_EMAIL_FROM: ${AUTH_EMAIL_FROM}
+      AUTH_ALLOWED_EMAIL_DOMAIN: ${AUTH_ALLOWED_EMAIL_DOMAIN}
+      RESEND_API_KEY: ${RESEND_API_KEY}
+      AUTH_SIGNING_JWK: ${AUTH_SIGNING_JWK}
+      AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET}
+      AUTH_CLIENT_SECRET: ${AUTH_CLIENT_SECRET}
+      CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET}
+    networks: [qm]
+
+  web-ui:
+    build:
+      context: ../..
+      dockerfile: deploy/web-ui/Dockerfile
+    restart: unless-stopped
+    depends_on: [core]
+    environment:
+      PORT: "8080"
+      CORE_API_URL: http://core:8080
+      CORE_ORG_ID: ${ORG_ID}
+      WEB_UI_PUBLIC_URL: ${PUBLIC_URL}
+      CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET}
+      PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET}
+    networks: [qm]
+
+  admin:
+    build:
+      context: ../..
+      dockerfile: deploy/admin/Dockerfile
+    restart: unless-stopped
+    depends_on: [core]
+    environment:
+      PORT: "8080"
+      CORE_API_URL: http://core:8080
+      CORE_ORG_ID: ${ORG_ID}
+      ADMIN_BASE_PATH: /admin
+      CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET}
+      PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET}
+    networks: [qm]
+
+  portal:
+    build:
+      context: ../..
+      dockerfile: deploy/portal/Dockerfile
+    restart: unless-stopped
+    depends_on: [core, auth, web-ui, admin]
+    environment:
+      PORT: "8080"
+      CORE_API_URL: http://core:8080
+      CORE_ORG_ID: ${ORG_ID}
+      PORTAL_PUBLIC_URL: ${PUBLIC_URL}
+      WEB_UI_UPSTREAM: http://web-ui:8080
+      ADMIN_UPSTREAM: http://admin:8080
+      # Built-in sign-in broker. Browser-facing routes are republished under
+      # /idp on the portal's own origin; token/userinfo/JWKS stay private.
+      AUTH_BROKER_UPSTREAM: http://auth:8080
+      AUTH_BROKER_PREFIX: /idp
+      OIDC_CLIENT_ID: qm-portal
+      OIDC_ISSUER: ${PUBLIC_URL}/idp
+      OIDC_AUTH_ENDPOINT: ${PUBLIC_URL}/idp/authorize
+      OIDC_TOKEN_ENDPOINT: http://auth:8080/token
+      OIDC_USERINFO_ENDPOINT: http://auth:8080/userinfo
+      OIDC_JWKS_URI: http://auth:8080/.well-known/jwks.json
+      OIDC_SCOPES: openid email
+      OIDC_PRINCIPAL_CLAIM: email
+      OIDC_ALLOWED_EMAIL_DOMAIN: ${AUTH_ALLOWED_EMAIL_DOMAIN}
+      AUTH_CLIENT_SECRET: ${AUTH_CLIENT_SECRET}
+      PORTAL_SESSION_SECRET: ${PORTAL_SESSION_SECRET}
+      PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET}
+      CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET}
+    networks: [qm, dokploy-network]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.qm-portal.rule=Host(`${PUBLIC_HOST}`)
+      - traefik.http.routers.qm-portal.entrypoints=websecure
+      - traefik.http.routers.qm-portal.tls.certresolver=letsencrypt
+      - traefik.http.services.qm-portal.loadbalancer.server.port=8080
+
+volumes:
+  pgdata:
+  coredata:
+
+networks:
+  qm:
+    driver: bridge
+  dokploy-network:
+    external: true
