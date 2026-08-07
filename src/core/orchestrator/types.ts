@@ -3,6 +3,7 @@ import type {
   Conversation,
   Principal,
   PendingApprovalRecord,
+  ScopeId,
   SurfaceContextQuery,
   SurfaceContextResult,
   TurnRequest,
@@ -151,6 +152,16 @@ export interface OrchestratorDeps {
   deviceFlowCutover?: DeviceFlowCutoverStore;
   credentialUsage?: CredentialUsageSink;
   keychain?: Keychain;
+  /**
+   * Renders the `## Attached folders` prompt section for one turn, as the
+   * turn's own actor. Optional: absent when no Drive mounts are configured,
+   * and the prompt simply has no such section.
+   */
+  attachedFolders?: (input: {
+    scopeIds: readonly ScopeId[];
+    principalId: string;
+    nowMs: number;
+  }) => Promise<{ block: string }>;
   serviceCreds?: ServiceCredentialStore;
   deliveries?: DeliveryStore;
   directory?: DirectoryStore;
