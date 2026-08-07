@@ -70,22 +70,22 @@ export function rowMenuTpl(
       open
         ? html`<div class="session-menu-popover" role="menu" @click=${(event: Event) => event.stopPropagation()}>
             ${actions.map(
-            (a) =>
-              html`<button
-                class="session-menu-option ${a.danger ? "danger" : ""}"
-                type="button"
-                role="menuitem"
-                ?disabled=${a.disabled}
-                title=${a.reason ?? ""}
-                @click=${() => {
-                openKey = null;
-                onSelect(a.id);
-                rerender();
-              }}
-              >
-                <span>${a.label}</span>
-              </button>`,
-          )}
+              (a) =>
+                html`<button
+                  class="session-menu-option ${a.danger ? "danger" : ""}"
+                  type="button"
+                  role="menuitem"
+                  ?disabled=${a.disabled}
+                  title=${a.reason ?? ""}
+                  @click=${() => {
+                  openKey = null;
+                  onSelect(a.id);
+                  rerender();
+                }}
+                >
+                  <span>${a.label}</span>
+                </button>`,
+            )}
           </div>`
         : nothing
     }

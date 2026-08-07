@@ -4,6 +4,7 @@ import { api } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
 import { icon } from "./ui";
 import { resetRowMenus, rowMenuTpl } from "./row-actions";
+import { openContextPicker, resetContextPicker } from "./context-picker";
 import {
   bandState,
   canAttach,
@@ -62,6 +63,7 @@ export function resetDriveFoldersState(): void {
   pending = null;
   detaching = null;
   resetRowMenus();
+  resetContextPicker();
 }
 
 interface MountsResponse {
@@ -150,6 +152,24 @@ function onFolderAction(id: string, m: MountRow, rerender: () => void): void {
     }
     case "refresh":
       void refreshOne(m.id, rerender);
+      return;
+    case "move":
+      openContextPicker(
+        {
+          label: m.name,
+          current: loadedScope,
+          kind: "folder",
+          move: async (scopeId) => {
+            await api(`/api/mounts/${encodeURIComponent(m.id)}/move`, {
+              method: "POST",
+              body: JSON.stringify({ scopeId }),
+            });
+            // The folder now lives elsewhere, so it leaves this list entirely.
+            await loadDriveMounts(loadedScope, rerender);
+          },
+        },
+        rerender,
+      );
       return;
     case "disable":
       void setMountEnabled(m, false, rerender);

@@ -7021,3 +7021,27 @@ h3.ambient-field-label {
 .row-menu {
   flex: 0 0 auto;
 }
+.context-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.context-choice {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.context-choice.active {
+  border-color: var(--primary);
+}
+.context-choice span:first-of-type {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

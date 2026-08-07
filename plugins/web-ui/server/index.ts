@@ -1155,9 +1155,10 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
     // this surface has never audited. No viewer parameter — core reads the
     // identity from the portal token coreFetch attaches, so passing one here
     // would imply the caller could choose who they act as.
-    if (method === "DELETE" && path.startsWith("/api/files/")) {
+    if ((method === "DELETE" || method === "PATCH") && path.startsWith("/api/files/")) {
       const id = decodeURIComponent(path.slice("/api/files/".length));
-      const r = await coreFetch("DELETE", `/v1/files/${encodeURIComponent(id)}`);
+      const raw = method === "PATCH" ? await readBody(req) : "";
+      const r = await coreFetch(method, `/v1/files/${encodeURIComponent(id)}`, raw);
       return relay(res, r);
     }
 

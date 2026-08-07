@@ -176,6 +176,7 @@ export function folderActions(row: MountRow, state: BandState): RowActionSpec[] 
   // Turning a folder off is a QM-side flag, so it works even when Google is
   // unreachable — which is exactly when someone may want to stop the agent
   // tripping over a folder it cannot read.
+  actions.push({ id: "move", label: "Change context…" });
   actions.push({ id: off ? "enable" : "disable", label: off ? "Turn on" : "Turn off" });
 
   actions.push({ id: "remove", label: "Remove…", danger: true });

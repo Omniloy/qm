@@ -167,6 +167,14 @@ export function createPostgresFileArtifactStore(
       await query("UPDATE file_artifacts SET enabled = $2, updated_at = $3 WHERE id = $1", [id, enabled, Date.now()]);
     },
 
+    async setCreatedInScope(id, scopeId) {
+      await query("UPDATE file_artifacts SET created_in_scope = $2, updated_at = $3 WHERE id = $1", [
+        id,
+        scopeId,
+        Date.now(),
+      ]);
+    },
+
     async delete(id) {
       const removed = await q("DELETE FROM file_artifacts WHERE id = $1 RETURNING blob_key", [id]);
       const blobKey = (removed[0]?.blob_key as string | null | undefined) ?? null;

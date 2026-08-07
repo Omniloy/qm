@@ -325,6 +325,25 @@ async function deleteFile(ctx: ApiCtx): Promise<void> {
   return sendJson(res, 200, { ok: true });
 }
 
+async function patchFile(ctx: ApiCtx): Promise<void> {
+  const { res, app, capability, actor, body } = ctx;
+  const viewer = capability?.actorId ?? actor?.p;
+  if (!viewer) return sendJson(res, 401, { error: "capability_required" });
+  const b = isObj(body) ? body : {};
+  if (typeof b.scopeId !== "string" || !b.scopeId) {
+    return sendJson(res, 400, { error: "bad_request", message: "scopeId is required" });
+  }
+  const outcome = await app.moveFileForViewer(ctx.params.id!, viewer, b.scopeId as ScopeId);
+  if (outcome === "not_found") return sendJson(res, 404, { error: "not_found" });
+  if (outcome === "forbidden") {
+    return sendJson(res, 403, {
+      error: "forbidden",
+      message: "you can only move your own files, and only into a context you can upload to",
+    });
+  }
+  return sendJson(res, 200, { ok: true });
+}
+
 async function patchSession(ctx: ApiCtx): Promise<void> {
   const { res, app, body } = ctx;
   const id = ctx.params.id!;
@@ -1337,6 +1356,7 @@ export const surfaceRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "POST", path: "/v1/files/upload", auth: "source", handle: uploadFile },
   { method: "GET", path: "/v1/files", auth: "either", handle: listFiles },
   { method: "DELETE", path: "/v1/files/:id", auth: "either", handle: deleteFile },
+  { method: "PATCH", path: "/v1/files/:id", auth: "either", handle: patchFile },
   { method: "POST", path: "/v1/sessions/:id", auth: "source", handle: patchSession },
   { method: "GET", path: "/v1/sessions", auth: "source", handle: listSessions },
   { method: "GET", path: "/v1/conversations", auth: "either", handle: listAgentConversations },

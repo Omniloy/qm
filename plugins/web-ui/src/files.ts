@@ -15,6 +15,7 @@ import {
 } from "./drive-folders";
 import { fileActions } from "./file-actions";
 import { resetRowMenus, rowMenuTpl } from "./row-actions";
+import { contextPickerTpl, openContextPicker, resetContextPicker } from "./context-picker";
 
 interface FileItem {
   id: string;
@@ -216,14 +217,46 @@ function drawFiles(loading = false): void {
       </div>
       ${visible.length ? html`<div class="list-rows file-list">${visible.map(fileRow)}</div>` : html`<div class="empty compact">${filtered ? "No files match these filters." : "No files yet. Upload one here or ask the agent to create one."}</div>`}
       ${filesNextCursor ? html`<div class="list-footer"><button class="btn" type="button" ?disabled=${filesLoadingMore} @click=${() => void loadMoreFiles()}>${filesLoadingMore ? "Loading…" : "Load more"}</button></div>` : nothing}
-      ${drivePickerTpl(uploadTarget ?? "", () => drawFiles())} ${deleteFileConfirmTpl()}
+      ${drivePickerTpl(uploadTarget ?? "", () => drawFiles())} ${contextPickerTpl(() => drawFiles())}
+      ${deleteFileConfirmTpl()}
     `,
     filesHost,
   );
 }
 
+async function moveFile(f: FileRow, scopeId: string): Promise<void> {
+  await api(`/api/files/${encodeURIComponent(f.id)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ scopeId }),
+  });
+  fileRows = [];
+  filesNextCursor = null;
+  await loadFiles(appState.viewRenderSeq);
+}
+
 function onFileAction(id: string, f: FileRow): void {
   switch (id) {
+    case "move":
+      openContextPicker(
+        {
+          label: f.name,
+          current: fileScope(f) ?? personalScopeId() ?? "",
+          kind: "file",
+          move: (scopeId) => moveFile(f, scopeId),
+        },
+        () => drawFiles(),
+      );
+      return;
+    case "unshare": {
+      // The same move, with the destination fixed to the person's own space.
+      const personal = personalScopeId();
+      if (personal)
+        void moveFile(f, personal).catch((e: unknown) => {
+          filesNotice = errMessage(e);
+          drawFiles();
+        });
+      return;
+    }
     case "download": {
       const a = document.createElement("a");
       a.href = withBase(`/api/files/${encodeURIComponent(f.id)}/content`);
@@ -251,7 +284,7 @@ function fileRow(f: FileRow) {
       >${f.openable ? html`<a class="btn compact" href=${contentUrl} target="_blank" rel="noreferrer">Open</a>` : html`<span>Unavailable</span>`}${rowMenuTpl(
         `file:${f.id}`,
         f.name,
-        fileActions(f, me),
+        fileActions(f, me, personalScopeId()),
         (id) => onFileAction(id, f),
         () => drawFiles(),
       )}</span
@@ -494,6 +527,7 @@ export async function renderFiles(): Promise<void> {
   // Transient per-visit state: a half-open menu or a delete confirm left over
   // from last time would reappear over a different list.
   resetRowMenus();
+  resetContextPicker();
   resetDriveFoldersState();
   deletingFile = null;
   deleteBusy = false;

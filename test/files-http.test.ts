@@ -340,3 +340,62 @@ test("deleting a file nobody uploaded reports not_found rather than throwing", a
   const app = makeApp(createMemoryFileArtifactStore(createMemoryDurableByteStore()), createAclStore());
   assert.equal(await app.deleteFileForViewer("no-such-file", "U1"), "not_found");
 });
+
+test("moving a file changes its audience, never its identity", async () => {
+  // src/tools/primitives.ts and app-helpers resolve files by
+  // (ownerScopeId, path). If a move touched either, every agent reference to
+  // the file would break silently, so the move is a grant swap and nothing
+  // more.
+  const files = createMemoryFileArtifactStore(createMemoryDurableByteStore());
+  const acl = createAclStore();
+  const app = makeUploadApp(files, acl);
+  const personal = scopeId("personal", "U1");
+
+  const uploaded = await app.uploadFileForViewer("U1", { name: "brief.md", data: chunks(Buffer.from("v1")) });
+  assert.ok(uploaded);
+  const id = uploaded!.id;
+  const before = (await files.get(id))!;
+
+  assert.equal(await app.moveFileForViewer(id, "U1", channel), "ok");
+  const moved = (await files.get(id))!;
+  assert.equal(moved.ownerScopeId, before.ownerScopeId, "the owner does not move");
+  assert.equal(moved.path, before.path, "nor the path");
+  assert.equal(moved.id, before.id, "nor the id");
+  assert.equal(moved.createdInScope, channel, "only the context moves");
+
+  // The reference agent tooling actually uses still resolves.
+  const resolved = await files.resolveByOwnerPaths([{ ownerScopeId: moved.ownerScopeId, path: moved.path }]);
+  assert.equal(resolved.length, 1);
+
+  // And a member of the destination can now see it.
+  assert.equal((await app.listFilesForViewer("U2")).shared.length, 1);
+
+  assert.equal(await app.moveFileForViewer(id, "U1", personal), "ok", "and back again");
+  assert.deepEqual(await acl.grantsFor(personal, moved.path), [], "the project's grant is gone");
+  assert.equal((await app.listFilesForViewer("U2")).shared.length, 0, "so the teammate no longer sees it");
+  assert.equal((await files.resolveByOwnerPaths([{ ownerScopeId: personal, path: moved.path }])).length, 1);
+});
+
+test("moving is refused into a context the person cannot use, and for a file they do not own", async () => {
+  const files = createMemoryFileArtifactStore(createMemoryDurableByteStore());
+  const acl = createAclStore();
+  const app = makeUploadApp(files, acl);
+
+  const uploaded = await app.uploadFileForViewer("U1", { name: "brief.md", data: chunks(Buffer.from("v1")) });
+  const id = uploaded!.id;
+
+  assert.equal(
+    await app.moveFileForViewer(id, "U1", scopeId("channel", "C-not-mine")),
+    "forbidden",
+    "the same rule that governs uploading there",
+  );
+  assert.equal(await app.moveFileForViewer(id, "U2", channel), "not_found", "and a non-owner cannot even see it");
+  assert.equal((await files.get(id))!.createdInScope, scopeId("personal", "U1"), "neither refusal moved anything");
+});
+
+test("moving a file to where it already is is a no-op, not an error", async () => {
+  const files = createMemoryFileArtifactStore(createMemoryDurableByteStore());
+  const app = makeUploadApp(files, createAclStore());
+  const uploaded = await app.uploadFileForViewer("U1", { name: "brief.md", data: chunks(Buffer.from("v1")) });
+  assert.equal(await app.moveFileForViewer(uploaded!.id, "U1", scopeId("personal", "U1")), "ok");
+});

@@ -167,6 +167,85 @@ async function patchMount(ctx: ApiCtx): Promise<void> {
   return sendJson(res, 200, { mount: next });
 }
 
+/**
+ * Move a folder to another context.
+ *
+ * A mount's id is hashId([scopeId, name]), which is what makes per-scope name
+ * uniqueness structural — and what makes a move a re-attach rather than an
+ * update. The new row therefore has a new id, and nobody's cached listing
+ * carries over.
+ */
+async function moveMount(ctx: ApiCtx): Promise<void> {
+  const { res, deps, params } = ctx;
+  const mounts = deps.driveMounts;
+  if (!mounts) return sendJson(res, 503, { error: "unavailable", message: "Drive folders are not configured" });
+
+  const principalId = callerOf(ctx);
+  if (!principalId) return sendJson(res, 403, { error: "forbidden", message: "an identified caller is required" });
+
+  const body = (ctx.body ?? {}) as { scopeId?: unknown };
+  if (typeof body.scopeId !== "string" || !body.scopeId) {
+    return sendJson(res, 400, { error: "bad_request", message: "scopeId is required" });
+  }
+  const target = body.scopeId as ScopeId;
+
+  const mount = await mounts.store.get(params.id!, { includeDisabled: true });
+  if (!mount) return sendJson(res, 404, { error: "not_found" });
+
+  // Moving a folder to where it already is changes nothing — and must not run
+  // the detach below, which would delete the row the re-attach just updated.
+  if (mount.scopeId === target) return sendJson(res, 200, { mount });
+
+  // Both ends. A move is a removal from one context and an attach to another,
+  // so someone who may do only one of those may not do the move.
+  for (const scopeId of [mount.scopeId, target]) {
+    const decision = await decideMountMutation({
+      triggered: Boolean(ctx.capability?.triggered),
+      principalId,
+      scopeId,
+      canUseContext: mounts.canUseContext,
+    });
+    if (!decision.ok) return refuse(ctx, decision);
+  }
+
+  try {
+    // Attach before detaching. A name already taken in the destination throws
+    // here, and the folder is still where it was — the other order would
+    // destroy it and then fail.
+    const now = Date.now();
+    const moved = await mounts.store.attach(
+      {
+        scopeId: target,
+        externalId: mount.externalId,
+        name: mount.name,
+        ...(mount.displayPath ? { displayPath: mount.displayPath } : {}),
+        mode: mount.mode,
+        // Preserved so the row keeps saying who brought the folder in, rather
+        // than crediting whoever moved it.
+        createdBy: mount.createdBy,
+      },
+      now,
+    );
+    // attach() always enables; a folder that was off stays off across a move.
+    if (!mount.enabled) await mounts.store.setEnabled(moved.id, false, now);
+    await mounts.store.detach(mount.id);
+
+    mounts.cache.invalidateMount(mount.id);
+    audit(deps, {
+      principalId,
+      action: "drive.mount.moved",
+      resource: `${mount.name} (${mount.externalId})`,
+      scopeLabel: `${mount.scopeId} -> ${target}`,
+    });
+    return sendJson(res, 200, { mount: { ...moved, enabled: mount.enabled } });
+  } catch (e) {
+    if (e instanceof MountNameInUseError) {
+      return sendJson(res, 409, { error: "conflict", message: e.message });
+    }
+    return sendJson(res, 400, { error: "bad_request", message: errMessage(e) });
+  }
+}
+
 async function refreshMount(ctx: ApiCtx): Promise<void> {
   const { res, deps, params } = ctx;
   const mounts = deps.driveMounts;
@@ -239,5 +318,6 @@ export const mountRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "POST", path: "/v1/mounts", auth: "either", handle: attachMount },
   { method: "POST", path: "/v1/mounts/:id/refresh", auth: "either", handle: refreshMount },
   { method: "PATCH", path: "/v1/mounts/:id", auth: "either", handle: patchMount },
+  { method: "POST", path: "/v1/mounts/:id/move", auth: "either", handle: moveMount },
   { method: "DELETE", path: "/v1/mounts/:id", auth: "either", handle: detachMount },
 ];

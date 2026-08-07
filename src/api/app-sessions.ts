@@ -29,6 +29,7 @@ export function createSessionMethods(
   | "uploadFileForViewer"
   | "openFileForViewer"
   | "deleteFileForViewer"
+  | "moveFileForViewer"
   | "listSessions"
   | "sessionBackground"
   | "readSessionBackgroundOutput"
@@ -187,6 +188,51 @@ export function createSessionMethods(
         action: "file.delete",
         resource: art.path,
         scopeLabel: art.createdInScope ?? art.ownerScopeId,
+      });
+      return "ok";
+    },
+
+    async moveFileForViewer(id, principalId, target) {
+      const art = await deps.files.get(id, { includeDisabled: true });
+      if (!art) return "not_found";
+
+      const myScopes = await currentResourceScopesForViewer(principalId);
+      const grants = await deps.acl.grantsFor(art.ownerScopeId, art.path);
+      const visible = myScopes.includes(art.ownerScopeId) || grants.some((g) => myScopes.includes(g.granteeScopeId));
+      if (!visible) return "not_found";
+      // Being shown a file does not make its audience yours to change.
+      if (art.createdBy !== principalId) return "forbidden";
+      // The same rule that governs uploading there in the first place.
+      if (!(await canUseContext(principalId, target))) return "forbidden";
+
+      const current = art.createdInScope ?? art.ownerScopeId;
+      if (current === target) return "ok";
+
+      // Revoke first, then grant. The reverse order would briefly expose the
+      // file to both contexts at once, and revoking cannot fail in a way that
+      // leaves it exposed.
+      for (const g of grants) {
+        await deps.acl.revoke(art.ownerScopeId, art.path, g.granteeScopeId, principalId);
+      }
+      // A file in its owner's own scope needs no grant — that is what moving
+      // it back out of a project means.
+      if (target !== art.ownerScopeId) {
+        await deps.acl.grant({
+          ownerScopeId: art.ownerScopeId,
+          ref: art.path,
+          granteeScopeId: target,
+          permission: "read",
+          grantedBy: principalId,
+        });
+      }
+      await deps.files.setCreatedInScope(id, target);
+
+      deps.auditLog?.record({
+        at: Date.now(),
+        principalId,
+        action: "file.move",
+        resource: art.path,
+        scopeLabel: `${current} -> ${target}`,
       });
       return "ok";
     },

@@ -11,16 +11,17 @@ import type { RowActionSpec } from "./drive-mount";
 export interface FileActionRow {
   id: string;
   name: string;
-  /** Who uploaded it. Only they may delete it. */
+  /** Who uploaded it. Only they may delete or move it. */
   createdBy?: string;
   /** False when the artifact has no stored bytes — nothing to open. */
   openable: boolean;
-  /** The context it currently sits in, when that is not the person's own. */
+  /** The context it currently sits in. */
   createdInScope?: string;
 }
 
-export function fileActions(row: FileActionRow, viewerId: string): RowActionSpec[] {
+export function fileActions(row: FileActionRow, viewerId: string, personalScope?: string | null): RowActionSpec[] {
   const mine = row.createdBy === viewerId;
+  const notMine = "Only the person who uploaded a file can change it";
   const actions: RowActionSpec[] = [
     {
       id: "download",
@@ -29,6 +30,26 @@ export function fileActions(row: FileActionRow, viewerId: string): RowActionSpec
       ...(row.openable ? {} : { reason: "This file has no stored contents" }),
     },
   ];
+
+  actions.push({
+    id: "move",
+    label: "Change context…",
+    disabled: !mine,
+    ...(mine ? {} : { reason: notMine }),
+  });
+
+  // Only meaningful for a file that is actually in a project. Taking it back
+  // out is the same move with a fixed destination, offered here because that
+  // is where someone looks for it.
+  const inProject = Boolean(row.createdInScope) && Boolean(personalScope) && row.createdInScope !== personalScope;
+  if (inProject) {
+    actions.push({
+      id: "unshare",
+      label: "Remove from this context",
+      disabled: !mine,
+      ...(mine ? {} : { reason: notMine }),
+    });
+  }
 
   // Deleting is the owner's alone. Core enforces it too, but offering a button
   // that always fails is worse than not offering it: it reads as a bug.

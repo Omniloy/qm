@@ -310,6 +310,14 @@ export interface App {
    * exist.
    */
   deleteFileForViewer(id: string, principalId: string): Promise<"ok" | "not_found" | "forbidden">;
+  /**
+   * Move a file to another context, owner only.
+   *
+   * Only the grant and createdInScope move; the file's owner, id and path do
+   * not, so agent references to it keep resolving. Passing the caller's own
+   * personal scope is how a file is taken back out of a project.
+   */
+  moveFileForViewer(id: string, principalId: string, scopeId: ScopeId): Promise<"ok" | "not_found" | "forbidden">;
   grant(g: Grant): Promise<void>;
   revokeGrant(ownerScopeId: ScopeId, ref: string, granteeScopeId: ScopeId, revokedBy: string): Promise<void>;
   promoteSkill(id: string, targetScopeId: ScopeId, actorId: string, liveActor: boolean): Promise<Skill>;

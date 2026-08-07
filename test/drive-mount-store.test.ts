@@ -197,3 +197,57 @@ test("re-attaching the same folder under an off name turns it back on", async ()
 test("setEnabled on a mount that does not exist reports it rather than creating one", async () => {
   assert.equal(await store().setEnabled("no-such-mount", false, 1_000), null);
 });
+
+test("a moved folder is a new row, because the id is derived from its context", async () => {
+  // mountId = hashId([scopeId, name]) is what makes per-scope name uniqueness
+  // structural, and it is also why a move cannot be an update: the row's own
+  // key changes. Everything else about the folder has to survive that.
+  const s = store();
+  const before = await s.attach(attach({ mode: "ro", displayPath: "Design docs" }), 1_000);
+
+  const after = await s.attach(
+    {
+      scopeId: "project:other",
+      externalId: before.externalId,
+      name: before.name,
+      displayPath: before.displayPath!,
+      mode: before.mode,
+      createdBy: before.createdBy,
+    },
+    2_000,
+  );
+  await s.detach(before.id);
+
+  assert.notEqual(after.id, before.id, "a different context means a different id");
+  assert.equal(after.id, mountId("project:other", "specs"));
+  assert.equal(after.externalId, before.externalId, "still the same Drive folder");
+  assert.equal(after.mode, before.mode, "and the same access");
+  assert.equal(after.displayPath, before.displayPath);
+  assert.equal(after.createdBy, "ada@example.com", "credited to whoever brought it in, not whoever moved it");
+  assert.deepEqual(await s.forScope("project:acme"), [], "it is gone from where it was");
+  assert.equal((await s.forScope("project:other")).length, 1);
+});
+
+test("a name already taken in the destination refuses before anything is destroyed", async () => {
+  // The route attaches before it detaches for exactly this reason: if the
+  // destination rejects the name, the folder must still be where it started.
+  const s = store();
+  const source = await s.attach(attach(), 1_000);
+  await s.attach(attach({ scopeId: "project:other", externalId: "someone-elses-folder" }), 1_000);
+
+  await assert.rejects(
+    () =>
+      s.attach(
+        {
+          scopeId: "project:other",
+          externalId: source.externalId,
+          name: source.name,
+          mode: source.mode,
+          createdBy: source.createdBy,
+        },
+        2_000,
+      ),
+    MountNameInUseError,
+  );
+  assert.equal((await s.forScope("project:acme")).length, 1, "the folder is still where it was");
+});
