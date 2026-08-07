@@ -14,6 +14,19 @@ test("a list row's overflow trigger is visible without hovering", () => {
   assert.match(css, rule, ".row-menu .session-menu-btn must set opacity: 1");
 });
 
+test("a list row's overflow trigger sits in the row, not wherever it lands", () => {
+  // Regression: .session-menu is position:absolute with top:50%/right:6px so it
+  // can pin to a position:relative session row. List rows are not positioned,
+  // so the trigger resolved against a far-away ancestor and rendered hundreds
+  // of pixels outside the card. .row-menu returns it to flow — and being
+  // relative is also what its own popover anchors to.
+  const block = /\.row-menu\s*\{[^}]*\}/.exec(css)?.[0] ?? "";
+  assert.match(block, /position:\s*relative/);
+  assert.match(block, /top:\s*auto/);
+  assert.match(block, /right:\s*auto/);
+  assert.match(block, /margin-top:\s*0/);
+});
+
 test("the base session-menu-btn still hides until its row is hovered", () => {
   // The override is scoped on purpose — the sidebar's behaviour is unchanged.
   assert.match(css, /\.session-menu-btn\s*\{[^}]*opacity:\s*0/);

@@ -7018,7 +7018,17 @@ h3.ambient-field-label {
   align-items: center;
   gap: 6px;
 }
+/* .session-menu is absolutely positioned to pin itself to the right edge of a
+   position:relative session row. A list row places the trigger in its action
+   cluster instead, so the menu returns to normal flow — and becomes the
+   positioned ancestor its own popover anchors against. Without this the
+   trigger lands wherever the nearest positioned ancestor happens to be, which
+   on the Files page was several hundred pixels outside the card. */
 .row-menu {
+  position: relative;
+  top: auto;
+  right: auto;
+  margin-top: 0;
   flex: 0 0 auto;
 }
 /* The sessions sidebar hides .session-menu-btn until its row is hovered, which
