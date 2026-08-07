@@ -70,6 +70,31 @@ test("cleanup releases the pane, not just the browser", () => {
   assert.match(RAW, /DELETE "\$AGENT_API_URL\/v1\/browser-sessions/);
 });
 
+test("cleanup stops the browser itself, which is the part that costs money", () => {
+  // Found on the deployed stack: End session cleared QM's record and left the
+  // provider session running. Core cannot stop it — it holds no provider key —
+  // so the trap is the only thing standing between a crash and a browser that
+  // bills until its idle timeout.
+  const trap = /trap '[^']*' EXIT/.exec(RAW)?.[0] ?? "";
+  assert.match(trap, /api\.anchorbrowser\.io\/v1\/sessions/, "terminates the provider session");
+  assert.match(trap, /AGENT_API_URL\/v1\/browser-sessions/, "and releases the pane");
+  assert.match(SKILL, /two different things and both are required/);
+});
+
+test("the breadcrumbs cannot outlive the browser they point at", () => {
+  // The computer is long-lived, so /tmp survives into unrelated conversations.
+  // A stale browse-state-url makes the runner poll a dead session, and Take
+  // control silently stops working — observed with two different session ids
+  // cached at once.
+  const trap = /trap '[^']*' EXIT/.exec(RAW)?.[0] ?? "";
+  assert.match(trap, /rm -f \/tmp\/browse-state-url/, "the trap clears them");
+  // And creation rewrites rather than trusting what is already there, because a
+  // hard-killed turn never runs its trap.
+  const create = /rm -f \/tmp\/browse-state-url[\s\S]{0,300}/.exec(RAW)?.[0] ?? "";
+  assert.match(create, /printf '%s' "\$AGENT_API_URL\/v1\/browser-sessions\/\$SESSION_ID\/state"/);
+  assert.match(SKILL, /Never reuse a session id, CDP URL or state URL from a previous turn/);
+});
+
 test("a missing key sends the person to Keychain, not into a search", () => {
   // The credential UI already exists — Add credential with a service, an env
   // key and a one-time page. The skill's job is to name it, not to invent a

@@ -175,9 +175,14 @@ Then drop the two values the runner needs, so it can find them however you end u
 invoking it:
 
 ```bash
+rm -f /tmp/browse-state-url /tmp/browse-state-token   # a hard-crashed turn leaves these behind
 printf '%s' "$AGENT_API_URL/v1/browser-sessions/$SESSION_ID/state" > /tmp/browse-state-url
 printf '%s' "$AGENT_API_TOKEN" > /tmp/browse-state-token
 ```
+
+Write them fresh every time, and only for the browser you just created. They are how the
+runner finds the session when it is invoked without the environment variable — pointing them
+at a stale session is how **Take control** quietly stops working.
 
 `expiresAt` is when the provider will close the browser — match the timeout you asked for, so
 the pane stops showing a browser that has already gone. Send `LIVE_VIEW`, never `CDP_URL`:
@@ -451,20 +456,32 @@ The last stdout line is the typed outcome:
 
 **Arm the cleanup when you create the browser, not when the task ends.** A run that crashes
 never reaches the end, and the browser then bills until its idle timeout with nobody watching
-it. Set the trap in the same shell that will run the task:
+it. Set the trap in the same shell that will run the task.
+
+The trap has three jobs, and dropping any one of them has been observed to bite:
 
 ```bash
-trap 'curl -fsS -X DELETE "$AGENT_API_URL/v1/browser-sessions/$SESSION_ID" -H "x-agent-capability: $AGENT_API_TOKEN" >/dev/null 2>&1 || true' EXIT
+trap '
+  # 1. Stop the actual browser. This is the one that costs money — releasing the
+  #    pane does not stop the provider billing. Substitute the Clean up call
+  #    from your provider doc; for Anchor it is:
+  curl -fsS -X DELETE "https://api.anchorbrowser.io/v1/sessions/$SESSION_ID" -H "anchor-api-key: $ANCHOR_API_KEY" >/dev/null 2>&1 || true
+  # 2. Release the pane, so nobody is left looking at a browser that is gone.
+  curl -fsS -X DELETE "$AGENT_API_URL/v1/browser-sessions/$SESSION_ID" -H "x-agent-capability: $AGENT_API_TOKEN" >/dev/null 2>&1 || true
+  # 3. Remove the breadcrumbs, so the NEXT turn cannot read them (see below).
+  rm -f /tmp/browse-state-url /tmp/browse-state-token
+' EXIT
 ```
 
-Then delete the browser when the task is over (it otherwise idles until its timeout) —
-the provider doc's "Clean up" section has the call. Then release the pane, so the person is
-not left looking at a browser that no longer exists:
+The provider call and the QM call are two different things and both are required. Deleting
+only the QM record hides the pane while the browser keeps running — the person believes they
+ended it, and it bills on until the idle timeout.
 
-```bash
-curl -fsS -X DELETE "$AGENT_API_URL/v1/browser-sessions/$SESSION_ID" \
-  -H "x-agent-capability: $AGENT_API_TOKEN" > /dev/null || true
-```
+**Never reuse a session id, CDP URL or state URL from a previous turn.** Your computer is
+long-lived, so files you leave in `/tmp` survive into conversations that have nothing to do
+with them. A cached id points at a browser that is usually dead and occasionally somebody
+else's task; a cached state URL makes the runner poll the wrong session, so **Take control**
+silently stops working. If you need a browser, create one — creation costs about a cent.
 
 **If a run fails and you start a fresh browser, say so.** The pane was showing the browser
 that just died; the new one is a different window. Someone watching it disappear and
