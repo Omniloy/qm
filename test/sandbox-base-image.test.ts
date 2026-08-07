@@ -37,3 +37,15 @@ test("a local chromium stays optional, because the browser being driven is remot
     "the client must not be reintroduced behind the flag",
   );
 });
+
+test("our own builds install the local browser, even though the ARG defaults to off", () => {
+  // The ARG default stays 0 to match upstream, whose release workflow passes
+  // it explicitly. But three shipped skills shell out to `chromium --headless`
+  // against the sandbox's own loopback — taste-skill, popular-web-designs, and
+  // browse's fallback for localhost URLs — and a remote browser cannot reach
+  // that. So the build script turns it on for us. It costs ~700MB once in the
+  // shared image layer, not per sandbox.
+  const script = readFileSync(new URL("../scripts/local-sandbox-build.sh", import.meta.url), "utf8");
+  assert.match(script, /INSTALL_BROWSER_ENGINE="\$\{INSTALL_BROWSER_ENGINE:-1\}"/);
+  assert.match(script, /--build-arg "INSTALL_BROWSER_ENGINE=\$\{INSTALL_BROWSER_ENGINE\}"/);
+});

@@ -46,11 +46,19 @@ LOCAL_SANDBOX_IMAGE=qm-sandbox-local:latest bash scripts/local-sandbox-build.sh
 A fingerprint mismatch only logs `[local-sandbox] sandbox image … is stale`; a missing
 image is a hard failure.
 
-The image carries the **browse client** (`/opt/browser-engine/venv`, roughly 310MB) in every
-build, because `skills-seed/browse` drives a _remote_ browser over CDP and its runner imports
-`browser_use`. It does **not** carry a local chromium unless the image is built with
-`--build-arg INSTALL_BROWSER_ENGINE=1`, which adds roughly another 700MB and is only useful
-for pointing the agent at a dev server on the sandbox's own loopback.
+The image carries two separate things, and it is worth knowing which is which:
+
+- The **browse client** (`/opt/browser-engine/venv`, ~308MB), in every build. `skills-seed/browse`
+  drives a _remote_ browser over CDP and its runner imports `browser_use`, so the client is needed
+  even though the browser is not local.
+- A **local headless chromium** (~700MB), because `scripts/local-sandbox-build.sh` defaults
+  `INSTALL_BROWSER_ENGINE=1` even though the Dockerfile ARG itself defaults to 0. Three skills need
+  it: `taste-skill` and `popular-web-designs` screenshot a dev server on the sandbox's own loopback,
+  which a remote browser cannot reach, and `browse` itself says to fall back to the local binary for
+  loopback URLs.
+
+Both costs land **once, in the shared image layer** — not per sandbox. The `qm-home-*` volumes hold
+`/root`, not image layers, so image size does not multiply by the number of scopes.
 
 **Agent computers are bounded by `LOCAL_SANDBOX_CPUS` and `LOCAL_SANDBOX_MEMORY_MB`,** set in
 the Compose file. `docker run` omits `--cpus`/`--memory` entirely when they are unset, which
