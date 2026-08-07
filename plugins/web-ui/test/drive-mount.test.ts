@@ -102,6 +102,11 @@ test("row status reflects why a row cannot be used", () => {
   assert.equal(rowStatus(row({ inaccessible: true }), "populated", NOW), "No access");
 });
 
+test("a never-listed folder reads as one sentence, not two glued together", () => {
+  // Regression: composing the prefix with listedAgo produced "Listed not listed yet".
+  assert.equal(rowStatus(row({ listedAt: undefined }), "populated", NOW), "Not listed yet");
+});
+
 test("inaccessibility beats the listing age in the row status", () => {
   const r = row({ inaccessible: true, listedAt: NOW - 60_000 });
   assert.equal(rowStatus(r, "populated", NOW), "No access", "a stale age would imply the folder is usable");

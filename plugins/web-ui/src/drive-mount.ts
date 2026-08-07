@@ -84,6 +84,8 @@ export function rowStatus(row: MountRow, state: BandState, nowMs: number): strin
   if (state === "not-connected") return "Not connected";
   if (state === "needs-reconnect") return "Paused";
   if (row.inaccessible) return "No access";
+  // Only prefix a real timestamp — "Listed not listed yet" is nonsense.
+  if (row.listedAt === undefined) return "Not listed yet";
   return `Listed ${listedAgo(row.listedAt, nowMs)}`;
 }
 

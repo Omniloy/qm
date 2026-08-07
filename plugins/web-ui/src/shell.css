@@ -6925,6 +6925,20 @@ h3.ambient-field-label {
 .drive-field input {
   width: 100%;
   box-sizing: border-box;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--input, var(--background));
+  color: var(--foreground);
+  font: inherit;
+  font-size: 14px;
+}
+.drive-field input::placeholder {
+  color: var(--muted-foreground);
+}
+.drive-field input:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--foreground) 35%, var(--border));
 }
 .drive-crumbs {
   display: flex;
