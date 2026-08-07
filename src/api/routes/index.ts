@@ -7,6 +7,7 @@ import { sessionStateRawRoutes } from "./session-state.ts";
 import { turnRoutes } from "./turns.ts";
 import { credentialRoutes } from "./credentials.ts";
 import { brokerGitHttp, GIT_HTTP_BROKER_PREFIX } from "../git-http-broker.ts";
+import { mountRoutes } from "./mounts.ts";
 import { keychainRoutes } from "./keychain.ts";
 import { secretDropRoutes } from "./secret-drop.ts";
 import { adminRoutes } from "./admin.ts";
@@ -44,6 +45,7 @@ export const apiRoutes: ReadonlyArray<Route<ApiCtx>> = [
   ...turnRoutes,
   ...credentialRoutes,
   ...keychainRoutes,
+  ...mountRoutes,
   ...secretDropRoutes,
   ...connectorRoutes,
   ...adminRoutes,

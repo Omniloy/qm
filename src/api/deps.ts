@@ -17,6 +17,9 @@ import type { ErrorLog } from "../admin/error-log.ts";
 import type { MetricsSink } from "../admin/metrics-sink.ts";
 import type { RunStore } from "../runs/run-store.ts";
 import type { WorkspaceStore } from "../workspace/workspace-store.ts";
+import type { ScopeId } from "../types.ts";
+import type { MountStore } from "../mounts/mount-store.ts";
+import type { ListingCache } from "../mounts/listing-cache.ts";
 import type { FileArtifactStore } from "../files/file-artifact-store.ts";
 import type { MemoryService } from "../memory/memory-service.ts";
 import type { SandboxMigrationRunner } from "../sandbox/sandbox-migration-runner.ts";
@@ -89,6 +92,21 @@ export interface ServerDeps {
   admin?: AdminService;
   rateLimiter?: RateLimiter;
   sessions?: SessionStore;
+  /**
+   * Drive folder mounts. Absent when the deployment has no Google connector
+   * configured, in which case the mount routes answer 503 rather than 404 —
+   * the endpoints exist, the capability does not.
+   */
+  driveMounts?: {
+    store: MountStore;
+    cache: ListingCache;
+    /** Same check that governs uploading a file to the scope. */
+    canUseContext: (principalId: string, scopeId: ScopeId) => Promise<boolean>;
+    /** The caller's own Drive token, or null when Google is not connected. */
+    tokenFor: (principalId: string) => Promise<string | null>;
+    /** Lists folders under a parent, server-side, with the caller's token. */
+    browseFolders: (accessToken: string, parentId: string) => Promise<Array<{ id: string; name: string }>>;
+  };
   auditLog?: AuditLog;
   errors?: ErrorLog;
   metrics?: MetricsSink;
