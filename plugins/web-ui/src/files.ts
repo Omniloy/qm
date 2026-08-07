@@ -6,6 +6,7 @@ import { browserRenderableImage, fieldSelect, formatBytes, icon, relTime } from 
 import { contextsState, ensureContexts, personalScopeId, scopeChip, scopeFilterControl } from "./contexts";
 import { appState } from "./shell";
 import { fileListNeedsAllPages } from "./file-list";
+import { driveBandTpl, drivePickerTpl, loadDriveMounts, openDrivePicker } from "./drive-folders";
 
 interface FileItem {
   id: string;
@@ -124,6 +125,15 @@ function drawFiles(loading = false): void {
       >
         ${icon(Upload, 18)}<span>${dropLabel}</span>${uploadTarget ? scopeChip(uploadTarget) : nothing}
       </button>
+      ${
+        uploadTarget
+          ? driveBandTpl(
+              Date.now(),
+              () => drawFiles(),
+              () => openDrivePicker(() => drawFiles()),
+            )
+          : nothing
+      }
       <div class="list-toolbar">
         <label class="list-search"
           ><span class="sr-only">Search files</span
@@ -184,6 +194,7 @@ function drawFiles(loading = false): void {
       </div>
       ${visible.length ? html`<div class="list-rows file-list">${visible.map(fileRow)}</div>` : html`<div class="empty compact">${filtered ? "No files match these filters." : "No files yet. Upload one here or ask the agent to create one."}</div>`}
       ${filesNextCursor ? html`<div class="list-footer"><button class="btn" type="button" ?disabled=${filesLoadingMore} @click=${() => void loadMoreFiles()}>${filesLoadingMore ? "Loading…" : "Load more"}</button></div>` : nothing}
+      ${drivePickerTpl(uploadTarget ?? "", () => drawFiles())}
     `,
     filesHost,
   );
@@ -371,6 +382,9 @@ async function loadFiles(seq: number): Promise<void> {
   filesLoadingMore = false;
   await ensureContexts();
   drawFiles(true);
+  // Fire and forget: the band renders its own loading/empty states, and a
+  // slow Drive listing must not hold up the file list.
+  void loadDriveMounts(filesScope ?? personalScopeId(), () => drawFiles());
   try {
     const page = await fetchFilePage();
     if (requestSeq !== filesRequestSeq || seq !== appState.viewRenderSeq || appState.currentView !== "files") return;

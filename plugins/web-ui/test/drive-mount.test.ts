@@ -8,6 +8,8 @@ import {
   requestAccessUrl,
   rowStatus,
   rowIsInert,
+  mountNameError,
+  slugFromFolderName,
   type MountRow,
   type ConnectorState,
 } from "../src/drive-mount.ts";
@@ -109,4 +111,29 @@ test("rows are inert unless this person can actually open the folder", () => {
   assert.equal(rowIsInert(row({ inaccessible: true }), "populated"), true);
   assert.equal(rowIsInert(row(), "needs-reconnect"), true);
   assert.equal(rowIsInert(row(), "not-connected"), true);
+});
+
+test("the browser rejects a bad mount name before a round trip", () => {
+  // Duplicated from core on purpose: the browser must be able to refuse
+  // early, and core must never trust that it did.
+  for (const bad of ["", "-lead", "Upper", "has space", "dots.no", "a/b"]) {
+    assert.ok(mountNameError(bad), `expected ${JSON.stringify(bad)} to be rejected`);
+  }
+  for (const ok of ["a", "specs", "q4-planning", "x".repeat(32)]) {
+    assert.equal(mountNameError(ok), null, `expected ${JSON.stringify(ok)} to be accepted`);
+  }
+  assert.ok(mountNameError("x".repeat(33)), "33 characters is too long");
+});
+
+test("suggested names from Drive titles are always storable", () => {
+  for (const [title, expected] of [
+    ["Product Specs", "product-specs"],
+    ["  Q4 / Planning  ", "q4-planning"],
+    ["A".repeat(64), "a".repeat(32)],
+  ] as Array<[string, string]>) {
+    const slug = slugFromFolderName(title);
+    assert.equal(slug, expected);
+    assert.equal(mountNameError(slug), null);
+  }
+  assert.equal(slugFromFolderName("..."), "", "an unusable title yields nothing rather than a bad name");
 });

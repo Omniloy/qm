@@ -91,3 +91,26 @@ export function rowStatus(row: MountRow, state: BandState, nowMs: number): strin
 export function rowIsInert(row: MountRow, state: BandState): boolean {
   return state !== "populated" || Boolean(row.inaccessible);
 }
+
+/**
+ * Mount-name rule, mirroring the one core enforces at the store. Duplicated
+ * deliberately: the browser must be able to reject a name before a round
+ * trip, and core must never trust the browser to have done so.
+ */
+const NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+export function mountNameError(name: string): string | null {
+  return NAME_RE.test(name)
+    ? null
+    : "use lowercase letters, numbers and hyphens, starting with a letter or number (max 32)";
+}
+
+/** Suggest a mount name from a Drive folder title. May be empty. */
+export function slugFromFolderName(folderName: string): string {
+  return folderName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32)
+    .replace(/-+$/g, "");
+}

@@ -4496,12 +4496,14 @@ a.chat-row-open {
   cursor: pointer;
 }
 .file-list,
-.deploy-list {
+.deploy-list,
+.drive-mount-list {
   width: min(960px, 100%);
   margin-inline: auto;
 }
 .file-row,
-.deploy-row {
+.deploy-row,
+.drive-mount-row {
   display: grid;
   grid-template-columns: auto minmax(180px, 1fr) auto;
   align-items: center;
@@ -6858,4 +6860,51 @@ h3.ambient-field-label {
 }
 .qm-tooltip.visible {
   opacity: 1;
+}
+
+.drive-band {
+  width: min(960px, 100%);
+  margin-inline: auto;
+}
+.drive-band-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.drive-band-head .spacer,
+.drive-picker-head .spacer {
+  flex: 1;
+}
+.drive-mount-row {
+  grid-template-columns: auto minmax(140px, 1fr) auto auto auto;
+}
+.drive-mount-name {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.drive-mount-name span {
+  opacity: 0.7;
+  font-size: 0.85em;
+}
+.drive-mount-row.inert {
+  opacity: 0.6;
+}
+.drive-picker {
+  width: min(520px, 100%);
+}
+.drive-picker-head,
+.drive-picker-foot,
+.drive-crumbs,
+.drive-mode {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.drive-picker-foot {
+  justify-content: flex-end;
+}
+.drive-mode .active {
+  font-weight: 600;
+  text-decoration: underline;
 }
