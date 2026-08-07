@@ -301,6 +301,15 @@ export interface App {
   membershipControlsScope(scope: ScopeId): Promise<boolean>;
   authorizesCapabilityScope(claims: Pick<CapabilityClaims, "actorId" | "scopeId" | "scopeVersion">): Promise<boolean>;
   openFileForViewer(id: string, principalId: string): Promise<OpenedFile | null>;
+  /**
+   * Delete an uploaded file, owner only.
+   *
+   * Returns "not_found" when the viewer cannot see it at all and "forbidden"
+   * when they can see it but do not own it — the two are different answers and
+   * collapsing them would tell someone a file they may not touch does not
+   * exist.
+   */
+  deleteFileForViewer(id: string, principalId: string): Promise<"ok" | "not_found" | "forbidden">;
   grant(g: Grant): Promise<void>;
   revokeGrant(ownerScopeId: ScopeId, ref: string, granteeScopeId: ScopeId, revokedBy: string): Promise<void>;
   promoteSkill(id: string, targetScopeId: ScopeId, actorId: string, liveActor: boolean): Promise<Skill>;
@@ -527,6 +536,12 @@ export interface ContextSummary {
 interface FileListItem {
   id: string;
   ownerScopeId: ScopeId;
+  /**
+   * Who uploaded it. Only the owner may delete a file, and without this the
+   * page cannot tell — "owned" in the list means owned by a scope you belong
+   * to, which is not the same person test.
+   */
+  createdBy: string;
   name: string;
   mimetype: string;
   sizeBytes: number;
@@ -576,6 +591,7 @@ export function toFileItem(a: FileArtifact): FileListItem {
   return {
     id: a.id,
     ownerScopeId: a.ownerScopeId,
+    createdBy: a.createdBy,
     name: a.name,
     mimetype: a.mimetype,
     sizeBytes: a.sizeBytes,

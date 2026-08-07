@@ -28,6 +28,7 @@ export function createSessionMethods(
   | "listFilesForViewer"
   | "uploadFileForViewer"
   | "openFileForViewer"
+  | "deleteFileForViewer"
   | "listSessions"
   | "sessionBackground"
   | "readSessionBackgroundOutput"
@@ -157,6 +158,37 @@ export function createSessionMethods(
       const opened = await deps.files.open(id);
       if (!opened) return null;
       return { name: art.name, mimetype: art.mimetype, sizeBytes: opened.sizeBytes, stream: opened.stream };
+    },
+
+    async deleteFileForViewer(id, principalId) {
+      const art = await deps.files.get(id, { includeDisabled: true });
+      if (!art) return "not_found";
+
+      // Visibility first, ownership second, so someone who cannot see the file
+      // learns nothing about whether it exists.
+      const myScopes = await currentResourceScopesForViewer(principalId);
+      const grants = await deps.acl.grantsFor(art.ownerScopeId, art.path);
+      const visible = myScopes.includes(art.ownerScopeId) || grants.some((g) => myScopes.includes(g.granteeScopeId));
+      if (!visible) return "not_found";
+      // Being shared a file is not authority to destroy it for its owner.
+      if (art.createdBy !== principalId) return "forbidden";
+
+      // Grants outlive the artifact they point at — the ACL is keyed on
+      // (ownerScopeId, path), not on the row — so a stale grant would survive
+      // and re-attach itself to any later file that reused the path.
+      for (const g of grants) {
+        await deps.acl.revoke(art.ownerScopeId, art.path, g.granteeScopeId, principalId);
+      }
+      await deps.files.delete(id);
+
+      deps.auditLog?.record({
+        at: Date.now(),
+        principalId,
+        action: "file.delete",
+        resource: art.path,
+        scopeLabel: art.createdInScope ?? art.ownerScopeId,
+      });
+      return "ok";
     },
 
     async listSessions(principalId) {

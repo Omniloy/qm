@@ -1150,6 +1150,17 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
       return relay(res, r);
     }
 
+    // Deliberately one branch per verb rather than a passthrough: /api/files
+    // has no generic relay, and adding one would expose every /v1/files route
+    // this surface has never audited. No viewer parameter — core reads the
+    // identity from the portal token coreFetch attaches, so passing one here
+    // would imply the caller could choose who they act as.
+    if (method === "DELETE" && path.startsWith("/api/files/")) {
+      const id = decodeURIComponent(path.slice("/api/files/".length));
+      const r = await coreFetch("DELETE", `/v1/files/${encodeURIComponent(id)}`);
+      return relay(res, r);
+    }
+
     if (method === "GET" && path === "/api/memory") {
       const r = await coreFetch("GET", `/v1/memory?principalId=${encodeURIComponent(user)}`);
       return relay(res, r);

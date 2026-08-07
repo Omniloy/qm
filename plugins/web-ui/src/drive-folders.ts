@@ -558,10 +558,11 @@ export function askDetach(m: MountRow, rerender: () => void): void {
 function detachConfirmTpl(rerender: () => void): TemplateResult {
   const m = detaching!;
   return html`<section class="kc-confirm drive-picker">
-    <header class="drive-picker-head"><h2>Detach “${m.name}”?</h2></header>
+    <header class="drive-picker-head"><h2>Remove “${m.name}”?</h2></header>
     <p class="drive-note">
-      The agent stops seeing this folder in every conversation in this scope. Nothing in Drive changes, and nothing is
-      deleted.
+      The agent stops seeing this folder in every conversation in this context.
+      <strong>Your Google Drive folder and its files are not touched</strong> — this only removes the attachment. You
+      can attach it again at any time.
     </p>
     <footer class="drive-picker-foot">
       <button class="btn" type="button" @click=${() => closeAll(rerender)}>Cancel</button>
@@ -584,7 +585,7 @@ function detachConfirmTpl(rerender: () => void): TemplateResult {
           }
         }}
       >
-        Detach
+        Remove folder
       </button>
     </footer>
   </section>`;

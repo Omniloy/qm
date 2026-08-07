@@ -6,11 +6,20 @@ import { browserRenderableImage, fieldSelect, formatBytes, icon, relTime } from 
 import { contextsState, ensureContexts, personalScopeId, scopeChip, scopeFilterControl } from "./contexts";
 import { appState } from "./shell";
 import { fileListNeedsAllPages } from "./file-list";
-import { driveBandTpl, drivePickerTpl, loadDriveMounts, openDrivePicker } from "./drive-folders";
+import {
+  driveBandTpl,
+  drivePickerTpl,
+  loadDriveMounts,
+  openDrivePicker,
+  resetDriveFoldersState,
+} from "./drive-folders";
+import { fileActions } from "./file-actions";
+import { resetRowMenus, rowMenuTpl } from "./row-actions";
 
 interface FileItem {
   id: string;
   name: string;
+  createdBy?: string;
   mimetype: string;
   sizeBytes: number;
   direction: "in" | "out";
@@ -36,6 +45,9 @@ let filesUploading = false;
 let filesLoadingMore = false;
 let filesNextCursor: string | null = null;
 let filesHost: HTMLElement | null = null;
+let deletingFile: FileRow | null = null;
+let deleteBusy = false;
+let deleteError = "";
 let filesRequestSeq = 0;
 let filesLoadAllQueued = false;
 
@@ -204,24 +216,93 @@ function drawFiles(loading = false): void {
       </div>
       ${visible.length ? html`<div class="list-rows file-list">${visible.map(fileRow)}</div>` : html`<div class="empty compact">${filtered ? "No files match these filters." : "No files yet. Upload one here or ask the agent to create one."}</div>`}
       ${filesNextCursor ? html`<div class="list-footer"><button class="btn" type="button" ?disabled=${filesLoadingMore} @click=${() => void loadMoreFiles()}>${filesLoadingMore ? "Loading…" : "Load more"}</button></div>` : nothing}
-      ${drivePickerTpl(uploadTarget ?? "", () => drawFiles())}
+      ${drivePickerTpl(uploadTarget ?? "", () => drawFiles())} ${deleteFileConfirmTpl()}
     `,
     filesHost,
   );
 }
 
+function onFileAction(id: string, f: FileRow): void {
+  switch (id) {
+    case "download": {
+      const a = document.createElement("a");
+      a.href = withBase(`/api/files/${encodeURIComponent(f.id)}/content`);
+      a.download = f.name;
+      a.click();
+      return;
+    }
+    case "delete":
+      deletingFile = f;
+      drawFiles();
+      return;
+  }
+}
+
 function fileRow(f: FileRow) {
   const contentUrl = withBase(`/api/files/${encodeURIComponent(f.id)}/content`);
   const isImage = f.openable && browserRenderableImage(f.mimetype);
+  const me = appState.me?.user ?? "";
   return html`<article class="list-row file-row">
     <span class="file-row-icon">${icon(isImage ? Image : File, 17)}</span>
     <span class="list-row-title"><span>${f.name}</span><span class="file-row-type">${f.mimetype}</span></span>
     <span class="list-row-meta"
       >${scopeChip(fileScope(f))}<span class="badge">${f.kind}</span><span>${formatBytes(f.sizeBytes)}</span
       ><span>${relTime(f.createdAt)}</span
-      >${f.openable ? html`<a class="btn compact" href=${contentUrl} target="_blank" rel="noreferrer">Open</a>` : html`<span>Unavailable</span>`}</span
+      >${f.openable ? html`<a class="btn compact" href=${contentUrl} target="_blank" rel="noreferrer">Open</a>` : html`<span>Unavailable</span>`}${rowMenuTpl(
+        `file:${f.id}`,
+        f.name,
+        fileActions(f, me),
+        (id) => onFileAction(id, f),
+        () => drawFiles(),
+      )}</span
     >
   </article>`;
+}
+
+function deleteFileConfirmTpl(): typeof nothing | ReturnType<typeof html> {
+  const f = deletingFile;
+  if (!f) return nothing;
+  const close = () => {
+    deletingFile = null;
+    drawFiles();
+  };
+  return html`<div
+    class="kc-dialog-scrim"
+    @click=${(e: Event) => {
+      if (e.target === e.currentTarget) close();
+    }}
+  >
+    <section class="kc-confirm drive-picker">
+      <header class="drive-picker-head"><h2>Delete “${f.name}”?</h2></header>
+      <p class="drive-note">
+        The file and its contents are removed for everyone it was shared with, and the agent can no longer read it. This
+        cannot be undone.
+      </p>
+      ${deleteError ? html`<p class="drive-note warning">${deleteError}</p>` : ""}
+      <footer class="drive-picker-foot">
+        <button class="btn" type="button" @click=${close}>Cancel</button>
+        <button class="primary" type="button" ?disabled=${deleteBusy} @click=${() => void doDeleteFile(f)}>
+          ${deleteBusy ? "Deleting…" : "Delete file"}
+        </button>
+      </footer>
+    </section>
+  </div>`;
+}
+
+async function doDeleteFile(f: FileRow): Promise<void> {
+  deleteBusy = true;
+  deleteError = "";
+  drawFiles();
+  try {
+    await api(`/api/files/${encodeURIComponent(f.id)}`, { method: "DELETE" });
+    fileRows = fileRows.filter((r) => r.id !== f.id);
+    deletingFile = null;
+  } catch (e) {
+    deleteError = errMessage(e);
+  } finally {
+    deleteBusy = false;
+    drawFiles();
+  }
 }
 
 async function fileSha256(file: globalThis.File): Promise<string> {
@@ -410,6 +491,13 @@ async function loadFiles(seq: number): Promise<void> {
 
 export async function renderFiles(): Promise<void> {
   if (appState.currentView !== "files") return;
+  // Transient per-visit state: a half-open menu or a delete confirm left over
+  // from last time would reappear over a different list.
+  resetRowMenus();
+  resetDriveFoldersState();
+  deletingFile = null;
+  deleteBusy = false;
+  deleteError = "";
   if (contextsState.selected) {
     filesScope = contextsState.selected;
     fileRows = [];

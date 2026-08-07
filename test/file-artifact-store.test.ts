@@ -170,14 +170,34 @@ test("resolveByOwnerPaths returns the SHARED set by (owner, path); disabled excl
   assert.ok(await store.get("a", { includeDisabled: true }), "get can surface disabled");
 });
 
-test("delete removes the ROW only — bytes shared with another row stay openable", async () => {
+test("delete never reclaims bytes another row still points at", async () => {
+  // Blob keys are files/<sha256>, so byte-identical uploads dedup to one blob.
+  // Reclaiming it whenever any one row is deleted would silently empty every
+  // other artifact referencing it — data loss landing on a file nobody
+  // touched. The delete is therefore reference-counted.
   const store = createMemoryFileArtifactStore(createMemoryDurableByteStore());
   const { artifact: out } = await store.put(put({ id: "out", direction: "out", path: "p/out", data: PNG }));
   const { artifact: inb } = await store.put(put({ id: "in", direction: "in", path: "p/in", data: PNG }));
-  assert.equal(out.blobKey, inb.blobKey, "identical bytes dedup to one blob");
+  assert.equal(out.blobKey, inb.blobKey, "the fixture must actually share a blob");
 
   await store.delete("out");
   assert.equal(await store.get("out"), null, "row gone");
   const back = await drain(store, "in");
-  assert.deepEqual(back, PNG, "the surviving row's bytes are intact (no inline byte delete)");
+  assert.deepEqual(back, PNG, "the surviving row still reads its contents");
+});
+
+test("deleting the last reference to a blob reclaims the bytes", async () => {
+  const bytes = createMemoryDurableByteStore();
+  const store = createMemoryFileArtifactStore(bytes);
+  const only = await store.put(put({ id: "art-only" }));
+  const blobKey = only.artifact.blobKey!;
+
+  await store.delete("art-only");
+
+  assert.equal(await bytes.open(blobKey), null, "nothing references it, so it should not be left behind");
+});
+
+test("deleting a row with no stored bytes is not an error", async () => {
+  const store = createMemoryFileArtifactStore(createMemoryDurableByteStore());
+  await store.delete("never-existed");
 });

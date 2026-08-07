@@ -268,3 +268,75 @@ test("scoped file listing pages within the requested context", async () => {
   );
   assert.equal(page.nextCursor, undefined, "unrelated files do not create a misleading next page");
 });
+
+test("only the person who uploaded a file can delete it", async () => {
+  // Being shared a file is not authority to destroy it for its owner. The
+  // distinction between "cannot see it" and "can see it but does not own it"
+  // is deliberate: collapsing them would tell someone that a file they are
+  // simply not allowed to touch does not exist.
+  const files = createMemoryFileArtifactStore(createMemoryDurableByteStore());
+  const acl = createAclStore();
+  const app = makeApp(files, acl);
+  const owner = scopeId("personal", "U1");
+  const id = fileArtifactId("del", "in", 0);
+  await files.put({
+    id,
+    ownerScopeId: owner,
+    createdBy: "U1",
+    name: "contract.pdf",
+    path: "contract.pdf",
+    mimetype: "application/pdf",
+    data: Buffer.from("v1"),
+    direction: "in",
+  });
+  await acl.grant({
+    ownerScopeId: owner,
+    ref: "contract.pdf",
+    granteeScopeId: scopeId("personal", "U2"),
+    permission: "read",
+    grantedBy: "U1",
+  });
+
+  assert.equal(await app.deleteFileForViewer(id, "U2"), "forbidden", "a grantee may read it, not destroy it");
+  assert.equal(await app.deleteFileForViewer(id, "U3"), "not_found", "a stranger learns nothing about it");
+  assert.ok(await app.openFileForViewer(id, "U1"), "neither refusal touched the file");
+
+  assert.equal(await app.deleteFileForViewer(id, "U1"), "ok");
+  assert.equal(await app.openFileForViewer(id, "U1"), null, "and now it is gone");
+});
+
+test("deleting a file takes its grants with it", async () => {
+  // The ACL is keyed on (ownerScopeId, path), not on the artifact row, so a
+  // grant outlives the file it pointed at and would silently re-attach itself
+  // to any later file that reused the path.
+  const files = createMemoryFileArtifactStore(createMemoryDurableByteStore());
+  const acl = createAclStore();
+  const app = makeApp(files, acl);
+  const owner = scopeId("personal", "U1");
+  const id = fileArtifactId("grant-sweep", "in", 0);
+  await files.put({
+    id,
+    ownerScopeId: owner,
+    createdBy: "U1",
+    name: "notes.md",
+    path: "notes.md",
+    mimetype: "text/markdown",
+    data: Buffer.from("v1"),
+    direction: "in",
+  });
+  await acl.grant({
+    ownerScopeId: owner,
+    ref: "notes.md",
+    granteeScopeId: scopeId("personal", "U2"),
+    permission: "read",
+    grantedBy: "U1",
+  });
+
+  assert.equal(await app.deleteFileForViewer(id, "U1"), "ok");
+  assert.deepEqual(await acl.grantsFor(owner, "notes.md"), [], "no grant is left pointing at nothing");
+});
+
+test("deleting a file nobody uploaded reports not_found rather than throwing", async () => {
+  const app = makeApp(createMemoryFileArtifactStore(createMemoryDurableByteStore()), createAclStore());
+  assert.equal(await app.deleteFileForViewer("no-such-file", "U1"), "not_found");
+});
