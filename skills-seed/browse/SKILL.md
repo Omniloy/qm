@@ -171,6 +171,14 @@ BROWSE_SESSION=$(curl -fsS -X POST "$AGENT_API_URL/v1/browser-sessions" \
   | python3 -c "import sys,json;print(json.load(sys.stdin)['session']['sessionId'])")
 ```
 
+Then drop the two values the runner needs, so it can find them however you end up
+invoking it:
+
+```bash
+printf '%s' "$AGENT_API_URL/v1/browser-sessions/$SESSION_ID/state" > /tmp/browse-state-url
+printf '%s' "$AGENT_API_TOKEN" > /tmp/browse-state-token
+```
+
 `expiresAt` is when the provider will close the browser — match the timeout you asked for, so
 the pane stops showing a browser that has already gone. Send `LIVE_VIEW`, never `CDP_URL`:
 core rejects a CDP-shaped URL because that value reaches the person's browser tab, and on some
@@ -252,7 +260,22 @@ GUARD = (
 # Two writers in one browser is how a half-finished sign-in gets clicked away
 # underneath someone. Parking BETWEEN steps rather than mid-action means the
 # browser is always in a coherent state when they get it.
-STATE_URL = os.environ.get("BROWSE_STATE_URL", "")
+# Where to ask who has the wheel. The env var wins, but it falls back to a file
+# the create step writes — because the invocation below is a template, and an
+# agent composing its own command line will drop an env var it does not
+# recognise. Losing the URL silently disables Take control, so it must not
+# depend on remembering to pass it.
+def _state_url():
+    v = os.environ.get("BROWSE_STATE_URL", "")
+    if v:
+        return v
+    try:
+        with open("/tmp/browse-state-url") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+STATE_URL = _state_url()
 
 async def wait_for_the_wheel():
     if not STATE_URL:
@@ -261,7 +284,14 @@ async def wait_for_the_wheel():
     told = False
     while True:
         try:
-            req = urllib.request.Request(STATE_URL, headers={"x-agent-capability": os.environ.get("AGENT_API_TOKEN", "")})
+            tok = os.environ.get("AGENT_API_TOKEN", "")
+            if not tok:
+                try:
+                    with open("/tmp/browse-state-token") as f:
+                        tok = f.read().strip()
+                except Exception:
+                    tok = ""
+            req = urllib.request.Request(STATE_URL, headers={"x-agent-capability": tok})
             with urllib.request.urlopen(req, timeout=10) as r:
                 mode = json.load(r).get("controlMode", "agent")
         except Exception:

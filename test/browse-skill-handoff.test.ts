@@ -41,6 +41,18 @@ test("the runner parks between steps while a person holds the wheel", () => {
   assert.match(RAW, /Cannot ask: carry on rather than stall forever/);
 });
 
+test("the runner finds the wheel even when the invocation forgets to say", () => {
+  // Caught on the deployed stack: the agent composed its own command line and
+  // dropped BROWSE_STATE_URL, so control flipped in core and the runner never
+  // looked. A contract that depends on an agent copying an env var is not a
+  // contract. The create step now writes the value to a file the runner reads.
+  assert.match(RAW, /\/tmp\/browse-state-url/);
+  assert.match(RAW, /\/tmp\/browse-state-token/);
+  const fn = /def _state_url\(\):[\s\S]{0,400}/.exec(RAW)?.[0] ?? "";
+  assert.match(fn, /BROWSE_STATE_URL/, "the env var still wins when present");
+  assert.match(fn, /open\("\/tmp\/browse-state-url"\)/, "and the file is the fallback");
+});
+
 test("every runner invocation is told where to check for the wheel", () => {
   // Only the lines that actually RUN it — the heredoc that writes the file
   // also mentions the path, and counting that would hide a missing one.
