@@ -155,6 +155,11 @@ import {
   type BrowserSessionStore,
   type StoredBrowserSession,
 } from "./connectors/browser-session-store.ts";
+import {
+  createLiveBrowserSessionStore,
+  type LiveBrowserSessionStore,
+  type StoredLiveBrowserSession,
+} from "./connectors/browser-live-session-store.ts";
 import { createCredentialUsageSink, type CredentialUsageSink } from "./admin/credential-usage-sink.ts";
 import { createPostgresCredentialUsageSink } from "./admin/postgres-credential-usage-sink.ts";
 import { createEgressAuditSink, type EgressAuditSink } from "./admin/egress-audit-sink.ts";
@@ -375,6 +380,7 @@ export interface BuiltApp {
   processes?: ProcessRegistry;
   monitors: MonitorStore;
   browserSessionStore?: BrowserSessionStore;
+  liveBrowserSessions?: LiveBrowserSessionStore;
   monitorPoller?: MonitorPoller;
   ambientJudgments?: AmbientJudgmentStore;
   ackEmojiPicks?: AckEmojiPickStore;
@@ -685,6 +691,14 @@ export function buildApp(
   const keychain: Keychain | undefined = keychainKeyMaterial ? credentialStore : undefined;
   const browserSessionStore: BrowserSessionStore | undefined = keychainKeyMaterial
     ? createBrowserSessionStore({ sessions: artifactMap<StoredBrowserSession>("browser_sessions"), key: credentialKey })
+    : undefined;
+  // Same key material as the cookie jar above, because it guards the same
+  // thing: material that opens a browser logged in as a specific person.
+  const liveBrowserSessions: LiveBrowserSessionStore | undefined = keychainKeyMaterial
+    ? createLiveBrowserSessionStore({
+        sessions: artifactMap<StoredLiveBrowserSession>("browser_live_sessions"),
+        key: credentialKey,
+      })
     : undefined;
   const connectorTokens = withOperatorTokenFallback(credentialStore, config.egressServiceHosts ?? [], secretSource);
 
@@ -1570,6 +1584,7 @@ export function buildApp(
     ...(processes ? { processes } : {}),
     monitors,
     ...(browserSessionStore ? { browserSessionStore } : {}),
+    ...(liveBrowserSessions ? { liveBrowserSessions } : {}),
     ...(monitorPoller ? { monitorPoller } : {}),
     ...(ambientJudgments ? { ambientJudgments } : {}),
     ...(ackEmojiPicks ? { ackEmojiPicks } : {}),

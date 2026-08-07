@@ -20,6 +20,7 @@ import { contextRoutes } from "./context.ts";
 import { surfaceCacheRoutes } from "./surface-cache.ts";
 import { environmentRoutes } from "./environments.ts";
 import { emojiRoutes } from "./emoji.ts";
+import { browserSessionRoutes } from "./browser-sessions.ts";
 import { projectRoutes } from "./projects.ts";
 import { contextPolicyRoutes } from "./context-policy.ts";
 import { deploymentLayerRoutes } from "./deployment-layer.ts";
@@ -60,6 +61,7 @@ export const apiRoutes: ReadonlyArray<Route<ApiCtx>> = [
   ...surfaceCacheRoutes,
   ...environmentRoutes,
   ...emojiRoutes,
+  ...browserSessionRoutes,
   ...deploymentRoutes,
   ...egressAuditRoutes,
   ...authBrokerRoutes,

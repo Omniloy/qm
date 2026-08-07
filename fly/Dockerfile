@@ -55,18 +55,31 @@ ENV VIRTUAL_ENV=/opt/agent-venv
 
 COPY fly/tools/x-api /usr/local/bin/x-api
 RUN chmod +x /usr/local/bin/x-api
-ARG INSTALL_BROWSER_ENGINE=0
+# The browse skill drives a REMOTE browser over CDP, so the client and the
+# browser are separate concerns and are installed separately.
+#
+# The client is unconditional. browser-use is what skills/browse's runner
+# imports, and it connects over CDP without needing a local browser (verified:
+# `from browser_use import Agent, ChatAnthropic, BrowserSession` imports fine
+# with no chromium installed). Gating it behind the ARG below is what left
+# every non-release build unable to run the skill at all.
 ARG BROWSER_USE_VERSION=0.12.9
+RUN set -eux; \
+    python3 -m venv /opt/browser-engine/venv; \
+    /opt/browser-engine/venv/bin/pip install --no-cache-dir --upgrade pip; \
+    /opt/browser-engine/venv/bin/pip install --no-cache-dir "browser-use==${BROWSER_USE_VERSION}"; \
+    /opt/browser-engine/venv/bin/python -c "import browser_use; print('browser-use ok')"
+
+# A local browser, for the one job a remote one cannot do: opening a dev server
+# the agent just started on the sandbox's own loopback. Off by default because
+# it costs roughly 700MB on per-scope volumes, and most work is remote.
+ARG INSTALL_BROWSER_ENGINE=0
 RUN if [ "$INSTALL_BROWSER_ENGINE" = "1" ]; then \
       set -eux; \
       apt-get update && apt-get install -y --no-install-recommends \
         chromium ca-certificates fontconfig \
         fonts-liberation fonts-noto-color-emoji fonts-noto-cjk fonts-freefont-ttf \
       && rm -rf /var/lib/apt/lists/*; \
-      python3 -m venv /opt/browser-engine/venv; \
-      /opt/browser-engine/venv/bin/pip install --no-cache-dir --upgrade pip; \
-      /opt/browser-engine/venv/bin/pip install --no-cache-dir "browser-use==${BROWSER_USE_VERSION}"; \
-      /opt/browser-engine/venv/bin/python -c "import browser_use; print('browser-use ok')"; \
       /usr/bin/chromium --version; \
       : > /etc/machine-id; \
       : > /var/lib/dbus/machine-id; \

@@ -5,6 +5,12 @@ cd "$(dirname "$0")/.."
 BASE_TAG="qm-sandbox-base:dev"
 LOCAL_TAG="${LOCAL_SANDBOX_IMAGE:-qm-sandbox-local:latest}"
 PLATFORM="linux/amd64"
+# On by default here, unlike the ARG's own default of 0. Three shipped skills
+# (taste-skill, popular-web-designs, and browse's own loopback fallback) call
+# `chromium --headless` to screenshot a dev server on the sandbox's loopback,
+# which no remote browser can reach. It costs ~700MB once in the shared image
+# layer — not per sandbox, since volumes hold /root and not image layers.
+INSTALL_BROWSER_ENGINE="${INSTALL_BROWSER_ENGINE:-1}"
 
 FINGERPRINT="$(node --input-type=module -e '
 const { computeSandboxImageFingerprint } = await import("./src/sandbox/local-sandbox.ts");
@@ -22,8 +28,9 @@ if [[ -n "${FLY_SANDBOX_APP_NAME:-}" ]] && command -v flyctl >/dev/null 2>&1; th
   docker pull --platform "${PLATFORM}" "${BASE_REF}"
   docker tag "${BASE_REF}" "${BASE_TAG}"
 else
-  echo "==> building ${BASE_TAG} from fly/Dockerfile (${PLATFORM})"
-  docker build --platform "${PLATFORM}" -f fly/Dockerfile -t "${BASE_TAG}" .
+  echo "==> building ${BASE_TAG} from fly/Dockerfile (${PLATFORM}, browser engine ${INSTALL_BROWSER_ENGINE})"
+  docker build --platform "${PLATFORM}" -f fly/Dockerfile \
+    --build-arg "INSTALL_BROWSER_ENGINE=${INSTALL_BROWSER_ENGINE}" -t "${BASE_TAG}" .
 fi
 
 echo "==> building ${LOCAL_TAG} from local/Dockerfile (fingerprint ${FINGERPRINT})"

@@ -1094,6 +1094,28 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
       return relay(res, r);
     }
 
+    // The browser a person has open. Three verbs, one per thing the pane can
+    // do, rather than a passthrough: /v1/browser-sessions vends a live-view URL
+    // that is bearer material, and a generic relay would expose every route on
+    // that router to anything that can shape a path. coreFetch carries the
+    // portal identity, so core resolves the owner itself — there is no viewer
+    // parameter to forge.
+    if (method === "GET" && path === "/api/browser/live") {
+      const r = await coreFetch("GET", "/v1/browser-sessions/current");
+      return relay(res, r);
+    }
+    if (method === "POST" && path.startsWith("/api/browser/session/") && path.endsWith("/handoff")) {
+      const id = decodeURIComponent(path.slice("/api/browser/session/".length, -"/handoff".length));
+      const raw = await readBody(req);
+      const r = await coreFetch("POST", `/v1/browser-sessions/${encodeURIComponent(id)}/handoff`, raw);
+      return relay(res, r);
+    }
+    if (method === "DELETE" && path.startsWith("/api/browser/session/")) {
+      const id = decodeURIComponent(path.slice("/api/browser/session/".length));
+      const r = await coreFetch("DELETE", `/v1/browser-sessions/${encodeURIComponent(id)}`);
+      return relay(res, r);
+    }
+
     // Drive folder mounts. Core does every Drive call with the caller's own
     // token, so nothing Google-shaped passes through this proxy.
     if (path === "/api/mounts" || path.startsWith("/api/mounts/")) {
