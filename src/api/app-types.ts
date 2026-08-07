@@ -287,6 +287,11 @@ export interface App {
     opts?: { upToSeq?: number },
   ): Promise<{ session: Session; entries: SessionEntry[] } | null>;
   listFilesForViewer(principalId: string, opts?: ListOwnedOptions, inScope?: ScopeId): Promise<FileListPage>;
+  /**
+   * Whether this person may act in a scope — the check that governs uploading
+   * a file to it. Exposed so callers share one rule rather than restating it.
+   */
+  canUseContext(principalId: string, targetScope: ScopeId): Promise<boolean>;
   uploadFileForViewer(
     principalId: string,
     input: { scopeId?: ScopeId; name: string; mimetype?: string; data: AsyncIterable<Uint8Array> },

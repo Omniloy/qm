@@ -100,6 +100,10 @@ import { createMemoryFileArtifactStore, type FileArtifactStore } from "./files/f
 import { createPostgresFileArtifactStore } from "./files/postgres-file-artifact-store.ts";
 import { createAwsSandbox, type StoredMicrovm } from "./sandbox/aws-sandbox.ts";
 import { createLocalSandbox } from "./sandbox/local-sandbox.ts";
+import { createMountStore, type DriveMount, type MountStore } from "./mounts/mount-store.ts";
+import { createListingCache, type ListingCache } from "./mounts/listing-cache.ts";
+import { listFolder, FOLDER_MIME, DriveListError } from "./mounts/drive-listing.ts";
+import { resolveAttachedFolders } from "./mounts/resolve.ts";
 import { createSpritesSandbox } from "./sandbox/sprites-sandbox.ts";
 import {
   createSandboxRouter,
@@ -302,6 +306,14 @@ export function stopWithBackstop(
 
 export interface BuiltApp {
   app: App;
+  /** Drive folder mounts, passed straight through to ServerDeps.driveMounts. */
+  driveMounts: {
+    store: MountStore;
+    cache: ListingCache;
+    canUseContext: (principalId: string, scopeId: ScopeId) => Promise<boolean>;
+    tokenFor: (principalId: string) => Promise<string | null>;
+    browseFolders: (accessToken: string, parentId: string) => Promise<Array<{ id: string; name: string }>>;
+  };
   deploymentLayer: DeploymentLayerRuntime;
   brokeredTools: readonly BrokeredLayerTool[];
   deploymentLayerStore: DeploymentLayerStore;
@@ -670,6 +682,34 @@ export function buildApp(
     ? createBrowserSessionStore({ sessions: artifactMap<StoredBrowserSession>("browser_sessions"), key: credentialKey })
     : undefined;
   const connectorTokens = withOperatorTokenFallback(credentialStore, config.egressServiceHosts ?? [], secretSource);
+
+  // Drive folder mounts. Every Drive call below runs as one person: the token
+  // is resolved per principal, never shared between members of a scope.
+  const driveMountStore = createMountStore(artifactMap<DriveMount>("drive_mounts"));
+  const driveListingCache = createListingCache();
+  const GOOGLE_API_HOST = "www.googleapis.com";
+  const driveTokenFor = async (principalId: string): Promise<string | null> =>
+    (await connectorTokens.connectorAccessToken(GOOGLE_API_HOST, principalId, "personal")) ??
+    (await connectorTokens.connectorAccessToken(GOOGLE_API_HOST, principalId));
+  const browseDriveFolders = async (accessToken: string, parentId: string) => {
+    const params = new URLSearchParams({
+      q: `mimeType='${FOLDER_MIME}' and '${parentId}' in parents and trashed = false`,
+      fields: "files(id,name)",
+      pageSize: "200",
+      orderBy: "name",
+      corpora: "allDrives",
+      includeItemsFromAllDrives: "true",
+      supportsAllDrives: "true",
+    });
+    const res = await fetch(`https://${GOOGLE_API_HOST}/drive/v3/files?${params}`, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok) throw new DriveListError(res.status, `drive folder browse failed (${res.status})`);
+    const body = (await res.json()) as { files?: Array<{ id?: string; name?: string }> };
+    return (body.files ?? [])
+      .filter((f): f is { id: string; name: string } => Boolean(f.id && f.name))
+      .map((f) => ({ id: f.id, name: f.name }));
+  };
   const consentLinks: ConsentLinkStore = createConsentLinkStore(artifactMap<ConsentLinkRecord>("consent_links"));
   const secretDrops: SecretDropStore = createSecretDropStore(artifactMap<SecretDropRecord>("secret_drops"));
   const modelGateway = createModelGateway();
@@ -944,6 +984,23 @@ export function buildApp(
     });
   }
   const orchestratorDeps: OrchestratorDeps = {
+    attachedFolders: async ({ scopeIds, principalId, nowMs }) =>
+      resolveAttachedFolders(
+        {
+          mounts: driveMountStore,
+          cache: driveListingCache,
+          listFolder,
+          tokenFor: driveTokenFor,
+          onError: (e) =>
+            errors?.record({
+              category: "drive_mounts",
+              code: e.code,
+              message: e.message,
+              scopeLabel: (e.scopeLabel ?? "unknown") as ScopeId,
+            }),
+        },
+        { scopeIds, principalId, nowMs },
+      ),
     identity,
     resolution,
     config: configStore,
@@ -1426,6 +1483,13 @@ export function buildApp(
   };
 
   return {
+    driveMounts: {
+      store: driveMountStore,
+      cache: driveListingCache,
+      canUseContext: (principalId: string, scopeId: ScopeId) => app.canUseContext(principalId, scopeId),
+      tokenFor: driveTokenFor,
+      browseFolders: browseDriveFolders,
+    },
     app,
     deploymentLayer,
     deploymentLayerStore,
