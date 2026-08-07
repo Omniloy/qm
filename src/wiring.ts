@@ -312,7 +312,12 @@ export interface BuiltApp {
     cache: ListingCache;
     canUseContext: (principalId: string, scopeId: ScopeId) => Promise<boolean>;
     tokenFor: (principalId: string) => Promise<string | null>;
-    browseFolders: (accessToken: string, parentId: string) => Promise<Array<{ id: string; name: string }>>;
+    browseFolders: (
+      accessToken: string,
+      parentId: string,
+      search?: string,
+    ) => Promise<Array<{ id: string; name: string }>>;
+    lookupFolder: (accessToken: string, folderId: string) => Promise<{ id: string; name: string } | null>;
   };
   deploymentLayer: DeploymentLayerRuntime;
   brokeredTools: readonly BrokeredLayerTool[];
@@ -691,11 +696,16 @@ export function buildApp(
   const driveTokenFor = async (principalId: string): Promise<string | null> =>
     (await connectorTokens.connectorAccessToken(GOOGLE_API_HOST, principalId, "personal")) ??
     (await connectorTokens.connectorAccessToken(GOOGLE_API_HOST, principalId));
-  const browseDriveFolders = async (accessToken: string, parentId: string) => {
+  const browseDriveFolders = async (accessToken: string, parentId: string, search?: string) => {
+    // Search ignores the parent: someone searching wants the folder wherever
+    // it lives, not "inside whatever I happen to be looking at".
+    const q = search
+      ? `mimeType='${FOLDER_MIME}' and name contains '${search.replace(/['\\]/g, "\\$&")}' and trashed = false`
+      : `mimeType='${FOLDER_MIME}' and '${parentId}' in parents and trashed = false`;
     const params = new URLSearchParams({
-      q: `mimeType='${FOLDER_MIME}' and '${parentId}' in parents and trashed = false`,
+      q,
       fields: "files(id,name)",
-      pageSize: "200",
+      pageSize: "100",
       orderBy: "name",
       corpora: "allDrives",
       includeItemsFromAllDrives: "true",
@@ -709,6 +719,18 @@ export function buildApp(
     return (body.files ?? [])
       .filter((f): f is { id: string; name: string } => Boolean(f.id && f.name))
       .map((f) => ({ id: f.id, name: f.name }));
+  };
+
+  /** Resolve one folder by id, for a pasted link. Returns null when unreachable. */
+  const lookupDriveFolder = async (accessToken: string, folderId: string) => {
+    const params = new URLSearchParams({ fields: "id,name,mimeType", supportsAllDrives: "true" });
+    const res = await fetch(`https://${GOOGLE_API_HOST}/drive/v3/files/${encodeURIComponent(folderId)}?${params}`, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok) return null;
+    const f = (await res.json()) as { id?: string; name?: string; mimeType?: string };
+    if (!f.id || !f.name || f.mimeType !== FOLDER_MIME) return null;
+    return { id: f.id, name: f.name };
   };
   const consentLinks: ConsentLinkStore = createConsentLinkStore(artifactMap<ConsentLinkRecord>("consent_links"));
   const secretDrops: SecretDropStore = createSecretDropStore(artifactMap<SecretDropRecord>("secret_drops"));
@@ -1489,6 +1511,7 @@ export function buildApp(
       canUseContext: (principalId: string, scopeId: ScopeId) => app.canUseContext(principalId, scopeId),
       tokenFor: driveTokenFor,
       browseFolders: browseDriveFolders,
+      lookupFolder: lookupDriveFolder,
     },
     app,
     deploymentLayer,

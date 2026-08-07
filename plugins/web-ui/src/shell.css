@@ -6865,14 +6865,16 @@ h3.ambient-field-label {
 .drive-band {
   width: min(960px, 100%);
   margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 .drive-band-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
-.drive-band-head .spacer,
-.drive-picker-head .spacer {
+.drive-band-head .spacer {
   flex: 1;
 }
 .drive-mount-row {
@@ -6882,29 +6884,104 @@ h3.ambient-field-label {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  gap: 2px;
 }
 .drive-mount-name span {
-  opacity: 0.7;
-  font-size: 0.85em;
+  color: var(--muted-foreground);
+  font-size: 12.5px;
 }
 .drive-mount-row.inert {
-  opacity: 0.6;
+  opacity: 0.55;
 }
+
+/* dialogs -------------------------------------------------------------- */
 .drive-picker {
-  width: min(520px, 100%);
+  width: min(560px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: min(76vh, 640px);
+  border-color: var(--border);
 }
-.drive-picker-head,
-.drive-picker-foot,
-.drive-crumbs,
-.drive-mode {
+.drive-picker-head {
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.drive-picker-head h2 {
+  margin: 0;
+  font-size: 16px;
+}
+.drive-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.drive-field > span {
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+}
+.drive-field input {
+  width: 100%;
+  box-sizing: border-box;
+}
+.drive-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.drive-back {
+  align-self: flex-start;
+}
+.drive-results {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  min-height: 96px;
+}
+.drive-result-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.drive-result-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.drive-mode {
+  display: flex;
   gap: 8px;
 }
-.drive-picker-foot {
-  justify-content: flex-end;
-}
 .drive-mode .active {
+  border-color: var(--primary, currentColor);
   font-weight: 600;
-  text-decoration: underline;
+}
+.drive-note {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.drive-note.warning {
+  color: var(--destructive, #c00);
+}
+.drive-picker-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.drive-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }

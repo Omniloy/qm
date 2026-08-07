@@ -10,6 +10,7 @@ import {
   rowIsInert,
   mountNameError,
   slugFromFolderName,
+  parseDriveFolderId,
   type MountRow,
   type ConnectorState,
 } from "../src/drive-mount.ts";
@@ -136,4 +137,20 @@ test("suggested names from Drive titles are always storable", () => {
     assert.equal(mountNameError(slug), null);
   }
   assert.equal(slugFromFolderName("..."), "", "an unusable title yields nothing rather than a bad name");
+});
+
+test("a pasted Drive link yields its folder id, whatever form it takes", () => {
+  const id = "1A2b3C4d5E6f7G8h9I0j";
+  assert.equal(parseDriveFolderId(`https://drive.google.com/drive/folders/${id}`), id);
+  assert.equal(parseDriveFolderId(`https://drive.google.com/drive/u/0/folders/${id}`), id);
+  assert.equal(parseDriveFolderId(`https://drive.google.com/drive/folders/${id}?usp=sharing`), id);
+  assert.equal(parseDriveFolderId(`https://drive.google.com/open?id=${id}`), id);
+  assert.equal(parseDriveFolderId(id), id, "a bare id is accepted too");
+  assert.equal(parseDriveFolderId(`  ${id}  `), id, "surrounding whitespace is forgiven");
+});
+
+test("anything that is not a Drive folder reference is refused", () => {
+  for (const bad of ["", "   ", "hello", "https://example.com/drive/folders/abc", "https://evil.com/?id=abc"]) {
+    assert.equal(parseDriveFolderId(bad), null, `expected ${JSON.stringify(bad)} to be refused`);
+  }
 });

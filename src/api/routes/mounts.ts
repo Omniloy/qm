@@ -147,7 +147,25 @@ async function browseFolders(ctx: ApiCtx): Promise<void> {
   try {
     // Only {id, name} leaves core: the browser never sees a Google credential,
     // and never more of the person's Drive than the picker needs to render.
-    const folders = await mounts.browseFolders(token, ctx.url.searchParams.get("parent") ?? "root");
+    // A pasted link resolves to exactly one folder; a query searches by name;
+    // otherwise we list the children of a parent.
+    const lookup = ctx.url.searchParams.get("id");
+    if (lookup) {
+      const one = await mounts.lookupFolder(token, lookup);
+      if (!one) {
+        return sendJson(res, 404, {
+          error: "not_found",
+          message: "that link is not a Drive folder you can open",
+        });
+      }
+      return sendJson(res, 200, { folders: [{ id: one.id, name: one.name }] });
+    }
+    const search = ctx.url.searchParams.get("q")?.trim();
+    const folders = await mounts.browseFolders(
+      token,
+      ctx.url.searchParams.get("parent") ?? "root",
+      search || undefined,
+    );
     return sendJson(res, 200, { folders: folders.map((f) => ({ id: f.id, name: f.name })) });
   } catch (e) {
     if (e instanceof DriveListError) {

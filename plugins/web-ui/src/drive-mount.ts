@@ -114,3 +114,36 @@ export function slugFromFolderName(folderName: string): string {
     .slice(0, 32)
     .replace(/-+$/g, "");
 }
+
+/**
+ * Pull a folder id out of whatever someone pastes.
+ *
+ * People copy the browser URL, the "Get link" share URL, or occasionally the
+ * bare id. All three should work — asking someone to extract an id by hand is
+ * the kind of small cruelty that makes a feature feel unfinished.
+ */
+export function parseDriveFolderId(input: string): string | null {
+  const raw = input.trim();
+  if (!raw) return null;
+
+  // A bare id: Drive ids are opaque but always URL-safe and reasonably long.
+  if (/^[A-Za-z0-9_-]{10,}$/.test(raw)) return raw;
+
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (!/(^|\.)google\.com$/.test(url.hostname)) return null;
+
+  // https://drive.google.com/drive/folders/<id>  (optionally /u/0/ before it)
+  const fromPath = /\/folders\/([A-Za-z0-9_-]+)/.exec(url.pathname)?.[1];
+  if (fromPath) return fromPath;
+
+  // https://drive.google.com/open?id=<id>
+  const fromQuery = url.searchParams.get("id");
+  if (fromQuery && /^[A-Za-z0-9_-]{10,}$/.test(fromQuery)) return fromQuery;
+
+  return null;
+}

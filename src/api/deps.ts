@@ -105,7 +105,13 @@ export interface ServerDeps {
     /** The caller's own Drive token, or null when Google is not connected. */
     tokenFor: (principalId: string) => Promise<string | null>;
     /** Lists folders under a parent, server-side, with the caller's token. */
-    browseFolders: (accessToken: string, parentId: string) => Promise<Array<{ id: string; name: string }>>;
+    browseFolders: (
+      accessToken: string,
+      parentId: string,
+      search?: string,
+    ) => Promise<Array<{ id: string; name: string }>>;
+    /** Resolve one folder by id, for a pasted Drive link. */
+    lookupFolder: (accessToken: string, folderId: string) => Promise<{ id: string; name: string } | null>;
   };
   auditLog?: AuditLog;
   errors?: ErrorLog;

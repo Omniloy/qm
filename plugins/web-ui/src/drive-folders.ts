@@ -7,6 +7,7 @@ import {
   bandState,
   canAttach,
   mountNameError,
+  parseDriveFolderId,
   slugFromFolderName,
   accessLabel,
   requestAccessUrl,
@@ -37,7 +38,14 @@ interface PickerFolder {
 }
 
 /** Breadcrumb trail into Drive, so "back" is possible without re-opening. */
-let picker: { trail: PickerFolder[]; folders: PickerFolder[]; loading: boolean; error: string } | null = null;
+let picker: {
+  trail: PickerFolder[];
+  folders: PickerFolder[];
+  loading: boolean;
+  error: string;
+  query: string;
+  searching: boolean;
+} | null = null;
 let pending: { folder: PickerFolder; name: string; mode: "ro" | "rw"; error: string } | null = null;
 let detaching: MountRow | null = null;
 
@@ -140,9 +148,12 @@ function mountRowTpl(m: MountRow, state: BandState, now: number, rerender: () =>
       m.inaccessible && link
         ? html`<a class="link" href=${link} target="_blank" rel="noopener">Request access in Drive</a>`
         : state === "populated"
-          ? html`<button class="link" ?disabled=${busy} @click=${() => void refreshOne(m.id, rerender)}>
-              ${icon(RefreshCw, 14)} Refresh
-            </button>`
+          ? html`<span class="drive-row-actions">
+              <button class="btn" type="button" ?disabled=${busy} @click=${() => void refreshOne(m.id, rerender)}>
+                ${icon(RefreshCw, 14)}
+              </button>
+              <button class="btn" type="button" @click=${() => askDetach(m, rerender)}>Detach</button>
+            </span>`
           : ""
     }
   </div>`;
@@ -157,10 +168,12 @@ export function driveBandTpl(now: number, rerender: () => void, onAttach: () => 
     <span class="spacer"></span>
     ${
       state === "populated"
-        ? html`<button class="link" ?disabled=${busy} @click=${() => void refreshAll(rerender)}>Refresh all</button>`
+        ? html`<button class="btn" type="button" ?disabled=${busy} @click=${() => void refreshAll(rerender)}>
+            Refresh all
+          </button>`
         : ""
     }
-    ${canAttach(state) ? html`<button class="primary" @click=${onAttach}>Attach folder</button>` : ""}
+    ${canAttach(state) ? html`<button class="primary" type="button" @click=${onAttach}>Attach folder</button>` : ""}
   </div>`;
 
   let body: TemplateResult;
@@ -210,16 +223,52 @@ interface BrowseResponse {
 
 const ROOT: PickerFolder = { id: "root", name: "My Drive" };
 
+/** Fetch whichever view the picker is in: a pasted id, a search, or a folder's children. */
+async function fetchFolders(mode: { id?: string; q?: string; parent?: string }): Promise<PickerFolder[]> {
+  const qs = mode.id
+    ? `id=${encodeURIComponent(mode.id)}`
+    : mode.q
+      ? `q=${encodeURIComponent(mode.q)}`
+      : `parent=${encodeURIComponent(mode.parent ?? "root")}`;
+  const r = await api<BrowseResponse>(`/api/mounts/browse?${qs}`);
+  return r.folders ?? [];
+}
+
 async function browseInto(folder: PickerFolder, rerender: () => void, descend: boolean): Promise<void> {
   if (!picker) return;
   picker.loading = true;
   picker.error = "";
+  picker.searching = false;
   rerender();
   try {
-    const r = await api<BrowseResponse>(`/api/mounts/browse?parent=${encodeURIComponent(folder.id)}`);
+    const folders = await fetchFolders({ parent: folder.id });
     if (!picker) return;
     if (descend) picker.trail = [...picker.trail, folder];
-    picker.folders = r.folders ?? [];
+    picker.folders = folders;
+  } catch (e) {
+    if (picker) picker.error = errMessage(e);
+  } finally {
+    if (picker) picker.loading = false;
+    rerender();
+  }
+}
+
+/** One box handles both pasting a link and searching by name. */
+async function runQuery(rerender: () => void): Promise<void> {
+  if (!picker) return;
+  const raw = picker.query.trim();
+  if (!raw) return void browseInto(ROOT, rerender, false);
+
+  picker.loading = true;
+  picker.error = "";
+  rerender();
+  try {
+    const id = parseDriveFolderId(raw);
+    const folders = await fetchFolders(id ? { id } : { q: raw });
+    if (!picker) return;
+    picker.searching = true;
+    picker.folders = folders;
+    if (!folders.length) picker.error = id ? "No folder found for that link." : "No folders match that name.";
   } catch (e) {
     if (picker) picker.error = errMessage(e);
   } finally {
@@ -229,92 +278,143 @@ async function browseInto(folder: PickerFolder, rerender: () => void, descend: b
 }
 
 export function openDrivePicker(rerender: () => void = () => {}): void {
-  picker = { trail: [ROOT], folders: [], loading: true, error: "" };
+  picker = { trail: [ROOT], folders: [], loading: true, error: "", query: "", searching: false };
   void browseInto(ROOT, rerender, false);
 }
 
+function closeAll(rerender: () => void): void {
+  picker = null;
+  pending = null;
+  detaching = null;
+  rerender();
+}
+
+/** Every dialog shares one scrim so it lands centred instead of mid-page. */
+function scrim(rerender: () => void, inner: TemplateResult): TemplateResult {
+  return html`<div
+    class="kc-dialog-scrim"
+    @click=${(e: Event) => {
+      if (e.target === e.currentTarget) closeAll(rerender);
+    }}
+  >
+    ${inner}
+  </div>`;
+}
+
+function beginAttach(f: PickerFolder, rerender: () => void): void {
+  pending = { folder: f, name: slugFromFolderName(f.name), mode: "rw", error: "" };
+  picker = null;
+  rerender();
+}
+
 export function drivePickerTpl(scopeId: string, rerender: () => void): TemplateResult | typeof nothing {
-  if (pending) return attachConfirmTpl(scopeId, rerender);
-  if (detaching) return detachConfirmTpl(rerender);
+  if (pending) return scrim(rerender, attachConfirmTpl(scopeId, rerender));
+  if (detaching) return scrim(rerender, detachConfirmTpl(rerender));
   if (!picker) return nothing;
 
-  const here = picker.trail[picker.trail.length - 1]!;
-  const close = (): void => {
-    picker = null;
-    rerender();
-  };
+  const p = picker;
+  const here = p.trail[p.trail.length - 1]!;
 
-  return html`<div class="kc-confirm drive-picker">
-    <div class="drive-picker-head">
-      <strong>Choose a folder</strong>
-      <span class="spacer"></span>
-      <button class="link" @click=${close}>Cancel</button>
-    </div>
-    <div class="drive-crumbs">
-      ${picker.trail.map(
-        (f, i) =>
-          html`<button
-            class="link"
-            ?disabled=${i === picker!.trail.length - 1}
-            @click=${() => {
-            picker!.trail = picker!.trail.slice(0, i + 1);
-            void browseInto(f, rerender, false);
+  return scrim(
+    rerender,
+    html`<section class="kc-confirm drive-picker">
+      <header class="drive-picker-head">
+        <h2>Attach a Drive folder</h2>
+        <button class="btn" type="button" @click=${() => closeAll(rerender)}>Cancel</button>
+      </header>
+
+      <label class="drive-field">
+        <span>Paste a Drive link, or search by name</span>
+        <input
+          type="text"
+          placeholder="https://drive.google.com/drive/folders/… or “Design docs”"
+          .value=${p.query}
+          @input=${(e: Event) => {
+            p.query = (e.target as HTMLInputElement).value;
           }}
-          >
-            ${f.name}
-          </button>`,
-      )}
-    </div>
-    ${picker.error ? html`<div class="kc-state warning">${picker.error}</div>` : ""}
-    ${
-      picker.loading
-        ? html`<div class="kc-state">Loading…</div>`
-        : picker.folders.length
-          ? html`<div class="drive-mount-list">
-              ${picker.folders.map(
-              (f) =>
-                html`<div class="drive-mount-row">
-                  ${icon(FolderOpen, 16)}
-                  <div class="drive-mount-name"><strong>${f.name}</strong></div>
-                  <button class="link" @click=${() => void browseInto(f, rerender, true)}>Open</button>
-                  <button
-                    class="primary"
-                    @click=${() => {
-                    pending = { folder: f, name: slugFromFolderName(f.name), mode: "rw", error: "" };
-                    picker = null;
-                    rerender();
-                  }}
-                  >
-                    Attach
-                  </button>
-                </div>`,
+          @keydown=${(e: KeyboardEvent) => {
+            if (e.key === "Enter") void runQuery(rerender);
+          }}
+        />
+      </label>
+
+      ${
+        p.searching
+          ? html`<button
+              class="btn drive-back"
+              type="button"
+              @click=${() => {
+                p.query = "";
+                void browseInto(ROOT, rerender, false);
+              }}
+            >
+              ← Back to My Drive
+            </button>`
+          : html`<nav class="drive-crumbs">
+              ${p.trail.map(
+              (f, i) =>
+                html`<button
+                  class="btn"
+                  type="button"
+                  ?disabled=${i === p.trail.length - 1}
+                  @click=${() => {
+                  p.trail = p.trail.slice(0, i + 1);
+                  void browseInto(f, rerender, false);
+                }}
+                >
+                  ${f.name}
+                </button>`,
             )}
-            </div>`
-          : html`<div class="kc-state">No subfolders here.</div>`
-    }
-    <div class="drive-picker-foot">
-      <button
-        class="primary"
-        ?disabled=${picker.trail.length < 2}
-        @click=${() => {
-          pending = { folder: here, name: slugFromFolderName(here.name), mode: "rw", error: "" };
-          picker = null;
-          rerender();
-        }}
-      >
-        Attach “${here.name}”
-      </button>
-    </div>
-  </div>`;
+            </nav>`
+      }
+      ${p.error ? html`<p class="drive-note warning">${p.error}</p>` : ""}
+
+      <div class="drive-results">
+        ${
+          p.loading
+            ? html`<p class="drive-note">Loading…</p>`
+            : p.folders.length
+              ? p.folders.map(
+                  (f) =>
+                    html`<div class="drive-result-row">
+                      ${icon(FolderOpen, 16)}
+                      <span class="drive-result-name">${f.name}</span>
+                      ${
+                    p.searching
+                      ? ""
+                      : html`<button class="btn" type="button" @click=${() => void browseInto(f, rerender, true)}>
+                          Open
+                        </button>`
+                  }
+                      <button class="primary" type="button" @click=${() => beginAttach(f, rerender)}>Attach</button>
+                    </div>`,
+                )
+              : html`<p class="drive-note">No subfolders here.</p>`
+        }
+      </div>
+
+      ${
+        p.searching || p.trail.length < 2
+          ? ""
+          : html`<footer class="drive-picker-foot">
+              <button class="primary" type="button" @click=${() => beginAttach(here, rerender)}>
+                Attach “${here.name}”
+              </button>
+            </footer>`
+      }
+    </section>`,
+  );
 }
 
 function attachConfirmTpl(scopeId: string, rerender: () => void): TemplateResult {
   const p = pending!;
-  return html`<div class="kc-confirm drive-picker">
-    <strong>Attach “${p.folder.name}”</strong>
-    <label
-      >Name in QM
+  return html`<section class="kc-confirm drive-picker">
+    <header class="drive-picker-head"><h2>Attach “${p.folder.name}”</h2></header>
+
+    <label class="drive-field">
+      <span>Name in QM</span>
       <input
+        type="text"
         .value=${p.name}
         @input=${(e: Event) => {
           p.name = (e.target as HTMLInputElement).value;
@@ -322,44 +422,46 @@ function attachConfirmTpl(scopeId: string, rerender: () => void): TemplateResult
         }}
       />
     </label>
-    <div class="drive-mode">
-      <button
-        class="link ${p.mode === "rw" ? "active" : ""}"
-        @click=${() => {
-        p.mode = "rw";
-        rerender();
-      }}
-      >
-        Read &amp; write
-      </button>
-      <button
-        class="link ${p.mode === "ro" ? "active" : ""}"
-        @click=${() => {
-        p.mode = "ro";
-        rerender();
-      }}
-      >
-        Read only
-      </button>
+
+    <div class="drive-field">
+      <span>Agent access</span>
+      <div class="drive-mode">
+        <button
+          class="btn ${p.mode === "rw" ? "active" : ""}"
+          type="button"
+          @click=${() => {
+          p.mode = "rw";
+          rerender();
+        }}
+        >
+          Read &amp; write
+        </button>
+        <button
+          class="btn ${p.mode === "ro" ? "active" : ""}"
+          type="button"
+          @click=${() => {
+          p.mode = "ro";
+          rerender();
+        }}
+        >
+          Read only
+        </button>
+      </div>
     </div>
-    <p class="kc-state">
+
+    <p class="drive-note">
       QM may use your Google account to read${p.mode === "rw" ? ", create and edit" : ""} files in
       <strong>${p.folder.name}</strong> on your behalf. Teammates use their own Google accounts, not yours.
     </p>
-    ${p.error ? html`<div class="kc-state warning">${p.error}</div>` : ""}
-    <div class="drive-picker-foot">
-      <button
-        class="link"
-        @click=${() => {
-        pending = null;
-        rerender();
-      }}
-      >
-        Cancel
+    ${p.error ? html`<p class="drive-note warning">${p.error}</p>` : ""}
+
+    <footer class="drive-picker-foot">
+      <button class="btn" type="button" @click=${() => closeAll(rerender)}>Cancel</button>
+      <button class="primary" type="button" ?disabled=${busy} @click=${() => void doAttach(scopeId, rerender)}>
+        Attach folder
       </button>
-      <button class="primary" ?disabled=${busy} @click=${() => void doAttach(scopeId, rerender)}>Attach folder</button>
-    </div>
-  </div>`;
+    </footer>
+  </section>`;
 }
 
 async function doAttach(scopeId: string, rerender: () => void): Promise<void> {
@@ -402,24 +504,17 @@ export function askDetach(m: MountRow, rerender: () => void): void {
 
 function detachConfirmTpl(rerender: () => void): TemplateResult {
   const m = detaching!;
-  return html`<div class="kc-confirm drive-picker">
-    <strong>Detach “${m.name}”?</strong>
-    <p class="kc-state">
+  return html`<section class="kc-confirm drive-picker">
+    <header class="drive-picker-head"><h2>Detach “${m.name}”?</h2></header>
+    <p class="drive-note">
       The agent stops seeing this folder in every conversation in this scope. Nothing in Drive changes, and nothing is
       deleted.
     </p>
-    <div class="drive-picker-foot">
-      <button
-        class="link"
-        @click=${() => {
-        detaching = null;
-        rerender();
-      }}
-      >
-        Cancel
-      </button>
+    <footer class="drive-picker-foot">
+      <button class="btn" type="button" @click=${() => closeAll(rerender)}>Cancel</button>
       <button
         class="primary"
+        type="button"
         ?disabled=${busy}
         @click=${async () => {
           busy = true;
@@ -438,6 +533,6 @@ function detachConfirmTpl(rerender: () => void): TemplateResult {
       >
         Detach
       </button>
-    </div>
-  </div>`;
+    </footer>
+  </section>`;
 }
