@@ -236,6 +236,36 @@ class FastChatAnthropic(ChatAnthropic):
             FastChatAnthropic.fast = False
             return await super().ainvoke(messages, output_format, **kwargs)
 
+# The provider hands back JPEG screenshot bytes inside a data URL labelled
+# image/png. browser-use trusts the label, Anthropic checks the bytes, and every
+# single step dies with a 400 — the agent is blind and the run ends in "5
+# consecutive failures" with no clue why. Trust the bytes.
+try:
+    import base64 as _b64
+    from browser_use.llm.anthropic.serializer import AnthropicMessageSerializer as _AMS
+
+    _orig_parse = _AMS._parse_base64_url
+
+    def _parse_sniffed(url):
+        media, data = _orig_parse(url)
+        try:
+            head = _b64.b64decode(data[:16])
+        except Exception:
+            return media, data
+        if head[:3] == b"\xff\xd8\xff":
+            media = "image/jpeg"
+        elif head[:8] == b"\x89PNG\r\n\x1a\n":
+            media = "image/png"
+        elif head[:6] in (b"GIF87a", b"GIF89a"):
+            media = "image/gif"
+        elif head[:4] == b"RIFF":
+            media = "image/webp"
+        return media, data
+
+    _AMS._parse_base64_url = staticmethod(_parse_sniffed)
+except Exception:
+    pass
+
 OPENAI_COMPATIBLE = {
     "openai": ("BROWSE_LAB_OPENAI_KEY", None),
     "openrouter": ("BROWSE_LAB_OPENROUTER_KEY", "https://openrouter.ai/api/v1"),

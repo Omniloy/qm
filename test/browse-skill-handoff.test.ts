@@ -94,3 +94,13 @@ test("a personal key is never offered in a shared room", () => {
   assert.match(missing, /channel or group/);
   assert.match(missing, /never be minted into a shared room/);
 });
+
+test("the runner trusts screenshot bytes, not the label on them", () => {
+  // Every step of a real run died with an Anthropic 400: the provider returns
+  // JPEG bytes in a data URL labelled image/png, browser-use forwards the
+  // label, and the API checks the bytes. The agent was blind and the run ended
+  // in "5 consecutive failures" with nothing explaining why.
+  assert.match(RAW, /_parse_base64_url/);
+  assert.match(RAW, /\\xff\\xd8\\xff/, "sniffs the JPEG magic bytes");
+  assert.match(RAW, /\\x89PNG/, "and PNG's");
+});

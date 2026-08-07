@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   paneVisible,
   paneStatus,
@@ -77,4 +78,14 @@ test("the composer says the agent is parked, so a typed follow-up is not swallow
   assert.equal(composerNote(s()), null);
   assert.match(composerNote(s({ controlMode: "human_control" })) ?? "", /paused/);
   assert.equal(composerNote(null), null);
+});
+
+test("the live view is sized to the browser's own shape, not the chat's width", () => {
+  // Seen on the deployed pane: a full-width frame with a fixed height is about
+  // 3:1, so a 16:9 picture letterboxes into the middle and most of the box is
+  // dead black. A big pane showing a small browser reads as broken.
+  const css = readFileSync(new URL("../src/shell.css", import.meta.url), "utf8");
+  const rule = /\.browser-pane-view\s*\{[^}]*\}/.exec(css)?.[0] ?? "";
+  assert.match(rule, /aspect-ratio:\s*16\s*\/\s*9/);
+  assert.match(rule, /margin-inline:\s*auto/, "and it stays centred when the chat is wider");
 });

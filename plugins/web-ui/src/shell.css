@@ -7069,9 +7069,17 @@ h3.ambient-field-label {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* The remote browser renders 16:9. Giving the frame the full chat width and a
+   fixed height made a box roughly 3:1, so the picture letterboxed into the
+   middle with wide dead bars either side — a big pane showing a small browser.
+   Matching the aspect ratio means every pixel of the box is picture. */
 .browser-pane-view {
+  display: block;
   width: 100%;
-  height: min(52vh, 520px);
+  max-width: calc((52vh - 60px) * 16 / 9);
+  aspect-ratio: 16 / 9;
+  max-height: 52vh;
+  margin-inline: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--secondary);
