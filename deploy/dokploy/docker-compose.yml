@@ -57,6 +57,12 @@ services:
       # Agent computers are containers on this host's Docker daemon.
       SANDBOX_BACKEND: local
       LOCAL_SANDBOX_IMAGE: ${LOCAL_SANDBOX_IMAGE}
+      # Without these two, `docker run` gets no --cpus and no --memory and an
+      # agent computer is unbounded on a box that also runs core, Postgres and
+      # Traefik. One runaway loop then takes QM down with it. Sized to leave
+      # room for several concurrent sandboxes.
+      LOCAL_SANDBOX_CPUS: ${LOCAL_SANDBOX_CPUS:-2}
+      LOCAL_SANDBOX_MEMORY_MB: ${LOCAL_SANDBOX_MEMORY_MB:-2048}
       # Sandboxes and deployed apps publish on the *host's* loopback, which only
       # a core running on the host could dial. Naming core here makes it join
       # their networks and address them by container name instead.

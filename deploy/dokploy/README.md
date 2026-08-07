@@ -46,6 +46,17 @@ LOCAL_SANDBOX_IMAGE=qm-sandbox-local:latest bash scripts/local-sandbox-build.sh
 A fingerprint mismatch only logs `[local-sandbox] sandbox image … is stale`; a missing
 image is a hard failure.
 
+The image carries the **browse client** (`/opt/browser-engine/venv`, roughly 310MB) in every
+build, because `skills-seed/browse` drives a _remote_ browser over CDP and its runner imports
+`browser_use`. It does **not** carry a local chromium unless the image is built with
+`--build-arg INSTALL_BROWSER_ENGINE=1`, which adds roughly another 700MB and is only useful
+for pointing the agent at a dev server on the sandbox's own loopback.
+
+**Agent computers are bounded by `LOCAL_SANDBOX_CPUS` and `LOCAL_SANDBOX_MEMORY_MB`,** set in
+the Compose file. `docker run` omits `--cpus`/`--memory` entirely when they are unset, which
+on a single host that also runs core, Postgres and Traefik means one runaway agent can take
+the whole stack down. Do not remove them.
+
 **Do not enable Dokploy's Docker Cleanup on this host.** It runs
 `docker system prune --all --force --volumes`, which reclaims every image no
 running container is using — including this one, since a sandbox container only
