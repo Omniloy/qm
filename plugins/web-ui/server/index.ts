@@ -1094,6 +1094,20 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
       return relay(res, r);
     }
 
+    // Drive folder mounts. Core does every Drive call with the caller's own
+    // token, so nothing Google-shaped passes through this proxy.
+    if (path === "/api/mounts" || path.startsWith("/api/mounts/")) {
+      // Only the verbs the mount API actually has. Forwarding whatever arrived
+      // would let this proxy reach core routes it was never meant to.
+      if (method !== "GET" && method !== "POST" && method !== "DELETE") {
+        return json(res, 405, { error: "method_not_allowed" });
+      }
+      const corePath = `/v1/${path.slice("/api/".length)}${url.search}`;
+      const raw = method === "POST" ? await readBody(req) : "";
+      const r = await coreFetch(method, corePath, raw);
+      return relay(res, r);
+    }
+
     if (method === "GET" && path.startsWith("/api/files/") && path.endsWith("/content")) {
       const id = decodeURIComponent(path.slice("/api/files/".length, -"/content".length));
       const corePath = withSourceAuthNonce(

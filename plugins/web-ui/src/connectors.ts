@@ -19,7 +19,7 @@ const CONNECTOR_LABELS: Record<string, { name: string; hosts: string; desc?: str
   google: {
     name: "Google Workspace",
     hosts: "Gmail, Calendar, Drive, Sheets",
-    desc: "Lets the agent read and act in your Gmail, Calendar, and Sheets on your behalf, and read your Drive (it can save new files there, but not edit your existing ones).",
+    desc: "Lets the agent read and act in your Gmail, Calendar, Drive and Sheets on your behalf — including creating and editing files, and folders you attach on the Files page.",
   },
   slack: {
     name: "Slack",
