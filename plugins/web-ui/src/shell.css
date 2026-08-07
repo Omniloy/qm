@@ -7021,6 +7021,13 @@ h3.ambient-field-label {
 .row-menu {
   flex: 0 0 auto;
 }
+/* The sessions sidebar hides .session-menu-btn until its row is hovered, which
+   suits a dense list you are scanning. On a list row the menu is the only way
+   to reach most of the row's actions, and a control nobody can see is a
+   control nobody finds — the exact problem this row was reworked to fix. */
+.row-menu .session-menu-btn {
+  opacity: 1;
+}
 .context-choices {
   display: flex;
   flex-direction: column;
