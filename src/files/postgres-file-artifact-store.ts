@@ -167,8 +167,23 @@ export function createPostgresFileArtifactStore(
       await query("UPDATE file_artifacts SET enabled = $2, updated_at = $3 WHERE id = $1", [id, enabled, Date.now()]);
     },
 
+    async setCreatedInScope(id, scopeId) {
+      await query("UPDATE file_artifacts SET created_in_scope = $2, updated_at = $3 WHERE id = $1", [
+        id,
+        scopeId,
+        Date.now(),
+      ]);
+    },
+
     async delete(id) {
-      await query("DELETE FROM file_artifacts WHERE id = $1", [id]);
+      const removed = await q("DELETE FROM file_artifacts WHERE id = $1 RETURNING blob_key", [id]);
+      const blobKey = (removed[0]?.blob_key as string | null | undefined) ?? null;
+      if (!blobKey) return;
+      // See FileArtifactStore.delete: blob_key is files/<sha256>, so it is
+      // shared by every byte-identical upload. Only reclaim it when this was
+      // the last artifact referencing it.
+      const others = await q("SELECT 1 FROM file_artifacts WHERE blob_key = $1 LIMIT 1", [blobKey]);
+      if (!others.length) await byteStore.delete(blobKey);
     },
   };
 }

@@ -862,6 +862,27 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       const sharedFilesBlock = sharedFilesSystemSection(resolution.grantedHandles);
       if (sharedFilesBlock) systemPrompt += `\n\n${sharedFilesBlock}`;
 
+      // Attached Drive folders, listed as this turn's actor. A failure here
+      // must not fail the turn: the agent loses a prompt section, which is
+      // recoverable, where a thrown error loses the whole reply.
+      if (deps.attachedFolders) {
+        try {
+          const attached = await deps.attachedFolders({
+            scopeIds: [scopeId],
+            principalId: actor.id,
+            nowMs: Date.now(),
+          });
+          if (attached.block) systemPrompt += `\n\n${attached.block}`;
+        } catch (e) {
+          deps.errors?.record({
+            category: "drive_mounts",
+            code: "attached_folders_failed",
+            message: errMessage(e),
+            scopeLabel: scopeId,
+          });
+        }
+      }
+
       const stableSystemBytes = systemPrompt.length;
       if (turnTimezone) {
         const timeBlock = currentTimeBlock(turnTimezone, Date.now());

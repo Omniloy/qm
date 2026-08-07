@@ -30,13 +30,18 @@ services:
     build:
       context: ../..
       dockerfile: deploy/dokploy/core.Dockerfile
+    # Pinned because CORE_CONTAINER below must name this
+    # container; keep the two in step.
+    container_name: qm-omniloy-core
     restart: unless-stopped
     depends_on:
       pg:
         condition: service_healthy
     environment:
       PORT: "8080"
-      DATA_DIR: /data
+      # Deliberately the same value as the bind's host side below — core hands
+      # DATA_DIR paths to the host daemon, so the two must be one path, not two.
+      DATA_DIR: ${DATA_HOST_DIR}
       ORG_ID: ${ORG_ID}
       HARNESS: ${HARNESS}
       HARNESS_SECURITY_POSTURE: ${HARNESS_SECURITY_POSTURE}
@@ -52,6 +57,10 @@ services:
       # Agent computers are containers on this host's Docker daemon.
       SANDBOX_BACKEND: local
       LOCAL_SANDBOX_IMAGE: ${LOCAL_SANDBOX_IMAGE}
+      # Sandboxes and deployed apps publish on the *host's* loopback, which only
+      # a core running on the host could dial. Naming core here makes it join
+      # their networks and address them by container name instead.
+      CORE_CONTAINER: qm-omniloy-core
       # The one source of admin identity: `<principal>:org_admin`, comma
       # separated. With OIDC_PRINCIPAL_CLAIM=email the principal is the
       # lowercased email. Seeded only while admin_grants is empty — after that
@@ -64,9 +73,27 @@ services:
       CONNECTOR_SECRET_KEY: ${CONNECTOR_SECRET_KEY}
       SKILL_SIGNING_SECRET: ${SKILL_SIGNING_SECRET}
     volumes:
-      - coredata:/data
+      # A host bind at the identical path on both sides, NOT a named volume.
+      # Core hands DATA_DIR paths (a deployed app's snapshot dir) to the host
+      # daemon as bind sources, so they must mean the same thing to both —
+      # otherwise the daemon creates an empty dir and the app starts with
+      # nothing in /app. Mapping it to a different container path reintroduces
+      # exactly that bug, so both sides read from one variable.
+      - ${DATA_HOST_DIR}:${DATA_HOST_DIR}
       - /var/run/docker.sock:/var/run/docker.sock
     networks: [qm]
+
+  # Holds a container open on the agent sandbox image so `docker system prune
+  # --all` cannot reclaim it. Dokploy's nightly cleanup deleted it once, and
+  # every agent exec then failed with "sandbox image not found" until it was
+  # rebuilt by hand. Costs one sleeping process.
+  sandbox-keepalive:
+    image: ${LOCAL_SANDBOX_IMAGE}
+    restart: unless-stopped
+    command: ["sh", "-c", "while true; do sleep 3600; done"]
+    network_mode: none
+    read_only: true
+    mem_limit: 32m
 
   auth:
     build:
@@ -163,6 +190,9 @@ services:
       # The portal reads the broker client credential under its OIDC name
       # (cli/src/secrets.ts maps AUTH_CLIENT_SECRET -> OIDC_CLIENT_SECRET).
       OIDC_CLIENT_SECRET: ${AUTH_CLIENT_SECRET}
+      # Without this the portal 404s /d/* itself and core never sees the
+      # request, so every app the agent publishes looks like it does not exist.
+      PORTAL_DEPLOYMENTS_ENABLED: "1"
       PORTAL_SESSION_SECRET: ${PORTAL_SESSION_SECRET}
       PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET}
       CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET}
@@ -177,7 +207,6 @@ services:
 
 volumes:
   pgdata:
-  coredata:
 
 networks:
   qm:

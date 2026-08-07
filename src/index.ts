@@ -44,6 +44,7 @@ const server = createServer(built.app, {
   ...(built.fireDropResolution ? { fireDropResolution: built.fireDropResolution } : {}),
   ...(config.publicUrl ? { publicUrl: config.publicUrl } : {}),
   ...(config.publicWebUrl ? { portalUrl: config.publicWebUrl } : {}),
+  driveMounts: built.driveMounts,
   admin: built.admin,
   rateLimiter: built.rateLimiter,
   acl: built.acl,

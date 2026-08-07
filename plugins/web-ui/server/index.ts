@@ -1094,6 +1094,20 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
       return relay(res, r);
     }
 
+    // Drive folder mounts. Core does every Drive call with the caller's own
+    // token, so nothing Google-shaped passes through this proxy.
+    if (path === "/api/mounts" || path.startsWith("/api/mounts/")) {
+      // Only the verbs the mount API actually has. Forwarding whatever arrived
+      // would let this proxy reach core routes it was never meant to.
+      if (method !== "GET" && method !== "POST" && method !== "DELETE" && method !== "PATCH") {
+        return json(res, 405, { error: "method_not_allowed" });
+      }
+      const corePath = `/v1/${path.slice("/api/".length)}${url.search}`;
+      const raw = method === "POST" || method === "PATCH" ? await readBody(req) : "";
+      const r = await coreFetch(method, corePath, raw);
+      return relay(res, r);
+    }
+
     if (method === "GET" && path.startsWith("/api/files/") && path.endsWith("/content")) {
       const id = decodeURIComponent(path.slice("/api/files/".length, -"/content".length));
       const corePath = withSourceAuthNonce(
@@ -1133,6 +1147,18 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const scope = url.searchParams.get("scope");
       if (scope) qs.set("scope", scope);
       const r = await coreFetch("GET", `/v1/files?${qs.toString()}`);
+      return relay(res, r);
+    }
+
+    // Deliberately one branch per verb rather than a passthrough: /api/files
+    // has no generic relay, and adding one would expose every /v1/files route
+    // this surface has never audited. No viewer parameter — core reads the
+    // identity from the portal token coreFetch attaches, so passing one here
+    // would imply the caller could choose who they act as.
+    if ((method === "DELETE" || method === "PATCH") && path.startsWith("/api/files/")) {
+      const id = decodeURIComponent(path.slice("/api/files/".length));
+      const raw = method === "PATCH" ? await readBody(req) : "";
+      const r = await coreFetch(method, `/v1/files/${encodeURIComponent(id)}`, raw);
       return relay(res, r);
     }
 

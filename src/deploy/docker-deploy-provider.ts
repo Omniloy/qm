@@ -4,11 +4,24 @@ import { spawnDockerExec } from "../sandbox/docker-exec.ts";
 
 const NETWORK = "agent-deploynet";
 const APP_PORT = 8080;
+// The snapshot is mounted read-only, so an app has nowhere to keep state unless
+// it gets one. The AWS provider gives apps a writable /data; this is the local
+// equivalent — a per-deployment named volume that survives redeploys.
+const APP_DATA_DIR = "/data";
+const dataVolume = (id: string) => `agent-deploy-data-${id.slice(0, 12)}`;
 
 export interface DockerDeployProviderOptions {
   image?: string;
   docker?: string;
   basePort?: number;
+  /**
+   * Container name or id core itself runs as, when core is containerised.
+   *
+   * Apps publish on the host's loopback, which only core-on-the-host can reach.
+   * Set this and core joins the deploy network instead, addressing each app by
+   * container name. See CORE_CONTAINER.
+   */
+  coreContainer?: string;
 }
 
 export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {}): DeployProvider {
@@ -36,11 +49,33 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
 
   const name = (d: Deployment) => `agent-deploy-${d.id.slice(0, 12)}`;
 
+  /** Idempotent: create the deploy network and put core on it. */
+  const ensureCoreOnNetwork = async (): Promise<void> => {
+    await dexec(["network", "create", NETWORK]);
+    if (!opts.coreContainer) return;
+    const c = await dexec(["network", "connect", NETWORK, opts.coreContainer]);
+    if (c.code !== 0 && !/already exists|already connected/i.test(c.stderr)) {
+      throw new Error(`docker network connect ${NETWORK} ${opts.coreContainer} failed: ${c.stderr.trim()}`);
+    }
+  };
+
   return {
     profile: { managedScaleToZero: false },
 
+    async resolveEndpoint(d: Deployment): Promise<DeployEndpoint | null> {
+      // Called before every proxied request. Core loses its endpoint on the
+      // deploy network whenever its own container is recreated, so rejoining
+      // here is what keeps published apps reachable across a redeploy.
+      await ensureCoreOnNetwork();
+      const running = await dexec(["inspect", "-f", "{{.State.Running}}", name(d)]);
+      if (running.code !== 0 || running.stdout.trim() !== "true") return null;
+      if (opts.coreContainer) return { host: name(d), port: APP_PORT };
+      const port = ports.get(name(d));
+      return port === undefined ? null : { host: "127.0.0.1", port };
+    },
+
     async apply(d: Deployment, version: DeploymentVersion): Promise<DeployEndpoint> {
-      await dexec(["network", "create", NETWORK]);
+      await ensureCoreOnNetwork();
       await dexec(["rm", "-f", name(d)]);
       const hostPort = allocPort(name(d));
       const envArgs = Object.entries(version.env ?? {}).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
@@ -61,10 +96,14 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
         `127.0.0.1:${hostPort}:${APP_PORT}`,
         "-v",
         `${version.snapshotDir}:/app:ro`,
+        "-v",
+        `${dataVolume(d.id)}:${APP_DATA_DIR}`,
         "-w",
         "/app",
         "-e",
         `PORT=${APP_PORT}`,
+        "-e",
+        `DATA_DIR=${APP_DATA_DIR}`,
         ...envArgs,
         image,
         "sh",
@@ -75,11 +114,15 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
         freePort(name(d));
         throw new Error(`deploy run failed: ${r.stderr.trim()}`);
       }
+      // Containerised core shares the deploy network, so it reaches the app at
+      // its container name; the published host port is for humans only.
+      if (opts.coreContainer) return { host: name(d), port: APP_PORT };
       return { host: "127.0.0.1", port: hostPort };
     },
 
     async destroy(d: Deployment): Promise<void> {
       await dexec(["rm", "-f", name(d)]);
+      await dexec(["volume", "rm", dataVolume(d.id)]);
       freePort(name(d));
     },
   };

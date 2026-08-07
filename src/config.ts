@@ -34,6 +34,8 @@ export interface Config {
   sandboxBackend: "aws" | "local" | "sprites";
   sandboxSecondaryBackend?: "aws" | "local" | "sprites";
   deployProvider: "docker" | "aws";
+  /** Container core runs as, when core is containerised. See CORE_CONTAINER. */
+  coreContainer?: string;
   egressServiceHosts?: string[];
   brandingDefault?: { accent?: string; mark?: string; selfLabel?: string };
   modelId?: string;
@@ -708,6 +710,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     sandboxBackend,
     ...(sandboxSecondaryBackend ? { sandboxSecondaryBackend } : {}),
     deployProvider,
+    ...(env.CORE_CONTAINER ? { coreContainer: env.CORE_CONTAINER } : {}),
     ...(env.EGRESS_SERVICE_HOSTS
       ? {
           egressServiceHosts: env.EGRESS_SERVICE_HOSTS.split(",")

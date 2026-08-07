@@ -100,6 +100,10 @@ import { createMemoryFileArtifactStore, type FileArtifactStore } from "./files/f
 import { createPostgresFileArtifactStore } from "./files/postgres-file-artifact-store.ts";
 import { createAwsSandbox, type StoredMicrovm } from "./sandbox/aws-sandbox.ts";
 import { createLocalSandbox } from "./sandbox/local-sandbox.ts";
+import { createMountStore, type DriveMount, type MountStore } from "./mounts/mount-store.ts";
+import { createListingCache, type ListingCache } from "./mounts/listing-cache.ts";
+import { listFolder, FOLDER_MIME, DriveListError } from "./mounts/drive-listing.ts";
+import { resolveAttachedFolders } from "./mounts/resolve.ts";
 import { createSpritesSandbox } from "./sandbox/sprites-sandbox.ts";
 import {
   createSandboxRouter,
@@ -302,6 +306,19 @@ export function stopWithBackstop(
 
 export interface BuiltApp {
   app: App;
+  /** Drive folder mounts, passed straight through to ServerDeps.driveMounts. */
+  driveMounts: {
+    store: MountStore;
+    cache: ListingCache;
+    canUseContext: (principalId: string, scopeId: ScopeId) => Promise<boolean>;
+    tokenFor: (principalId: string) => Promise<string | null>;
+    browseFolders: (
+      accessToken: string,
+      parentId: string,
+      search?: string,
+    ) => Promise<Array<{ id: string; name: string }>>;
+    lookupFolder: (accessToken: string, folderId: string) => Promise<{ id: string; name: string } | null>;
+  };
   deploymentLayer: DeploymentLayerRuntime;
   brokeredTools: readonly BrokeredLayerTool[];
   deploymentLayerStore: DeploymentLayerStore;
@@ -570,6 +587,7 @@ export function buildApp(
   const buildLocal = (): Sandbox =>
     createLocalSandbox(workspace, {
       ...config.localSandbox,
+      ...(config.coreContainer ? { coreContainer: config.coreContainer } : {}),
       onError: sandboxOnError,
     });
   const buildSprites = (): Sandbox =>
@@ -669,6 +687,51 @@ export function buildApp(
     ? createBrowserSessionStore({ sessions: artifactMap<StoredBrowserSession>("browser_sessions"), key: credentialKey })
     : undefined;
   const connectorTokens = withOperatorTokenFallback(credentialStore, config.egressServiceHosts ?? [], secretSource);
+
+  // Drive folder mounts. Every Drive call below runs as one person: the token
+  // is resolved per principal, never shared between members of a scope.
+  const driveMountStore = createMountStore(artifactMap<DriveMount>("drive_mounts"));
+  const driveListingCache = createListingCache();
+  const GOOGLE_API_HOST = "www.googleapis.com";
+  const driveTokenFor = async (principalId: string): Promise<string | null> =>
+    (await connectorTokens.connectorAccessToken(GOOGLE_API_HOST, principalId, "personal")) ??
+    (await connectorTokens.connectorAccessToken(GOOGLE_API_HOST, principalId));
+  const browseDriveFolders = async (accessToken: string, parentId: string, search?: string) => {
+    // Search ignores the parent: someone searching wants the folder wherever
+    // it lives, not "inside whatever I happen to be looking at".
+    const q = search
+      ? `mimeType='${FOLDER_MIME}' and name contains '${search.replace(/['\\]/g, "\\$&")}' and trashed = false`
+      : `mimeType='${FOLDER_MIME}' and '${parentId}' in parents and trashed = false`;
+    const params = new URLSearchParams({
+      q,
+      fields: "files(id,name)",
+      pageSize: "100",
+      orderBy: "name",
+      corpora: "allDrives",
+      includeItemsFromAllDrives: "true",
+      supportsAllDrives: "true",
+    });
+    const res = await fetch(`https://${GOOGLE_API_HOST}/drive/v3/files?${params}`, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok) throw new DriveListError(res.status, `drive folder browse failed (${res.status})`);
+    const body = (await res.json()) as { files?: Array<{ id?: string; name?: string }> };
+    return (body.files ?? [])
+      .filter((f): f is { id: string; name: string } => Boolean(f.id && f.name))
+      .map((f) => ({ id: f.id, name: f.name }));
+  };
+
+  /** Resolve one folder by id, for a pasted link. Returns null when unreachable. */
+  const lookupDriveFolder = async (accessToken: string, folderId: string) => {
+    const params = new URLSearchParams({ fields: "id,name,mimeType", supportsAllDrives: "true" });
+    const res = await fetch(`https://${GOOGLE_API_HOST}/drive/v3/files/${encodeURIComponent(folderId)}?${params}`, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok) return null;
+    const f = (await res.json()) as { id?: string; name?: string; mimeType?: string };
+    if (!f.id || !f.name || f.mimeType !== FOLDER_MIME) return null;
+    return { id: f.id, name: f.name };
+  };
   const consentLinks: ConsentLinkStore = createConsentLinkStore(artifactMap<ConsentLinkRecord>("consent_links"));
   const secretDrops: SecretDropStore = createSecretDropStore(artifactMap<SecretDropRecord>("secret_drops"));
   const modelGateway = createModelGateway();
@@ -840,7 +903,9 @@ export function buildApp(
           advisoryLock,
           store: artifactMap<StoredDeployBody>("aws_deploy_bodies"),
         })
-      : createDockerDeployProvider();
+      : createDockerDeployProvider({
+          ...(config.coreContainer ? { coreContainer: config.coreContainer } : {}),
+        });
   if (config.deployProvider === "aws" && !config.awsDeploy.dataBucket && !config.awsSandbox.s3Bucket) {
     console.warn(
       "[wiring] aws deploy: no data bucket resolved (AWS_DEPLOY_DATA_BUCKET unset, sandbox is not aws) — deployed apps have NO durable /data",
@@ -941,6 +1006,23 @@ export function buildApp(
     });
   }
   const orchestratorDeps: OrchestratorDeps = {
+    attachedFolders: async ({ scopeIds, principalId, nowMs }) =>
+      resolveAttachedFolders(
+        {
+          mounts: driveMountStore,
+          cache: driveListingCache,
+          listFolder,
+          tokenFor: driveTokenFor,
+          onError: (e) =>
+            errors?.record({
+              category: "drive_mounts",
+              code: e.code,
+              message: e.message,
+              scopeLabel: (e.scopeLabel ?? "unknown") as ScopeId,
+            }),
+        },
+        { scopeIds, principalId, nowMs },
+      ),
     identity,
     resolution,
     config: configStore,
@@ -1423,6 +1505,14 @@ export function buildApp(
   };
 
   return {
+    driveMounts: {
+      store: driveMountStore,
+      cache: driveListingCache,
+      canUseContext: (principalId: string, scopeId: ScopeId) => app.canUseContext(principalId, scopeId),
+      tokenFor: driveTokenFor,
+      browseFolders: browseDriveFolders,
+      lookupFolder: lookupDriveFolder,
+    },
     app,
     deploymentLayer,
     deploymentLayerStore,

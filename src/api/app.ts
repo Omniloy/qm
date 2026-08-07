@@ -16,6 +16,7 @@ export function createApp(deps: AppDeps): App {
   const helpers = createAppHelpers(deps, app);
   const ambient = createAmbientHelpers(deps, app);
   const methods: App = {
+    canUseContext: helpers.canUseContext,
     ...createTurnMethods(deps, helpers, ambient),
     ...createSessionMethods(deps, helpers),
     ...createMessagingMethods(deps, helpers, ambient),

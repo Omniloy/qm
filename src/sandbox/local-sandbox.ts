@@ -41,6 +41,15 @@ export type { DockerExec };
 export interface LocalSandboxOptions {
   image?: string;
   dockerBin?: string;
+  /**
+   * Container name or id core itself runs as, when core is containerised rather
+   * than running on the Docker host.
+   *
+   * The agent port is published to the host's loopback, which only core-on-the-
+   * host can dial. Set this and core instead joins each sandbox's own network
+   * and reaches the daemon at the container's name — no host port involved.
+   */
+  coreContainer?: string;
   cpus?: number;
   memoryMb?: number;
   defaultTimeoutSec?: number;
@@ -158,6 +167,30 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
     return port;
   }
 
+  // Core on the host dials the published loopback port; containerised core is
+  // on the sandbox's own network and dials the container directly.
+  async function daemonOrigin(name: string): Promise<string> {
+    if (opts.coreContainer) return `http://${name}:${AGENT_PORT}`;
+    return `http://127.0.0.1:${await resolvePort(name)}`;
+  }
+
+  async function attachCore(net: string): Promise<void> {
+    if (!opts.coreContainer) return;
+    const r = await dexec(["network", "connect", net, opts.coreContainer]);
+    if (r.code !== 0 && !/already exists|already connected/i.test(r.stderr)) {
+      throw new Error(`docker network connect ${net} ${opts.coreContainer} failed: ${r.stderr.trim()}`);
+    }
+  }
+
+  async function detachCore(net: string): Promise<void> {
+    if (!opts.coreContainer) return;
+    // Without this the network still has an endpoint and `network rm` fails,
+    // leaking a network per sandbox.
+    await dexec(["network", "disconnect", "-f", net, opts.coreContainer]).catch(
+      swallowAs("local-sandbox: core network disconnect", undefined),
+    );
+  }
+
   async function daemon(
     name: string,
     path: string,
@@ -165,9 +198,9 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
     timeoutMs?: number,
     signal?: AbortSignal,
   ): Promise<{ status: number; text: string }> {
-    const port = await resolvePort(name);
+    const origin = await daemonOrigin(name);
     const signals = [AbortSignal.timeout(timeoutMs ?? 30_000), ...(signal ? [signal] : [])];
-    const res = await fetchImpl(`http://127.0.0.1:${port}${path}`, {
+    const res = await fetchImpl(`${origin}${path}`, {
       method: body === undefined ? "GET" : "POST",
       ...(body === undefined ? {} : { body: JSON.stringify(body), headers: { "content-type": "application/json" } }),
       signal: AbortSignal.any(signals),
@@ -195,6 +228,9 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
     portByName.delete(name);
     const r = await dexec(["start", name]);
     if (r.code !== 0) throw new Error(`docker start ${name} failed: ${r.stderr.trim()}`);
+    // Core may have restarted since this sandbox was built, dropping its
+    // endpoint on the sandbox network.
+    await attachCore(localNetworkName(name));
     await waitDaemon(name);
   }
 
@@ -263,6 +299,7 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
     const r = await dexec(args, 120_000);
     if (r.code !== 0) throw new Error(`docker run ${name} failed: ${r.stderr.trim()}`);
     portByName.delete(name);
+    await attachCore(net);
     await waitDaemon(name);
   }
 
@@ -456,6 +493,7 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
           for (const [k, name] of scratchByKey) if (name === handle.id) scratchByKey.delete(k);
           if (tdOpts?.destroy) await dexec(["rm", "-f", handle.id]);
           else await dexec(["rm", "-f", handle.id]).catch(swallowAs("local-sandbox: scratch rm", undefined));
+          await detachCore(localNetworkName(handle.id));
           await dexec(["network", "rm", localNetworkName(handle.id)]).catch(
             swallowAs("local-sandbox: scratch network rm", undefined),
           );
@@ -467,6 +505,7 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
 
         if (tdOpts?.destroy) {
           await dexec(["rm", "-f", handle.id]).catch(swallowAs("local-sandbox: destroy rm", undefined));
+          await detachCore(localNetworkName(handle.id));
           await dexec(["network", "rm", localNetworkName(handle.id)]).catch(
             swallowAs("local-sandbox: destroy network rm", undefined),
           );

@@ -4496,7 +4496,8 @@ a.chat-row-open {
   cursor: pointer;
 }
 .file-list,
-.deploy-list {
+.deploy-list,
+.drive-mount-list {
   width: min(960px, 100%);
   margin-inline: auto;
 }
@@ -6858,4 +6859,206 @@ h3.ambient-field-label {
 }
 .qm-tooltip.visible {
   opacity: 1;
+}
+
+.drive-band {
+  width: min(960px, 100%);
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.drive-band-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.drive-band-head .spacer {
+  flex: 1;
+}
+/* A flex row, not a grid: the name absorbs every spare pixel and the action
+   cluster keeps its intrinsic width, so adding an action cannot squeeze the
+   badges into wrapping. The previous fixed five-column grid grew this row from
+   36px to 100px tall once the card fell below ~600px. */
+.drive-mount-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.drive-row-actions {
+  flex: 0 0 auto;
+}
+/* Turned off: still listed and still actionable, just visibly out of play. */
+.drive-mount-row.off .drive-mount-name strong {
+  color: var(--muted-foreground);
+}
+.drive-mount-name {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
+}
+.drive-mount-name strong,
+.drive-mount-name span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.drive-mount-name span {
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+}
+.drive-mount-row.inert {
+  opacity: 0.55;
+}
+
+/* dialogs -------------------------------------------------------------- */
+.drive-picker {
+  width: min(560px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: min(76vh, 640px);
+  border-color: var(--border);
+}
+.drive-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.drive-picker-head h2 {
+  margin: 0;
+  font-size: 16px;
+}
+.drive-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.drive-field > span {
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+}
+.drive-field input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--input, var(--background));
+  color: var(--foreground);
+  font: inherit;
+  font-size: 14px;
+}
+.drive-field input::placeholder {
+  color: var(--muted-foreground);
+}
+.drive-field input:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--foreground) 35%, var(--border));
+}
+.drive-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.drive-back {
+  align-self: flex-start;
+}
+.drive-results {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  min-height: 96px;
+}
+.drive-result-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.drive-result-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.drive-mode {
+  display: flex;
+  gap: 8px;
+}
+.drive-mode .active {
+  border-color: var(--primary, currentColor);
+  font-weight: 600;
+}
+.drive-note {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.drive-note.warning {
+  color: var(--destructive, #c00);
+}
+.drive-picker-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.drive-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* .session-menu is absolutely positioned to pin itself to the right edge of a
+   position:relative session row. A list row places the trigger in its action
+   cluster instead, so the menu returns to normal flow — and becomes the
+   positioned ancestor its own popover anchors against. Without this the
+   trigger lands wherever the nearest positioned ancestor happens to be, which
+   on the Files page was several hundred pixels outside the card. */
+.row-menu {
+  position: relative;
+  top: auto;
+  right: auto;
+  margin-top: 0;
+  flex: 0 0 auto;
+}
+/* The sessions sidebar hides .session-menu-btn until its row is hovered, which
+   suits a dense list you are scanning. On a list row the menu is the only way
+   to reach most of the row's actions, and a control nobody can see is a
+   control nobody finds — the exact problem this row was reworked to fix. */
+.row-menu .session-menu-btn {
+  opacity: 1;
+}
+.context-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.context-choice {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.context-choice.active {
+  border-color: var(--primary);
+}
+.context-choice span:first-of-type {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
