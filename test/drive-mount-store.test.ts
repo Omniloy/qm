@@ -132,3 +132,68 @@ test("slugFromFolderName produces names the store accepts", () => {
     if (slug) assert.equal(mountNameError(slug), null, `slug ${JSON.stringify(slug)} must be storable`);
   }
 });
+
+test("turning a folder off hides it from the agent but not from the person", async () => {
+  // The entire meaning of "off" lives in this split. forScopes feeds the
+  // prompt block, so a disabled mount must be invisible there; forScope feeds
+  // the Files page, where it has to stay visible or nobody could turn it on.
+  const s = store();
+  const m = await s.attach(attach(), 1_000);
+
+  const off = await s.setEnabled(m.id, false, 2_000);
+  assert.equal(off?.enabled, false);
+  assert.equal(off?.updatedAt, 2_000);
+
+  assert.deepEqual(await s.forScopes(["project:acme"]), [], "the agent must not see an off folder");
+  assert.deepEqual(await s.forScope("project:acme"), [], "and it is hidden by default everywhere else");
+  assert.equal(
+    (await s.forScope("project:acme", { includeDisabled: true })).length,
+    1,
+    "but the page that manages it can ask for it",
+  );
+});
+
+test("a folder that is off can be read back, which is how it gets turned on", async () => {
+  const s = store();
+  const m = await s.attach(attach(), 1_000);
+  await s.setEnabled(m.id, false, 2_000);
+
+  assert.equal(await s.get(m.id), null, "the default read still refuses it");
+  assert.equal((await s.get(m.id, { includeDisabled: true }))?.id, m.id);
+
+  const on = await s.setEnabled(m.id, true, 3_000);
+  assert.equal(on?.enabled, true);
+  assert.equal((await s.forScopes(["project:acme"])).length, 1, "and the agent sees it again");
+});
+
+test("turning a folder off does not release its name", async () => {
+  // Off is not removed. If the name read as free, re-attaching would silently
+  // repoint the handle the off folder still owns.
+  const s = store();
+  const m = await s.attach(attach(), 1_000);
+  await s.setEnabled(m.id, false, 2_000);
+
+  await assert.rejects(() => s.attach(attach({ externalId: "a-different-folder" }), 3_000), MountNameInUseError);
+  assert.equal(
+    (await s.get(m.id, { includeDisabled: true }))?.externalId,
+    "folder-1",
+    "the off folder still points where it did",
+  );
+});
+
+test("re-attaching the same folder under an off name turns it back on", async () => {
+  // Attaching is an explicit act of enabling, so it is allowed to revive the
+  // row rather than failing with a name conflict against itself.
+  const s = store();
+  const m = await s.attach(attach(), 1_000);
+  await s.setEnabled(m.id, false, 2_000);
+
+  const again = await s.attach(attach(), 3_000);
+  assert.equal(again.id, m.id);
+  assert.equal(again.enabled, true);
+  assert.equal((await s.forScopes(["project:acme"])).length, 1);
+});
+
+test("setEnabled on a mount that does not exist reports it rather than creating one", async () => {
+  assert.equal(await store().setEnabled("no-such-mount", false, 1_000), null);
+});

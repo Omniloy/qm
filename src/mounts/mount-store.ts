@@ -35,11 +35,32 @@ export interface AttachInput {
   createdBy: string;
 }
 
+export interface MountReadOptions {
+  /**
+   * Include folders someone has turned off.
+   *
+   * Only the UI and the routes that manage mounts may ask for this: a person
+   * has to see an off folder to turn it back on. Note that `forScopes` takes
+   * no options at all — see below.
+   */
+  includeDisabled?: boolean;
+}
+
 export interface MountStore {
-  forScope(scopeId: ScopeId): Promise<DriveMount[]>;
+  forScope(scopeId: ScopeId, opts?: MountReadOptions): Promise<DriveMount[]>;
+  /**
+   * The agent's view, and the reason `enabled` exists.
+   *
+   * This feeds resolveAttachedFolders, which builds the `## Attached folders`
+   * prompt block. It deliberately accepts no options: "off" means the agent
+   * cannot see the folder, and a caller should not be able to ask for
+   * otherwise even by mistake.
+   */
   forScopes(scopeIds: readonly ScopeId[]): Promise<DriveMount[]>;
-  get(id: string): Promise<DriveMount | null>;
+  get(id: string, opts?: MountReadOptions): Promise<DriveMount | null>;
   attach(input: AttachInput, nowMs: number): Promise<DriveMount>;
+  /** Returns the updated mount, or null when there is no such mount. */
+  setEnabled(id: string, enabled: boolean, nowMs: number): Promise<DriveMount | null>;
   detach(id: string): Promise<void>;
 }
 
@@ -89,9 +110,10 @@ export class MountNameInUseError extends Error {
 export function createMountStore(map: DurableMap<DriveMount>): MountStore {
   const visible = (m: DriveMount): boolean => m.enabled;
 
-  async function forScope(scopeId: ScopeId): Promise<DriveMount[]> {
+  async function forScope(scopeId: ScopeId, opts?: MountReadOptions): Promise<DriveMount[]> {
     const all = await map.all();
-    return all.filter((m) => visible(m) && m.scopeId === scopeId).sort((a, b) => a.name.localeCompare(b.name));
+    const wanted = (m: DriveMount): boolean => Boolean(opts?.includeDisabled) || visible(m);
+    return all.filter((m) => wanted(m) && m.scopeId === scopeId).sort((a, b) => a.name.localeCompare(b.name));
   }
 
   return {
@@ -106,9 +128,10 @@ export function createMountStore(map: DurableMap<DriveMount>): MountStore {
         .sort((a, b) => a.scopeId.localeCompare(b.scopeId) || a.name.localeCompare(b.name));
     },
 
-    async get(id) {
+    async get(id, opts) {
       const m = await map.get(id);
-      return m && visible(m) ? m : null;
+      if (!m) return null;
+      return Boolean(opts?.includeDisabled) || visible(m) ? m : null;
     },
 
     async attach(input, nowMs) {
@@ -120,7 +143,10 @@ export function createMountStore(map: DurableMap<DriveMount>): MountStore {
 
       // Re-attaching a name that currently points at a different folder would
       // silently repoint every reference to it, so refuse rather than surprise.
-      if (prior?.enabled && prior.externalId !== input.externalId) {
+      // Deliberately not conditioned on `enabled`: turning a folder off does
+      // not release its name, and treating it as free would let a re-attach
+      // quietly hijack the handle the off folder still owns.
+      if (prior && prior.externalId !== input.externalId) {
         throw new MountNameInUseError(input.name);
       }
 
@@ -137,6 +163,14 @@ export function createMountStore(map: DurableMap<DriveMount>): MountStore {
         updatedAt: nowMs,
         enabled: true,
       };
+      await map.put(id, next);
+      return next;
+    },
+
+    async setEnabled(id, enabled, nowMs) {
+      const prior = await map.get(id);
+      if (!prior) return null;
+      const next: DriveMount = { ...prior, enabled, updatedAt: nowMs };
       await map.put(id, next);
       return next;
     },

@@ -180,3 +180,30 @@ test("mounts across several scopes are gathered together", async () => {
   assert.match(out.block, /### one/);
   assert.match(out.block, /### two/);
 });
+
+test("a folder that is off never reaches the agent's prompt", async () => {
+  // The end of the chain the store test starts: off has to mean the agent
+  // cannot see the folder, and cannot spend a Drive call discovering that.
+  const { deps, store, calls } = await harness({}, [
+    { name: "specs", externalId: "folder-1" },
+    { name: "archive", externalId: "folder-2" },
+  ]);
+  const archive = (await store.forScope(SCOPE)).find((m) => m.name === "archive")!;
+  await store.setEnabled(archive.id, false, NOW);
+
+  const out = await run(deps);
+  assert.match(out.block, /### specs/);
+  assert.doesNotMatch(out.block, /### archive/, "an off folder must not appear in the block");
+  assert.deepEqual(calls, ["folder-1"], "and must not cost a Drive call");
+  assert.equal(out.listings.length, 1);
+});
+
+test("turning every folder off is the same as having none", async () => {
+  const { deps, store, calls } = await harness();
+  const only = (await store.forScope(SCOPE))[0]!;
+  await store.setEnabled(only.id, false, NOW);
+
+  const out = await run(deps);
+  assert.equal(out.block, "", "no section at all, rather than an empty heading");
+  assert.deepEqual(calls, []);
+});

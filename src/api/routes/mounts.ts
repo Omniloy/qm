@@ -39,7 +39,7 @@ async function listMounts(ctx: ApiCtx): Promise<void> {
   // Without merging it here the UI can never show when *this* caller last saw
   // the folder, and its refresh control has nothing to change.
   const now = Date.now();
-  const rows = (await mounts.store.forScope(scopeId)).map((m) => {
+  const rows = (await mounts.store.forScope(scopeId, { includeDisabled: true })).map((m) => {
     const cached = mounts.cache.get(principalId, m.id, now);
     return cached ? { ...m, listedAt: cached.listedAt, itemCount: cached.listing.entries.length } : m;
   });
@@ -117,6 +117,56 @@ async function detachMount(ctx: ApiCtx): Promise<void> {
   return sendJson(res, 200, { ok: true });
 }
 
+/**
+ * Turn a folder off, or back on.
+ *
+ * Off is a property of the mount, which is shared, so it applies to everyone
+ * in the scope rather than muting the folder for one person. That matches
+ * where the flag already lives and needs no per-principal storage; a
+ * per-person mute would be a different feature.
+ */
+async function patchMount(ctx: ApiCtx): Promise<void> {
+  const { res, deps, params } = ctx;
+  const mounts = deps.driveMounts;
+  if (!mounts) return sendJson(res, 503, { error: "unavailable", message: "Drive folders are not configured" });
+
+  const principalId = callerOf(ctx);
+  if (!principalId) return sendJson(res, 403, { error: "forbidden", message: "an identified caller is required" });
+
+  const body = (ctx.body ?? {}) as { enabled?: unknown };
+  if (typeof body.enabled !== "boolean") {
+    return sendJson(res, 400, { error: "bad_request", message: "enabled must be a boolean" });
+  }
+
+  // Turning a folder back on means reading it while it is off, so this is one
+  // of the few places allowed to see past the enabled filter.
+  const mount = await mounts.store.get(params.id!, { includeDisabled: true });
+  if (!mount) return sendJson(res, 404, { error: "not_found" });
+
+  const decision = await decideMountMutation({
+    triggered: Boolean(ctx.capability?.triggered),
+    principalId,
+    scopeId: mount.scopeId,
+    canUseContext: mounts.canUseContext,
+  });
+  if (!decision.ok) return refuse(ctx, decision);
+
+  const next = await mounts.store.setEnabled(mount.id, body.enabled, Date.now());
+  if (!next) return sendJson(res, 404, { error: "not_found" });
+
+  // Every viewer's copy, not just this caller's: availability changed for the
+  // whole scope, and a stale listing would keep describing a folder the agent
+  // can no longer reach.
+  mounts.cache.invalidateMount(mount.id);
+  audit(deps, {
+    principalId,
+    action: body.enabled ? "drive.mount.enabled" : "drive.mount.disabled",
+    resource: `${mount.name} (${mount.externalId})`,
+    scopeLabel: mount.scopeId,
+  });
+  return sendJson(res, 200, { mount: next });
+}
+
 async function refreshMount(ctx: ApiCtx): Promise<void> {
   const { res, deps, params } = ctx;
   const mounts = deps.driveMounts;
@@ -188,5 +238,6 @@ export const mountRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/mounts/browse", auth: "source", handle: browseFolders },
   { method: "POST", path: "/v1/mounts", auth: "either", handle: attachMount },
   { method: "POST", path: "/v1/mounts/:id/refresh", auth: "either", handle: refreshMount },
+  { method: "PATCH", path: "/v1/mounts/:id", auth: "either", handle: patchMount },
   { method: "DELETE", path: "/v1/mounts/:id", auth: "either", handle: detachMount },
 ];

@@ -1099,11 +1099,11 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
     if (path === "/api/mounts" || path.startsWith("/api/mounts/")) {
       // Only the verbs the mount API actually has. Forwarding whatever arrived
       // would let this proxy reach core routes it was never meant to.
-      if (method !== "GET" && method !== "POST" && method !== "DELETE") {
+      if (method !== "GET" && method !== "POST" && method !== "DELETE" && method !== "PATCH") {
         return json(res, 405, { error: "method_not_allowed" });
       }
       const corePath = `/v1/${path.slice("/api/".length)}${url.search}`;
-      const raw = method === "POST" ? await readBody(req) : "";
+      const raw = method === "POST" || method === "PATCH" ? await readBody(req) : "";
       const r = await coreFetch(method, corePath, raw);
       return relay(res, r);
     }

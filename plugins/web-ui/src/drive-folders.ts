@@ -117,7 +117,10 @@ async function refreshAll(rerender: () => void): Promise<void> {
   busy = true;
   rerender();
   try {
-    await Promise.all(mounts.map((m) => api(`/api/mounts/${encodeURIComponent(m.id)}/refresh`, { method: "POST" })));
+    // Folders that are off are not listed for anyone, so re-listing them
+    // would spend Drive calls producing nothing.
+    const live = mounts.filter((m) => m.enabled !== false);
+    await Promise.all(live.map((m) => api(`/api/mounts/${encodeURIComponent(m.id)}/refresh`, { method: "POST" })));
     await loadDriveMounts(loadedScope, rerender);
   } catch (e) {
     notice = errMessage(e);
@@ -148,9 +151,32 @@ function onFolderAction(id: string, m: MountRow, rerender: () => void): void {
     case "refresh":
       void refreshOne(m.id, rerender);
       return;
+    case "disable":
+      void setMountEnabled(m, false, rerender);
+      return;
+    case "enable":
+      void setMountEnabled(m, true, rerender);
+      return;
     case "remove":
       askDetach(m, rerender);
       return;
+  }
+}
+
+async function setMountEnabled(m: MountRow, enabled: boolean, rerender: () => void): Promise<void> {
+  busy = true;
+  rerender();
+  try {
+    await api(`/api/mounts/${encodeURIComponent(m.id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ enabled }),
+    });
+    await loadDriveMounts(loadedScope, rerender);
+  } catch (e) {
+    notice = errMessage(e);
+  } finally {
+    busy = false;
+    rerender();
   }
 }
 
@@ -385,9 +411,9 @@ export function drivePickerTpl(scopeId: string, rerender: () => void): TemplateR
                     type="button"
                     ?disabled=${i === p.trail.length - 1}
                     @click=${() => {
-                    p.trail = p.trail.slice(0, i + 1);
-                    void browseInto(f, rerender, false);
-                  }}
+                      p.trail = p.trail.slice(0, i + 1);
+                      void browseInto(f, rerender, false);
+                    }}
                   >
                     ${f.name}
                   </button>`,
