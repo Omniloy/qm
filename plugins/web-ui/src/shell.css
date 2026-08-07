@@ -7038,6 +7038,50 @@ h3.ambient-field-label {
 .row-menu .session-menu-btn {
   opacity: 1;
 }
+/* browser pane ---------------------------------------------------------- */
+/* Sits in the chat's bottom dock above the composer, so it is part of the
+   conversation rather than app chrome. Absent entirely when no browser is
+   open — there is no empty state to style. */
+.browser-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--background);
+}
+/* A person holding the wheel is the state worth noticing across the room. */
+.browser-pane.human {
+  border-color: var(--primary);
+}
+.browser-pane-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.browser-pane-head .spacer {
+  flex: 1;
+}
+.browser-pane-head strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.browser-pane-view {
+  width: 100%;
+  height: min(52vh, 520px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--secondary);
+}
+/* Collapsed keeps the header — the row still reports state, and the session
+   keeps running behind it. */
+.browser-pane.collapsed {
+  gap: 0;
+}
+
 .context-choices {
   display: flex;
   flex-direction: column;

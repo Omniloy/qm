@@ -99,6 +99,7 @@ import {
 import { backgroundLabel, clearWorking, conversationBackground, isAbandonedNewChat, markWorking } from "./session-list";
 import { liveTurnThreadRef } from "./working-dot";
 import { newChatDraftKey, saveDraft, storedDraft } from "./drafts";
+import { browserPaneTpl, resetBrowserPane, startBrowserPanePolling, stopBrowserPanePolling } from "./browser-pane";
 import { createForkOriginController, forkOriginView } from "./fork-origin";
 
 installMarkdownSanitizer();
@@ -726,6 +727,8 @@ export function createChatSurface(
   function mountLoadingPane(): void {
     const container = ctx.container();
     if (!container || !ctx.visible()) return;
+    // Switching conversations: whatever the last one showed is not this one's.
+    stopBrowserPanePolling();
     const host = document.createElement("div");
     host.className = "custom-chat";
     render(
@@ -767,6 +770,7 @@ export function createChatSurface(
     syncLocation();
 
     resetBackgroundPanel();
+    resetBrowserPane();
     const host = document.createElement("div");
     host.className = "custom-chat readonly-chat";
     const draw = () =>
@@ -1037,12 +1041,14 @@ export function createChatSurface(
                 </section>`
           }
           <div class="chat-bottom-dock">
-            ${backgroundActivityStrip()} ${liveWorkDock(agent)} ${ctx.composer.composerForm(agent)}
+            ${browserPaneTpl(chatState.threadRef, () => drawActiveChat())} ${backgroundActivityStrip()}
+            ${liveWorkDock(agent)} ${ctx.composer.composerForm(agent)}
           </div>
         </div>
       `,
       chatState.host,
     );
+    startBrowserPanePolling(() => drawActiveChat(), agent.state.isStreaming);
     decorateStreamingTail();
     ctx.composer.resizeComposer();
     scrollTranscript(opts.forceScroll);
