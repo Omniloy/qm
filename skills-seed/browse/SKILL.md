@@ -34,12 +34,19 @@ person's own keychain key overrides the org one. Keys you may see today:
   chosen key is rejected (401/403 on browser create) — a dead key means that provider is
   absent, not that browsing is.
 - None set → nobody has given you a browser to drive. Do not hunt for keys, and do not treat
-  it as a dead end: in a DM, tell the person they can add one themselves in **Keychain →
-  Add credential**, with service `anchor`, env key `ANCHOR_API_KEY`, and the key from
-  anchorbrowser.io — the free plan covers roughly eight tasks a day. They paste it into a
-  one-time page; it never passes through the conversation. Then say you will pick it up on
-  the next message. In a channel or group, just say browsing is not set up here — a personal
-  key must never be minted into a shared room.
+  it as a dead end: in a DM, tell the person they can add their own in **Keychain → Add
+  credential**, which pastes each secret into a one-time page so it never passes through the
+  conversation. Ask for **both**, in one message, and say what each is for — browsing needs a
+  browser _and_ a model to drive it, and someone who adds only the first will come back to
+  the same wall:
+  - service `anchor`, env key `ANCHOR_API_KEY` — the browser itself, from anchorbrowser.io.
+    Their free plan covers roughly eight tasks a day.
+  - service `anthropic`, env key `BROWSE_LAB_ANTHROPIC_KEY` — the model that decides what to
+    click. (Or `BROWSE_LAB_OPENAI_KEY` / `BROWSE_LAB_OPENROUTER_KEY` if they would rather use
+    those; core sets `BROWSE_LAB_MODEL_PROVIDER` to match.)
+
+  Then say you will pick them up on the next message. In a channel or group, just say
+  browsing is not set up here — a personal key must never be minted into a shared room.
 
 Read the provider doc BEFORE creating anything — it owns every provider-shaped step:
 creating and deleting the browser, the person's profile, routing a sign-in wall, and giving
