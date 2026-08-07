@@ -84,6 +84,7 @@ const server = createServer(built.app, {
   advisoryLock: built.advisoryLock,
   ...(built.processes ? { processes: built.processes } : {}),
   ...(built.browserSessionStore ? { browserSessionStore: built.browserSessionStore } : {}),
+  ...(built.liveBrowserSessions ? { liveBrowserSessions: built.liveBrowserSessions } : {}),
   directory: built.directory,
   ...(built.ambientJudgments ? { ambientJudgments: built.ambientJudgments } : {}),
   ...(built.ackEmojiPicks ? { ackEmojiPicks: built.ackEmojiPicks } : {}),
