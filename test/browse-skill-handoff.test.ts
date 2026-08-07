@@ -53,3 +53,18 @@ test("every runner invocation is told where to check for the wheel", () => {
 test("cleanup releases the pane, not just the browser", () => {
   assert.match(SKILL, /DELETE "\$AGENT_API_URL\/v1\/browser-sessions/);
 });
+
+test("a missing key sends the person to Keychain, not into a search", () => {
+  // The credential UI already exists — Add credential with a service, an env
+  // key and a one-time page. The skill's job is to name it, not to invent a
+  // second way in.
+  assert.match(SKILL, /Keychain \u2192\s*\n?\s*Add credential/);
+  assert.match(SKILL, /ANCHOR_API_KEY/);
+  assert.match(SKILL, /never passes through the conversation/);
+});
+
+test("a personal key is never offered in a shared room", () => {
+  const missing = /None set \u2192[\s\S]{0,600}/.exec(SKILL)?.[0] ?? "";
+  assert.match(missing, /channel or group/);
+  assert.match(missing, /never be minted into a shared room/);
+});

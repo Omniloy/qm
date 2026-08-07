@@ -33,8 +33,13 @@ person's own keychain key overrides the org one. Keys you may see today:
 - Several set → the first in the order above, unless the person asks for another or the
   chosen key is rejected (401/403 on browser create) — a dead key means that provider is
   absent, not that browsing is.
-- None set → org-key browsing is off here (externals in the room, or the admin saved no
-  provider key). Say so rather than hunting for keys.
+- None set → nobody has given you a browser to drive. Do not hunt for keys, and do not treat
+  it as a dead end: in a DM, tell the person they can add one themselves in **Keychain →
+  Add credential**, with service `anchor`, env key `ANCHOR_API_KEY`, and the key from
+  anchorbrowser.io — the free plan covers roughly eight tasks a day. They paste it into a
+  one-time page; it never passes through the conversation. Then say you will pick it up on
+  the next message. In a channel or group, just say browsing is not set up here — a personal
+  key must never be minted into a shared room.
 
 Read the provider doc BEFORE creating anything — it owns every provider-shaped step:
 creating and deleting the browser, the person's profile, routing a sign-in wall, and giving
