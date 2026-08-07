@@ -7086,8 +7086,15 @@ h3.ambient-field-label {
 }
 /* Collapsed keeps the header — the row still reports state, and the session
    keeps running behind it. */
-.browser-pane.collapsed {
+.browser-pane.collapsed,
+.browser-pane.ended {
   gap: 0;
+}
+/* A browser that has gone: quieter than a live one, still present enough to
+   answer "where did it go?". */
+.browser-pane.ended {
+  border-style: dashed;
+  opacity: 0.8;
 }
 
 .context-choices {

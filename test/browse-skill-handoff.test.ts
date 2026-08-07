@@ -104,3 +104,15 @@ test("the runner trusts screenshot bytes, not the label on them", () => {
   assert.match(RAW, /\\xff\\xd8\\xff/, "sniffs the JPEG magic bytes");
   assert.match(RAW, /\\x89PNG/, "and PNG's");
 });
+
+test("cleanup is armed when the browser is created, not when the task ends", () => {
+  // A crashed run never reaches the end, and the browser then bills until its
+  // idle timeout with nobody watching. Two were found alive after a failure.
+  assert.match(RAW, /trap '[^']*DELETE[^']*' EXIT/);
+});
+
+test("a replacement browser is explained rather than silently swapped", () => {
+  // The pane was showing the browser that died. Watching it vanish and come
+  // back as a different window, unexplained, reads as the feature breaking.
+  assert.match(SKILL, /start a fresh browser, say so/);
+});

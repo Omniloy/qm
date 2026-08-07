@@ -41,6 +41,19 @@ export interface PaneStatus {
   human: boolean;
 }
 
+/**
+ * What to show once a browser is gone.
+ *
+ * Sessions end for three different reasons and only one of them is boring.
+ * Vanishing silently makes a crash look like the pane broke — which is exactly
+ * how it read the first time someone watched one die mid-task.
+ */
+export function endedNote(reason: "ended" | "expired" | "lost"): string {
+  if (reason === "expired") return "Session timed out. Your sign-ins were saved.";
+  if (reason === "lost") return "That browser stopped. The agent will say if it opened another.";
+  return "Browser closed. Your sign-ins were saved.";
+}
+
 export function paneStatus(session: LiveSession): PaneStatus {
   return session.controlMode === "human_control"
     ? { label: "You have control", human: true }

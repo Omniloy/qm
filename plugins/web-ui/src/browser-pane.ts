@@ -21,6 +21,12 @@ import { paneVisible, paneStatus, paneActions, primaryAction, timeLeft, type Liv
  */
 
 let session: LiveSession | null = null;
+/**
+ * The last browser this conversation showed, kept after it goes so the pane can
+ * say what happened instead of disappearing. Cleared when a new one opens or
+ * the person dismisses it.
+ */
+let ended: { threadRef: string; note: string } | null = null;
 let collapsed = false;
 let busy = false;
 let notice = "";
@@ -31,6 +37,7 @@ let timer: ReturnType<typeof setInterval> | null = null;
 export function resetBrowserPane(): void {
   stopBrowserPanePolling();
   session = null;
+  ended = null;
   collapsed = false;
   busy = false;
   notice = "";
@@ -84,8 +91,13 @@ export async function refreshBrowserPane(rerender: () => void): Promise<void> {
     const r = await api<LiveResponse>("/api/browser/live");
     const next = r.session ?? null;
     const changed = next?.sessionId !== session?.sessionId || next?.controlMode !== session?.controlMode;
+    // A browser that was here and is not any more gets a headstone rather than
+    // a silent removal — a crashed run should not look like a broken pane.
+    if (session && !next) {
+      ended = { threadRef: session.threadRef, note: endedNote(session.expiresAt <= Date.now() ? "expired" : "lost") };
+    }
+    if (next) ended = null;
     session = next;
-    // A browser that appears, or one that changes hands, is worth looking at.
     if (next && changed) collapsed = false;
     if (changed) rerender();
   } catch {
@@ -114,6 +126,7 @@ async function act(id: string, rerender: () => void): Promise<void> {
   try {
     if (id === "end") {
       await api(`/api/browser/session/${encodeURIComponent(s.sessionId)}`, { method: "DELETE" });
+      ended = { threadRef: s.threadRef, note: endedNote("ended") };
       session = null;
     } else {
       const mode = id === "take" ? "human_control" : "agent";
@@ -135,7 +148,27 @@ async function act(id: string, rerender: () => void): Promise<void> {
 
 export function browserPaneTpl(threadRef: string | null, rerender: () => void): TemplateResult | typeof nothing {
   const now = Date.now();
-  if (!paneVisible(session, threadRef, now)) return nothing;
+  if (!paneVisible(session, threadRef, now)) {
+    if (!ended || !threadRef || ended.threadRef !== threadRef) return nothing;
+    return html`<section class="browser-pane ended">
+      <div class="browser-pane-head">
+        <span class="tool-icon">${icon(Globe, 15)}</span>
+        <strong>Your browser</strong>
+        <span class="kc-state">${ended.note}</span>
+        <span class="spacer"></span>
+        <button
+          class="btn compact"
+          type="button"
+          @click=${() => {
+            ended = null;
+            rerender();
+          }}
+        >
+          Dismiss
+        </button>
+      </div>
+    </section>`;
+  }
   const s = session!;
   const status = paneStatus(s);
   const primary = primaryAction(s);

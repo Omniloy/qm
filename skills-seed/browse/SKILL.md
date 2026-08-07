@@ -449,7 +449,15 @@ The last stdout line is the typed outcome:
 
 ## 3. Clean up
 
-Always delete the browser when the task is over (it otherwise idles until its timeout) —
+**Arm the cleanup when you create the browser, not when the task ends.** A run that crashes
+never reaches the end, and the browser then bills until its idle timeout with nobody watching
+it. Set the trap in the same shell that will run the task:
+
+```bash
+trap 'curl -fsS -X DELETE "$AGENT_API_URL/v1/browser-sessions/$SESSION_ID" -H "x-agent-capability: $AGENT_API_TOKEN" >/dev/null 2>&1 || true' EXIT
+```
+
+Then delete the browser when the task is over (it otherwise idles until its timeout) —
 the provider doc's "Clean up" section has the call. Then release the pane, so the person is
 not left looking at a browser that no longer exists:
 
@@ -457,6 +465,10 @@ not left looking at a browser that no longer exists:
 curl -fsS -X DELETE "$AGENT_API_URL/v1/browser-sessions/$SESSION_ID" \
   -H "x-agent-capability: $AGENT_API_TOKEN" > /dev/null || true
 ```
+
+**If a run fails and you start a fresh browser, say so.** The pane was showing the browser
+that just died; the new one is a different window. Someone watching it disappear and
+reappear with no explanation reasonably concludes the feature is broken.
 
 ## Reporting
 

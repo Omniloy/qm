@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
+  endedNote,
   paneVisible,
   paneStatus,
   paneActions,
@@ -88,4 +89,17 @@ test("the live view is sized to the browser's own shape, not the chat's width", 
   const rule = /\.browser-pane-view\s*\{[^}]*\}/.exec(css)?.[0] ?? "";
   assert.match(rule, /aspect-ratio:\s*16\s*\/\s*9/);
   assert.match(rule, /margin-inline:\s*auto/, "and it stays centred when the chat is wider");
+});
+
+test("a browser that goes away says why it went", () => {
+  // The first time one died mid-task the pane simply vanished, and the person
+  // watching concluded the feature was broken. Three reasons, three sentences.
+  assert.match(endedNote("expired"), /timed out/i);
+  assert.match(endedNote("lost"), /stopped/i);
+  assert.match(endedNote("ended"), /closed/i);
+  // Each one reassures about the thing people actually worry about losing.
+  assert.match(endedNote("expired"), /sign-ins were saved/);
+  assert.match(endedNote("ended"), /sign-ins were saved/);
+  // Except the crash case, where promising that would be a guess.
+  assert.doesNotMatch(endedNote("lost"), /saved/);
 });
