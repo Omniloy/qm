@@ -2,9 +2,11 @@ import "dockview-core/dist/styles/dockview.css";
 import "./shell.css";
 import { bootSafely } from "./shell";
 import { closeFormMenus } from "./ui";
+import { redrawFilesPage } from "./files";
 import { allConversations } from "./conversations";
 import { closeOpenSessionMenu, renderList, sessionsState } from "./sessions";
 import { closeDeployMenu } from "./deploys";
+import { closeRowMenu } from "./row-actions";
 
 function closeComposerMenus(keepOpenWithin: Element | null): boolean {
   let changed = false;
@@ -27,6 +29,7 @@ document.addEventListener("click", (e) => {
     renderList();
   }
   closeDeployMenu(target);
+  if (closeRowMenu(target)) redrawFilesPage();
 });
 
 document.addEventListener("keydown", (e) => {
@@ -34,6 +37,7 @@ document.addEventListener("keydown", (e) => {
   closeComposerMenus(null);
   closeOpenSessionMenu();
   closeDeployMenu(null, true);
+  if (closeRowMenu(null)) redrawFilesPage();
   closeFormMenus();
 });
 

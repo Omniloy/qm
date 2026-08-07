@@ -11,8 +11,12 @@
 export interface MountRow {
   id: string;
   name: string;
+  /** Drive folder id. Every folder URL is derived from this. */
+  externalId?: string;
   displayPath?: string;
   mode: "ro" | "rw";
+  /** False once someone turns the folder off. Absent on older rows, which are on. */
+  enabled?: boolean;
   /** When this person last listed the folder. Absent until they have. */
   listedAt?: number;
   /** How many files that listing found, when there is one. */
@@ -73,29 +77,104 @@ export function listedAgo(listedAt: number | undefined, nowMs: number): string {
 export const accessLabel = (mode: "ro" | "rw"): string => (mode === "rw" ? "Read & write" : "Read only");
 
 /**
- * Where "Request access" sends someone. QM cannot grant Drive access, so the
- * only honest action is to open the folder in Drive and let Google run its
- * own request flow.
+ * The canonical Drive URL for a folder, derived from the id the row already
+ * carries. No API call and nothing to keep in sync — Drive resolves the id.
  */
-export function requestAccessUrl(row: Pick<MountRow, "webViewLink" | "id">): string | null {
-  return row.webViewLink ?? null;
+export const driveFolderUrl = (externalId: string): string =>
+  `https://drive.google.com/drive/folders/${encodeURIComponent(externalId)}`;
+
+/**
+ * Where "Open" and "Request access" send someone. QM cannot grant Drive
+ * access, so the only honest action for someone locked out is to open the
+ * folder in Drive and let Google run its own request flow.
+ *
+ * Drive's own `webViewLink` is preferred when a listing supplied one, but it
+ * usually has not, which is why the derived URL matters: without it the
+ * no-access state offers a link that never renders.
+ */
+export function requestAccessUrl(row: Pick<MountRow, "webViewLink" | "externalId">): string | null {
+  if (row.webViewLink) return row.webViewLink;
+  return row.externalId ? driveFolderUrl(row.externalId) : null;
 }
 
-/** Per-row status text, given the band state this row is rendered in. */
-export function rowStatus(row: MountRow, state: BandState, nowMs: number): string {
+/**
+ * Per-row status, or null when the row has nothing worth saying.
+ *
+ * A healthy folder used to report `Listed 4m ago` forever. Nobody acts on that
+ * number, and it occupied a column that then squeezed the row's actions at
+ * narrow widths. Silence is the correct output for the common case; the age
+ * survives in the row's tooltip (see rowTitle).
+ */
+export function rowStatus(row: MountRow, state: BandState, nowMs: number): string | null {
   if (state === "not-connected") return "Not connected";
   if (state === "needs-reconnect") return "Paused";
+  // Off outranks no-access: a folder that is off is never listed, so any
+  // inaccessible flag on it is left over from before it was turned off.
+  if (row.enabled === false) return "Off";
   if (row.inaccessible) return "No access";
   // Nothing lists a folder until a conversation needs it, so a freshly
   // attached folder has no timestamp. Say what will happen rather than
   // reporting an absence the person cannot act on.
   if (row.listedAt === undefined) return "Opens when the agent needs it";
-  return `Listed ${listedAgo(row.listedAt, nowMs)}`;
+  return null;
+}
+
+/**
+ * The row's tooltip: everything true about the folder that the row itself no
+ * longer has room to say. This is where the listing age went.
+ */
+export function rowTitle(row: MountRow, nowMs: number): string {
+  const parts: string[] = [row.displayPath ?? "Google Drive"];
+  if (row.listedAt !== undefined) parts.push(`listed ${listedAgo(row.listedAt, nowMs)}`);
+  if (row.createdBy) parts.push(`attached by ${row.createdBy}`);
+  return parts.join(" · ");
 }
 
 /** A row is interactive only when this person could actually open the folder. */
 export function rowIsInert(row: MountRow, state: BandState): boolean {
   return state !== "populated" || Boolean(row.inaccessible);
+}
+
+/**
+ * One entry in a row's overflow menu. Carries no handler: which actions a row
+ * offers is a decision, and lives here where it can be tested; what they *do*
+ * is wiring, and lives in the view.
+ */
+export interface RowActionSpec {
+  id: string;
+  label: string;
+  /** Destructive — rendered apart from the rest and in the warning tone. */
+  danger?: boolean;
+  /** Shown, but refused, with the reason in the title. */
+  disabled?: boolean;
+  reason?: string;
+}
+
+/**
+ * What a Drive folder row offers behind its overflow menu.
+ *
+ * Actions that cannot work are shown disabled rather than hidden: a menu whose
+ * contents change between rows is harder to learn than one where an entry is
+ * present and explains itself.
+ */
+export function folderActions(row: MountRow, state: BandState): RowActionSpec[] {
+  const off = row.enabled === false;
+  // Opening in Drive is the one action that always works — it is just a link,
+  // and it is the whole point of the row for someone who lacks access.
+  const actions: RowActionSpec[] = [{ id: "open", label: "Open in Drive" }];
+
+  const listable = state === "populated" && !off && !row.inaccessible;
+  actions.push({
+    id: "refresh",
+    label: "Refresh listing",
+    disabled: !listable,
+    ...(listable
+      ? {}
+      : { reason: off ? "This folder is off" : "This folder cannot be listed with your account right now" }),
+  });
+
+  actions.push({ id: "remove", label: "Remove…", danger: true });
+  return actions;
 }
 
 /**

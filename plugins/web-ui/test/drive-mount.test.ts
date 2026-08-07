@@ -7,10 +7,14 @@ import {
   accessLabel,
   requestAccessUrl,
   rowStatus,
+  rowTitle,
   rowIsInert,
+  driveFolderUrl,
+  folderActions,
   mountNameError,
   slugFromFolderName,
   parseDriveFolderId,
+  type BandState,
   type MountRow,
   type ConnectorState,
 } from "../src/drive-mount.ts";
@@ -27,6 +31,7 @@ const connector = (over: Partial<ConnectorState> = {}): ConnectorState => ({
 const row = (over: Partial<MountRow> = {}): MountRow => ({
   id: "m1",
   name: "Product Specs",
+  externalId: "1A2b3C4d5E6f7G8h9I0j",
   mode: "rw",
   listedAt: NOW,
   ...over,
@@ -90,16 +95,52 @@ test("the access label describes the agent's access", () => {
   assert.equal(accessLabel("ro"), "Read only");
 });
 
+test("a folder URL is derived from the id, not fetched", () => {
+  assert.equal(driveFolderUrl("1A2b3C4d5E6f7G8h9I0j"), "https://drive.google.com/drive/folders/1A2b3C4d5E6f7G8h9I0j");
+  assert.equal(driveFolderUrl("a/b?c"), "https://drive.google.com/drive/folders/a%2Fb%3Fc", "ids are escaped");
+});
+
 test("request access points at Drive, since QM cannot grant it", () => {
-  assert.equal(requestAccessUrl({ id: "m1", webViewLink: "https://drive.google.com/x" }), "https://drive.google.com/x");
-  assert.equal(requestAccessUrl({ id: "m1" }), null, "no link rather than a fabricated one");
+  assert.equal(
+    requestAccessUrl({ externalId: "x", webViewLink: "https://drive.google.com/x" }),
+    "https://drive.google.com/x",
+    "Drive's own link wins when a listing supplied one",
+  );
+  // Regression: this used to return null whenever webViewLink was absent,
+  // which is almost always — so the no-access state offered a link that
+  // never rendered. The id we already hold resolves the same folder.
+  assert.equal(
+    requestAccessUrl({ externalId: "1A2b3C4d5E6f7G8h9I0j" }),
+    "https://drive.google.com/drive/folders/1A2b3C4d5E6f7G8h9I0j",
+  );
+  assert.equal(requestAccessUrl({}), null, "no link rather than a fabricated one");
+});
+
+test("a healthy folder says nothing at all", () => {
+  // It used to report "Listed just now" forever. Nobody acts on that, and the
+  // column it occupied is what squeezed the row's actions at narrow widths.
+  assert.equal(rowStatus(row(), "populated", NOW), null);
+  assert.equal(rowStatus(row({ listedAt: NOW - 3 * 86_400_000 }), "populated", NOW), null, "age alone is not a status");
 });
 
 test("row status reflects why a row cannot be used", () => {
-  assert.equal(rowStatus(row(), "populated", NOW), "Listed just now");
   assert.equal(rowStatus(row(), "not-connected", NOW), "Not connected");
   assert.equal(rowStatus(row(), "needs-reconnect", NOW), "Paused");
   assert.equal(rowStatus(row({ inaccessible: true }), "populated", NOW), "No access");
+  assert.equal(rowStatus(row({ enabled: false }), "populated", NOW), "Off");
+});
+
+test("off outranks no-access, because an off folder is never listed", () => {
+  const r = row({ enabled: false, inaccessible: true });
+  assert.equal(rowStatus(r, "populated", NOW), "Off", "a stale access flag would send someone chasing the wrong fix");
+});
+
+test("the listing age survives in the tooltip", () => {
+  assert.equal(
+    rowTitle(row({ displayPath: "Design docs", listedAt: NOW - 2 * 60_000, createdBy: "sam@example.com" }), NOW),
+    "Design docs \u00b7 listed 2m ago \u00b7 attached by sam@example.com",
+  );
+  assert.equal(rowTitle(row({ displayPath: undefined, listedAt: undefined }), NOW), "Google Drive");
 });
 
 test("a folder with no listing explains what happens next", () => {
@@ -107,6 +148,35 @@ test("a folder with no listing explains what happens next", () => {
   // phrase — and then stated an absence the person could do nothing about.
   // Nothing lists a folder until a conversation needs it.
   assert.equal(rowStatus(row({ listedAt: undefined }), "populated", NOW), "Opens when the agent needs it");
+});
+
+test("the overflow menu always offers the one action that cannot fail", () => {
+  // Opening in Drive is a link. It works when the token is dead, when the
+  // folder is off, and when this person has no access — which is exactly when
+  // someone needs it most.
+  for (const [r, state] of [
+    [row(), "populated"],
+    [row({ enabled: false }), "populated"],
+    [row({ inaccessible: true }), "populated"],
+    [row(), "needs-reconnect"],
+  ] as Array<[MountRow, BandState]>) {
+    assert.equal(folderActions(r, state)[0]?.id, "open");
+  }
+});
+
+test("refresh is offered but refused when it could not work", () => {
+  const refreshOf = (r: MountRow, state: BandState) => folderActions(r, state).find((a) => a.id === "refresh");
+  assert.equal(refreshOf(row(), "populated")?.disabled, false);
+  assert.equal(refreshOf(row({ enabled: false }), "populated")?.disabled, true);
+  assert.equal(refreshOf(row({ inaccessible: true }), "populated")?.disabled, true);
+  assert.equal(refreshOf(row(), "needs-reconnect")?.disabled, true);
+  assert.ok(refreshOf(row({ enabled: false }), "populated")?.reason, "a disabled action has to say why");
+});
+
+test("removing is marked destructive so it renders apart", () => {
+  const remove = folderActions(row(), "populated").find((a) => a.id === "remove");
+  assert.equal(remove?.danger, true);
+  assert.equal(remove?.disabled, undefined, "removing stays available even when the folder cannot be read");
 });
 
 test("inaccessibility beats the listing age in the row status", () => {

@@ -1,17 +1,20 @@
 import { html, nothing, type TemplateResult } from "lit";
-import { FolderOpen, Link, RefreshCw, TriangleAlert } from "lucide";
+import { FolderOpen, Link, TriangleAlert } from "lucide";
 import { api } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
 import { icon } from "./ui";
+import { resetRowMenus, rowMenuTpl } from "./row-actions";
 import {
   bandState,
   canAttach,
+  folderActions,
   mountNameError,
   parseDriveFolderId,
   slugFromFolderName,
   accessLabel,
   requestAccessUrl,
   rowStatus,
+  rowTitle,
   rowIsInert,
   type BandState,
   type ConnectorState,
@@ -58,6 +61,7 @@ export function resetDriveFoldersState(): void {
   picker = null;
   pending = null;
   detaching = null;
+  resetRowMenus();
 }
 
 interface MountsResponse {
@@ -133,38 +137,61 @@ function emptyCard(title: string, body: string, action?: TemplateResult): Templa
   </div>`;
 }
 
+/** Route an overflow-menu selection to the thing it does. */
+function onFolderAction(id: string, m: MountRow, rerender: () => void): void {
+  switch (id) {
+    case "open": {
+      const url = requestAccessUrl(m);
+      if (url) window.open(url, "_blank", "noopener");
+      return;
+    }
+    case "refresh":
+      void refreshOne(m.id, rerender);
+      return;
+    case "remove":
+      askDetach(m, rerender);
+      return;
+  }
+}
+
 function mountRowTpl(m: MountRow, state: BandState, now: number, rerender: () => void): TemplateResult {
   const inert = rowIsInert(m, state);
+  const off = m.enabled === false;
+  const status = rowStatus(m, state, now);
   const link = requestAccessUrl(m);
-  return html`<div class="drive-mount-row ${inert ? "inert" : ""}">
+  const count = m.itemCount === undefined ? "" : ` · ${m.itemCount} file${m.itemCount === 1 ? "" : "s"}`;
+  return html`<div class="drive-mount-row ${inert ? "inert" : ""} ${off ? "off" : ""}" title=${rowTitle(m, now)}>
     ${icon(FolderOpen, 16)}
     <div class="drive-mount-name">
       <strong>${m.name}</strong>
-      <span>${m.displayPath ?? "Google Drive"}${m.createdBy ? ` · attached by ${m.createdBy}` : ""}</span>
+      <span>${m.displayPath ?? "Google Drive"}${count}</span>
     </div>
-    <span class="badge">${accessLabel(m.mode)}</span>
-    <span class="kc-state ${m.inaccessible ? "warning" : ""}">${rowStatus(m, state, now)}</span>
-    ${
-      m.inaccessible && link
-        ? html`<a class="link" href=${link} target="_blank" rel="noopener">Request access in Drive</a>`
-        : state === "populated"
-          ? html`<span class="drive-row-actions">
-              <button class="btn" type="button" ?disabled=${busy} @click=${() => void refreshOne(m.id, rerender)}>
-                ${icon(RefreshCw, 14)}
-              </button>
-              <button class="btn" type="button" @click=${() => askDetach(m, rerender)}>Detach</button>
-            </span>`
-          : ""
-    }
+    <div class="drive-row-actions">
+      <span class="badge">${accessLabel(m.mode)}</span>
+      ${status ? html`<span class="kc-state ${m.inaccessible ? "warning" : ""}">${status}</span>` : nothing}
+      ${
+        link
+          ? html`<a class="btn compact" href=${link} target="_blank" rel="noopener">
+              ${m.inaccessible ? "Request access" : "Open"}
+            </a>`
+          : nothing
+      }
+      ${rowMenuTpl(`mount:${m.id}`, m.name, folderActions(m, state), (id) => onFolderAction(id, m, rerender), rerender)}
+    </div>
   </div>`;
 }
 
 export function driveBandTpl(now: number, rerender: () => void, onAttach: () => void): TemplateResult {
   const state = bandState(connector, mounts);
 
+  const offCount = mounts.filter((m) => m.enabled === false).length;
   const header = html`<div class="drive-band-head">
     <strong>Drive folders</strong>
-    ${mounts.length ? html`<span class="badge">${mounts.length} attached</span>` : ""}
+    ${
+      mounts.length
+        ? html`<span class="badge">${mounts.length} attached${offCount ? ` · ${offCount} off` : ""}</span>`
+        : ""
+    }
     <span class="spacer"></span>
     ${
       state === "populated"
@@ -352,19 +379,19 @@ export function drivePickerTpl(scopeId: string, rerender: () => void): TemplateR
             </button>`
           : html`<nav class="drive-crumbs">
               ${p.trail.map(
-              (f, i) =>
-                html`<button
-                  class="btn"
-                  type="button"
-                  ?disabled=${i === p.trail.length - 1}
-                  @click=${() => {
-                  p.trail = p.trail.slice(0, i + 1);
-                  void browseInto(f, rerender, false);
-                }}
-                >
-                  ${f.name}
-                </button>`,
-            )}
+                (f, i) =>
+                  html`<button
+                    class="btn"
+                    type="button"
+                    ?disabled=${i === p.trail.length - 1}
+                    @click=${() => {
+                    p.trail = p.trail.slice(0, i + 1);
+                    void browseInto(f, rerender, false);
+                  }}
+                  >
+                    ${f.name}
+                  </button>`,
+              )}
             </nav>`
       }
       ${p.error ? html`<p class="drive-note warning">${p.error}</p>` : ""}
@@ -380,12 +407,12 @@ export function drivePickerTpl(scopeId: string, rerender: () => void): TemplateR
                       ${icon(FolderOpen, 16)}
                       <span class="drive-result-name">${f.name}</span>
                       ${
-                    p.searching
-                      ? ""
-                      : html`<button class="btn" type="button" @click=${() => void browseInto(f, rerender, true)}>
-                          Open
-                        </button>`
-                  }
+                        p.searching
+                          ? ""
+                          : html`<button class="btn" type="button" @click=${() => void browseInto(f, rerender, true)}>
+                              Open
+                            </button>`
+                      }
                       <button class="primary" type="button" @click=${() => beginAttach(f, rerender)}>Attach</button>
                     </div>`,
                 )
@@ -430,9 +457,9 @@ function attachConfirmTpl(scopeId: string, rerender: () => void): TemplateResult
           class="btn ${p.mode === "rw" ? "active" : ""}"
           type="button"
           @click=${() => {
-          p.mode = "rw";
-          rerender();
-        }}
+            p.mode = "rw";
+            rerender();
+          }}
         >
           Read &amp; write
         </button>
@@ -440,9 +467,9 @@ function attachConfirmTpl(scopeId: string, rerender: () => void): TemplateResult
           class="btn ${p.mode === "ro" ? "active" : ""}"
           type="button"
           @click=${() => {
-          p.mode = "ro";
-          rerender();
-        }}
+            p.mode = "ro";
+            rerender();
+          }}
         >
           Read only
         </button>

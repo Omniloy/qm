@@ -80,6 +80,16 @@ function visibleFiles(): FileRow[] {
     });
 }
 
+/**
+ * Redraw the Files page from outside it — the document-level menu dismissal in
+ * main.ts needs a way to reflect a closed row menu. A no-op when the page is
+ * not mounted, so the global handler never has to know which view is showing.
+ */
+export function redrawFilesPage(): void {
+  if (appState.currentView !== "files" || !filesHost) return;
+  drawFiles();
+}
+
 function drawFiles(loading = false): void {
   if (appState.currentView !== "files" || !appState.mainEl) return;
   if (!filesHost || filesHost.parentElement !== appState.mainEl) {

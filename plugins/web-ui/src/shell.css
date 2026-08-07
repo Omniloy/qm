@@ -4502,8 +4502,7 @@ a.chat-row-open {
   margin-inline: auto;
 }
 .file-row,
-.deploy-row,
-.drive-mount-row {
+.deploy-row {
   display: grid;
   grid-template-columns: auto minmax(180px, 1fr) auto;
   align-items: center;
@@ -6877,14 +6876,34 @@ h3.ambient-field-label {
 .drive-band-head .spacer {
   flex: 1;
 }
+/* A flex row, not a grid: the name absorbs every spare pixel and the action
+   cluster keeps its intrinsic width, so adding an action cannot squeeze the
+   badges into wrapping. The previous fixed five-column grid grew this row from
+   36px to 100px tall once the card fell below ~600px. */
 .drive-mount-row {
-  grid-template-columns: auto minmax(140px, 1fr) auto auto auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.drive-row-actions {
+  flex: 0 0 auto;
+}
+/* Turned off: still listed and still actionable, just visibly out of play. */
+.drive-mount-row.off .drive-mount-name strong {
+  color: var(--muted-foreground);
 }
 .drive-mount-name {
   display: flex;
   flex-direction: column;
+  flex: 1;
   min-width: 0;
   gap: 2px;
+}
+.drive-mount-name strong,
+.drive-mount-name span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .drive-mount-name span {
   color: var(--muted-foreground);
@@ -6998,4 +7017,7 @@ h3.ambient-field-label {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+.row-menu {
+  flex: 0 0 auto;
 }
