@@ -23,6 +23,7 @@ const session = (over: Record<string, unknown> = {}) => ({
   provider: "anchor",
   sessionId: "s1",
   threadRef: "dm:ada:t1",
+  viewer: "iframe" as const,
   liveViewUrl: LIVE,
   controlMode: "agent" as const,
   expiresAt: NOW + 30 * 60_000,
@@ -41,6 +42,37 @@ test("the live-view URL is encrypted at rest, because it is bearer material", as
   const raw = JSON.stringify(await map.get(ADA));
   assert.doesNotMatch(raw, /inspector\.html/, "the raw record must not carry the URL in the clear");
   assert.equal((await s.get(ADA, NOW))?.liveViewUrl, LIVE, "but its owner still reads it back");
+});
+
+test("a streamed browser stores no secret, because it has none", async () => {
+  // Our own browser is reached through QM's authenticated endpoint. There is
+  // no viewer URL to hold, so there must be no ciphertext either — an empty
+  // one would only invite a later reader to trust it.
+  const map = createMemoryMap<StoredLiveBrowserSession>();
+  const s = createLiveBrowserSessionStore({ sessions: map, key: KEY });
+  await s.put(session({ provider: "local", viewer: "stream", liveViewUrl: undefined }));
+
+  const rec = await map.get(ADA);
+  assert.equal(rec?.liveViewEnc, undefined, "nothing encrypted");
+  assert.equal(rec?.viewer, "stream");
+  const back = await s.get(ADA, NOW);
+  assert.equal(back?.viewer, "stream");
+  assert.equal(back?.liveViewUrl, undefined);
+});
+
+test("a record written before streamed browsers existed is still an iframe", async () => {
+  // Those rows carry a URL and no discriminator. Reading them as anything else
+  // would blank the pane for anyone with a browser already open.
+  const map = createMemoryMap<StoredLiveBrowserSession>();
+  const s = createLiveBrowserSessionStore({ sessions: map, key: KEY });
+  await s.put(session());
+  const rec = (await map.get(ADA))!;
+  delete (rec as { viewer?: unknown }).viewer;
+  await map.put(ADA, rec);
+
+  const back = await s.get(ADA, NOW);
+  assert.equal(back?.viewer, "iframe");
+  assert.equal(back?.liveViewUrl, LIVE);
 });
 
 test("an expired browser is gone rather than stale", async () => {
@@ -158,6 +190,45 @@ test("the CDP URL is refused where the viewer URL belongs", async () => {
   await route("POST", "/v1/browser-sessions").handle(c);
   assert.equal(sent[0]?.status, 400);
   assert.match(sent[0]?.body.message, /not the CDP URL/);
+});
+
+test("a streamed browser may not carry a viewer URL", async () => {
+  // It is reached through QM, so a URL here is either meaningless or — worse —
+  // a CDP URL being pasted where a viewer URL was expected.
+  const s = store();
+  const { ctx: c, sent } = ctx({
+    deps: { liveBrowserSessions: s } as never,
+    capability: cap() as never,
+    body: { provider: "local", sessionId: "s1", viewer: "stream", liveViewUrl: LIVE, expiresAt: NOW + 60_000 },
+  });
+  await route("POST", "/v1/browser-sessions").handle(c);
+  assert.equal(sent[0]?.status, 400);
+  assert.match(sent[0]?.body.message, /must not carry a liveViewUrl/);
+});
+
+test("an iframe browser without a viewer URL is refused", async () => {
+  const s = store();
+  const { ctx: c, sent } = ctx({
+    deps: { liveBrowserSessions: s } as never,
+    capability: cap() as never,
+    body: { provider: "anchor", sessionId: "s1", expiresAt: NOW + 60_000 },
+  });
+  await route("POST", "/v1/browser-sessions").handle(c);
+  assert.equal(sent[0]?.status, 400);
+  assert.match(sent[0]?.body.message, /iframe viewer needs a liveViewUrl/);
+});
+
+test("a streamed browser registers with no URL at all", async () => {
+  const s = store();
+  const { ctx: c, sent } = ctx({
+    deps: { liveBrowserSessions: s, auditLog: { record: () => undefined } } as never,
+    capability: cap() as never,
+    body: { provider: "local", sessionId: "s1", viewer: "stream", expiresAt: NOW + 60_000 },
+  });
+  await route("POST", "/v1/browser-sessions").handle(c);
+  assert.equal(sent[0]?.status, 200);
+  assert.equal(sent[0]?.body.session.viewer, "stream");
+  assert.equal(sent[0]?.body.session.liveViewUrl, undefined, "and the wire carries no URL key");
 });
 
 test("the thread comes from the token, so a turn cannot attach a browser elsewhere", async () => {

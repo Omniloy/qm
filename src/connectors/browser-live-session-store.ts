@@ -18,6 +18,19 @@ import { swallow } from "../util/errors.ts";
 
 export type ControlMode = "agent" | "human_control";
 
+/**
+ * How the pane shows this browser.
+ *
+ * `iframe` embeds a vendor's own viewer, reached with a URL that is bearer
+ * material. `stream` means the browser is one of ours: the pane asks QM for
+ * frames over QM's own authenticated endpoint, so there is no URL, nothing to
+ * encrypt, and nothing that could leak into a transcript.
+ *
+ * A discriminator rather than a nullable URL, so a record cannot be half of
+ * each — and so core still never has to branch on which provider it is.
+ */
+export type ViewerKind = "iframe" | "stream";
+
 export interface LiveBrowserSession {
   principalId: string;
   /** Opaque. Core never branches on this — swapping providers is config. */
@@ -25,12 +38,14 @@ export interface LiveBrowserSession {
   sessionId: string;
   /** Where the pane renders. Taken from the capability, never from a request body. */
   threadRef: string;
+  viewer: ViewerKind;
   /**
-   * The vendor's viewer URL. Bearer material: anyone holding it can watch and
-   * drive the browser, so it is encrypted at rest and only ever returned to
-   * its owner.
+   * The vendor's viewer URL, for `iframe` viewers only. Bearer material:
+   * anyone holding it can watch and drive the browser, so it is encrypted at
+   * rest and only ever returned to its owner. Absent for `stream`, which has
+   * no such secret to hold.
    */
-  liveViewUrl: string;
+  liveViewUrl?: string;
   controlMode: ControlMode;
   expiresAt: number;
   createdAt: number;
@@ -44,7 +59,10 @@ export interface StoredLiveBrowserSession {
   provider: string;
   sessionId: string;
   threadRef: string;
-  liveViewEnc: string;
+  /** Absent on records written before streamed browsers existed. */
+  viewer?: ViewerKind;
+  /** Only ever set for an `iframe` viewer. */
+  liveViewEnc?: string;
   controlMode: ControlMode;
   expiresAt: number;
   createdAt: number;
@@ -66,20 +84,26 @@ export function createLiveBrowserSessionStore(deps: {
   key: SecretKey;
 }): LiveBrowserSessionStore {
   const decode = (rec: StoredLiveBrowserSession): LiveBrowserSession | null => {
-    let liveViewUrl: string;
-    try {
-      liveViewUrl = decryptSecret(rec.liveViewEnc, deps.key);
-    } catch (e) {
-      // A record we cannot decrypt is a record we cannot hand to anyone.
-      swallow(`live-browser decrypt ${rec.principalId}`, e);
-      return null;
+    // Records written before streamed browsers existed carry a URL and no
+    // discriminator, and they are all iframes.
+    const viewer: ViewerKind = rec.viewer ?? "iframe";
+    let liveViewUrl: string | undefined;
+    if (viewer === "iframe") {
+      try {
+        liveViewUrl = decryptSecret(rec.liveViewEnc ?? "", deps.key);
+      } catch (e) {
+        // A record we cannot decrypt is a record we cannot hand to anyone.
+        swallow(`live-browser decrypt ${rec.principalId}`, e);
+        return null;
+      }
     }
     return {
       principalId: rec.principalId,
       provider: rec.provider,
       sessionId: rec.sessionId,
       threadRef: rec.threadRef,
-      liveViewUrl,
+      viewer,
+      ...(liveViewUrl === undefined ? {} : { liveViewUrl }),
       controlMode: rec.controlMode,
       expiresAt: rec.expiresAt,
       createdAt: rec.createdAt,
@@ -93,7 +117,10 @@ export function createLiveBrowserSessionStore(deps: {
     provider: s.provider,
     sessionId: s.sessionId,
     threadRef: s.threadRef,
-    liveViewEnc: encryptSecret(s.liveViewUrl, deps.key),
+    viewer: s.viewer,
+    // Nothing to encrypt for a streamed browser, and writing an empty
+    // ciphertext would only invite a later reader to trust it.
+    ...(s.viewer === "iframe" ? { liveViewEnc: encryptSecret(s.liveViewUrl ?? "", deps.key) } : {}),
     controlMode: s.controlMode,
     expiresAt: s.expiresAt,
     createdAt: s.createdAt,

@@ -49,7 +49,10 @@ function wire(s: LiveBrowserSession): Record<string, unknown> {
     provider: s.provider,
     sessionId: s.sessionId,
     threadRef: s.threadRef,
-    liveViewUrl: s.liveViewUrl,
+    viewer: s.viewer,
+    // Only an iframe viewer has a URL. Emitting the key as undefined would
+    // leave the pane unable to tell "streamed" from "iframe we failed to read".
+    ...(s.viewer === "iframe" ? { liveViewUrl: s.liveViewUrl } : {}),
     controlMode: s.controlMode,
     expiresAt: s.expiresAt,
     ...(s.handedOffAt === undefined ? {} : { handedOffAt: s.handedOffAt }),
@@ -74,13 +77,32 @@ async function registerSession(ctx: ApiCtx): Promise<void> {
   const sessionId = typeof b.sessionId === "string" ? b.sessionId.trim() : "";
   const liveViewUrl = typeof b.liveViewUrl === "string" ? b.liveViewUrl.trim() : "";
   const expiresAt = typeof b.expiresAt === "number" ? b.expiresAt : 0;
-  if (!provider || !sessionId || !liveViewUrl || !expiresAt) {
+  // Absent means iframe: that is what every caller sent before streamed
+  // browsers existed, and it is the shape that carries a secret.
+  const viewer = b.viewer === "stream" ? "stream" : b.viewer === undefined || b.viewer === "iframe" ? "iframe" : null;
+  if (viewer === null) {
+    return sendJson(res, 400, { error: "bad_request", message: 'viewer must be "iframe" or "stream"' });
+  }
+  if (!provider || !sessionId || !expiresAt) {
     return sendJson(res, 400, {
       error: "bad_request",
-      message: "provider, sessionId, liveViewUrl and expiresAt are required",
+      message: "provider, sessionId and expiresAt are required",
     });
   }
-  if (/^cdp:|^wss:\/\/connect\./i.test(liveViewUrl)) {
+  if (viewer === "iframe" && !liveViewUrl) {
+    return sendJson(res, 400, { error: "bad_request", message: "an iframe viewer needs a liveViewUrl" });
+  }
+  // A streamed browser is reached through QM's own authenticated endpoint, so
+  // it has no URL. Accepting one anyway would quietly store bearer material
+  // for a viewer that will never render it — and it is the shape a confused
+  // caller would send while pasting a CDP URL somewhere it does not belong.
+  if (viewer === "stream" && liveViewUrl) {
+    return sendJson(res, 400, {
+      error: "bad_request",
+      message: "a streamed browser is reached through QM and must not carry a liveViewUrl",
+    });
+  }
+  if (viewer === "iframe" && /^cdp:|^wss:\/\/connect\./i.test(liveViewUrl)) {
     // Cheap guard against the mistake that would matter most: some providers
     // embed the API key in the CDP URL, and this value reaches a browser tab.
     return sendJson(res, 400, { error: "bad_request", message: "liveViewUrl must be the viewer URL, not the CDP URL" });
@@ -99,7 +121,8 @@ async function registerSession(ctx: ApiCtx): Promise<void> {
     provider,
     sessionId,
     threadRef,
-    liveViewUrl,
+    viewer,
+    ...(viewer === "iframe" ? { liveViewUrl } : {}),
     controlMode: "agent",
     expiresAt,
     createdAt: now,
