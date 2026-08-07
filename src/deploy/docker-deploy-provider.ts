@@ -49,17 +49,33 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
 
   const name = (d: Deployment) => `agent-deploy-${d.id.slice(0, 12)}`;
 
+  /** Idempotent: create the deploy network and put core on it. */
+  const ensureCoreOnNetwork = async (): Promise<void> => {
+    await dexec(["network", "create", NETWORK]);
+    if (!opts.coreContainer) return;
+    const c = await dexec(["network", "connect", NETWORK, opts.coreContainer]);
+    if (c.code !== 0 && !/already exists|already connected/i.test(c.stderr)) {
+      throw new Error(`docker network connect ${NETWORK} ${opts.coreContainer} failed: ${c.stderr.trim()}`);
+    }
+  };
+
   return {
     profile: { managedScaleToZero: false },
 
+    async resolveEndpoint(d: Deployment): Promise<DeployEndpoint | null> {
+      // Called before every proxied request. Core loses its endpoint on the
+      // deploy network whenever its own container is recreated, so rejoining
+      // here is what keeps published apps reachable across a redeploy.
+      await ensureCoreOnNetwork();
+      const running = await dexec(["inspect", "-f", "{{.State.Running}}", name(d)]);
+      if (running.code !== 0 || running.stdout.trim() !== "true") return null;
+      if (opts.coreContainer) return { host: name(d), port: APP_PORT };
+      const port = ports.get(name(d));
+      return port === undefined ? null : { host: "127.0.0.1", port };
+    },
+
     async apply(d: Deployment, version: DeploymentVersion): Promise<DeployEndpoint> {
-      await dexec(["network", "create", NETWORK]);
-      if (opts.coreContainer) {
-        const c = await dexec(["network", "connect", NETWORK, opts.coreContainer]);
-        if (c.code !== 0 && !/already exists|already connected/i.test(c.stderr)) {
-          throw new Error(`docker network connect ${NETWORK} ${opts.coreContainer} failed: ${c.stderr.trim()}`);
-        }
-      }
+      await ensureCoreOnNetwork();
       await dexec(["rm", "-f", name(d)]);
       const hostPort = allocPort(name(d));
       const envArgs = Object.entries(version.env ?? {}).flatMap(([k, v]) => ["-e", `${k}=${v}`]);

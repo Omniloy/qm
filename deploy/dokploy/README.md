@@ -11,14 +11,14 @@ maintained by hand against `cli/src/services.ts` and `cli/src/secrets.ts`.
 
 ## Topology
 
-| Service   | Image                          | Exposure                              |
-| --------- | ------------------------------ | ------------------------------------- |
-| `pg`      | `postgres:16`                  | private                               |
-| `core`    | `deploy/dokploy/core.Dockerfile` | private, mounts the host Docker socket |
-| `auth`    | `deploy/auth/Dockerfile`       | private                               |
-| `web-ui`  | `deploy/web-ui/Dockerfile`     | private                               |
-| `admin`   | `deploy/admin/Dockerfile`      | private                               |
-| `portal`  | `deploy/portal/Dockerfile`     | **public**, via Traefik on `dokploy-network` |
+| Service  | Image                            | Exposure                                     |
+| -------- | -------------------------------- | -------------------------------------------- |
+| `pg`     | `postgres:16`                    | private                                      |
+| `core`   | `deploy/dokploy/core.Dockerfile` | private, mounts the host Docker socket       |
+| `auth`   | `deploy/auth/Dockerfile`         | private                                      |
+| `web-ui` | `deploy/web-ui/Dockerfile`       | private                                      |
+| `admin`  | `deploy/admin/Dockerfile`        | private                                      |
+| `portal` | `deploy/portal/Dockerfile`       | **public**, via Traefik on `dokploy-network` |
 
 The portal is the only Internet-facing service, as on Fly and AWS. It proxies the web
 UI, `/admin`, and the sign-in broker's two browser routes under `/idp`.
@@ -46,18 +46,28 @@ LOCAL_SANDBOX_IMAGE=qm-sandbox-local:latest bash scripts/local-sandbox-build.sh
 A fingerprint mismatch only logs `[local-sandbox] sandbox image … is stale`; a missing
 image is a hard failure.
 
+**Do not enable Dokploy's Docker Cleanup on this host.** It runs
+`docker system prune --all --force --volumes`, which reclaims every image no
+running container is using — including this one, since a sandbox container only
+exists while an agent is working. It also removes unused _volumes_, which would
+take a stopped deployed app's data with it. Cleanup is instead a host cron
+(`/usr/local/bin/qm-docker-cleanup.sh`) that prunes only untagged layers, old
+build cache and long-idle networks. The `sandbox-keepalive` service in the
+Compose file is a second line of defence: it holds a container open on the image
+so even an aggressive prune spares it.
+
 ## The containerised-core constraint
 
 **Read this before changing anything about core's networking or `DATA_DIR`.** QM's two
 `docker` backends — `SANDBOX_BACKEND=local` and `DEPLOY_PROVIDER=docker`, the default —
-are written for a core running *directly on the Docker host*. Core drives the host
+are written for a core running _directly on the Docker host_. Core drives the host
 daemon over the mounted socket, so anything it hands that daemon is interpreted from
 the host's point of view, not core's. Here core is itself a container, which breaks
 that assumption in two distinct ways. Both have already bitten this deployment.
 
 **Addresses.** Both backends publish their workload on the host's loopback
 (`-p 127.0.0.1:<port>:8080`) and hand core back `127.0.0.1:<port>`. From inside core
-that is core's *own* loopback, so nothing is reachable: sandboxes fail with
+that is core's _own_ loopback, so nothing is reachable: sandboxes fail with
 `exec daemon never became reachable: fetch failed` and deployed apps 404, while both
 are demonstrably healthy when curled from the host.
 
@@ -72,7 +82,7 @@ directory, and core passes that path (`/data/deployments/<id>`) to the host daem
 verbatim. With a named volume the real files live under
 `/var/lib/docker/volumes/…/_data/`, the daemon finds nothing there, silently creates an
 empty directory, and the app starts with an empty `/app` and dies with
-`MODULE_NOT_FOUND`. Binding the host path to a *different* container path fails the
+`MODULE_NOT_FOUND`. Binding the host path to a _different_ container path fails the
 same way, so `DATA_HOST_DIR` is used for both sides of the bind and for `DATA_DIR`
 itself — there is deliberately no second value to keep in sync.
 
@@ -86,16 +96,16 @@ Set these on the Dokploy Compose application. Nothing here belongs in git.
 
 ### Identity and URLs
 
-| Key                         | Value                                                     |
-| --------------------------- | --------------------------------------------------------- |
-| `ORG_ID`                    | org slug, e.g. `omniloy`                                    |
-| `PUBLIC_URL`                | portal origin, e.g. `https://qm.example.com` — no trailing slash |
-| `PUBLIC_HOST`               | the same host without the scheme; Traefik's router rule     |
-| `HARNESS`                   | `pi`, `claude`, `codex`, or `opencode`                      |
-| `HARNESS_SECURITY_POSTURE`  | `strict`, `auto`, or `dangerous`                            |
-| `LOCAL_SANDBOX_IMAGE`       | `qm-sandbox-local:latest`                                   |
-| `DATA_HOST_DIR`             | host path for core's data, e.g. `/opt/qm/data`; it *is* `DATA_DIR` — see above |
-| `ADMIN_GRANTS`              | `someone@example.com:org_admin`, comma-separated             |
+| Key                        | Value                                                                          |
+| -------------------------- | ------------------------------------------------------------------------------ |
+| `ORG_ID`                   | org slug, e.g. `omniloy`                                                       |
+| `PUBLIC_URL`               | portal origin, e.g. `https://qm.example.com` — no trailing slash               |
+| `PUBLIC_HOST`              | the same host without the scheme; Traefik's router rule                        |
+| `HARNESS`                  | `pi`, `claude`, `codex`, or `opencode`                                         |
+| `HARNESS_SECURITY_POSTURE` | `strict`, `auto`, or `dangerous`                                               |
+| `LOCAL_SANDBOX_IMAGE`      | `qm-sandbox-local:latest`                                                      |
+| `DATA_HOST_DIR`            | host path for core's data, e.g. `/opt/qm/data`; it _is_ `DATA_DIR` — see above |
+| `ADMIN_GRANTS`             | `someone@example.com:org_admin`, comma-separated                               |
 
 `ADMIN_GRANTS` is the only source of admin identity. `org_admin` is the sole accepted
 role, and the principal is whatever `OIDC_PRINCIPAL_CLAIM` yields — the lowercased
@@ -105,12 +115,12 @@ instead, since changing the variable will no longer have any effect.
 
 ### Sign-in
 
-| Key                         | Value                                                     |
-| --------------------------- | --------------------------------------------------------- |
-| `AUTH_EMAIL_FROM`           | verified sender, e.g. `QM <no-reply@example.com>`           |
-| `AUTH_ALLOWED_EMAIL_DOMAIN` | domain allowed to sign in                                   |
-| `AUTH_BRAND_NAME`           | name shown on the sign-in page                              |
-| `RESEND_API_KEY`            | Resend key that can send as `AUTH_EMAIL_FROM`               |
+| Key                         | Value                                             |
+| --------------------------- | ------------------------------------------------- |
+| `AUTH_EMAIL_FROM`           | verified sender, e.g. `QM <no-reply@example.com>` |
+| `AUTH_ALLOWED_EMAIL_DOMAIN` | domain allowed to sign in                         |
+| `AUTH_BRAND_NAME`           | name shown on the sign-in page                    |
+| `RESEND_API_KEY`            | Resend key that can send as `AUTH_EMAIL_FROM`     |
 
 The broker sends one-time sign-in links through Resend. The sender domain must be
 verified in Resend, or delivery is limited to the Resend account's own address.
