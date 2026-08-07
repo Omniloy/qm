@@ -102,9 +102,11 @@ test("row status reflects why a row cannot be used", () => {
   assert.equal(rowStatus(row({ inaccessible: true }), "populated", NOW), "No access");
 });
 
-test("a never-listed folder reads as one sentence, not two glued together", () => {
-  // Regression: composing the prefix with listedAgo produced "Listed not listed yet".
-  assert.equal(rowStatus(row({ listedAt: undefined }), "populated", NOW), "Not listed yet");
+test("a folder with no listing explains what happens next", () => {
+  // Regression: this once read "Listed not listed yet" — a prefix glued onto a
+  // phrase — and then stated an absence the person could do nothing about.
+  // Nothing lists a folder until a conversation needs it.
+  assert.equal(rowStatus(row({ listedAt: undefined }), "populated", NOW), "Opens when the agent needs it");
 });
 
 test("inaccessibility beats the listing age in the row status", () => {

@@ -13,8 +13,10 @@ export interface MountRow {
   name: string;
   displayPath?: string;
   mode: "ro" | "rw";
-  /** Absent until this person's first listing of the folder. */
+  /** When this person last listed the folder. Absent until they have. */
   listedAt?: number;
+  /** How many files that listing found, when there is one. */
+  itemCount?: number;
   /** Set when this person's own Google account cannot open the folder. */
   inaccessible?: boolean;
   webViewLink?: string;
@@ -84,8 +86,10 @@ export function rowStatus(row: MountRow, state: BandState, nowMs: number): strin
   if (state === "not-connected") return "Not connected";
   if (state === "needs-reconnect") return "Paused";
   if (row.inaccessible) return "No access";
-  // Only prefix a real timestamp — "Listed not listed yet" is nonsense.
-  if (row.listedAt === undefined) return "Not listed yet";
+  // Nothing lists a folder until a conversation needs it, so a freshly
+  // attached folder has no timestamp. Say what will happen rather than
+  // reporting an absence the person cannot act on.
+  if (row.listedAt === undefined) return "Opens when the agent needs it";
   return `Listed ${listedAgo(row.listedAt, nowMs)}`;
 }
 

@@ -35,7 +35,15 @@ async function listMounts(ctx: ApiCtx): Promise<void> {
   const decision = await decideMountRead({ principalId, scopeId, canUseContext: mounts.canUseContext });
   if (!decision.ok) return refuse(ctx, decision);
 
-  return sendJson(res, 200, { mounts: await mounts.store.forScope(scopeId) });
+  // listedAt lives in the cache, not on the mount row, and it is per person.
+  // Without merging it here the UI can never show when *this* caller last saw
+  // the folder, and its refresh control has nothing to change.
+  const now = Date.now();
+  const rows = (await mounts.store.forScope(scopeId)).map((m) => {
+    const cached = mounts.cache.get(principalId, m.id, now);
+    return cached ? { ...m, listedAt: cached.listedAt, itemCount: cached.listing.entries.length } : m;
+  });
+  return sendJson(res, 200, { mounts: rows });
 }
 
 async function attachMount(ctx: ApiCtx): Promise<void> {
