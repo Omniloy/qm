@@ -74,7 +74,13 @@ interface ConnectorsResponse {
   providers?: Record<string, { connected?: boolean; needsReconnect?: boolean }>;
 }
 
-export async function loadDriveMounts(scopeId: string, rerender: () => void): Promise<void> {
+/**
+ * `scopeId` is nullable because callers reach here before contexts have
+ * loaded, when there is no personal scope to name yet. Loading nothing is the
+ * right answer then — the band renders its own empty state and a later draw
+ * picks it up.
+ */
+export async function loadDriveMounts(scopeId: string | null, rerender: () => void): Promise<void> {
   if (!scopeId) return;
   loadedScope = scopeId;
   try {

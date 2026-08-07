@@ -46,10 +46,14 @@ export function resetContextPicker(): void {
 /** Contexts this person could move something into, current one included. */
 export function movableContexts(): Array<{ scopeId: string; title: string }> {
   const personal = personalScopeId();
-  return contextsState.list
-    .filter((c) => c.scopeId === personal || c.kind === "project" || c.kind === "channel" || c.kind === "group")
-    .map((c) => ({ scopeId: c.scopeId, title: scopeTitle(c.scopeId, c.name) }))
-    .sort((a, b) => (a.scopeId === personal ? -1 : b.scopeId === personal ? 1 : a.title.localeCompare(b.title)));
+  return (
+    contextsState.list
+      // A Project is a channel or group scope, so those two kinds already cover
+      // everything the sidebar calls a Project — there is no separate kind.
+      .filter((c) => c.scopeId === personal || c.kind === "channel" || c.kind === "group")
+      .map((c) => ({ scopeId: c.scopeId, title: scopeTitle(c.scopeId, c.name) }))
+      .sort((a, b) => (a.scopeId === personal ? -1 : b.scopeId === personal ? 1 : a.title.localeCompare(b.title)))
+  );
 }
 
 export function contextPickerTpl(rerender: () => void): TemplateResult | typeof nothing {
@@ -84,10 +88,10 @@ export function contextPickerTpl(rerender: () => void): TemplateResult | typeof 
                 name="move-context"
                 .checked=${o.scopeId === choice}
                 @change=${() => {
-                choice = o.scopeId;
-                error = "";
-                rerender();
-              }}
+                  choice = o.scopeId;
+                  error = "";
+                  rerender();
+                }}
               />
               <span>${o.title}</span>
               ${o.scopeId === t.current ? html`<span class="badge">now</span>` : nothing}

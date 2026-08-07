@@ -4,7 +4,15 @@ import { api } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
 import { icon } from "./ui";
 import { resetRowMenus, rowMenuTpl } from "./row-actions";
-import { paneVisible, paneStatus, paneActions, primaryAction, timeLeft, type LiveSession } from "./browser-pane-state";
+import {
+  paneVisible,
+  paneStatus,
+  paneActions,
+  primaryAction,
+  timeLeft,
+  endedNote,
+  type LiveSession,
+} from "./browser-pane-state";
 
 /**
  * The browser a person has open, shown where the conversation that opened it
