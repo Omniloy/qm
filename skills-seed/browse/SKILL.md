@@ -150,6 +150,24 @@ step leaves you with `CDP_URL` (the websocket the runner drives) and `LIVE_VIEW`
 human-viewable session URL). Treat `CDP_URL` as a secret — some providers embed the API key
 in it; it rides only as a runner argument, never into chat or logs.
 
+Then tell QM about it, so the person gets a live pane in the conversation instead of a link:
+
+```bash
+BROWSE_SESSION=$(curl -fsS -X POST "$AGENT_API_URL/v1/browser-sessions" \
+  -H "x-agent-capability: $AGENT_API_TOKEN" -H 'content-type: application/json' \
+  -d "{\"provider\":\"<anchor|kernel|browserbase>\",\"sessionId\":\"$SESSION_ID\",\"liveViewUrl\":\"$LIVE_VIEW\",\"expiresAt\":$(( ($(date +%s) + 1800) * 1000 ))}" \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['session']['sessionId'])")
+```
+
+`expiresAt` is when the provider will close the browser — match the timeout you asked for, so
+the pane stops showing a browser that has already gone. Send `LIVE_VIEW`, never `CDP_URL`:
+core rejects a CDP-shaped URL because that value reaches the person's browser tab, and on some
+providers it carries the API key. QM takes the conversation from your token, so there is
+nothing to pass and nothing to get wrong.
+
+If this call fails, keep going — the browser still works, the person just has no pane. Say so
+rather than pasting the link.
+
 ## 2. Run the task with the embedded runner
 
 The runtime is already on your computer at `/opt/browser-engine/venv` — do not pip install.
@@ -218,6 +236,33 @@ GUARD = (
     " authorizes — never add items, upgrades, or tips the task doesn't name."
 )
 
+# While a person has taken the wheel from the pane, this agent must not act.
+# Two writers in one browser is how a half-finished sign-in gets clicked away
+# underneath someone. Parking BETWEEN steps rather than mid-action means the
+# browser is always in a coherent state when they get it.
+STATE_URL = os.environ.get("BROWSE_STATE_URL", "")
+
+async def wait_for_the_wheel():
+    if not STATE_URL:
+        return
+    import urllib.request
+    told = False
+    while True:
+        try:
+            req = urllib.request.Request(STATE_URL, headers={"x-agent-capability": os.environ.get("AGENT_API_TOKEN", "")})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                mode = json.load(r).get("controlMode", "agent")
+        except Exception:
+            return  # Cannot ask: carry on rather than stall forever.
+        if mode != "human_control":
+            if told:
+                print(json.dumps({"outcome": "resumed"}), flush=True)
+            return
+        if not told:
+            print(json.dumps({"outcome": "paused", "reason": "human_control"}), flush=True)
+            told = True
+        await asyncio.sleep(2)
+
 async def main():
     session = BrowserSession(cdp_url=CDP)
     await session.start()
@@ -226,7 +271,8 @@ async def main():
                   llm=Chat(model=MODEL),
                   browser_session=session,
                   **({"available_file_paths": files} if files else {}))
-    history = await agent.run(max_steps=int(os.environ.get("BROWSE_LAB_MAX_STEPS", "50")))
+    history = await agent.run(max_steps=int(os.environ.get("BROWSE_LAB_MAX_STEPS", "50")),
+                              on_step_start=lambda _a: wait_for_the_wheel())
     answer = history.final_result() or ""
     if not answer:
 
@@ -247,10 +293,15 @@ async def main():
 asyncio.run(main())
 PY
 
-ANTHROPIC_API_KEY="$BROWSE_LAB_ANTHROPIC_KEY" \
+BROWSE_STATE_URL="$AGENT_API_URL/v1/browser-sessions/$SESSION_ID/state" \
+  AGENT_API_TOKEN="$AGENT_API_TOKEN" ANTHROPIC_API_KEY="$BROWSE_LAB_ANTHROPIC_KEY" \
   /opt/browser-engine/venv/bin/python /tmp/browse-runner.py "<the task, plain language>" "$CDP_URL" \
   | tee /tmp/browse-out.txt
 ```
+
+`BROWSE_STATE_URL` is what makes **Take control** mean something: the runner checks it before
+every step and waits while the person has the wheel. Omit it and the run still works, but the
+two of you will be clicking in the same browser at once.
 
 (The `tee` matters: the outcome JSON lands in `/tmp/browse-out.txt`, which is how a wall URL
 gets into later commands as data instead of being pasted into shell source.)
@@ -282,7 +333,9 @@ land), then name that in-browser path in the task and hand it to the runner via
 `BROWSE_FILES`:
 
 ```bash
-BROWSE_FILES="<in-browser path from the provider doc>" ANTHROPIC_API_KEY="$BROWSE_LAB_ANTHROPIC_KEY" \
+BROWSE_FILES="<in-browser path from the provider doc>" \
+  BROWSE_STATE_URL="$AGENT_API_URL/v1/browser-sessions/$SESSION_ID/state" \
+  AGENT_API_TOKEN="$AGENT_API_TOKEN" ANTHROPIC_API_KEY="$BROWSE_LAB_ANTHROPIC_KEY" \
   /opt/browser-engine/venv/bin/python /tmp/browse-runner.py \
   "… attach the receipt at <in-browser path> using the file upload input …" "$CDP_URL" \
   | tee /tmp/browse-out.txt
@@ -316,14 +369,22 @@ The last stdout line is the typed outcome:
   flow ends the same way: the person signs in once, the sign-in lands durably in THEIR
   profile (or the provider's managed store), and you relaunch the browser and re-run the
   task. Two rules hold for all providers: sign-in and live-view links are single-audience
-  bearer material — hand them to the person in a DM, never open them yourself; and a
+  bearer material — never open them yourself, and never paste one into the conversation; and a
   mid-session verification check (already signed in, then challenged) is cleared on the LIVE
-  browser — hand the person `$LIVE_VIEW`, wait for done, re-run.
+  browser. The person already has that browser in the pane below the conversation: ask them to
+  press **Take control**, sign in, then hand it back. You will park automatically while they
+  hold it and resume when they release, so there is usually nothing to re-run.
 
 ## 3. Clean up
 
 Always delete the browser when the task is over (it otherwise idles until its timeout) —
-the provider doc's "Clean up" section has the call.
+the provider doc's "Clean up" section has the call. Then release the pane, so the person is
+not left looking at a browser that no longer exists:
+
+```bash
+curl -fsS -X DELETE "$AGENT_API_URL/v1/browser-sessions/$SESSION_ID" \
+  -H "x-agent-capability: $AGENT_API_TOKEN" > /dev/null || true
+```
 
 ## Reporting
 
