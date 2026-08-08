@@ -526,8 +526,13 @@ def main():
     # the agent, which can see the snapshot; a person clicks a picture.
     pc.add_argument("--at", help="X,Y in page coordinates")
     pt = sub.add_parser("type")
-    pt.add_argument("text"); pt.add_argument("--into", type=int)
+    pt.add_argument("text", nargs="?"); pt.add_argument("--into", type=int)
     pt.add_argument("--into-selector"); pt.add_argument("--enter", action="store_true")
+    # What a person typed in the pane arrives base64-encoded so it never has to
+    # survive a shell. Their keystrokes are arbitrary text; interpolating that
+    # into a command line is how a password with a quote in it becomes an
+    # injection.
+    pt.add_argument("--text-b64")
     pk = sub.add_parser("key"); pk.add_argument("name")
     psc = sub.add_parser("scroll")
     psc.add_argument("--by", type=int, default=600); psc.add_argument("--to")
@@ -678,7 +683,15 @@ def main():
                 do_click(c, a.ref, a.selector)
 
         elif a.cmd == "type":
-            do_type(c, a.text, a.into, a.into_selector, a.enter)
+            text = a.text
+            if a.text_b64:
+                try:
+                    text = base64.b64decode(a.text_b64).decode("utf-8")
+                except Exception:
+                    die("--text-b64 is not valid base64 utf-8")
+            if text is None:
+                die("give the text to type, or --text-b64")
+            do_type(c, text, a.into, a.into_selector, a.enter)
 
         elif a.cmd == "key":
             if a.name not in KEYS:

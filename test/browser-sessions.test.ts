@@ -300,6 +300,144 @@ test("ending a browser twice is not an error", async () => {
   assert.equal(await run(), 200, "the skill's cleanup and a person's click can race");
 });
 
+/* ------------------------------------------------------ frames and input */
+
+/** A sandbox that records what it was asked to run, and says it worked. */
+function fakeSandbox(stdout = "") {
+  const ran: string[] = [];
+  return {
+    ran,
+    sandbox: {
+      provision: async () => ({ id: "h1", rootDir: "/root" }),
+      run: async (_h: unknown, command: string) => {
+        ran.push(command);
+        return { stdout, stderr: "", code: 0, timedOut: false };
+      },
+    },
+  };
+}
+
+const streamed = (over: Record<string, unknown> = {}) =>
+  session({ provider: "local", viewer: "stream", liveViewUrl: undefined, ...over });
+
+test("a frame comes from the caller's own sandbox, addressed by their token", async () => {
+  const s = store();
+  await s.put(streamed());
+  const f = fakeSandbox(JSON.stringify({ w: 1280, h: 700, jpeg: "abc" }));
+  const { ctx: c, sent } = ctx({
+    deps: { liveBrowserSessions: s, sandbox: f.sandbox } as never,
+    capability: cap() as never,
+    params: { id: "s1" },
+  });
+  await route("GET", "/v1/browser-sessions/:id/frame").handle(c);
+  assert.equal(sent[0]?.status, 200);
+  assert.equal(sent[0]?.body.w, 1280, "the viewport travels with the image");
+  assert.match(f.ran[0] ?? "", /browser\.py frame/);
+});
+
+test("a vendor's browser has no frames for us to serve", async () => {
+  const s = store();
+  await s.put(session()); // iframe
+  const { ctx: c, sent } = ctx({
+    deps: { liveBrowserSessions: s, sandbox: fakeSandbox().sandbox } as never,
+    capability: cap() as never,
+    params: { id: "s1" },
+  });
+  await route("GET", "/v1/browser-sessions/:id/frame").handle(c);
+  assert.equal(sent[0]?.status, 400);
+  assert.match(sent[0]?.body.message, /not one QM streams/);
+});
+
+test("the pane cannot drive until the person has taken control", async () => {
+  // The mirror of the agent-side check: two writers in one browser, from the
+  // other direction.
+  const s = store();
+  await s.put(streamed());
+  const f = fakeSandbox();
+  const { ctx: c, sent } = ctx({
+    deps: { liveBrowserSessions: s, sandbox: f.sandbox } as never,
+    capability: cap() as never,
+    params: { id: "s1" },
+    body: { kind: "click", x: 10, y: 20 },
+  });
+  await route("POST", "/v1/browser-sessions/:id/input").handle(c);
+  assert.equal(sent[0]?.status, 409);
+  assert.match(sent[0]?.body.message, /take control/i);
+  assert.equal(f.ran.length, 0, "and nothing reached the browser");
+});
+
+test("typed text never reaches a shell", async () => {
+  // A person's keystrokes are arbitrary — a password with a quote in it must
+  // not become a command. Base64 is the whole defence, so it is worth a test.
+  const s = store();
+  await s.put(streamed({ controlMode: "human_control" }));
+  const f = fakeSandbox();
+  const nasty = `"; rm -rf / #`;
+  const { ctx: c, sent } = ctx({
+    deps: { liveBrowserSessions: s, sandbox: f.sandbox } as never,
+    capability: cap() as never,
+    params: { id: "s1" },
+    body: { kind: "type", text: nasty },
+  });
+  await route("POST", "/v1/browser-sessions/:id/input").handle(c);
+  assert.equal(sent[0]?.status, 200);
+  const cmd = f.ran[0] ?? "";
+  assert.doesNotMatch(cmd, /rm -rf/, "the text is not in the command line");
+  assert.match(cmd, /--text-b64 /);
+  assert.equal(
+    Buffer.from(cmd.split("--text-b64 ")[1]!.trim(), "base64").toString("utf8"),
+    nasty,
+    "and it arrives intact",
+  );
+});
+
+test("input QM relays is exempt from the agent's control check", async () => {
+  // Otherwise the person's own click would be refused on the grounds that the
+  // person has control, and takeover would deadlock.
+  const s = store();
+  await s.put(streamed({ controlMode: "human_control" }));
+  const f = fakeSandbox();
+  const { ctx: c, sent } = ctx({
+    deps: { liveBrowserSessions: s, sandbox: f.sandbox } as never,
+    capability: cap() as never,
+    params: { id: "s1" },
+    body: { kind: "click", x: 10.6, y: 20.2 },
+  });
+  await route("POST", "/v1/browser-sessions/:id/input").handle(c);
+  assert.equal(sent[0]?.status, 200);
+  assert.match(f.ran[0] ?? "", /--from-pane click --at 11,20/);
+});
+
+test("an unknown input kind is refused rather than guessed at", async () => {
+  const s = store();
+  await s.put(streamed({ controlMode: "human_control" }));
+  const f = fakeSandbox();
+  const { ctx: c, sent } = ctx({
+    deps: { liveBrowserSessions: s, sandbox: f.sandbox } as never,
+    capability: cap() as never,
+    params: { id: "s1" },
+    body: { kind: "eval", text: "alert(1)" },
+  });
+  await route("POST", "/v1/browser-sessions/:id/input").handle(c);
+  assert.equal(sent[0]?.status, 400);
+  assert.equal(f.ran.length, 0);
+});
+
+test("a key name is a name, not a command fragment", async () => {
+  const s = store();
+  await s.put(streamed({ controlMode: "human_control" }));
+  const f = fakeSandbox();
+  const { ctx: c, sent } = ctx({
+    deps: { liveBrowserSessions: s, sandbox: f.sandbox } as never,
+    capability: cap() as never,
+    params: { id: "s1" },
+    body: { kind: "key", name: "Enter; whoami" },
+  });
+  await route("POST", "/v1/browser-sessions/:id/input").handle(c);
+  assert.equal(sent[0]?.status, 400);
+  assert.equal(f.ran.length, 0);
+});
+
 test("state is cheap and carries no secret", async () => {
   // The runner polls this between every step, so it must not mint a URL.
   const s = store();
