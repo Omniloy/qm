@@ -205,6 +205,75 @@ def http_json(url, timeout=5):
         return json.loads(r.read().decode())
 
 
+# ------------------------------------------------------------------- core
+
+def core_call(method, path, body=None, timeout=8):
+    """Talk to QM. Returns None when QM is unreachable or says no.
+
+    Every caller treats failure as "no pane", never as "no browser": the person
+    asked to browse, and losing the picture is not a reason to refuse the task.
+    """
+    base = os.environ.get("AGENT_API_URL", "").rstrip("/")
+    token = os.environ.get("AGENT_API_TOKEN", "")
+    if not base or not token:
+        return None
+    req = urllib.request.Request(
+        f"{base}{path}", method=method,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"x-agent-capability": token,
+                 **({"content-type": "application/json"} if body is not None else {})},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            raw = r.read().decode()
+            return json.loads(raw) if raw.strip() else {}
+    except Exception:
+        return None
+
+
+def register(state):
+    """Tell QM a browser is open, so a pane appears beside the conversation.
+
+    Registered as a streamed viewer with no URL: this browser is reached
+    through QM's own authenticated endpoint, so unlike a hosted one there is no
+    link that would work for whoever found it.
+    """
+    session_id = state.get("sessionId") or os.urandom(8).hex()
+    state["sessionId"] = session_id
+    r = core_call("POST", "/v1/browser-sessions", {
+        "provider": "local",
+        "sessionId": session_id,
+        "viewer": "stream",
+        # The pane stops showing a browser that has gone; this bound is what
+        # the idle reaper enforces from the other side.
+        "expiresAt": int((time.time() + 30 * 60) * 1000),
+    })
+    state["registered"] = bool(r)
+    write_state(state)
+    return bool(r)
+
+
+def unregister(state):
+    sid = state.get("sessionId")
+    if sid:
+        core_call("DELETE", f"/v1/browser-sessions/{sid}")
+
+
+def control_mode(state):
+    """Who has the wheel right now, as far as QM knows.
+
+    Unknown counts as the agent's: a browser nobody registered still has to be
+    drivable, and refusing on a failed lookup would strand the task.
+    """
+    sid = state.get("sessionId")
+    if not sid or not state.get("registered"):
+        return "agent"
+    r = core_call("GET", f"/v1/browser-sessions/{sid}/state", timeout=5)
+    if not isinstance(r, dict):
+        return "agent"
+    return r.get("controlMode") or "agent"
+
+
 def page_ws_url(port):
     """The debugger URL of the first real page target."""
     for t in http_json(f"http://127.0.0.1:{port}/json/list"):
@@ -437,6 +506,10 @@ KEYS = {
 
 def main():
     p = argparse.ArgumentParser(prog="browser.py", add_help=True)
+    # Set by QM when it relays what a person did in the pane. Their input must
+    # not be refused by the check that stops the agent driving while they hold
+    # the wheel — they ARE the wheel.
+    p.add_argument("--from-pane", action="store_true", help=argparse.SUPPRESS)
     sub = p.add_subparsers(dest="cmd", required=True)
 
     po = sub.add_parser("open", help="start or reattach to a browser")
@@ -449,6 +522,9 @@ def main():
     pr.add_argument("--selector"); pr.add_argument("--max", type=int, default=6000)
     pc = sub.add_parser("click")
     pc.add_argument("ref", nargs="?", type=int); pc.add_argument("--selector")
+    # Viewport coordinates, for a click a person made in the pane. Refs are for
+    # the agent, which can see the snapshot; a person clicks a picture.
+    pc.add_argument("--at", help="X,Y in page coordinates")
     pt = sub.add_parser("type")
     pt.add_argument("text"); pt.add_argument("--into", type=int)
     pt.add_argument("--into-selector"); pt.add_argument("--enter", action="store_true")
@@ -456,6 +532,12 @@ def main():
     psc = sub.add_parser("scroll")
     psc.add_argument("--by", type=int, default=600); psc.add_argument("--to")
     psh = sub.add_parser("screenshot"); psh.add_argument("--path", default="/tmp/page.jpg")
+    pf = sub.add_parser("frame", help="one JPEG plus its viewport size, as JSON on stdout")
+    # Sized for the pane, which renders about 730px wide. Measured on a real
+    # article: 800px/q55 is 42 KB, where full resolution is 87 KB for detail
+    # that is scaled away before anyone sees it.
+    pf.add_argument("--quality", type=int, default=55)
+    pf.add_argument("--width", type=int, default=800)
     sub.add_parser("status")
     sub.add_parser("close")
 
@@ -472,8 +554,15 @@ def main():
         state = {"provider": "local", "port": port,
                  "startedAt": int(time.time()), "lastUsedAt": int(time.time())}
         write_state(state)
+        shown = register(state)
         print(f"Browser open (local chromium, profile {PROFILE_DIR}).")
         print("Sign-ins here persist between sessions.")
+        print("The person can see it in the pane below the conversation, and take control."
+              if shown else
+              # Worth saying rather than swallowing: the browser works, but
+              # nobody can watch it, so "press Take control" is not advice to give.
+              "QM did not accept the session, so there is no pane — the person cannot watch "
+              "or take over. Browsing still works; say so if a sign-in comes up.")
         return
 
     # ------------------------------------------------------------ status
@@ -515,11 +604,22 @@ def main():
             if not alive(state.get("port", DEBUG_PORT)):
                 break
             time.sleep(0.5)
+        unregister(state)
         clear_state()
         print("Browser closed. Sign-ins were saved.")
         return
 
     c, state = connect()
+
+    # Two writers in one browser is how a half-finished sign-in gets clicked
+    # away underneath someone. One check per call is all this needs — the calls
+    # are short, so there is no long action to interrupt and nothing to park.
+    if a.cmd in ("go", "click", "type", "key", "scroll") and not a.from_pane:
+        if control_mode(state) == "human_control":
+            c.close()
+            die("The person has taken control of this browser. Wait for them to hand it back "
+                "before acting — tell them what you were about to do, and let them finish.")
+
     try:
         if a.cmd == "go":
             # Any scheme is taken as written — about:blank and data: have no
@@ -563,9 +663,19 @@ def main():
                       "use --selector to narrow, or --max to raise the limit]")
 
         elif a.cmd == "click":
-            if a.ref is None and not a.selector:
-                die("give a ref from `snapshot` or --selector")
-            do_click(c, a.ref, a.selector)
+            if a.at:
+                try:
+                    x, y = (float(v) for v in a.at.split(",", 1))
+                except ValueError:
+                    die("--at wants X,Y")
+                for typ in ("mousePressed", "mouseReleased"):
+                    c.call("Input.dispatchMouseEvent", type=typ, x=x, y=y,
+                           button="left", clickCount=1)
+                print(f"clicked at {int(x)},{int(y)}")
+            elif a.ref is None and not a.selector:
+                die("give a ref from `snapshot`, --selector, or --at X,Y")
+            else:
+                do_click(c, a.ref, a.selector)
 
         elif a.cmd == "type":
             do_type(c, a.text, a.into, a.into_selector, a.enter)
@@ -594,6 +704,27 @@ def main():
             with open(a.path, "wb") as f:
                 f.write(raw)
             print(f"{a.path} ({len(raw) // 1024} KB)")
+
+        elif a.cmd == "frame":
+            # For the pane, not for the agent. The viewport size travels with
+            # the image because the pane scales it to fit, and a click has to
+            # be mapped back to page coordinates — guessing that from the JPEG
+            # alone puts every click in the wrong place.
+            size = json.loads(c.eval(
+                "JSON.stringify({w: innerWidth, h: innerHeight, url: location.href,"
+                " title: document.title})"))
+            # Downscale on the way out. The pane shows this in a box a few
+            # hundred pixels wide, so sending full-resolution pixels spends
+            # bandwidth on detail that is thrown away before anyone sees it.
+            scale = min(1.0, a.width / size["w"]) if size["w"] else 1.0
+            r = c.call("Page.captureScreenshot", format="jpeg", quality=a.quality,
+                       optimizeForSpeed=True,
+                       clip={"x": 0, "y": 0, "width": size["w"], "height": size["h"],
+                             "scale": round(scale, 4)})
+            sys.stdout.write(json.dumps({
+                "w": size["w"], "h": size["h"], "url": size["url"],
+                "title": size["title"], "jpeg": r["data"],
+            }))
     finally:
         c.close()
 

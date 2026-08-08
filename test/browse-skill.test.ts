@@ -86,6 +86,57 @@ test("a CDP failure reads as a message, not a traceback", () => {
   assert.match(CLI, /die\(str\(e\)\)/);
 });
 
+/* ------------------------------------------------------- pane and control */
+
+test("a local browser registers as streamed, carrying no URL", () => {
+  // Core refuses a liveViewUrl on a streamed viewer precisely so a CDP URL
+  // cannot be pasted where a viewer URL belongs. Sending one here would turn
+  // that protection into a failed registration and a missing pane.
+  const reg = /def register\([\s\S]{0,1200}/.exec(CLI)?.[0] ?? "";
+  assert.match(reg, /"viewer": "stream"/);
+  assert.doesNotMatch(reg, /liveViewUrl/, "a streamed browser has no viewer URL to send");
+  assert.match(reg, /"provider": "local"/);
+});
+
+test("losing the pane never costs the person the browser", () => {
+  // They asked to browse. If QM cannot be reached the picture is gone, but the
+  // task is still doable, and refusing would be the wrong trade.
+  assert.match(CLI, /never as "no browser"/);
+  const open = /shown = register\(state\)[\s\S]{0,700}/.exec(CLI)?.[0] ?? "";
+  assert.match(open, /Browsing still works/);
+});
+
+test("the agent is refused while a person holds the wheel", () => {
+  // Replaces the old parking loop: the calls are short, so a single check
+  // before each one is enough and there is no long action to interrupt.
+  const guard = /if a\.cmd in \("go", "click", "type", "key", "scroll"\)[\s\S]{0,500}/.exec(CLI)?.[0] ?? "";
+  assert.match(guard, /not a\.from_pane/);
+  assert.match(guard, /human_control/);
+  assert.match(guard, /Wait for them to hand it back/);
+});
+
+test("input relayed from the pane is not blocked by that check", () => {
+  // The person IS the wheel; refusing their own click would deadlock takeover.
+  assert.match(CLI, /--from-pane/);
+  assert.match(CLI, /they ARE the wheel/);
+});
+
+test("an unknown control mode lets the agent carry on", () => {
+  // A browser nobody registered still has to be drivable, and failing closed on
+  // a lookup error would strand every task whenever QM hiccups.
+  const cm = /def control_mode\([\s\S]{0,700}/.exec(CLI)?.[0] ?? "";
+  assert.match(cm, /return "agent"/);
+});
+
+test("a frame carries the viewport size, so a click lands where it was aimed", () => {
+  // The pane scales the image to fit. Without the true viewport size it cannot
+  // map a click back to page coordinates, and every click misses.
+  const frame = /elif a\.cmd == "frame":[\s\S]{0,1800}/.exec(CLI)?.[0] ?? "";
+  assert.match(frame, /"w": size\["w"\]/);
+  assert.match(frame, /"h": size\["h"\]/);
+  assert.match(frame, /clip=/, "downscaled on the way out rather than in the pane");
+});
+
 /* ---------------------------------------------------------------- safety */
 
 test("an automation block is explained as the site's choice, not a bug to retry", () => {
