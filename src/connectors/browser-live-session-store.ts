@@ -77,6 +77,14 @@ export interface LiveBrowserSessionStore {
   /** Null when there is no live session to hand over. */
   setControl(principalId: string, mode: ControlMode, nowMs: number): Promise<LiveBrowserSession | null>;
   clear(principalId: string): Promise<void>;
+  /**
+   * How many browsers are open right now, across everyone.
+   *
+   * A browser costs about 1.25 GB, so this is the number that decides whether
+   * another one fits on the host. Expired records do not count — they describe
+   * browsers that are already gone.
+   */
+  countLive(nowMs: number): Promise<number>;
 }
 
 export function createLiveBrowserSessionStore(deps: {
@@ -167,6 +175,11 @@ export function createLiveBrowserSessionStore(deps: {
 
     async clear(principalId) {
       await deps.sessions.delete(principalId);
+    },
+
+    async countLive(nowMs) {
+      const all = await deps.sessions.all();
+      return all.filter((rec) => rec.expiresAt > nowMs).length;
     },
   };
 }

@@ -213,10 +213,20 @@ def core_call(method, path, body=None, timeout=8):
     Every caller treats failure as "no pane", never as "no browser": the person
     asked to browse, and losing the picture is not a reason to refuse the task.
     """
+    status, payload = core_call_status(method, path, body, timeout)
+    return payload if status and 200 <= status < 300 else None
+
+
+def core_call_status(method, path, body=None, timeout=8):
+    """As above, but says what QM answered.
+
+    Some refusals are meant to be obeyed rather than shrugged off — "there is
+    no room for another browser" is a real answer, not a failed lookup.
+    """
     base = os.environ.get("AGENT_API_URL", "").rstrip("/")
     token = os.environ.get("AGENT_API_TOKEN", "")
     if not base or not token:
-        return None
+        return None, None
     req = urllib.request.Request(
         f"{base}{path}", method=method,
         data=json.dumps(body).encode() if body is not None else None,
@@ -226,31 +236,42 @@ def core_call(method, path, body=None, timeout=8):
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             raw = r.read().decode()
-            return json.loads(raw) if raw.strip() else {}
+            return r.status, (json.loads(raw) if raw.strip() else {})
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read().decode())
+        except Exception:
+            return e.code, {}
     except Exception:
-        return None
+        return None, None
 
 
 def register(state):
-    """Tell QM a browser is open, so a pane appears beside the conversation.
+    """Claim a browser with QM, before spending a gigabyte starting one.
 
     Registered as a streamed viewer with no URL: this browser is reached
     through QM's own authenticated endpoint, so unlike a hosted one there is no
     link that would work for whoever found it.
+
+    Returns "ok", "full" (QM says there is no room — obey it), or "no-pane"
+    (QM could not be reached, so browse anyway without one).
     """
     session_id = state.get("sessionId") or os.urandom(8).hex()
     state["sessionId"] = session_id
-    r = core_call("POST", "/v1/browser-sessions", {
+    status, payload = core_call_status("POST", "/v1/browser-sessions", {
         "provider": "local",
         "sessionId": session_id,
         "viewer": "stream",
-        # The pane stops showing a browser that has gone; this bound is what
-        # the idle reaper enforces from the other side.
+        # The pane stops showing a browser that has gone; the watchdog below
+        # enforces the same bound on the browser itself.
         "expiresAt": int((time.time() + 30 * 60) * 1000),
     })
-    state["registered"] = bool(r)
+    if status == 409:
+        return "full", (payload or {}).get("message", "there is no room for another browser right now")
+    ok = bool(status and 200 <= status < 300)
+    state["registered"] = ok
     write_state(state)
-    return bool(r)
+    return ("ok" if ok else "no-pane"), ""
 
 
 def unregister(state):
@@ -316,7 +337,15 @@ def touch(state):
 
 # ------------------------------------------------------------------ launch
 
-def launch_local(headless=True):
+def spawn_chromium(headless=True):
+    """Start chromium as a CHILD of this process, and hand back the handle.
+
+    Deliberately not detached. A chromium orphaned to PID 1 becomes a zombie
+    when it exits, because PID 1 in this computer is the exec daemon and does
+    not reap anyone — measured, after a handful of sessions, as ~14 dead
+    process entries each. They hold no memory but they do hold PIDs. The
+    watchdog owns the process instead, and waits on it.
+    """
     exe = shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")
     if not exe:
         die("no chromium on PATH in this sandbox")
@@ -336,15 +365,145 @@ def launch_local(headless=True):
         "--no-default-browser-check",
         "about:blank",
     ]
-    args = [a for a in args if a]
-    subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     start_new_session=True)
-    end = time.time() + LAUNCH_TIMEOUT
+    return subprocess.Popen([a for a in args if a],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def wait_for_port(seconds=LAUNCH_TIMEOUT):
+    end = time.time() + seconds
     while time.time() < end:
         if alive(DEBUG_PORT):
-            return DEBUG_PORT
+            return True
         time.sleep(0.4)
-    die("chromium did not start within %ds" % LAUNCH_TIMEOUT)
+    return False
+
+
+# --------------------------------------------------------------- watchdog
+
+IDLE_LIMIT = 30 * 60          # seconds a browser may sit unused
+CLOSE_GRACE = 15              # how long to wait for a graceful close
+WATCH_TICK = 30               # how often the watchdog looks
+
+
+def close_browser(state, reason):
+    """Shut the browser down without losing what it learned.
+
+    Chromium batches its cookie writes, so killing the process throws away
+    exactly the sign-in someone just completed — measured, not theorised. So
+    ask it to close, wait, and only then insist.
+    """
+    port = state.get("port", DEBUG_PORT)
+    try:
+        c = CDP(page_ws_url(port), timeout=10)
+        try:
+            c.call("Browser.close")
+        finally:
+            c.close()
+    except Exception:
+        pass
+    for _ in range(CLOSE_GRACE * 2):
+        if not alive(port):
+            break
+        time.sleep(0.5)
+    if alive(port):
+        # It ignored us. Losing recent cookies beats leaking a gigabyte, but
+        # this is the unhappy path and it is deliberately last.
+        subprocess.run(["pkill", "-f", f"user-data-dir={PROFILE_DIR}"], check=False)
+        time.sleep(2)
+    unregister(state)
+    clear_state()
+    return reason
+
+
+def become_subreaper():
+    """Adopt the browser's whole process tree, not just its root.
+
+    Chromium is a dozen processes — a zygote, a GPU process, one per renderer —
+    and they are children of the one we start, not of us. When it exits they
+    are re-parented to PID 1, which in this computer is the exec daemon and
+    reaps nobody, so each session left a handful of dead entries behind.
+    Becoming a subreaper makes them ours to bury instead.
+    """
+    try:
+        import ctypes
+
+        PR_SET_CHILD_SUBREAPER = 36
+        ctypes.CDLL("libc.so.6", use_errno=True).prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0)
+    except Exception:
+        # Not fatal, and not worth failing a browser over: without it the only
+        # cost is a few dead process entries per session.
+        pass
+
+
+def reap_orphans():
+    while True:
+        try:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return
+        except Exception:
+            return
+        if pid == 0:
+            return
+
+
+def watchdog(headless=True):
+    """Own the browser: start it, outlive it, and close it when it is forgotten.
+
+    This process is the browser's parent for its whole life. That is what keeps
+    it from becoming a zombie, and it is also the only thing that can close it
+    gracefully — QM can forget a session, but only something inside this
+    computer can ask Chromium to flush its cookies and stop.
+    """
+    become_subreaper()
+    proc = spawn_chromium(headless)
+    if not wait_for_port():
+        proc.kill()
+        return
+    state = read_state() or {}
+    state.update({"provider": "local", "port": DEBUG_PORT, "lastUsedAt": int(time.time())})
+    state.setdefault("startedAt", int(time.time()))
+    write_state(state)
+
+    try:
+        while True:
+            time.sleep(WATCH_TICK)
+            # Renderers come and go all session; bury each as it exits rather
+            # than letting them pile up while the browser is still open.
+            reap_orphans()
+            if proc.poll() is not None:
+                # It went on its own — a crash, or someone closed it directly.
+                clear_state()
+                return
+            state = read_state()
+            if not state:
+                break
+            if time.time() - state.get("lastUsedAt", 0) >= IDLE_LIMIT:
+                close_browser(state, "idle")
+                break
+    finally:
+        # Waiting is the point: an unwaited child left behind by this process
+        # is exactly the zombie this structure exists to avoid.
+        try:
+            proc.wait(timeout=CLOSE_GRACE)
+        except Exception:
+            proc.kill()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+        # Chromium's helpers land here once it is gone, having been inherited
+        # rather than orphaned. Give them a moment to exit, then bury them.
+        for _ in range(10):
+            reap_orphans()
+            time.sleep(0.3)
+
+
+def start_watchdog(headless=True):
+    subprocess.Popen(
+        [sys.executable, os.path.abspath(__file__), "watch"] + ([] if headless else ["--headful"]),
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+    )
 
 
 # ------------------------------------------------------------------- verbs
@@ -545,6 +704,8 @@ def main():
     pf.add_argument("--width", type=int, default=800)
     sub.add_parser("status")
     sub.add_parser("close")
+    pw = sub.add_parser("watch", help=argparse.SUPPRESS)
+    pw.add_argument("--headful", action="store_true")
 
     a = p.parse_args()
 
@@ -555,19 +716,34 @@ def main():
             touch(state)
             print(f"A browser is already open (provider={state.get('provider')}). Reusing it.")
             return
-        port = launch_local(headless=not a.headful)
-        state = {"provider": "local", "port": port,
-                 "startedAt": int(time.time()), "lastUsedAt": int(time.time())}
+        # Claim first, launch second. A browser costs about a gigabyte, and
+        # being told "no room" after spending it helps nobody.
+        state = {"provider": "local", "startedAt": int(time.time()),
+                 "lastUsedAt": int(time.time())}
+        outcome, why = register(state)
+        if outcome == "full":
+            clear_state()
+            die(f"No browser was opened: {why}\n"
+                "Nothing is broken and nothing is lost — say so, and offer to try again shortly.")
+
         write_state(state)
-        shown = register(state)
+        # The watchdog starts the browser and stays its parent for life.
+        start_watchdog(headless=not a.headful)
+        if not wait_for_port():
+            clear_state()
+            die(f"chromium did not start within {LAUNCH_TIMEOUT}s")
         print(f"Browser open (local chromium, profile {PROFILE_DIR}).")
         print("Sign-ins here persist between sessions.")
         print("The person can see it in the pane below the conversation, and take control."
-              if shown else
+              if outcome == "ok" else
               # Worth saying rather than swallowing: the browser works, but
               # nobody can watch it, so "press Take control" is not advice to give.
               "QM did not accept the session, so there is no pane — the person cannot watch "
               "or take over. Browsing still works; say so if a sign-in comes up.")
+        return
+
+    if a.cmd == "watch":
+        watchdog(headless=not a.headful)
         return
 
     # ------------------------------------------------------------ status
@@ -595,22 +771,7 @@ def main():
             return
         # Graceful, not a kill: chromium batches cookie writes, so a SIGKILL
         # here discards the sign-in someone just completed.
-        try:
-            c, _ = connect()
-            try:
-                c.call("Browser.close")
-            finally:
-                c.close()
-        except SystemExit:
-            raise
-        except Exception:
-            pass
-        for _ in range(20):
-            if not alive(state.get("port", DEBUG_PORT)):
-                break
-            time.sleep(0.5)
-        unregister(state)
-        clear_state()
+        close_browser(state, "asked")
         print("Browser closed. Sign-ins were saved.")
         return
 

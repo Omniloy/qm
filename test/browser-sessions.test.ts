@@ -300,6 +300,45 @@ test("ending a browser twice is not an error", async () => {
   assert.equal(await run(), 200, "the skill's cleanup and a person's click can race");
 });
 
+/* ------------------------------------------------------------ how many */
+
+test("a second browser is refused in a sentence, not an out-of-memory kill", async () => {
+  // One costs about 1.25 GB on a host that also runs other things. The caller
+  // registers BEFORE launching, so this refusal arrives while it is still free
+  // to obey — being told "no room" after spending the gigabyte helps nobody.
+  const s = store();
+  await s.put(session({ principalId: "someone@else.com" }));
+  const { ctx: c, sent } = ctx({
+    deps: { liveBrowserSessions: s, maxLiveBrowsers: 1 } as never,
+    capability: cap() as never,
+    body: { provider: "local", sessionId: "s2", viewer: "stream", expiresAt: NOW + 60_000 },
+  });
+  await route("POST", "/v1/browser-sessions").handle(c);
+  assert.equal(sent[0]?.status, 409);
+  assert.match(sent[0]?.body.message, /only room for one/);
+  assert.match(sent[0]?.body.message, /try again/, "and says what to do about it");
+});
+
+test("re-registering your own browser is not competing with yourself", async () => {
+  // Otherwise reopening after a crash would be refused on the grounds that you
+  // already have the browser you just lost.
+  const s = store();
+  await s.put(streamed());
+  const { ctx: c, sent } = ctx({
+    deps: { liveBrowserSessions: s, maxLiveBrowsers: 1, auditLog: { record: () => undefined } } as never,
+    capability: cap() as never,
+    body: { provider: "local", sessionId: "s9", viewer: "stream", expiresAt: NOW + 60_000 },
+  });
+  await route("POST", "/v1/browser-sessions").handle(c);
+  assert.equal(sent[0]?.status, 200);
+});
+
+test("an expired record does not hold a slot for a browser that is gone", async () => {
+  const s = store();
+  await s.put(session({ principalId: "someone@else.com", expiresAt: NOW - 1 }));
+  assert.equal(await s.countLive(NOW), 0);
+});
+
 /* ------------------------------------------------------ frames and input */
 
 /** A sandbox that records what it was asked to run, and says it worked. */

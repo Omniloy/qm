@@ -110,6 +110,24 @@ async function registerSession(ctx: ApiCtx): Promise<void> {
     return sendJson(res, 400, { error: "bad_request", message: "liveViewUrl must be the viewer URL, not the CDP URL" });
   }
 
+  // Refuse before a browser exists rather than after. A browser costs about
+  // 1.25 GB, so on a host that also runs other things the honest answer to
+  // "one too many" is a sentence, not an out-of-memory kill — and the caller
+  // registers before launching so this arrives while it is still free to obey.
+  const already = await store.get(principalId, Date.now());
+  if (!already) {
+    const cap = deps.maxLiveBrowsers ?? 1;
+    if ((await store.countLive(Date.now())) >= cap) {
+      return sendJson(res, 409, {
+        error: "busy",
+        message:
+          cap === 1
+            ? "someone else has a browser open, and there is only room for one at a time — try again in a few minutes"
+            : `all ${cap} browsers are in use — try again in a few minutes`,
+      });
+    }
+  }
+
   // The thread comes from the token, not the body, so a turn cannot attach a
   // browser to a conversation it is not running in.
   const threadRef = ctx.capability?.threadRef ?? "";

@@ -56,13 +56,10 @@ test("Enter is sent as rawKeyDown + char + keyUp", () => {
 test("closing is graceful, because a hard kill loses the sign-in", () => {
   // Measured: after pkill, localStorage survived and cookies did not — Chromium
   // batches cookie writes. The cookie discarded is exactly the session someone
-  // just signed in to create.
-  const close = /if a\.cmd == "close":[\s\S]{0,1200}/.exec(CLI)?.[0] ?? "";
-  assert.match(close, /Browser\.close/);
-  // Strip comments first: the reason a kill is wrong is written right here, and
-  // asserting over prose would fail on the explanation rather than the code.
-  const code = close.replace(/^\s*#.*$/gm, "");
-  assert.doesNotMatch(code, /SIGKILL|os\.kill|pkill|terminate\(/, "the close path must not kill the process");
+  // just signed in to create. Asking and reaping both go through one function,
+  // so a person closing a browser and a watchdog reaping one behave the same.
+  const verb = /if a\.cmd == "close":[\s\S]{0,600}/.exec(CLI)?.[0] ?? "";
+  assert.match(verb, /close_browser\(state/);
   assert.match(CLI, /chromium batches cookie writes/i);
 });
 
@@ -102,8 +99,11 @@ test("losing the pane never costs the person the browser", () => {
   // They asked to browse. If QM cannot be reached the picture is gone, but the
   // task is still doable, and refusing would be the wrong trade.
   assert.match(CLI, /never as "no browser"/);
-  const open = /shown = register\(state\)[\s\S]{0,700}/.exec(CLI)?.[0] ?? "";
+  const open = /outcome, why = register\(state\)[\s\S]{0,1400}/.exec(CLI)?.[0] ?? "";
   assert.match(open, /Browsing still works/);
+  // The distinction that matters: "no room" is obeyed, "cannot reach QM" is not.
+  assert.match(open, /outcome == "full"/);
+  assert.match(open, /outcome == "ok"/);
 });
 
 test("the agent is refused while a person holds the wheel", () => {
@@ -175,4 +175,42 @@ test("refs are preferred over selectors, and re-taken after the page changes", (
   // the wrong element.
   assert.match(SKILL, /Take a fresh snapshot after anything that changes the page/);
   assert.match(SKILL, /Prefer refs to CSS selectors/);
+});
+
+/* ------------------------------------------------ closing what nobody wants */
+
+test("the browser is claimed before it is started", () => {
+  // A browser costs about 1.25 GB. Registering first means a refusal arrives
+  // while there is still nothing to throw away.
+  const open = /if a\.cmd == "open":[\s\S]{0,1400}/.exec(CLI)?.[0] ?? "";
+  const claimAt = open.indexOf("register(state)");
+  const launchAt = open.indexOf("start_watchdog");
+  assert.ok(claimAt > 0 && launchAt > 0, "both steps are in open");
+  assert.ok(claimAt < launchAt, "the claim comes first");
+  assert.match(open, /outcome == "full"/);
+});
+
+test("a refusal to open is passed on as news, not as a failure", () => {
+  assert.match(CLI, /Nothing is broken and nothing is lost/);
+});
+
+test("an idle browser is closed gracefully, and killed only if it refuses", () => {
+  // Measured: a hard kill discards the cookies chromium has not yet flushed,
+  // which is exactly the sign-in someone just completed.
+  const close = /def close_browser\([\s\S]{0,1400}/.exec(CLI)?.[0] ?? "";
+  const graceAt = close.indexOf("Browser.close");
+  const killAt = close.indexOf("pkill");
+  assert.ok(graceAt > 0 && killAt > 0);
+  assert.ok(graceAt < killAt, "ask first");
+  assert.match(close, /deliberately last/);
+});
+
+test("the watchdog owns the browser rather than orphaning it", () => {
+  // Measured: chromium orphaned to PID 1 leaves ~14 dead process entries per
+  // session, because PID 1 here is the exec daemon and reaps nobody. Owning
+  // the tree took that to zero across three open/reap cycles.
+  const spawn = /def spawn_chromium\([\s\S]{0,900}/.exec(CLI)?.[0] ?? "";
+  assert.doesNotMatch(spawn, /start_new_session=True/, "chromium stays a child of the watchdog");
+  assert.match(CLI, /PR_SET_CHILD_SUBREAPER/);
+  assert.match(CLI, /def reap_orphans/);
 });
