@@ -79,6 +79,30 @@ test("ending a session reaches core as a DELETE", async () => {
   assert.match(call.url, /^\/v1\/browser-sessions\/s1/);
 });
 
+test("a frame is fetched for the caller, not for a session they name", async () => {
+  const before = calls.length;
+  await fetch(`${base}/api/browser/session/s1/frame`, { headers });
+  const call = calls.slice(before).find((c) => c.method === "GET");
+  assert.ok(call, "forwarded to core");
+  assert.match(call.url, /^\/v1\/browser-sessions\/s1\/frame/);
+  // Core still resolves the owner from the portal identity; the id in the path
+  // only says which session, and core refuses one that is not theirs.
+  assert.doesNotMatch(call.url, /principal|actor|viewer/);
+});
+
+test("pane input carries its body through", async () => {
+  const before = calls.length;
+  await fetch(`${base}/api/browser/session/s1/input`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ kind: "click", x: 12, y: 34 }),
+  });
+  const call = calls.slice(before).find((c) => c.method === "POST");
+  assert.ok(call);
+  assert.match(call.url, /^\/v1\/browser-sessions\/s1\/input/);
+  assert.deepEqual(JSON.parse(call.body), { kind: "click", x: 12, y: 34 });
+});
+
 test("nothing else on that router is reachable through the proxy", async () => {
   // The guard that matters: /v1/browser-sessions vends bearer material, so a
   // generic relay would expose every route on it to anything that can shape a

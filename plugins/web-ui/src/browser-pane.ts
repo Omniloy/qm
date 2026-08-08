@@ -11,6 +11,8 @@ import {
   primaryAction,
   timeLeft,
   endedNote,
+  frameInterval,
+  toPageCoords,
   type LiveSession,
 } from "./browser-pane-state";
 
@@ -42,13 +44,104 @@ let inFlight = false;
 
 let timer: ReturnType<typeof setInterval> | null = null;
 
+/**
+ * The last picture of a browser QM hosts itself, and the machinery to keep it
+ * fresh.
+ *
+ * A vendor's browser renders itself inside an iframe and needs none of this.
+ * Ours has no URL to embed — Chrome will not expose its debug port off
+ * loopback — so the pane asks QM for frames and draws them. The upside is that
+ * there is no bearer material in the pane at all.
+ */
+interface Frame {
+  w: number;
+  h: number;
+  url: string;
+  title: string;
+  jpeg: string;
+}
+let frame: Frame | null = null;
+let frameTimer: ReturnType<typeof setTimeout> | null = null;
+let frameInFlight = false;
+let frameFailures = 0;
+
+function stopFrames(): void {
+  if (frameTimer) clearTimeout(frameTimer);
+  frameTimer = null;
+}
+
+/**
+ * Fetch one frame, then schedule the next.
+ *
+ * A chain rather than an interval: frames take about 145ms to produce and the
+ * network adds more, so a fixed interval would stack requests on a slow link
+ * and make the picture lag further the worse things get.
+ */
+async function pumpFrames(rerender: () => void): Promise<void> {
+  const s = session;
+  if (!s || s.viewer !== "stream" || collapsed) return stopFrames();
+  if (typeof document !== "undefined" && document.hidden) {
+    // Nobody is looking. Check back rather than burning a frame a second.
+    frameTimer = setTimeout(() => void pumpFrames(rerender), 2000);
+    return;
+  }
+  if (!frameInFlight) {
+    frameInFlight = true;
+    try {
+      const next = await api<Frame>(`/api/browser/session/${encodeURIComponent(s.sessionId)}/frame`);
+      if (next?.jpeg) {
+        frame = next;
+        frameFailures = 0;
+        rerender();
+      }
+    } catch {
+      // A dropped frame is not worth a banner — the last picture stays up. But
+      // a browser that has genuinely gone will fail every time, and the poll
+      // backs off rather than hammering core forever.
+      frameFailures += 1;
+    } finally {
+      frameInFlight = false;
+    }
+  }
+  const wait = frameFailures > 3 ? 5000 : frameInterval(s);
+  frameTimer = setTimeout(() => void pumpFrames(rerender), wait);
+}
+
+function syncFrames(rerender: () => void): void {
+  const wanted = !!session && session.viewer === "stream" && !collapsed;
+  if (wanted && !frameTimer) void pumpFrames(rerender);
+  if (!wanted) stopFrames();
+}
+
+/** Send what a person did in the pane. Refused by core unless they hold the wheel. */
+async function sendInput(body: Record<string, unknown>, rerender: () => void): Promise<void> {
+  const s = session;
+  if (!s) return;
+  try {
+    await api(`/api/browser/session/${encodeURIComponent(s.sessionId)}/input`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    // Pull the next frame straight away rather than waiting out the interval:
+    // input with a visible delay feels like it was dropped.
+    stopFrames();
+    void pumpFrames(rerender);
+  } catch (e) {
+    notice = errMessage(e);
+    rerender();
+  }
+}
+
 export function resetBrowserPane(): void {
   stopBrowserPanePolling();
+  stopFrames();
   session = null;
   ended = null;
   collapsed = false;
   busy = false;
   notice = "";
+  frame = null;
+  frameFailures = 0;
   resetRowMenus();
 }
 
@@ -105,6 +198,12 @@ export async function refreshBrowserPane(rerender: () => void): Promise<void> {
       ended = { threadRef: session.threadRef, note: endedNote(session.expiresAt <= Date.now() ? "expired" : "lost") };
     }
     if (next) ended = null;
+    // A different browser means the picture on screen is of the old one.
+    // Keeping it would show someone the wrong page and let them click it.
+    if (next?.sessionId !== session?.sessionId) {
+      frame = null;
+      frameFailures = 0;
+    }
     session = next;
     if (next && changed) collapsed = false;
     if (changed) rerender();
@@ -209,17 +308,83 @@ export function browserPaneTpl(threadRef: string | null, rerender: () => void): 
     ${rowMenuTpl(`browser:${s.sessionId}`, "your browser", paneActions(s), (id) => void act(id, rerender), rerender)}
   </div>`;
 
+  syncFrames(rerender);
+
   return html`<section class="browser-pane ${status.human ? "human" : ""} ${collapsed ? "collapsed" : ""}">
     ${header} ${notice ? html`<div class="kc-state warning">${notice}</div>` : nothing}
-    ${
-      collapsed
-        ? nothing
-        : html`<iframe
-            class="browser-pane-view"
-            src=${s.liveViewUrl}
-            title="Your browser"
-            allow="clipboard-read; clipboard-write"
-          ></iframe>`
-    }
+    ${collapsed ? nothing : s.viewer === "stream" ? streamBody(s, rerender) : iframeBody(s)}
   </section>`;
+}
+
+function iframeBody(s: LiveSession): TemplateResult {
+  return html`<iframe
+    class="browser-pane-view"
+    src=${s.liveViewUrl ?? ""}
+    title="Your browser"
+    allow="clipboard-read; clipboard-write"
+  ></iframe>`;
+}
+
+/** Named keys travel as keys; everything else is text the page should receive. */
+const NAMED_KEYS = new Set([
+  "Enter",
+  "Tab",
+  "Escape",
+  "Backspace",
+  "ArrowDown",
+  "ArrowUp",
+  "ArrowLeft",
+  "ArrowRight",
+  "PageDown",
+  "PageUp",
+  "Home",
+  "End",
+]);
+
+function streamBody(s: LiveSession, rerender: () => void): TemplateResult {
+  const human = s.controlMode === "human_control";
+  if (!frame) {
+    return html`<div class="browser-pane-view waiting">
+      <span class="kc-state">${frameFailures > 3 ? "Cannot reach that browser." : "Waiting for the browser…"}</span>
+    </div>`;
+  }
+  return html`<img
+    class="browser-pane-view ${human ? "drivable" : ""}"
+    src=${`data:image/jpeg;base64,${frame.jpeg}`}
+    alt=${frame.title || "Your browser"}
+    title=${human ? frame.url : "Take control to click and type"}
+    tabindex=${human ? 0 : -1}
+    draggable="false"
+    @click=${(e: MouseEvent) => {
+      // Clicking while the agent drives is not an error worth a message — the
+      // header already says who has the wheel, and the cursor says it too.
+      if (!human || !frame) return;
+      const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      const pt = toPageCoords(
+        { x: e.clientX - r.left, y: e.clientY - r.top },
+        { width: r.width, height: r.height },
+        { w: frame.w, h: frame.h },
+      );
+      if (pt) void sendInput({ kind: "click", ...pt }, rerender);
+    }}
+    @wheel=${(e: WheelEvent) => {
+      if (!human) return;
+      e.preventDefault();
+      void sendInput({ kind: "scroll", by: Math.round(e.deltaY) }, rerender);
+    }}
+    @keydown=${(e: KeyboardEvent) => {
+      if (!human) return;
+      if (NAMED_KEYS.has(e.key)) {
+        e.preventDefault();
+        void sendInput({ kind: "key", name: e.key }, rerender);
+        return;
+      }
+      // Leave shortcuts alone: a person reaching for Cmd-R wants their own
+      // browser to reload, not the remote one to receive an "r".
+      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        void sendInput({ kind: "type", text: e.key }, rerender);
+      }
+    }}
+  />`;
 }
