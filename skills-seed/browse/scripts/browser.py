@@ -209,10 +209,25 @@ def read_state():
 
 def write_state(state):
     os.makedirs(STATE_DIR, exist_ok=True)
-    tmp = STATE_FILE + ".tmp"
+    tmp = STATE_FILE + f".{os.getpid()}.tmp"
     with open(tmp, "w") as f:
         json.dump(state, f)
     os.replace(tmp, STATE_FILE)
+
+
+def merge_state(**fields):
+    """Update some fields without discarding what another writer just added.
+
+    Two processes write this file: `open` records the session it claimed, and
+    the watchdog records the port once chromium is actually listening. They
+    race, and a plain write means whoever finishes second wins — which cost a
+    whole deploy cycle when `open` clobbered the port and every later call
+    reported no browser at all.
+    """
+    state = read_state() or {}
+    state.update(fields)
+    write_state(state)
+    return state
 
 
 def clear_state():
@@ -280,6 +295,7 @@ def register(state):
     """
     session_id = state.get("sessionId") or os.urandom(8).hex()
     state["sessionId"] = session_id
+    merge_state(sessionId=session_id)
     status, payload = core_call_status("POST", "/v1/browser-sessions", {
         "provider": "local",
         "sessionId": session_id,
@@ -291,8 +307,7 @@ def register(state):
     if status == 409:
         return "full", (payload or {}).get("message", "there is no room for another browser right now")
     ok = bool(status and 200 <= status < 300)
-    state["registered"] = ok
-    write_state(state)
+    merge_state(registered=ok)
     return ("ok" if ok else "no-pane"), ""
 
 
@@ -382,9 +397,13 @@ def connect(fresh_page=False):
 
 
 def touch(state):
-    """Record activity, so an idle reaper can tell a parked browser from a busy one."""
+    """Record activity, so an idle reaper can tell a parked browser from a busy one.
+
+    Merges rather than writes: the watchdog owns `port` in the same file, and a
+    full write from here would erase it.
+    """
     state["lastUsedAt"] = int(time.time())
-    write_state(state)
+    merge_state(lastUsedAt=state["lastUsedAt"])
 
 
 # ------------------------------------------------------------------ launch
@@ -508,14 +527,17 @@ def watchdog(headless=True):
     computer can ask Chromium to flush its cookies and stop.
     """
     become_subreaper()
+    started = time.time()
     proc = spawn_chromium(headless)
     if not wait_for_port():
         proc.kill()
         return
-    state = read_state() or {}
-    state.update({"provider": "local", "port": DEBUG_PORT, "lastUsedAt": int(time.time())})
-    state.setdefault("startedAt", int(time.time()))
-    write_state(state)
+    # Stamp lastUsedAt as this browser starts. Without it the watchdog would
+    # inherit whatever a previous session left in the file and could judge a
+    # brand-new browser idle before anyone has touched it — observed: the
+    # browser was reaped seconds after opening, and the pane sat on "waiting"
+    # forever while chromium was still running.
+    merge_state(provider="local", port=DEBUG_PORT, lastUsedAt=int(time.time()))
 
     try:
         while True:
@@ -530,7 +552,10 @@ def watchdog(headless=True):
             state = read_state()
             if not state:
                 break
-            if time.time() - state.get("lastUsedAt", 0) >= IDLE_LIMIT:
+            # Never idle before it has had a chance to be used: a stale
+            # timestamp from a previous session must not condemn this browser.
+            last = max(state.get("lastUsedAt", 0), started)
+            if time.time() - last >= IDLE_LIMIT:
                 close_browser(state, "idle")
                 break
     finally:
@@ -783,20 +808,22 @@ def main():
             return
         # Claim first, launch second. A browser costs about a gigabyte, and
         # being told "no room" after spending it helps nobody.
-        state = {"provider": "local", "startedAt": int(time.time()),
-                 "lastUsedAt": int(time.time())}
+        state = write_state({"provider": "local", "startedAt": int(time.time()),
+                             "lastUsedAt": int(time.time())}) or read_state()
         outcome, why = register(state)
         if outcome == "full":
             clear_state()
             die(f"No browser was opened: {why}\n"
                 "Nothing is broken and nothing is lost — say so, and offer to try again shortly.")
 
-        write_state(state)
-        # The watchdog starts the browser and stays its parent for life.
+        # The watchdog starts the browser and stays its parent for life. It
+        # records the port itself once chromium is listening, so nothing here
+        # writes the whole file again — that race cost a deploy cycle.
         start_watchdog(headless=not a.headful)
         if not wait_for_port():
             clear_state()
             die(f"chromium did not start within {LAUNCH_TIMEOUT}s")
+        merge_state(lastUsedAt=int(time.time()))
         print(f"Browser open (local chromium, profile {PROFILE_DIR}).")
         print("Sign-ins here persist between sessions.")
         print("The person can see it in the pane below the conversation, and take control."

@@ -182,7 +182,7 @@ test("refs are preferred over selectors, and re-taken after the page changes", (
 test("the browser is claimed before it is started", () => {
   // A browser costs about 1.25 GB. Registering first means a refusal arrives
   // while there is still nothing to throw away.
-  const open = /if a\.cmd == "open":[\s\S]{0,1400}/.exec(CLI)?.[0] ?? "";
+  const open = /if a\.cmd == "open":[\s\S]{0,2600}/.exec(CLI)?.[0] ?? "";
   const claimAt = open.indexOf("register(state)");
   const launchAt = open.indexOf("start_watchdog");
   assert.ok(claimAt > 0 && launchAt > 0, "both steps are in open");
@@ -249,4 +249,36 @@ test("closing a browser we did not start does not claim to have stopped it", () 
   // Otherwise someone believes it ended while it bills on somewhere else.
   assert.match(CLI, /running somewhere else/);
   assert.match(CLI, /bills until its own timeout/);
+});
+
+/* ------------------------------------------- found by deploying and using it */
+
+test("two writers share the state file without erasing each other", () => {
+  // `open` records the session it claimed; the watchdog records the port once
+  // chromium is listening. They race. A plain write means whoever finishes
+  // second wins — which is how the port went missing and every later call
+  // reported no browser at all.
+  assert.match(CLI, /def merge_state/);
+  const merge = /def merge_state\([\s\S]{0,700}/.exec(CLI)?.[0] ?? "";
+  assert.match(merge, /state = read_state\(\) or \{\}/);
+  assert.match(merge, /state\.update\(fields\)/);
+  // touch() runs on every verb, so it is the most frequent clobberer.
+  const touch = /def touch\([\s\S]{0,500}/.exec(CLI)?.[0] ?? "";
+  assert.match(touch, /merge_state\(/);
+});
+
+test("a fresh browser is never idle before anyone has used it", () => {
+  // Observed on the deployed stack: a stale lastUsedAt from a previous session
+  // made the watchdog reap a brand-new browser within seconds, and the pane sat
+  // on "waiting for the browser" forever while chromium was still running.
+  assert.match(
+    CLI,
+    /last = max\(state\.get\("lastUsedAt", 0\), started\)/,
+    "idleness is measured from the later of last-use and start",
+  );
+  assert.match(CLI, /started = time\.time\(\)/);
+});
+
+test("a temp file per process, so concurrent writes cannot interleave", () => {
+  assert.match(CLI, /STATE_FILE \+ f"\.\{os\.getpid\(\)\}\.tmp"/);
 });
