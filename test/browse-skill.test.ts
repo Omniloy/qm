@@ -296,3 +296,20 @@ test("two turns opening at once do not each start a browser", () => {
   // it arrived a moment later.
   assert.match(open, /already open[\s\S]{0,80}Reusing it/);
 });
+
+test("a lock from a container that no longer exists cannot wedge the profile", () => {
+  // The worst bug of the build, and it only appears after a restart. Chromium
+  // guards a profile with a symlink naming the host holding it — here
+  // "21a7194ab74a-379", a container that had been destroyed. The profile lives
+  // on a volume that outlives its container, so that lock was permanent:
+  // chromium refused to start forever, dying instantly with an error nobody
+  // saw, while the pane sat on "waiting for the browser".
+  assert.match(CLI, /def clear_profile_lock/);
+  const fn = /def clear_profile_lock\([\s\S]{0,1400}/.exec(CLI)?.[0] ?? "";
+  assert.match(fn, /SingletonLock/);
+  assert.match(fn, /SingletonSocket/);
+  assert.match(fn, /SingletonCookie/);
+  // Only when nothing is actually listening: a running browser's lock is real.
+  assert.match(fn, /if alive\(DEBUG_PORT\):\s*\n\s*return/);
+  assert.match(CLI, /clear_profile_lock\(\)/);
+});

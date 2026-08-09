@@ -445,6 +445,31 @@ def touch(state):
 
 # ------------------------------------------------------------------ launch
 
+def clear_profile_lock():
+    """Remove a profile lock left behind by a browser that no longer exists.
+
+    Chromium guards a profile with a symlink naming the host and pid holding
+    it. That guard assumes the host outlives the lock — but this profile sits
+    on a volume that survives its container, so after a restart the lock names
+    a hostname that is gone, and chromium refuses to start FOREVER: "the
+    profile appears to be in use by another Chromium process on another
+    computer".
+
+    It presents as a browser that dies instantly with no error anyone sees. The
+    same persistence that keeps sign-ins is what makes this permanent, so the
+    lock is cleared whenever nothing is actually listening on the debug port.
+    """
+    if alive(DEBUG_PORT):
+        return  # A real browser is running; its lock is legitimate.
+    for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        p = os.path.join(PROFILE_DIR, name)
+        try:
+            if os.path.islink(p) or os.path.exists(p):
+                os.remove(p)
+        except OSError:
+            pass
+
+
 def spawn_chromium(headless=True):
     """Start chromium as a CHILD of this process, and hand back the handle.
 
@@ -458,6 +483,7 @@ def spawn_chromium(headless=True):
     if not exe:
         die("no chromium on PATH in this sandbox")
     os.makedirs(PROFILE_DIR, exist_ok=True)
+    clear_profile_lock()
     args = [
         exe,
         "--headless=new" if headless else "",
