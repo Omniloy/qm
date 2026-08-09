@@ -6,7 +6,7 @@ its turn instead of handing a whole task to a background process it cannot
 steer. The browser itself outlives the call: it is a long-running Chromium
 whose CDP endpoint is recorded in a state file, so the next call reattaches.
 
-  browser.py open [--provider local]     start (or reattach to) a browser
+  browser.py open [--cdp URL]            start, reattach, or drive one elsewhere
   browser.py go URL                      navigate, wait for load
   browser.py snapshot [--max N]          numbered interactive elements
   browser.py read [--selector S]         visible text
@@ -37,11 +37,13 @@ import os
 import re
 import shutil
 import socket
+import ssl
 import struct
 import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 STATE_DIR = os.path.expanduser("~/.browser")
@@ -68,11 +70,18 @@ class WS:
     """
 
     def __init__(self, url, timeout=60):
-        m = re.match(r"ws://([^:/]+):(\d+)(/.*)", url)
-        if not m:
-            die(f"only ws:// URLs are supported here, got: {url[:60]}")
-        host, port, path = m.group(1), int(m.group(2)), m.group(3)
+        u = urllib.parse.urlsplit(url)
+        if u.scheme not in ("ws", "wss"):
+            die(f"not a websocket URL: {url.split('?')[0][:60]}")
+        secure = u.scheme == "wss"
+        host = u.hostname or ""
+        port = u.port or (443 if secure else 80)
+        # A remote endpoint often carries its credentials in the query string
+        # and no path at all, so the query has to survive into the request line.
+        path = (u.path or "/") + (f"?{u.query}" if u.query else "")
         self.sock = socket.create_connection((host, port), timeout=timeout)
+        if secure:
+            self.sock = ssl.create_default_context().wrap_socket(self.sock, server_hostname=host)
         self.sock.settimeout(timeout)
         key = base64.b64encode(os.urandom(16)).decode()
         req = (
@@ -146,14 +155,27 @@ class WS:
 
 
 class CDP:
-    def __init__(self, ws_url, timeout=60):
+    """A CDP connection, optionally scoped to one page.
+
+    A local chromium hands out a per-page websocket, so commands need no
+    addressing. A remote endpoint hands out a browser-level one instead, where
+    every command must name the page it is for. `session_id` carries that, and
+    is the only difference between driving a browser here and one somewhere
+    else — which is the point: the verbs above do not change.
+    """
+
+    def __init__(self, ws_url, timeout=60, session_id=None):
         self.ws = WS(ws_url, timeout)
         self.n = 0
+        self.session_id = session_id
 
     def call(self, method, **params):
         self.n += 1
         mid = self.n
-        self.ws.send(json.dumps({"id": mid, "method": method, "params": params}))
+        msg = {"id": mid, "method": method, "params": params}
+        if self.session_id:
+            msg["sessionId"] = self.session_id
+        self.ws.send(json.dumps(msg))
         while True:
             msg = json.loads(self.ws.recv())
             if msg.get("id") == mid:
@@ -316,16 +338,46 @@ def alive(port):
         return False
 
 
+def attach_remote(cdp_url, timeout=60):
+    """Attach to a page on a browser somewhere else.
+
+    A remote endpoint speaks browser-level CDP, so there is a step a local one
+    does not need: find a page, attach to it, and address everything after that
+    to the session it hands back.
+    """
+    c = CDP(cdp_url, timeout)
+    targets = c.call("Target.getTargets").get("targetInfos", [])
+    page = next((t for t in targets if t.get("type") == "page"), None)
+    if not page:
+        page = c.call("Target.createTarget", url="about:blank")
+        target_id = page["targetId"]
+    else:
+        target_id = page["targetId"]
+    # flatten puts the session on the same socket rather than a nested protocol,
+    # which is what lets one connection be used like a page connection.
+    c.session_id = c.call("Target.attachToTarget", targetId=target_id, flatten=True)["sessionId"]
+    return c
+
+
 def connect(fresh_page=False):
-    """Attach to the browser this person already has open."""
+    """Attach to the browser this person already has open, wherever it runs."""
     state = read_state()
     if not state:
         die("No browser is open. Run: browser.py open")
+    touch(state)
+    cdp_url = state.get("cdpUrl")
+    if cdp_url:
+        try:
+            return attach_remote(cdp_url), state
+        except SystemExit:
+            raise
+        except Exception as e:
+            clear_state()
+            die(f"The browser that was open has gone ({str(e)[:80]}). Run: browser.py open")
     port = state.get("port", DEBUG_PORT)
     if not alive(port):
         clear_state()
         die("The browser that was open has gone. Run: browser.py open")
-    touch(state)
     return CDP(page_ws_url(port)), state
 
 
@@ -672,8 +724,11 @@ def main():
     sub = p.add_subparsers(dest="cmd", required=True)
 
     po = sub.add_parser("open", help="start or reattach to a browser")
-    po.add_argument("--provider", default="local", choices=["local"])
     po.add_argument("--headful", action="store_true")
+    # Drive a browser that is already running somewhere else, given its CDP
+    # endpoint. Every verb behaves identically against it — a CDP URL is plain
+    # protocol, not a vendor concept, which is what keeps this surface honest.
+    po.add_argument("--cdp", help="attach to an existing browser instead of starting one")
 
     pg = sub.add_parser("go"); pg.add_argument("url")
     ps = sub.add_parser("snapshot"); ps.add_argument("--max", type=int, default=60)
@@ -711,8 +766,18 @@ def main():
 
     # ------------------------------------------------------------ open
     if a.cmd == "open":
+        if a.cdp:
+            # Someone else started this one; it is theirs to close, and its
+            # pane (if it has one) is registered by whoever created it.
+            c = attach_remote(a.cdp)
+            c.close()
+            write_state({"provider": "remote", "cdpUrl": a.cdp,
+                         "startedAt": int(time.time()), "lastUsedAt": int(time.time())})
+            print("Attached to the browser you pointed at. Every verb works the same.")
+            return
+
         state = read_state()
-        if state and alive(state.get("port", DEBUG_PORT)):
+        if state and (state.get("cdpUrl") or alive(state.get("port", DEBUG_PORT))):
             touch(state)
             print(f"A browser is already open (provider={state.get('provider')}). Reusing it.")
             return
@@ -749,7 +814,7 @@ def main():
     # ------------------------------------------------------------ status
     if a.cmd == "status":
         state = read_state()
-        if not state or not alive(state.get("port", DEBUG_PORT)):
+        if not state or not (state.get("cdpUrl") or alive(state.get("port", DEBUG_PORT))):
             print("No browser is open.")
             return
         c, _ = connect()
@@ -765,7 +830,18 @@ def main():
     # ------------------------------------------------------------ close
     if a.cmd == "close":
         state = read_state()
-        if not state or not alive(state.get("port", DEBUG_PORT)):
+        if not state:
+            print("Nothing to close.")
+            return
+        if state.get("cdpUrl"):
+            # Not ours to shut down, and pretending otherwise would leave a
+            # browser running somewhere while the person believes it stopped.
+            unregister(state)
+            clear_state()
+            print("Detached. That browser is running somewhere else — follow your provider "
+                  "doc's Clean up step to actually stop it, or it bills until its own timeout.")
+            return
+        if not alive(state.get("port", DEBUG_PORT)):
             clear_state()
             print("Nothing to close.")
             return

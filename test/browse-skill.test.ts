@@ -58,7 +58,7 @@ test("closing is graceful, because a hard kill loses the sign-in", () => {
   // batches cookie writes. The cookie discarded is exactly the session someone
   // just signed in to create. Asking and reaping both go through one function,
   // so a person closing a browser and a watchdog reaping one behave the same.
-  const verb = /if a\.cmd == "close":[\s\S]{0,600}/.exec(CLI)?.[0] ?? "";
+  const verb = /if a\.cmd == "close":[\s\S]{0,1600}/.exec(CLI)?.[0] ?? "";
   assert.match(verb, /close_browser\(state/);
   assert.match(CLI, /chromium batches cookie writes/i);
 });
@@ -213,4 +213,40 @@ test("the watchdog owns the browser rather than orphaning it", () => {
   assert.doesNotMatch(spawn, /start_new_session=True/, "chromium stays a child of the watchdog");
   assert.match(CLI, /PR_SET_CHILD_SUBREAPER/);
   assert.match(CLI, /def reap_orphans/);
+});
+
+/* ---------------------------------------------- when a site refuses us */
+
+test("a blocked site is recoverable, not just explained", () => {
+  // Detecting a block and saying so is only half an answer. The same verbs
+  // have to work against a hosted browser, or the fallback is advice rather
+  // than a path.
+  assert.match(SKILL, /open --cdp/);
+  assert.match(SKILL, /the same verbs/i);
+  assert.match(CLI, /po\.add_argument\("--cdp"/);
+});
+
+test("driving a remote browser is the same protocol, addressed differently", () => {
+  // A remote endpoint speaks browser-level CDP, so commands must name their
+  // page. That session id is the ONLY difference — if it grew into a second
+  // code path the two would drift.
+  assert.match(CLI, /def attach_remote/);
+  assert.match(CLI, /Target\.attachToTarget/);
+  assert.match(CLI, /flatten=True/);
+  assert.match(CLI, /msg\["sessionId"\] = self\.session_id/);
+});
+
+test("wss is supported, because every hosted endpoint uses it", () => {
+  // Found by pointing it at a real hosted browser: the client spoke only ws://
+  // and the fallback failed at the first connection.
+  assert.match(CLI, /u\.scheme not in \("ws", "wss"\)/);
+  assert.match(CLI, /ssl\.create_default_context\(\)\.wrap_socket/);
+  // Credentials often ride in the query string with no path at all.
+  assert.match(CLI, /\(u\.path or "\/"\) \+ \(f"\?\{u\.query\}"/);
+});
+
+test("closing a browser we did not start does not claim to have stopped it", () => {
+  // Otherwise someone believes it ended while it bills on somewhere else.
+  assert.match(CLI, /running somewhere else/);
+  assert.match(CLI, /bills until its own timeout/);
 });

@@ -20,6 +20,7 @@ submit a form, click through a flow, or when a plain fetch is genuinely blocked.
 
 ```bash
 python3 skills/browse/scripts/browser.py open          # start, or reattach to what is open
+python3 skills/browse/scripts/browser.py open --cdp URL # drive a browser running elsewhere
 python3 skills/browse/scripts/browser.py go URL
 python3 skills/browse/scripts/browser.py snapshot      # numbered interactive elements
 python3 skills/browse/scripts/browser.py read [--selector S] [--max N]
@@ -70,8 +71,8 @@ traffic or developer tools.
 
 This is not a fault you can debug, and retrying does not help. It is also **not** about where
 the browser runs: the same sites refuse a browser on someone's own laptop, on their home
-connection. Say so plainly, and if a hosted provider key is configured (see below), offer to
-retry that one site there.
+connection. Say so plainly, and if a hosted provider key is configured, offer to retry that
+one site on a hosted browser — the next section is how, and the verbs do not change.
 
 ## A hosted browser, when the built-in one is refused
 
@@ -81,7 +82,26 @@ not the default: they cost money per hour and need a key.
 Use one when the built-in browser was blocked, or when the person asks. Which one is decided
 by whichever key is present — read the provider doc BEFORE creating anything, because it owns
 every provider-shaped step (creating and deleting the browser, profiles, routing a sign-in
-wall, giving the browser a file):
+wall, giving the browser a file).
+
+Once it exists, you drive it with **the same verbs**. Its create step leaves you a `CDP_URL`;
+point the browser at that and nothing else changes:
+
+```bash
+$B close                                  # let go of the built-in one first
+$B open --cdp "$CDP_URL"
+$B go the-site-that-blocked-you.com
+$B snapshot
+```
+
+Two things differ, and both matter:
+
+- **`close` does not stop it.** That browser is running on someone else's hardware and bills
+  until its own timeout, so follow the provider doc's Clean up step as well. `close` says so.
+- **The pane is theirs to arrange.** The provider doc's registration step gives the person a
+  live view; a hosted browser is not one QM can stream.
+
+The providers:
 
 - `ANCHOR_API_KEY` → **Anchor**. Read `skills/browse/providers/anchor.md`.
 - `KERNEL_API_KEY` → **Kernel**. Read `skills/browse/providers/kernel.md`.
