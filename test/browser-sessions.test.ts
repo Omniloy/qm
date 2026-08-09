@@ -372,6 +372,10 @@ test("a frame comes from the caller's own sandbox, addressed by their token", as
   assert.equal(sent[0]?.status, 200);
   assert.equal(sent[0]?.body.w, 1280, "the viewport travels with the image");
   assert.match(f.ran[0] ?? "", /browser\.py frame/);
+  // Exec gives no working directory, so a relative path resolves from /root
+  // and the script is simply not there — a failure that surfaced only as a
+  // blank pane.
+  assert.match(f.ran[0] ?? "", /^cd \/root\/workspace &&/);
 });
 
 test("a vendor's browser has no frames for us to serve", async () => {

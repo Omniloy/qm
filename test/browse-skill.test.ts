@@ -282,3 +282,17 @@ test("a fresh browser is never idle before anyone has used it", () => {
 test("a temp file per process, so concurrent writes cannot interleave", () => {
   assert.match(CLI, /STATE_FILE \+ f"\.\{os\.getpid\(\)\}\.tmp"/);
 });
+
+test("two turns opening at once do not each start a browser", () => {
+  // Reproduced on the deployed stack: both saw an empty state file, both
+  // launched a watchdog, and when one decided its browser was idle it closed
+  // the port the other was still using. The second turn's browser died under
+  // it while every call reported success.
+  assert.match(CLI, /class OpenLock/);
+  assert.match(CLI, /fcntl\.flock\(self\.fd, fcntl\.LOCK_EX\)/);
+  const open = /if a\.cmd == "open":[\s\S]{0,2800}/.exec(CLI)?.[0] ?? "";
+  assert.match(open, /with OpenLock\(\):/);
+  // The loser must reuse rather than fail — it is what it would have done had
+  // it arrived a moment later.
+  assert.match(open, /already open[\s\S]{0,80}Reusing it/);
+});

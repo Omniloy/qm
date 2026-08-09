@@ -215,6 +215,43 @@ def write_state(state):
     os.replace(tmp, STATE_FILE)
 
 
+class OpenLock:
+    """Serialise opening, so two turns cannot each start a browser.
+
+    Two concurrent `open` calls both saw an empty state file and both launched
+    a watchdog. Two watchdogs is not merely wasteful: when one decides its
+    browser is idle it closes the port the other is still using, so the second
+    turn's browser dies under it and the pane goes blank while everything
+    reports success.
+    """
+
+    def __init__(self):
+        self.fd = None
+
+    def __enter__(self):
+        os.makedirs(STATE_DIR, exist_ok=True)
+        self.fd = os.open(os.path.join(STATE_DIR, "open.lock"), os.O_CREAT | os.O_RDWR, 0o600)
+        import fcntl
+
+        # Blocking: the loser should end up reusing the winner's browser, which
+        # is exactly what it would have done had it arrived a moment later.
+        fcntl.flock(self.fd, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *_):
+        try:
+            import fcntl
+
+            fcntl.flock(self.fd, fcntl.LOCK_UN)
+        except Exception:
+            pass
+        try:
+            os.close(self.fd)
+        except Exception:
+            pass
+        return False
+
+
 def merge_state(**fields):
     """Update some fields without discarding what another writer just added.
 
@@ -801,29 +838,34 @@ def main():
             print("Attached to the browser you pointed at. Every verb works the same.")
             return
 
-        state = read_state()
-        if state and (state.get("cdpUrl") or alive(state.get("port", DEBUG_PORT))):
-            touch(state)
-            print(f"A browser is already open (provider={state.get('provider')}). Reusing it.")
-            return
-        # Claim first, launch second. A browser costs about a gigabyte, and
-        # being told "no room" after spending it helps nobody.
-        state = write_state({"provider": "local", "startedAt": int(time.time()),
-                             "lastUsedAt": int(time.time())}) or read_state()
-        outcome, why = register(state)
-        if outcome == "full":
-            clear_state()
-            die(f"No browser was opened: {why}\n"
-                "Nothing is broken and nothing is lost — say so, and offer to try again shortly.")
+        # Under the lock, because two turns opening at once each used to start
+        # their own browser and then reap each other's.
+        with OpenLock():
+            state = read_state()
+            if state and (state.get("cdpUrl") or alive(state.get("port", DEBUG_PORT))):
+                touch(state)
+                print(f"A browser is already open (provider={state.get('provider')}). Reusing it.")
+                return
+            # Claim first, launch second. A browser costs about a gigabyte, and
+            # being told "no room" after spending it helps nobody.
+            write_state({"provider": "local", "startedAt": int(time.time()),
+                         "lastUsedAt": int(time.time())})
+            state = read_state() or {}
+            outcome, why = register(state)
+            if outcome == "full":
+                clear_state()
+                die(f"No browser was opened: {why}\n"
+                    "Nothing is broken and nothing is lost — say so, and offer to try again shortly.")
 
-        # The watchdog starts the browser and stays its parent for life. It
-        # records the port itself once chromium is listening, so nothing here
-        # writes the whole file again — that race cost a deploy cycle.
-        start_watchdog(headless=not a.headful)
-        if not wait_for_port():
-            clear_state()
-            die(f"chromium did not start within {LAUNCH_TIMEOUT}s")
-        merge_state(lastUsedAt=int(time.time()))
+            # The watchdog starts the browser and stays its parent for life. It
+            # records the port itself once chromium is listening, so nothing here
+            # writes the whole file again — that race cost a deploy cycle.
+            start_watchdog(headless=not a.headful)
+            if not wait_for_port():
+                clear_state()
+                die(f"chromium did not start within {LAUNCH_TIMEOUT}s")
+            merge_state(lastUsedAt=int(time.time()))
+
         print(f"Browser open (local chromium, profile {PROFILE_DIR}).")
         print("Sign-ins here persist between sessions.")
         print("The person can see it in the pane below the conversation, and take control."

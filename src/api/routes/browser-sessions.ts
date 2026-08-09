@@ -288,7 +288,10 @@ async function ownSandbox(deps: ApiCtx["deps"], scope: string): Promise<SandboxH
   return handle;
 }
 
-const BROWSER_CLI = "python3 skills/browse/scripts/browser.py";
+// Absolute, and cd'd first: the exec path does not guarantee a working
+// directory, and a relative path resolved from /root instead of the workspace
+// produced a "no such file" that surfaced only as a blank pane.
+const BROWSER_CLI = "cd /root/workspace && python3 skills/browse/scripts/browser.py";
 
 async function runInOwnSandbox(ctx: ApiCtx, scope: string, args: string): Promise<ExecResult | null> {
   const sandbox = ctx.deps.sandbox;
