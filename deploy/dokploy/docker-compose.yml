@@ -81,6 +81,10 @@ services:
       # per-token API billing. The harness drops ANTHROPIC_API_KEY from the
       # child when this is set, since Claude Code would otherwise prefer it.
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      # The public origin the browser extension dials. Only RELAY_PUBLIC_URL
+      # reaches core (it goes into the pairing response); RELAY_HOST is used by
+      # the Traefik label above at compose-render time and needs no runtime env.
+      RELAY_PUBLIC_URL: ${RELAY_PUBLIC_URL:-}
       CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET}
       CAPABILITY_SECRET: ${CAPABILITY_SECRET}
       PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET}
