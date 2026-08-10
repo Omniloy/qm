@@ -119,11 +119,15 @@ Two things differ, and both matter:
 
 - **`close` does not stop it.** That browser is running on someone else's hardware and bills
   until its own timeout, so follow the provider doc's Clean up step as well. `close` says so.
-- **Put it in the pane, or they cannot watch it.** QM cannot stream a browser running on
-  someone else's hardware, but the pane embeds the provider's own viewer. The provider doc's
-  **Show it in the pane** step does this in one call. Do it right after creating the browser —
-  skip it and the person gets a bare link in the conversation and has to leave the app to
-  watch their own browser work. Take it out again when you clean up.
+- **A hosted browser goes in the pane too — put it there.** The provider doc's **Show it in
+  the pane** step does it in one call, right after you create the browser:
+  `$B pane --provider P --session S --url VIEWER_URL`. The person then watches it and takes
+  control in the app, exactly as with the built-in one.
+
+  The mechanism differs and the outcome does not: QM streams its own browser frame by frame
+  and embeds a hosted provider's viewer instead. "QM cannot stream it" is never a reason to
+  fall back to the built-in browser or to paste a link into the conversation — it only means
+  the pane shows the provider's viewer. Take it out again when you clean up.
 
 The providers:
 
