@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { orgId as configOrgId } from "../../config.ts";
 import { mintCapabilityToken, verifyCapabilityToken, SECRET_DROP_AUD } from "../../auth/capability-token.ts";
 import { KeychainError, type GrantMode } from "../../credentials/keychain.ts";
@@ -8,6 +9,27 @@ import { escapeHtml, sendJson } from "../http.ts";
 import type { ApiCtx, Route } from "./route.ts";
 import { audit, resolveCapabilityDestination } from "./shared.ts";
 import { swallow } from "../../util/errors.ts";
+
+/**
+ * A hosted browser keeps its saved sign-ins under a profile name. The name is
+ * a detail of that provider rather than a decision worth asking anyone to
+ * make, and asking made the whole paste fail when it was left blank — so name
+ * it here, once, the first time the key arrives.
+ */
+async function ensureBrowserProfile(ctx: ApiCtx, ownerId: string, service: string): Promise<void> {
+  const { deps } = ctx;
+  const spec = (deps.browserProviders ?? []).find((p) => p.keyService === service);
+  if (!spec?.profileService || !spec.profileEnv || !deps.keychain) return;
+  const existing = await deps.keychain.listByOwner(ownerId).catch(() => []);
+  if (existing.some((credential) => credential.service === spec.profileService)) return;
+  await deps.keychain.save({
+    ownerId,
+    service: spec.profileService,
+    secret: `qm-${randomBytes(6).toString("hex")}`,
+    envKey: spec.profileEnv,
+    origin: "browser-provider",
+  });
+}
 
 const TRIGGERED = "secret-drop links can only be minted on a turn a person sent — this turn was fired by a trigger";
 
@@ -266,6 +288,11 @@ async function redeemDrop(ctx: ApiCtx): Promise<void> {
       ...(drop.host ? { host: drop.host } : {}),
       origin: "secret-drop",
     });
+    // Best effort: a browser that works without its profile is worth more than
+    // one that failed to connect because naming the profile went wrong.
+    await ensureBrowserProfile(ctx, drop.ownerId, meta.service).catch((e) =>
+      swallow("secret-drop: browser profile", e),
+    );
     const mayShare = await dropScopeAuthorized(ctx, drop);
     let grantId: string | undefined;
     if (mayShare && drop.grantMode && drop.audienceScopeId) {

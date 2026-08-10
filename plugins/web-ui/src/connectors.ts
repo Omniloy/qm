@@ -149,6 +149,10 @@ let secureDropUrl: string | null = null;
 let browserProviders: BrowserProvider[] = [];
 let activeBrowser = BUILT_IN_BROWSER_ID;
 let browserTab: string | null = null;
+// The paste happens here rather than in a handed-off tab. It still goes
+// straight to the one-time drop endpoint over TLS and never enters
+// conversation state — the tab switch bought nothing and lost people.
+let browserConnect: { provider: BrowserProvider; path: string; value: string; error: string } | null = null;
 let confirmation: { title: string; body: string; action: string; run: () => Promise<void> } | null = null;
 let confirmationOpener: HTMLElement | null = null;
 const keychainOperations = new KeychainOperations();
@@ -165,6 +169,7 @@ export function resetKeychainState(): void {
   browserProviders = [];
   activeBrowser = BUILT_IN_BROWSER_ID;
   browserTab = null;
+  browserConnect = null;
   connectorNotice = "";
   addingCredential = null;
   secureDropUrl = null;
@@ -416,15 +421,59 @@ function browserCard(): TemplateResult {
               role="tab"
               aria-selected=${tab.id === shown.id ? "true" : "false"}
               @click=${() => {
-              browserTab = tab.id;
-              drawConnectors();
-            }}
+                browserTab = tab.id;
+                drawConnectors();
+              }}
             >
               ${tab.name}${tab.active ? html`<span class="kc-browser-dot" aria-label="in use"></span>` : ""}
             </button>`,
         )}
       </div>
       <p class="kc-resource-description">${browserSummary(provider, shown)}</p>
+      ${
+        browserConnect && browserConnect.provider.id === shown.id
+          ? html`<form
+              class="kc-browser-connect"
+              @submit=${(e: Event) => {
+                e.preventDefault();
+                void submitBrowserKey();
+              }}
+            >
+              <label class="skill-field"
+                ><span>${provider.name} API key</span
+                ><input
+                  class="skill-desc-input"
+                  type="password"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder=${provider.keyEnv}
+                  .value=${browserConnect.value}
+                  ?disabled=${keychainOperations.dropInFlight}
+                  @input=${(e: Event) => {
+                    if (browserConnect) browserConnect.value = (e.target as HTMLInputElement).value;
+                  }}
+              /></label>
+              <p class="kc-browser-note">
+                Goes straight to your encrypted keychain over TLS. It is never shown in chat.
+              </p>
+              ${browserConnect.error ? html`<p class="kc-inline-warning" role="status">${browserConnect.error}</p>` : ""}
+              <div class="kc-form-actions">
+                <button class="btn primary" type="submit" ?disabled=${keychainOperations.dropInFlight}>
+                  ${keychainOperations.dropInFlight ? "Saving…" : "Save key"}</button
+                ><button
+                  class="btn"
+                  type="button"
+                  @click=${() => {
+                    browserConnect = null;
+                    drawConnectors();
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>`
+          : ""
+      }
       <div class="kc-resource-actions">
         ${
           action.kind === "in-use"
@@ -457,6 +506,45 @@ function browserCard(): TemplateResult {
       </div>
     </article>
   `;
+}
+
+async function submitBrowserKey(): Promise<void> {
+  if (!browserConnect || keychainOperations.dropInFlight) return;
+  const key = browserConnect.value.trim();
+  if (!key) {
+    browserConnect.error = "Paste the key first.";
+    return drawConnectors();
+  }
+  const pending = browserConnect;
+  const stateEpoch = keychainOperations.beginDrop();
+  if (stateEpoch === null) return;
+  pending.error = "";
+  drawConnectors();
+  try {
+    const res = await fetch(pending.path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ values: { [pending.provider.keyEnv]: key } }),
+    });
+    if (!keychainOperations.isCurrentEpoch(stateEpoch)) return;
+    if (!res.ok) {
+      const detail = (await res.json().catch(() => null)) as { message?: string } | null;
+      pending.error = detail?.message ?? "That key could not be saved. Try Connect again for a fresh link.";
+      return;
+    }
+    pending.value = "";
+    browserConnect = null;
+    connectorNotice = `${pending.provider.name} is connected.`;
+    await renderConnectors();
+  } catch (e) {
+    if (!keychainOperations.isCurrentEpoch(stateEpoch)) return;
+    pending.error = errMessage(e, "That key could not be saved.");
+  } finally {
+    if (keychainOperations.isCurrentEpoch(stateEpoch)) {
+      keychainOperations.finishDrop(stateEpoch);
+      drawConnectors();
+    }
+  }
 }
 
 async function chooseBrowser(providerId: string): Promise<void> {
@@ -492,11 +580,11 @@ async function connectBrowser(provider: BrowserProvider): Promise<void> {
     });
     if (!keychainOperations.isCurrentEpoch(stateEpoch)) return;
     if (!result.url) throw new Error("No one-time page URL was returned.");
-    secureDropUrl = result.url;
-    // Reuse the existing "your page is ready" card rather than inventing a
-    // second one: the paste step is identical whichever way you got here.
-    addingCredential = { service: draft.service, envKey: draft.envKey ?? "", purpose: draft.purpose };
-    connectorNotice = `Paste your ${provider.name} key on the one-time page.`;
+    // Keep only the path: the field below posts to the same one-time endpoint
+    // the handed-off page would have, from here.
+    const url = new URL(result.url, window.location.origin);
+    browserConnect = { provider, path: `${url.pathname.replace(/\/form$/, "")}${url.search}`, value: "", error: "" };
+    connectorNotice = "";
   } catch (e) {
     if (!keychainOperations.isCurrentEpoch(stateEpoch)) return;
     connectorNotice = errMessage(e, "Could not create the one-time page.");

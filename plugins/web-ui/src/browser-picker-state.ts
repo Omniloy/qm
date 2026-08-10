@@ -93,19 +93,14 @@ export interface DropDraft {
  */
 export function connectDraft(provider: BrowserProvider): DropDraft | null {
   if (provider.id === BUILT_IN_BROWSER_ID || !provider.keyService) return null;
-  const fields = [{ key: provider.keyEnv, label: `${provider.name} API key`, secret: true }];
-  if (provider.profileEnv) {
-    fields.push({
-      key: provider.profileEnv,
-      label: `Profile name (any label — your saved sign-ins live under it)`,
-      secret: false,
-    });
-  }
+  // The key and nothing else. A provider that keeps a profile still needs one,
+  // but its name is a detail of that provider rather than a decision anybody
+  // wants to make, so core names it on save.
   return {
     service: provider.keyService,
     purpose: `Browse the web with ${provider.name} when a site refuses the built-in browser`,
     envKey: provider.keyEnv,
-    fields,
+    fields: [{ key: provider.keyEnv, label: `${provider.name} API key`, secret: true }],
   };
 }
 

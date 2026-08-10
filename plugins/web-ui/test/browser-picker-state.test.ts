@@ -70,21 +70,20 @@ test("a connected provider is never asked for its key again", () => {
   assert.notEqual(browserAction(anchorTab!).kind, "connect");
 });
 
-test("connecting asks for the key and the profile in one paste", () => {
+test("connecting asks for the key and nothing else", () => {
   const draft = connectDraft(ANCHOR)!;
   assert.equal(draft.service, "anchor");
   assert.equal(draft.envKey, "ANCHOR_API_KEY");
+  // Anchor keeps a profile, but naming it is not a decision anyone wants to
+  // make, and a second required field is how the whole paste fails.
   assert.deepEqual(
     draft.fields?.map((f) => [f.key, f.secret]),
-    [
-      ["ANCHOR_API_KEY", true],
-      ["ANCHOR_PROFILE", false],
-    ],
+    [["ANCHOR_API_KEY", true]],
   );
   assert.match(draft.purpose, /Anchor/);
 });
 
-test("a provider without a profile asks only for its key", () => {
+test("a provider without a profile also asks only for its key", () => {
   const draft = connectDraft(KERNEL)!;
   assert.deepEqual(
     draft.fields?.map((f) => f.key),
