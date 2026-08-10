@@ -130,7 +130,10 @@ export function paneActions(session: LiveSession): RowActionSpec[] {
   const human = session.controlMode === "human_control";
   return [
     { id: "minimize", label: "Minimize" },
-    { id: "open", label: "Open in a new tab" },
+    // Only a vendor's viewer has a page to open. A browser QM streams has no
+    // URL at all — offering it opened a blank tab, which reads as broken
+    // rather than as "there is nothing to open".
+    ...(session.viewer === "iframe" ? [{ id: "open", label: "Open in a new tab" } satisfies RowActionSpec] : []),
     {
       id: "release",
       label: "Give back to agent",

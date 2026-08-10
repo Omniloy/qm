@@ -313,3 +313,15 @@ test("a lock from a container that no longer exists cannot wedge the profile", (
   assert.match(fn, /if alive\(DEBUG_PORT\):\s*\n\s*return/);
   assert.match(CLI, /clear_profile_lock\(\)/);
 });
+
+test("the frame follows the scroll, instead of photographing the page top", () => {
+  // Reported from real use: "when I scrolled it turned into a white screen".
+  // Page.captureScreenshot's clip is in PAGE coordinates, so clipping at the
+  // document origin while the viewport sits further down captures an unpainted
+  // region. Measured on a scrolled article: a 43KB screenshot became 2.7KB of
+  // blank. It also silently broke clicking, since the picture no longer showed
+  // the part of the page that input events were being sent to.
+  const frame = /elif a\.cmd == "frame":[\s\S]{0,2000}/.exec(CLI)?.[0] ?? "";
+  assert.match(frame, /sx: scrollX, sy: scrollY/);
+  assert.match(frame, /"x": size\["sx"\], "y": size\["sy"\]/);
+});

@@ -1057,14 +1057,20 @@ def main():
             # alone puts every click in the wrong place.
             size = json.loads(c.eval(
                 "JSON.stringify({w: innerWidth, h: innerHeight, url: location.href,"
-                " title: document.title})"))
+                " title: document.title, sx: scrollX, sy: scrollY})"))
             # Downscale on the way out. The pane shows this in a box a few
             # hundred pixels wide, so sending full-resolution pixels spends
             # bandwidth on detail that is thrown away before anyone sees it.
             scale = min(1.0, a.width / size["w"]) if size["w"] else 1.0
+            # The clip is in PAGE coordinates, not viewport ones, so it has to
+            # follow the scroll. Clipping at the document origin while the
+            # viewport sits further down captures an unpainted region: the pane
+            # went white the moment anyone scrolled, and a real screenshot of
+            # 43KB collapsed to 2KB of blank.
             r = c.call("Page.captureScreenshot", format="jpeg", quality=a.quality,
                        optimizeForSpeed=True,
-                       clip={"x": 0, "y": 0, "width": size["w"], "height": size["h"],
+                       clip={"x": size["sx"], "y": size["sy"],
+                             "width": size["w"], "height": size["h"],
                              "scale": round(scale, 4)})
             sys.stdout.write(json.dumps({
                 "w": size["w"], "h": size["h"], "url": size["url"],
