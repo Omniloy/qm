@@ -93,6 +93,7 @@ interface KeychainCredential {
   service: string;
   kind?: string;
   envKey?: string;
+  fields?: Array<{ envKey: string }>;
   accountLabel?: string;
   host?: string;
   fingerprint?: string;
@@ -187,7 +188,11 @@ function fmtDate(ms?: number): string {
 }
 
 function credentialCard(c: KeychainCredential): TemplateResult {
-  const subtitle = [c.accountLabel, c.host, c.envKey].filter(Boolean).join(" · ");
+  // A multi-field credential keeps its env vars in `fields` and leaves the
+  // top-level one unset, which left those rows saying nothing about where the
+  // value lands.
+  const envNames = c.envKey ?? c.fields?.map((field) => field.envKey).join(", ");
+  const subtitle = [c.accountLabel, c.host, envNames].filter(Boolean).join(" · ");
   const expired = isExpiredCredential(c);
   const grants = keychainGrants.filter((grant) => grant.credentialId === c.id && isActiveGrant(grant, c));
   const asks = keychainAsks.filter((ask) => ask.credentialId === c.id);
