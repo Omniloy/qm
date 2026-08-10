@@ -1,6 +1,8 @@
 import { baseModelProviders, configuredModelForHarness, loadConfig, providerKeysPresent } from "./config.ts";
 import { buildApp, stopWithBackstop } from "./wiring.ts";
 import { createServer } from "./api/server.ts";
+import { createRelayHub } from "./browser-relay/relay.ts";
+import { attachBrowserRelay } from "./browser-relay/server.ts";
 import { errMessage } from "./util/errors.ts";
 import { defaultModelForHarness, modelProviderAvailabilityFor } from "./model/pi-models.ts";
 import { effectiveEgressEnforcement } from "./sandbox/sandbox.ts";
@@ -16,6 +18,9 @@ const envSlackAttempted = Boolean(process.env.SLACK_BOT_TOKEN || process.env.SLA
 let slackEnvironmentState: "absent" | "configured" | "partial" = "absent";
 if (slackConfig) slackEnvironmentState = "configured";
 else if (envSlackAttempted) slackEnvironmentState = "partial";
+// Built before the server so the routes can report on it, attached after so
+// it can hook the upgrade the routes cannot see.
+const browserRelay = createRelayHub();
 const server = createServer(built.app, {
   production: config.production,
   allowUnauthenticatedCore: config.allowUnauthenticatedCore,
@@ -35,6 +40,7 @@ const server = createServer(built.app, {
   modelCredentials: built.modelCredentials,
   harnessAuth: built.harnessAuth,
   browserProviders: built.browserProviders,
+  browserRelay,
   ...(config.brandingDefault ? { brandingDefault: config.brandingDefault } : {}),
   harnessId: config.harness,
   connectorTokens: built.connectorTokens,
@@ -101,6 +107,11 @@ await built.identity.hydrate();
 await built.deploymentLayerReady;
 built.deploymentLayerRefresh.start();
 built.runtime.start();
+
+attachBrowserRelay(server, {
+  hub: browserRelay,
+  ...(config.capabilitySecret ? { capabilitySecret: config.capabilitySecret } : {}),
+});
 
 server.listen(config.port, () => {
   console.log(

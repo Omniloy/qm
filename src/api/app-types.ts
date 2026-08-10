@@ -28,6 +28,7 @@ import type { TaskStore, TaskStatus } from "../tasks/task-store.ts";
 import type { ModelGateway } from "../model/model-gateway.ts";
 import type { HarnessAuthStore } from "../credentials/harness-auth-store.ts";
 import type { BrowserProviderSpec } from "../connectors/browser-providers.ts";
+import type { RelayHub } from "../browser-relay/relay.ts";
 import type { ModelCredentialStore } from "../model/model-credential-store.ts";
 import type { CustomProviderStore } from "../model/custom-provider-store.ts";
 import type { AclStore } from "../acl/acl-store.ts";
@@ -495,6 +496,8 @@ export interface AppDeps {
   harnessAuth?: HarnessAuthStore;
   /** Hosted browsers a person may connect, read from the browse skill docs. */
   browserProviders?: readonly BrowserProviderSpec[];
+  /** Pairs a person's own Chrome with the browser their agent drives. */
+  browserRelay?: RelayHub;
   /** Injected in tests so saving a token needs no live model call. */
   harnessAuthProbe?: (token: string) => Promise<{ ok: boolean; detail?: string }>;
   modelCredentialFetch?: typeof fetch;
