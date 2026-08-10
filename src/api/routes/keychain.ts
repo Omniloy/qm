@@ -216,6 +216,20 @@ async function handleKeychain(ctx: ApiCtx): Promise<void> {
         });
       }
       if (!deps.config) return sendJson(res, 404, { error: "not_found" });
+      // A provider with no key would send every turn to a browser that cannot
+      // start. The card never offers it, but the endpoint is reachable without
+      // the card, and the failure would surface as a broken browser rather
+      // than a missing credential.
+      const wantedSpec = (deps.browserProviders ?? []).find((spec) => spec.id === wanted);
+      if (wantedSpec) {
+        const owned = new Set((await kc.listByOwner(actorId)).map((credential) => credential.service));
+        if (!owned.has(wantedSpec.keyService)) {
+          return sendJson(res, 409, {
+            error: "not_connected",
+            message: `connect ${wantedSpec.name} before switching to it`,
+          });
+        }
+      }
       // Built-in is the absence of a choice, so it clears rather than stores —
       // otherwise a person could never fall back to an org default again.
       deps.config.setBrowserProvider(personalScope(actorId), wanted === BUILT_IN_BROWSER_ID ? null : wanted);
