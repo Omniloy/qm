@@ -7,7 +7,7 @@ import {
   type GrantMode,
 } from "../../credentials/keychain.ts";
 import { parseScopeId, personalScope } from "../../types.ts";
-import { BUILT_IN_BROWSER_ID, browserProviderIds } from "../../connectors/browser-providers.ts";
+import { BUILT_IN_BROWSER_ID, EXTENSION_BROWSER_ID, browserProviderIds } from "../../connectors/browser-providers.ts";
 import { principalDestination } from "../../reach/reach.ts";
 import { samePerson } from "../../directory/person.ts";
 import { sendJson } from "../http.ts";
@@ -184,6 +184,22 @@ async function handleKeychain(ctx: ApiCtx): Promise<void> {
         ...(spec.signupUrl ? { signupUrl: spec.signupUrl } : {}),
         connected: services.has(spec.keyService),
       }));
+      // The person's own Chrome, via the extension, when the relay is exposed.
+      // "Connected" here means the extension is attached right now — unlike a
+      // hosted provider, whose connection is a stored key rather than a live
+      // socket.
+      if (deps.relayPublicUrl) {
+        const live = deps.browserRelay?.connected(actorId).extension ?? false;
+        browserProviders.push({
+          id: EXTENSION_BROWSER_ID,
+          name: "Your Chrome",
+          summary:
+            "Drive one tab in your own browser through the QM Browser Bridge extension, so it has your real sign-ins and does not look like automation.",
+          keyEnv: "",
+          keyService: "",
+          connected: live,
+        });
+      }
       const activeBrowser =
         (await deps.config?.getBrowserProviderDurable(personalScope(actorId))) ?? BUILT_IN_BROWSER_ID;
       return sendJson(res, 200, {
@@ -208,7 +224,7 @@ async function handleKeychain(ctx: ApiCtx): Promise<void> {
 
     if (method === "POST" && pathname === "/v1/keychain/browser") {
       const wanted = (body as { provider?: unknown }).provider;
-      const allowed = browserProviderIds(deps.browserProviders ?? []);
+      const allowed = browserProviderIds(deps.browserProviders ?? [], Boolean(deps.relayPublicUrl));
       if (typeof wanted !== "string" || !allowed.includes(wanted)) {
         return sendJson(res, 400, {
           error: "bad_request",

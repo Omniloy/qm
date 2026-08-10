@@ -10,6 +10,7 @@
  */
 
 export const BUILT_IN_BROWSER_ID = "built-in";
+export const EXTENSION_BROWSER_ID = "extension";
 
 export interface BrowserProvider {
   id: string;
@@ -72,8 +73,17 @@ export type BrowserAction = { kind: "in-use" } | { kind: "use"; label: string } 
 /** What the primary button on a tab should do. */
 export function browserAction(tab: BrowserTab): BrowserAction {
   if (tab.active) return { kind: "in-use" };
+  // The extension is paired, not key-dropped: "connected" is a live socket, and
+  // there is a token to reveal rather than a secret to paste. Even when it is
+  // not attached right now, the person can still select it and pair later.
+  if (tab.id === EXTENSION_BROWSER_ID) return { kind: "use", label: "Use my Chrome" };
   if (!tab.connected) return { kind: "connect", label: `Connect ${tab.name}` };
   return { kind: "use", label: `Use ${tab.name}` };
+}
+
+/** True for the one tab that pairs an extension rather than storing a key. */
+export function isExtensionTab(id: string): boolean {
+  return id === EXTENSION_BROWSER_ID;
 }
 
 export interface DropDraft {

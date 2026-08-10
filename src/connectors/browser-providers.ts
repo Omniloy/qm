@@ -25,6 +25,13 @@ export interface BrowserProviderSpec {
 /** The always-present option: the browser QM runs in the sandbox itself. */
 export const BUILT_IN_BROWSER_ID = "built-in";
 
+/**
+ * The person's own Chrome, reached through the QM Browser Bridge extension.
+ * Offered only where the relay is exposed — otherwise there is nothing to
+ * connect to and the option would be a dead end.
+ */
+export const EXTENSION_BROWSER_ID = "extension";
+
 const REQUIRED = ["id", "name", "summary", "keyEnv", "keyService"] as const;
 
 function parseFrontMatter(text: string): Record<string, string> | null {
@@ -86,7 +93,10 @@ export function loadBrowserProviders(skillsSeedDir: string): BrowserProviderSpec
   return specs;
 }
 
-/** Every id the picker will accept, built-in first. */
-export function browserProviderIds(specs: readonly BrowserProviderSpec[]): string[] {
-  return [BUILT_IN_BROWSER_ID, ...specs.map((spec) => spec.id)];
+/**
+ * Every id the picker will accept, built-in first, with the extension appended
+ * when its relay is configured.
+ */
+export function browserProviderIds(specs: readonly BrowserProviderSpec[], relayConfigured = false): string[] {
+  return [BUILT_IN_BROWSER_ID, ...specs.map((spec) => spec.id), ...(relayConfigured ? [EXTENSION_BROWSER_ID] : [])];
 }
