@@ -145,3 +145,21 @@ test("a streamed browser carries no URL for the pane to embed", () => {
   assert.equal(streamed.liveViewUrl, undefined);
   assert.equal(paneVisible(streamed, THREAD, NOW), true, "and it still renders");
 });
+
+test("a browser with no URL does not offer to open one", () => {
+  // Reported from real use: "Open in a new tab" on a streamed browser opened a
+  // blank tab, because there is no viewer URL to open — QM streams the frames
+  // instead. An action that cannot work reads as broken, so it is not offered.
+  const streamed = s({ provider: "local", viewer: "stream", liveViewUrl: undefined });
+  assert.equal(
+    paneActions(streamed).find((a) => a.id === "open"),
+    undefined,
+  );
+  // A vendor's viewer still has one, and still offers it.
+  assert.ok(paneActions(s()).find((a) => a.id === "open"));
+  // The rest of the menu is unchanged either way.
+  assert.deepEqual(
+    paneActions(streamed).map((a) => a.id),
+    ["minimize", "release", "end"],
+  );
+});

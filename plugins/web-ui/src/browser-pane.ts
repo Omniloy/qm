@@ -254,7 +254,9 @@ async function act(id: string, rerender: () => void): Promise<void> {
     return;
   }
   if (id === "open") {
-    window.open(s.liveViewUrl, "_blank", "noopener");
+    // Guarded as well as hidden: a streamed browser has no URL, and opening
+    // `undefined` gives a blank tab rather than an error anyone can act on.
+    if (s.viewer === "iframe" && s.liveViewUrl) window.open(s.liveViewUrl, "_blank", "noopener");
     return;
   }
   busy = true;
