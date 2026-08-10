@@ -409,10 +409,27 @@ function extensionPanel(connected: boolean): TemplateResult {
         ${
           connected
             ? html`<span class="kc-state ok">Extension connected</span> Your Chrome is paired and ready.`
-            : html`<span class="kc-state neutral">Not connected</span> Install the QM Browser Bridge extension, then
-                paste the token below into it.`
+            : html`<span class="kc-state neutral">Not connected</span> Install the extension, then paste the pairing
+                token into it.`
         }
       </p>
+      ${
+        connected
+          ? ""
+          : html`<ol class="kc-ext-steps">
+              <li>
+                <a class="btn" href="/api/browser-relay/extension.zip" download="qm-browser-bridge.zip"
+                  >Download the extension</a
+                >
+                and unzip it.
+              </li>
+              <li>
+                Open <code>chrome://extensions</code> (copy-paste it — Chrome blocks links there), turn on
+                <strong>Developer mode</strong>, click <strong>Load unpacked</strong>, and pick the unzipped folder.
+              </li>
+              <li>Click the extension, get a pairing token below, and paste it in.</li>
+            </ol>`
+      }
       ${
         extensionPairing
           ? html`<label class="skill-field"

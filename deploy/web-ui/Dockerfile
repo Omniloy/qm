@@ -17,6 +17,8 @@ RUN npm ci --omit=dev && rm package-lock.json \
 COPY plugins/web-ui/server ./server
 COPY plugins/chassis/src /chassis/src
 COPY --from=build /app/dist-web ./dist-web
+# The browser-bridge extension, served as a downloadable zip from the server.
+COPY extension ./extension
 
 ENV NODE_ENV=production
 ENV PORT=8080

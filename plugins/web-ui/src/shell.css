@@ -3496,6 +3496,20 @@ a.chat-row-open {
   color: var(--muted-foreground);
   font-size: 11px;
 }
+.kc-ext-steps {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.kc-ext-steps li {
+  margin-bottom: 4px;
+}
+.kc-ext-steps .btn {
+  display: inline-block;
+  vertical-align: middle;
+}
 .kc-resource-description {
   max-width: 700px;
   margin: 5px 0 0 40px;
