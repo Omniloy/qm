@@ -1,3 +1,15 @@
+---
+id: kernel
+name: Kernel
+summary: Hosted browsers with persistent profiles. Billed per browser-hour.
+keyEnv: KERNEL_API_KEY
+keyService: kernel
+profileEnv: KERNEL_PROFILE
+profileService: kernel-profile
+signupUrl: https://dashboard.onkernel.com
+homeUrl: https://onkernel.com
+---
+
 # Browse provider: Kernel (onkernel.com)
 
 Provider names for the shared flow in SKILL.md: API key `KERNEL_API_KEY`, keychain service

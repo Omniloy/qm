@@ -1331,14 +1331,34 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
       return relay(res, r);
     }
 
-    if (method === "POST" && path === "/api/keychain/drops") {
-      let draft: { service?: string; purpose?: string; envKey?: string };
+    if (method === "POST" && path === "/api/keychain/browser") {
+      let choice: { provider?: string };
       try {
-        const p = JSON.parse(await readBody(req)) as { service?: unknown; purpose?: unknown; envKey?: unknown };
+        const p = JSON.parse(await readBody(req)) as { provider?: unknown };
+        choice = typeof p.provider === "string" ? { provider: p.provider } : {};
+      } catch (e) {
+        if (e instanceof PayloadTooLargeError) throw e;
+        return json(res, 400, { error: "bad_request" });
+      }
+      const r = await coreFetchCap("POST", "/v1/keychain/browser", JSON.stringify(choice));
+      return relay(res, r);
+    }
+
+    if (method === "POST" && path === "/api/keychain/drops") {
+      let draft: { service?: string; purpose?: string; envKey?: string; fields?: unknown };
+      try {
+        const p = JSON.parse(await readBody(req)) as {
+          service?: unknown;
+          purpose?: unknown;
+          envKey?: unknown;
+          fields?: unknown;
+        };
         draft = {
           ...(typeof p.service === "string" ? { service: p.service } : {}),
           ...(typeof p.purpose === "string" ? { purpose: p.purpose } : {}),
           ...(typeof p.envKey === "string" ? { envKey: p.envKey } : {}),
+          // Core validates the shape; the proxy only has to stop dropping it.
+          ...(Array.isArray(p.fields) ? { fields: p.fields } : {}),
         };
       } catch (e) {
         if (e instanceof PayloadTooLargeError) throw e;

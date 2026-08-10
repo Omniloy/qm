@@ -1,11 +1,21 @@
 import { html, render, type TemplateResult } from "lit";
-import { Activity, KeyRound, Link, LockKeyhole, Plug, Plus, RefreshCw, ShieldCheck } from "lucide";
+import { Activity, Globe, KeyRound, Link, LockKeyhole, Plug, Plus, RefreshCw, ShieldCheck } from "lucide";
 import { api } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
 import { icon } from "./ui";
 import { appState, replacePanePreservingFocus } from "./shell";
 import { focusDialogCancel, restoreDialogFocus, trapDialogFocus } from "./dialog-focus";
 import { isActiveGrant, isExpiredCredential, KeychainOperations, keychainSummary } from "./keychain-state";
+import {
+  browserAction,
+  browserById,
+  browserSummary,
+  browserTabs,
+  connectDraft,
+  initialBrowserTab,
+  BUILT_IN_BROWSER_ID,
+  type BrowserProvider,
+} from "./browser-picker-state";
 
 interface ConnectorProvider {
   connected?: boolean;
@@ -83,6 +93,7 @@ interface KeychainCredential {
   service: string;
   kind?: string;
   envKey?: string;
+  fields?: Array<{ envKey: string }>;
   accountLabel?: string;
   host?: string;
   fingerprint?: string;
@@ -136,6 +147,13 @@ let keychainScopeNames: Record<string, string> = {};
 let connectorNotice = "";
 let addingCredential: { service: string; envKey: string; purpose: string } | null = null;
 let secureDropUrl: string | null = null;
+let browserProviders: BrowserProvider[] = [];
+let activeBrowser = BUILT_IN_BROWSER_ID;
+let browserTab: string | null = null;
+// The paste happens here rather than in a handed-off tab. It still goes
+// straight to the one-time drop endpoint over TLS and never enters
+// conversation state — the tab switch bought nothing and lost people.
+let browserConnect: { provider: BrowserProvider; path: string; value: string; error: string } | null = null;
 let confirmation: { title: string; body: string; action: string; run: () => Promise<void> } | null = null;
 let confirmationOpener: HTMLElement | null = null;
 const keychainOperations = new KeychainOperations();
@@ -149,6 +167,10 @@ export function resetKeychainState(): void {
   keychainAsks = [];
   keychainUsage = [];
   keychainScopeNames = {};
+  browserProviders = [];
+  activeBrowser = BUILT_IN_BROWSER_ID;
+  browserTab = null;
+  browserConnect = null;
   connectorNotice = "";
   addingCredential = null;
   secureDropUrl = null;
@@ -166,7 +188,11 @@ function fmtDate(ms?: number): string {
 }
 
 function credentialCard(c: KeychainCredential): TemplateResult {
-  const subtitle = [c.accountLabel, c.host, c.envKey].filter(Boolean).join(" · ");
+  // A multi-field credential keeps its env vars in `fields` and leaves the
+  // top-level one unset, which left those rows saying nothing about where the
+  // value lands.
+  const envNames = c.envKey ?? c.fields?.map((field) => field.envKey).join(", ");
+  const subtitle = [c.accountLabel, c.host, envNames].filter(Boolean).join(" · ");
   const expired = isExpiredCredential(c);
   const grants = keychainGrants.filter((grant) => grant.credentialId === c.id && isActiveGrant(grant, c));
   const asks = keychainAsks.filter((ask) => ask.credentialId === c.id);
@@ -372,6 +398,209 @@ function addCredentialCard(): TemplateResult {
   </section>`;
 }
 
+function browserCard(): TemplateResult {
+  const tabs = browserTabs(browserProviders, activeBrowser);
+  const shownId = browserTab ?? initialBrowserTab(browserProviders, activeBrowser);
+  const shown = tabs.find((tab) => tab.id === shownId) ?? tabs[0]!;
+  const provider = browserById(browserProviders, shown.id);
+  const action = browserAction(shown);
+  const live = tabs.find((tab) => tab.active);
+  return html`
+    <article class="kc-resource kc-account kc-browser">
+      <div class="kc-resource-main">
+        <span class="connector-logo">${icon(Globe, 18)}</span>
+        <div class="kc-resource-copy">
+          <div class="kc-resource-title-row">
+            <h3>Browser</h3>
+            <span class="kc-state neutral">${live ? live.name : "Built-in"}</span>
+          </div>
+          <div class="kc-resource-meta">Which browser the agent uses for you</div>
+        </div>
+      </div>
+      <div class="kc-browser-tabs" role="tablist" aria-label="Browser">
+        ${tabs.map(
+          (tab) =>
+            html`<button
+              class="kc-browser-tab${tab.id === shown.id ? " selected" : ""}${tab.active ? " live" : ""}"
+              type="button"
+              role="tab"
+              aria-selected=${tab.id === shown.id ? "true" : "false"}
+              @click=${() => {
+                browserTab = tab.id;
+                drawConnectors();
+              }}
+            >
+              ${tab.name}${tab.active ? html`<span class="kc-browser-dot" aria-label="in use"></span>` : ""}
+            </button>`,
+        )}
+      </div>
+      <p class="kc-resource-description">${browserSummary(provider, shown)}</p>
+      ${
+        browserConnect && browserConnect.provider.id === shown.id
+          ? html`<form
+              class="kc-browser-connect"
+              @submit=${(e: Event) => {
+                e.preventDefault();
+                void submitBrowserKey();
+              }}
+            >
+              <label class="skill-field"
+                ><span>${provider.name} API key</span
+                ><input
+                  class="skill-desc-input"
+                  type="password"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder=${provider.keyEnv}
+                  .value=${browserConnect.value}
+                  ?disabled=${keychainOperations.dropInFlight}
+                  @input=${(e: Event) => {
+                    if (browserConnect) browserConnect.value = (e.target as HTMLInputElement).value;
+                  }}
+              /></label>
+              <p class="kc-browser-note">
+                Goes straight to your encrypted keychain over TLS. It is never shown in chat.
+              </p>
+              ${browserConnect.error ? html`<p class="kc-inline-warning" role="status">${browserConnect.error}</p>` : ""}
+              <div class="kc-form-actions">
+                <button class="btn primary" type="submit" ?disabled=${keychainOperations.dropInFlight}>
+                  ${keychainOperations.dropInFlight ? "Saving…" : "Save key"}</button
+                ><button
+                  class="btn"
+                  type="button"
+                  @click=${() => {
+                    browserConnect = null;
+                    drawConnectors();
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>`
+          : ""
+      }
+      <div class="kc-resource-actions">
+        ${
+          action.kind === "in-use"
+            ? html`<span class="kc-state ok">In use</span>`
+            : action.kind === "use"
+              ? html`<button
+                  class="btn"
+                  type="button"
+                  ?disabled=${keychainOperations.mutationInFlight}
+                  @click=${() => void chooseBrowser(shown.id)}
+                >
+                  ${action.label}
+                </button>`
+              : html`<button
+                  class="btn"
+                  type="button"
+                  ?disabled=${keychainOperations.dropInFlight}
+                  @click=${() => void connectBrowser(provider)}
+                >
+                  ${keychainOperations.dropInFlight ? "Preparing…" : action.label}
+                </button>`
+        }
+        ${
+          provider.signupUrl
+            ? html`<a class="kc-text-action" href=${provider.signupUrl} target="_blank" rel="noopener noreferrer"
+                >Get an API key ↗</a
+              >`
+            : ""
+        }
+      </div>
+    </article>
+  `;
+}
+
+async function submitBrowserKey(): Promise<void> {
+  if (!browserConnect || keychainOperations.dropInFlight) return;
+  const key = browserConnect.value.trim();
+  if (!key) {
+    browserConnect.error = "Paste the key first.";
+    return drawConnectors();
+  }
+  const pending = browserConnect;
+  const stateEpoch = keychainOperations.beginDrop();
+  if (stateEpoch === null) return;
+  pending.error = "";
+  drawConnectors();
+  try {
+    const res = await fetch(pending.path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ values: { [pending.provider.keyEnv]: key } }),
+    });
+    if (!keychainOperations.isCurrentEpoch(stateEpoch)) return;
+    if (!res.ok) {
+      const detail = (await res.json().catch(() => null)) as { message?: string } | null;
+      pending.error = detail?.message ?? "That key could not be saved. Try Connect again for a fresh link.";
+      return;
+    }
+    pending.value = "";
+    browserConnect = null;
+    connectorNotice = `${pending.provider.name} is connected.`;
+    await renderConnectors();
+  } catch (e) {
+    if (!keychainOperations.isCurrentEpoch(stateEpoch)) return;
+    pending.error = errMessage(e, "That key could not be saved.");
+  } finally {
+    if (keychainOperations.isCurrentEpoch(stateEpoch)) {
+      keychainOperations.finishDrop(stateEpoch);
+      drawConnectors();
+    }
+  }
+}
+
+async function chooseBrowser(providerId: string): Promise<void> {
+  const operation = beginKeychainMutation();
+  if (!operation) return;
+  connectorNotice = "";
+  drawConnectors();
+  try {
+    await api("/api/keychain/browser", { method: "POST", body: JSON.stringify({ provider: providerId }) });
+    if (!keychainOperations.isCurrentEpoch(operation.epoch)) return;
+    activeBrowser = providerId;
+    browserTab = providerId;
+    connectorNotice = `${browserById(browserProviders, providerId).name} is now your browser.`;
+  } catch (e) {
+    if (!keychainOperations.isCurrentEpoch(operation.epoch)) return;
+    connectorNotice = errMessage(e, "Could not switch browser.");
+  } finally {
+    if (keychainOperations.finishMutation(operation)) drawConnectors();
+  }
+}
+
+async function connectBrowser(provider: BrowserProvider): Promise<void> {
+  const draft = connectDraft(provider);
+  if (!draft || keychainOperations.dropInFlight) return;
+  const stateEpoch = keychainOperations.beginDrop();
+  if (stateEpoch === null) return;
+  connectorNotice = "";
+  drawConnectors();
+  try {
+    const result = await api<{ url?: string }>("/api/keychain/drops", {
+      method: "POST",
+      body: JSON.stringify(draft),
+    });
+    if (!keychainOperations.isCurrentEpoch(stateEpoch)) return;
+    if (!result.url) throw new Error("No one-time page URL was returned.");
+    // Keep only the path: the field below posts to the same one-time endpoint
+    // the handed-off page would have, from here.
+    const url = new URL(result.url, window.location.origin);
+    browserConnect = { provider, path: `${url.pathname.replace(/\/form$/, "")}${url.search}`, value: "", error: "" };
+    connectorNotice = "";
+  } catch (e) {
+    if (!keychainOperations.isCurrentEpoch(stateEpoch)) return;
+    connectorNotice = errMessage(e, "Could not create the one-time page.");
+  } finally {
+    if (keychainOperations.isCurrentEpoch(stateEpoch)) {
+      keychainOperations.finishDrop(stateEpoch);
+      drawConnectors();
+    }
+  }
+}
+
 function confirmationCard(): TemplateResult {
   const pending = confirmation!;
   return html`<div
@@ -552,23 +781,11 @@ function drawConnectors(loading = false): void {
           <div class="kc-section-head">
             <div class="kc-section-title">
               <h2 id="kc-accounts-title">Linked accounts</h2>
-              <span>${entries.length}</span>
+              <span>${entries.length + 1}</span>
             </div>
             <p>Provider APIs the agent can use as you.</p>
           </div>
-          <div class="kc-resource-list">
-            ${
-              connectorCards.length
-                ? connectorCards
-                : html`<div class="kc-empty">
-                    ${icon(Link, 20)}
-                    <div>
-                      <strong>No accounts available</strong
-                      ><span>Your workspace has not configured any account providers yet.</span>
-                    </div>
-                  </div>`
-            }
-          </div>
+          <div class="kc-resource-list">${browserCard()}${connectorCards}</div>
         </section>
         <section class="kc-section" aria-labelledby="kc-credentials-title">
           <div class="kc-section-head">
@@ -625,6 +842,8 @@ export async function renderConnectors(): Promise<void> {
       asks?: KeychainAsk[];
       usage?: KeychainUsage[];
       scopeNames?: Record<string, string>;
+      browserProviders?: BrowserProvider[];
+      activeBrowser?: string;
     }>("/api/keychain/overview"),
   ]);
   if (seq !== appState.viewRenderSeq || !keychainOperations.isCurrentLoad(load) || appState.currentView !== "keychain")
@@ -645,6 +864,9 @@ export async function renderConnectors(): Promise<void> {
     keychainAsks = keys.value.asks ?? [];
     keychainUsage = keys.value.usage ?? [];
     keychainScopeNames = keys.value.scopeNames ?? {};
+    browserProviders = keys.value.browserProviders ?? [];
+    activeBrowser = keys.value.activeBrowser ?? BUILT_IN_BROWSER_ID;
+    if (browserTab === null) browserTab = initialBrowserTab(browserProviders, activeBrowser);
   } else {
     keychainCredentials = [];
     keychainConnectorCredentials = [];

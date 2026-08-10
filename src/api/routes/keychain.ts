@@ -6,7 +6,8 @@ import {
   type CredentialFile,
   type GrantMode,
 } from "../../credentials/keychain.ts";
-import { parseScopeId } from "../../types.ts";
+import { parseScopeId, personalScope } from "../../types.ts";
+import { BUILT_IN_BROWSER_ID, browserProviderIds } from "../../connectors/browser-providers.ts";
 import { principalDestination } from "../../reach/reach.ts";
 import { samePerson } from "../../directory/person.ts";
 import { sendJson } from "../http.ts";
@@ -168,7 +169,33 @@ async function handleKeychain(ctx: ApiCtx): Promise<void> {
         ...asks.map((ask) => ask.requesterScopeId),
         ...usage.map((row) => row.scopeLabel),
       ]);
-      return sendJson(res, 200, { credentials, connectorCredentials, grants, asks, usage, scopeNames });
+      // The browser picker: one card, one option per provider, and the
+      // person's current choice. Connected is derived from the credential they
+      // already hold, so connecting and choosing stay one story.
+      const services = new Set(credentials.map((credential) => credential.service));
+      const browserProviders = (deps.browserProviders ?? []).map((spec) => ({
+        id: spec.id,
+        name: spec.name,
+        summary: spec.summary,
+        keyEnv: spec.keyEnv,
+        keyService: spec.keyService,
+        ...(spec.profileEnv ? { profileEnv: spec.profileEnv } : {}),
+        ...(spec.profileService ? { profileService: spec.profileService } : {}),
+        ...(spec.signupUrl ? { signupUrl: spec.signupUrl } : {}),
+        connected: services.has(spec.keyService),
+      }));
+      const activeBrowser =
+        (await deps.config?.getBrowserProviderDurable(personalScope(actorId))) ?? BUILT_IN_BROWSER_ID;
+      return sendJson(res, 200, {
+        credentials,
+        connectorCredentials,
+        grants,
+        asks,
+        usage,
+        scopeNames,
+        browserProviders,
+        activeBrowser,
+      });
     }
 
     if (method === "DELETE" && pathname.startsWith("/v1/keychain/credentials/")) {
@@ -177,6 +204,42 @@ async function handleKeychain(ctx: ApiCtx): Promise<void> {
       if (ok)
         audit(deps, { principalId: actorId, action: "keychain.delete", resource: id, scopeLabel: capability.scopeId });
       return ok ? sendJson(res, 200, { ok: true }) : sendJson(res, 404, { error: "not_found" });
+    }
+
+    if (method === "POST" && pathname === "/v1/keychain/browser") {
+      const wanted = (body as { provider?: unknown }).provider;
+      const allowed = browserProviderIds(deps.browserProviders ?? []);
+      if (typeof wanted !== "string" || !allowed.includes(wanted)) {
+        return sendJson(res, 400, {
+          error: "bad_request",
+          message: `expected { provider } to be one of ${allowed.join(", ")}`,
+        });
+      }
+      if (!deps.config) return sendJson(res, 404, { error: "not_found" });
+      // A provider with no key would send every turn to a browser that cannot
+      // start. The card never offers it, but the endpoint is reachable without
+      // the card, and the failure would surface as a broken browser rather
+      // than a missing credential.
+      const wantedSpec = (deps.browserProviders ?? []).find((spec) => spec.id === wanted);
+      if (wantedSpec) {
+        const owned = new Set((await kc.listByOwner(actorId)).map((credential) => credential.service));
+        if (!owned.has(wantedSpec.keyService)) {
+          return sendJson(res, 409, {
+            error: "not_connected",
+            message: `connect ${wantedSpec.name} before switching to it`,
+          });
+        }
+      }
+      // Built-in is the absence of a choice, so it clears rather than stores —
+      // otherwise a person could never fall back to an org default again.
+      deps.config.setBrowserProvider(personalScope(actorId), wanted === BUILT_IN_BROWSER_ID ? null : wanted);
+      audit(deps, {
+        principalId: actorId,
+        action: "keychain.browser",
+        resource: wanted,
+        scopeLabel: capability.scopeId,
+      });
+      return sendJson(res, 200, { ok: true, activeBrowser: wanted });
     }
 
     if (method === "POST" && pathname === "/v1/keychain/grants") {
@@ -433,6 +496,7 @@ export const keychainRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "POST", path: "/v1/keychain/credentials", auth: "either", handle: handleKeychain },
   { method: "GET", path: "/v1/keychain/credentials", auth: "either", handle: handleKeychain },
   { method: "GET", path: "/v1/keychain/overview", auth: "either", handle: handleKeychain },
+  { method: "POST", path: "/v1/keychain/browser", auth: "either", handle: handleKeychain },
   { method: "DELETE", path: "/v1/keychain/credentials/:id", auth: "either", handle: handleKeychain },
   { method: "POST", path: "/v1/keychain/grants", auth: "either", handle: handleKeychain },
   { method: "GET", path: "/v1/keychain/grants", auth: "either", handle: handleKeychain },

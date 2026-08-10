@@ -1034,6 +1034,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const browseSteps = deps.config?.getBrowseMaxSteps(toScopeId("org", orgId()));
         if (browseSteps && !("BROWSE_LAB_MAX_STEPS" in connectorEnv))
           connectorEnv.BROWSE_LAB_MAX_STEPS = String(browseSteps);
+        // The person's browser choice, so the skill is told rather than left to
+        // infer it from which keys happen to be present.
+        const browserProvider = await deps.config?.getBrowserProviderDurable(memoryScopeId);
+        if (browserProvider && !("BROWSE_PROVIDER" in connectorEnv)) connectorEnv.BROWSE_PROVIDER = browserProvider;
         const browseChoice =
           knownBrowseModel(deps.config?.getBrowseModel(toScopeId("org", orgId()))) ??
           knownBrowseModel(deps.resolveBaseModelId?.());
