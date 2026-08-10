@@ -1,4 +1,5 @@
 import type { ModelProviderAvailability } from "../model/pi-models.ts";
+import type { HarnessAuthStore } from "../credentials/harness-auth-store.ts";
 import type { ModelCredentialStore } from "../model/model-credential-store.ts";
 import type { CustomProviderStore } from "../model/custom-provider-store.ts";
 import type { ReplayDedupe } from "../auth/replay-dedupe.ts";
@@ -85,6 +86,9 @@ export interface ServerDeps {
   modelProviders?: ModelProviderAvailability;
   providerKeys?: ModelProviderAvailability;
   modelCredentials?: ModelCredentialStore;
+  harnessAuth?: HarnessAuthStore;
+  /** Injected in tests so saving a token needs no live model call. */
+  harnessAuthProbe?: (token: string) => Promise<{ ok: boolean; detail?: string }>;
   modelCredentialFetch?: typeof fetch;
   customProviders?: CustomProviderStore;
   refreshCustomProviders?: () => Promise<void>;

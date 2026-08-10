@@ -47,6 +47,15 @@ export interface ClaudeHarnessOptions {
   judgeModelId?: string;
   binaryPath?: string;
   env?: NodeJS.ProcessEnv;
+  /**
+   * Extra environment resolved per turn and overlaid on `env`.
+   *
+   * `env` is a snapshot of the process environment taken at boot, so a
+   * credential saved from the admin panel would otherwise need a restart to
+   * take effect — and a credential that appears not to work is worse than one
+   * that is plainly absent.
+   */
+  resolveEnvOverlay?: () => Promise<NodeJS.ProcessEnv>;
   scratchExec?: boolean;
   ownerAuthExec?: boolean;
   reachExec?: boolean;
@@ -439,12 +448,21 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
         swallow("claude: tape append", error);
       }
     };
+    // A credential that cannot be read must degrade this turn to the boot
+    // environment, never fail it: losing the subscription is a billing change,
+    // losing the turn is an outage.
+    const envOverlay = opts.resolveEnvOverlay
+      ? await opts.resolveEnvOverlay().catch((error) => {
+          swallow("claude: env overlay", error);
+          return {};
+        })
+      : {};
     const sdkQuery = query({
       prompt: queue,
       options: {
         abortController: controller,
         cwd: jail,
-        env: claudeChildEnv(opts.env ?? {}, jail),
+        env: claudeChildEnv({ ...(opts.env ?? {}), ...envOverlay }, jail),
         tools: allowSubagents ? ["Agent"] : [],
         skills: [],
         settingSources: [],
