@@ -28,6 +28,8 @@ interface Pair {
   /** The tab the extension attached to, as the extension reported it. */
   title?: string;
   url?: string;
+  /** True between "share this tab" and "stop sharing". */
+  sharing?: boolean;
 }
 
 /** The single page the sandbox is allowed to see, whatever Chrome calls it. */
@@ -87,7 +89,19 @@ function handshake(pair: Pair, method: string, id: number, cdp: RelaySocket): bo
   return false;
 }
 
-export function createRelayHub(): RelayHub {
+export interface RelayHubOptions {
+  /**
+   * Called when a person shares a tab, or explicitly stops sharing.
+   *
+   * Connecting the extension and choosing it as your browser were two separate
+   * steps, and doing only the first left every turn quietly on the sandbox
+   * browser — which is exactly the state someone thinks they have fixed. So
+   * sharing a tab IS the choice, and stopping sharing takes it back.
+   */
+  onShareChanged?(principalId: string, sharing: boolean): void;
+}
+
+export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
   const pairs = new Map<string, Pair>();
   const pairOf = (id: string): Pair => {
     const found = pairs.get(id) ?? {};
@@ -157,6 +171,18 @@ export function createRelayHub(): RelayHub {
       if (frame.qm === "attached") {
         pair.title = frame.title ?? pair.title;
         pair.url = frame.url ?? pair.url;
+        pair.sharing = true;
+        opts.onShareChanged?.(principalId, true);
+        return;
+      }
+      if (frame.qm === "detached") {
+        // Explicit "stop sharing" only. A socket that merely closed is a
+        // sleeping service worker, not a decision — reverting on that would
+        // undo the person's choice every time Chrome idled the extension.
+        pair.sharing = false;
+        delete pair.title;
+        delete pair.url;
+        opts.onShareChanged?.(principalId, false);
         return;
       }
       pair.cdp?.send(raw);
