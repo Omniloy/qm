@@ -64,6 +64,8 @@ let frame: Frame | null = null;
 let frameTimer: ReturnType<typeof setTimeout> | null = null;
 let frameInFlight = false;
 let frameFailures = 0;
+/** The draw function to call when a frame lands, kept for the visibility listener. */
+let lastRerender: (() => void) | null = null;
 
 function stopFrames(): void {
   if (frameTimer) clearTimeout(frameTimer);
@@ -111,9 +113,28 @@ async function pumpFrames(rerender: () => void): Promise<void> {
 }
 
 function syncFrames(rerender: () => void): void {
+  lastRerender = rerender;
   const wanted = !!session && session.viewer === "stream" && !collapsed;
   if (wanted && !frameTimer) void pumpFrames(rerender);
   if (!wanted) stopFrames();
+}
+
+/**
+ * Come back to a fresh picture, not a two-second-old one.
+ *
+ * While the tab is hidden the pane deliberately stops fetching, so the last
+ * frame is however stale the person's absence made it. Waiting out the poll
+ * before correcting that means the first thing they see on returning is a page
+ * the browser has already left.
+ */
+if (typeof document !== "undefined") {
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden || !session || session.viewer !== "stream" || collapsed) return;
+    const rerender = lastRerender;
+    if (!rerender) return;
+    stopFrames();
+    void pumpFrames(rerender);
+  });
 }
 
 /** Send what a person did in the pane. Refused by core unless they hold the wheel. */
@@ -210,6 +231,12 @@ export async function refreshBrowserPane(rerender: () => void): Promise<void> {
     session = next;
     if (next && changed) collapsed = false;
     if (changed) rerender();
+    // Restart the frame chain if it has stopped. Otherwise the only thing that
+    // starts it is a re-render, and the only thing that causes a re-render is a
+    // frame arriving — so one interruption freezes the picture permanently,
+    // showing a page the browser left long ago. This poll runs regardless, so
+    // it is the one place that can always recover.
+    syncFrames(rerender);
   } catch {
     // A failed poll is not worth a banner: the pane simply does not change.
     // Real failures surface on the actions, which a person is waiting on.
