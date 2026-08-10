@@ -16,11 +16,37 @@ const SKILL = RAW.replace(/\s+/g, " ");
 test("every verb the skill documents actually exists in the CLI", () => {
   // A documented verb that argparse does not know is a dead end the agent only
   // discovers mid-task, having already opened a browser.
-  const verbs = ["open", "go", "snapshot", "read", "click", "type", "key", "scroll", "screenshot", "status", "close"];
+  const verbs = [
+    "open",
+    "go",
+    "snapshot",
+    "read",
+    "click",
+    "type",
+    "key",
+    "scroll",
+    "screenshot",
+    "status",
+    "close",
+    "cookies",
+    "storage",
+    "net",
+  ];
   for (const v of verbs) {
     assert.match(SKILL, new RegExp(`browser\\.py ${v}\\b`), `SKILL.md documents ${v}`);
     assert.match(CLI, new RegExp(`sub\\.add_parser\\("${v}"`), `browser.py implements ${v}`);
   }
+});
+
+test("the credential verbs exist for curl-based skills and warn about the secret", () => {
+  // cookies/storage/net let a skill read the session out of the browser and
+  // then call an API directly. HttpOnly is the whole reason `cookies` beats
+  // page script, so the doc has to say so, and the values are secrets that
+  // must not reach the conversation.
+  assert.match(CLI, /Network\.getCookies/);
+  assert.match(CLI, /def watch\(/);
+  assert.match(SKILL, /HttpOnly/);
+  assert.match(SKILL, /What these return are secrets/);
 });
 
 test("the browser surface carries no provider concepts", () => {
