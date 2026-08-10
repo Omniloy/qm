@@ -40,7 +40,15 @@ export async function mintRelayPairing(ctx: ApiCtx): Promise<void> {
     resource: "browser-relay",
     scopeLabel: personalScope(principalId),
   });
-  return sendJson(res, 200, { token, expiresAt: Date.now() + PAIRING_TTL_MS });
+  // The address the extension dials, so the person pastes a token and nothing
+  // else. Absent until the relay host is configured — the extension can still
+  // be pointed by hand.
+  const relayUrl = deps.relayPublicUrl;
+  return sendJson(res, 200, {
+    token,
+    expiresAt: Date.now() + PAIRING_TTL_MS,
+    ...(relayUrl ? { relayUrl } : {}),
+  });
 }
 
 export async function relayStatus(ctx: ApiCtx): Promise<void> {

@@ -41,6 +41,7 @@ const server = createServer(built.app, {
   harnessAuth: built.harnessAuth,
   browserProviders: built.browserProviders,
   browserRelay,
+  ...(config.relayPublicUrl ? { relayPublicUrl: config.relayPublicUrl } : {}),
   ...(config.brandingDefault ? { brandingDefault: config.brandingDefault } : {}),
   harnessId: config.harness,
   connectorTokens: built.connectorTokens,

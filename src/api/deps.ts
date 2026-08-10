@@ -93,6 +93,8 @@ export interface ServerDeps {
   browserProviders?: readonly BrowserProviderSpec[];
   /** Pairs a person's own Chrome with the browser their agent drives. */
   browserRelay?: RelayHub;
+  /** Public wss origin the extension dials, e.g. https://relay.qm.example.com. */
+  relayPublicUrl?: string;
   /** Injected in tests so saving a token needs no live model call. */
   harnessAuthProbe?: (token: string) => Promise<{ ok: boolean; detail?: string }>;
   modelCredentialFetch?: typeof fetch;
