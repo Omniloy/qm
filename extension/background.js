@@ -21,9 +21,75 @@ async function settings() {
   return { origin: origin || "", token: token || "" };
 }
 
-async function setBadge(text, colour) {
-  await chrome.action.setBadgeText({ text });
-  if (colour) await chrome.action.setBadgeBackgroundColor({ color: colour });
+/**
+ * The download is built for this person on this QM, so it can carry both the
+ * address and a pairing token. Load them once, the first time, so a fresh
+ * install connects with nothing to paste.
+ */
+async function bootstrapFromConfig() {
+  const { origin } = await settings();
+  if (origin) return;
+  try {
+    const res = await fetch(chrome.runtime.getURL("config.json"));
+    const cfg = await res.json();
+    const next = {};
+    if (cfg.origin) next.origin = cfg.origin;
+    if (cfg.token) next.token = cfg.token;
+    if (Object.keys(next).length) await chrome.storage.local.set(next);
+  } catch {
+    // No baked config (e.g. a hand-assembled folder); the popup still works.
+  }
+}
+
+async function badge(tabId, on) {
+  try {
+    await chrome.action.setBadgeText({ tabId, text: on ? "●" : "" });
+    if (on) await chrome.action.setBadgeBackgroundColor({ tabId, color: "#1f9254" });
+  } catch {
+    // The tab may have closed; nothing to mark.
+  }
+}
+
+/**
+ * A banner on the page itself, so the shared tab is obvious from the tab and
+ * not only from the toolbar. It is inert — no pointer events, its own marker —
+ * so it never becomes something the agent reads or clicks by mistake.
+ */
+function pageBanner(on) {
+  const ID = "__qm_bridge_banner__";
+  const existing = document.getElementById(ID);
+  if (!on) {
+    existing?.remove();
+    return;
+  }
+  if (existing) return;
+  const el = document.createElement("div");
+  el.id = ID;
+  el.textContent = "● QM is using this tab";
+  el.setAttribute("data-qm-bridge", "1");
+  el.style.cssText = [
+    "position:fixed",
+    "top:8px",
+    "right:8px",
+    "z-index:2147483647",
+    "pointer-events:none",
+    "font:600 12px/1 system-ui,sans-serif",
+    "color:#fff",
+    "background:#1f9254",
+    "padding:6px 10px",
+    "border-radius:999px",
+    "box-shadow:0 2px 8px rgba(0,0,0,.25)",
+  ].join(";");
+  document.documentElement.appendChild(el);
+}
+
+async function showBanner(tabId, on) {
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, func: pageBanner, args: [on] });
+  } catch {
+    // Some pages (chrome://, the Web Store) refuse injection; the badge and
+    // native debugger bar still signal the shared tab.
+  }
 }
 
 function send(payload) {
@@ -46,7 +112,8 @@ async function attach(tabId) {
   await chrome.debugger.attach({ tabId }, PROTOCOL_VERSION);
   attachedTabId = tabId;
   await chrome.storage.local.set({ attachedTabId: tabId });
-  await setBadge("ON", "#1f9254");
+  await badge(tabId, true);
+  await showBanner(tabId, true);
   await announce();
 }
 
@@ -55,7 +122,8 @@ async function detach() {
   const tabId = attachedTabId;
   attachedTabId = null;
   await chrome.storage.local.remove("attachedTabId");
-  await setBadge("", null);
+  await badge(tabId, false);
+  await showBanner(tabId, false);
   try {
     await chrome.debugger.detach({ tabId });
   } catch {
@@ -122,7 +190,12 @@ function connect() {
 chrome.debugger.onEvent.addListener((source, method, params) => {
   if (source.tabId !== attachedTabId) return;
   send({ method, params: params ?? {} });
-  if (method === "Page.frameNavigated") void announce();
+  // The agent navigating the tab replaces the page, so re-announce the new one
+  // and re-paint the banner it just wiped out.
+  if (method === "Page.frameNavigated") {
+    void announce();
+    void showBanner(attachedTabId, true);
+  }
 });
 
 chrome.debugger.onDetach.addListener((source) => {
@@ -159,11 +232,21 @@ chrome.runtime.onMessage.addListener((message, _sender, respond) => {
       return;
     }
     if (message.type === "status") {
-      const { origin } = await settings();
+      const { origin, token } = await settings();
+      let sharedTitle = null;
+      if (attachedTabId !== null) {
+        try {
+          sharedTitle = (await chrome.tabs.get(attachedTabId)).title ?? null;
+        } catch {
+          sharedTitle = null;
+        }
+      }
       respond({
         origin,
+        hasToken: Boolean(token),
         connected: Boolean(socket && socket.readyState === WebSocket.OPEN),
         sharedTabId: attachedTabId,
+        sharedTitle,
       });
       return;
     }
@@ -176,6 +259,6 @@ chrome.runtime.onMessage.addListener((message, _sender, respond) => {
 // wakes it to reconnect after Chrome has stopped it.
 chrome.alarms.create("qm-keepalive", { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener(() => connect());
-chrome.runtime.onStartup.addListener(() => connect());
-chrome.runtime.onInstalled.addListener(() => connect());
-connect();
+chrome.runtime.onStartup.addListener(() => void bootstrapFromConfig().then(connect));
+chrome.runtime.onInstalled.addListener(() => void bootstrapFromConfig().then(connect));
+void bootstrapFromConfig().then(connect);

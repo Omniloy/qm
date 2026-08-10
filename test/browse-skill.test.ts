@@ -38,6 +38,15 @@ test("every verb the skill documents actually exists in the CLI", () => {
   }
 });
 
+test("the extension routes to the relay, not a provider doc or the local browser", () => {
+  // The bug this guards: BROWSE_PROVIDER=extension fell through to the hosted
+  // -provider branch (read a doc that does not exist) or to the local launch,
+  // instead of attaching to the person's own Chrome over the relay.
+  assert.match(CLI, /chosen == "extension"/);
+  assert.match(CLI, /QM_RELAY_URL/);
+  assert.match(SKILL, /\*\*`extension`\*\*/);
+});
+
 test("the credential verbs exist for curl-based skills and warn about the secret", () => {
   // cookies/storage/net let a skill read the session out of the browser and
   // then call an API directly. HttpOnly is the whole reason `cookies` beats
@@ -216,7 +225,7 @@ test("refs are preferred over selectors, and re-taken after the page changes", (
 test("the browser is claimed before it is started", () => {
   // A browser costs about 1.25 GB. Registering first means a refusal arrives
   // while there is still nothing to throw away.
-  const open = /if a\.cmd == "open":[\s\S]{0,2600}/.exec(CLI)?.[0] ?? "";
+  const open = /if a\.cmd == "open":[\s\S]{0,3800}/.exec(CLI)?.[0] ?? "";
   const claimAt = open.indexOf("register(state)");
   const launchAt = open.indexOf("start_watchdog");
   assert.ok(claimAt > 0 && launchAt > 0, "both steps are in open");

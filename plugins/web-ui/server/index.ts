@@ -1340,6 +1340,25 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
       try {
         const names = readdirSync(EXTENSION_DIR).filter((n) => !n.startsWith("."));
         const entries = names.map((name) => ({ name, data: readFileSync(join(EXTENSION_DIR, name)) }));
+        // Bake this person's QM address and a fresh pairing token into the
+        // download, so a new install connects with nothing to paste. The
+        // download is already gated behind their session, so the token is no
+        // more exposed than the page they got it from.
+        const pairing = await coreFetchCap("POST", "/v1/browser-relay/pairing", "{}");
+        if (pairing.status >= 200 && pairing.status < 300) {
+          try {
+            const p = JSON.parse(pairing.text) as { token?: string; relayUrl?: string };
+            const cfg: Record<string, string> = {};
+            if (p.relayUrl) cfg.origin = p.relayUrl;
+            if (p.token) cfg.token = p.token;
+            if (Object.keys(cfg).length) {
+              entries.push({ name: "config.json", data: Buffer.from(JSON.stringify(cfg, null, 2), "utf8") });
+            }
+          } catch {
+            // Malformed pairing response — ship the extension unconfigured
+            // rather than not at all; the popup still lets them set it up.
+          }
+        }
         const zip = makeZip(entries);
         res.writeHead(200, {
           "content-type": "application/zip",

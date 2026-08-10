@@ -156,7 +156,6 @@ let browserTab: string | null = null;
 // straight to the one-time drop endpoint over TLS and never enters
 // conversation state — the tab switch bought nothing and lost people.
 let browserConnect: { provider: BrowserProvider; path: string; value: string; error: string } | null = null;
-let extensionPairing: { token: string; relayUrl?: string } | null = null;
 let confirmation: { title: string; body: string; action: string; run: () => Promise<void> } | null = null;
 let confirmationOpener: HTMLElement | null = null;
 const keychainOperations = new KeychainOperations();
@@ -174,7 +173,6 @@ export function resetKeychainState(): void {
   activeBrowser = BUILT_IN_BROWSER_ID;
   browserTab = null;
   browserConnect = null;
-  extensionPairing = null;
   connectorNotice = "";
   addingCredential = null;
   secureDropUrl = null;
@@ -417,53 +415,24 @@ function extensionPanel(connected: boolean): TemplateResult {
         connected
           ? ""
           : html`<ol class="kc-ext-steps">
-              <li>
-                <a class="btn" href="/api/browser-relay/extension.zip" download="qm-browser-bridge.zip"
-                  >Download the extension</a
-                >
-                and unzip it.
-              </li>
-              <li>
-                Open <code>chrome://extensions</code> (copy-paste it — Chrome blocks links there), turn on
-                <strong>Developer mode</strong>, click <strong>Load unpacked</strong>, and pick the unzipped folder.
-              </li>
-              <li>Click the extension, get a pairing token below, and paste it in.</li>
-            </ol>`
-      }
-      ${
-        extensionPairing
-          ? html`<label class="skill-field"
-                ><span
-                  >Pairing
-                  token${extensionPairing.relayUrl ? html` · QM address <code>${extensionPairing.relayUrl}</code>` : ""}</span
-                ><input
-                  class="skill-desc-input"
-                  readonly
-                  .value=${extensionPairing.token}
-                  @focus=${(e: Event) => (e.target as HTMLInputElement).select()}
-              /></label>
+                <li>
+                  <a class="btn" href="/api/browser-relay/extension.zip" download="qm-browser-bridge.zip"
+                    >Download the extension</a
+                  >
+                  and unzip it. It comes set up with your QM address and a pairing token — nothing to paste.
+                </li>
+                <li>
+                  Open <code>chrome://extensions</code> (copy-paste it — Chrome blocks links there), turn on
+                  <strong>Developer mode</strong>, click <strong>Load unpacked</strong>, and pick the unzipped folder.
+                </li>
+                <li>Click the extension, then <strong>Share this tab</strong> on any tab you want the agent to use.</li>
+              </ol>
               <p class="kc-browser-note">
-                Paste this into the extension. Treat it like a password — anyone with it can pair their agent to a tab
-                you share. It expires on its own; generate a new one anytime.
+                The download carries a token that lets it connect as you — treat the unzipped folder like a password.
               </p>`
-          : html`<div class="kc-form-actions">
-              <button class="btn" type="button" @click=${() => void getPairing()}>Get pairing token</button>
-            </div>`
       }
     </div>
   `;
-}
-
-async function getPairing(): Promise<void> {
-  connectorNotice = "";
-  try {
-    const data = await api<{ token?: string; relayUrl?: string }>("/api/browser-relay/pairing", { method: "POST" });
-    if (!data?.token) throw new Error("no token returned");
-    extensionPairing = { token: data.token, ...(data.relayUrl ? { relayUrl: data.relayUrl } : {}) };
-  } catch (e) {
-    connectorNotice = errMessage(e, "Could not create a pairing token.");
-  }
-  drawConnectors();
 }
 
 function browserCard(): TemplateResult {
