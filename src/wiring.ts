@@ -167,6 +167,7 @@ import { createPostgresEgressAuditSink } from "./admin/postgres-egress-audit-sin
 import { createConsentLinkStore, type ConsentLinkStore, type ConsentLinkRecord } from "./connectors/consent-link.ts";
 import { createModelGateway, type ModelGateway } from "./model/model-gateway.ts";
 import { createModelCredentialStore, type ModelCredentialStore } from "./model/model-credential-store.ts";
+import { createHarnessAuthStore, type HarnessAuthStore } from "./credentials/harness-auth-store.ts";
 import { setProviderBaseUrls } from "./model/provider-endpoints.ts";
 import { setCustomProviders } from "./model/custom-providers.ts";
 import { createCustomProviderStore, type CustomProviderStore } from "./model/custom-provider-store.ts";
@@ -343,6 +344,7 @@ export interface BuiltApp {
   secretDrops: SecretDropStore;
   modelGateway: ModelGateway;
   modelCredentials: ModelCredentialStore;
+  harnessAuth: HarnessAuthStore;
   customProviders: CustomProviderStore;
   refreshCustomProviders: () => Promise<void>;
   acl: AclStore;
@@ -431,6 +433,10 @@ export function buildApp(
       ...(config.openaiApiKey ? { openai: config.openaiApiKey } : {}),
       ...(config.openrouterApiKey ? { openrouter: config.openrouterApiKey } : {}),
     },
+  });
+  const harnessAuth = createHarnessAuthStore({
+    backing: artifactMap("harness_credentials"),
+    keyMaterial: config.connectorSecretKey ?? randomBytes(32),
   });
   const identity = createIdentityService(artifactMap<DeactivationRecord>("deactivated_principals"));
   void identity.hydrate();
@@ -843,7 +849,20 @@ export function buildApp(
       }),
     ],
     ["codex", createCodexHarness({ ...codexHarnessConfigOptions(config), signals: runSignals, tasks })],
-    ["claude", createClaudeHarness({ ...claudeHarnessConfigOptions(config), signals: runSignals, tasks })],
+    [
+      "claude",
+      createClaudeHarness({
+        ...claudeHarnessConfigOptions(config),
+        // A subscription saved in the admin panel outranks the boot
+        // environment, so switching billing does not need a restart.
+        resolveEnvOverlay: async () => {
+          const token = await harnessAuth.resolve("claude");
+          return token ? { CLAUDE_CODE_OAUTH_TOKEN: token } : {};
+        },
+        signals: runSignals,
+        tasks,
+      }),
+    ],
     ["mock", createMockHarness()],
   ]);
   const fallbackHarness = config.harness as HarnessId;
@@ -1204,6 +1223,7 @@ export function buildApp(
     tasks,
     modelGateway,
     modelCredentials,
+    harnessAuth,
     customProviders,
     refreshCustomProviders,
     ...(overrides.modelCredentialFetch ? { modelCredentialFetch: overrides.modelCredentialFetch } : {}),
@@ -1548,6 +1568,7 @@ export function buildApp(
     secretDrops,
     modelGateway,
     modelCredentials,
+    harnessAuth,
     customProviders,
     refreshCustomProviders,
     acl,

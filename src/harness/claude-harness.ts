@@ -47,6 +47,15 @@ export interface ClaudeHarnessOptions {
   judgeModelId?: string;
   binaryPath?: string;
   env?: NodeJS.ProcessEnv;
+  /**
+   * Extra environment resolved per turn and overlaid on `env`.
+   *
+   * `env` is a snapshot of the process environment taken at boot, so a
+   * credential saved from the admin panel would otherwise need a restart to
+   * take effect — and a credential that appears not to work is worse than one
+   * that is plainly absent.
+   */
+  resolveEnvOverlay?: () => Promise<NodeJS.ProcessEnv>;
   scratchExec?: boolean;
   ownerAuthExec?: boolean;
   reachExec?: boolean;
@@ -118,10 +127,25 @@ const CLAUDE_ENV_PASSTHROUGH = [
   "CLAUDE_CODE_OAUTH_TOKEN",
 ] as const;
 
+/**
+ * Credentials that outrank a subscription token inside Claude Code.
+ *
+ * Claude Code picks one credential by a fixed precedence, and both of these sit
+ * above CLAUDE_CODE_OAUTH_TOKEN. Passing a subscription token alongside either
+ * one does not fail — it quietly bills the key instead, which is the kind of
+ * bug you find on an invoice rather than in a log.
+ */
+const CLAUDE_CREDENTIALS_OUTRANKING_SUBSCRIPTION = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] as const;
+
 export function claudeChildEnv(source: NodeJS.ProcessEnv, jail: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { HOME: jail, CLAUDE_CONFIG_DIR: join(jail, ".claude") };
   for (const name of CLAUDE_ENV_PASSTHROUGH) {
     if (source[name] !== undefined) env[name] = source[name];
+  }
+  // The core keeps its API key for the harnesses that call the API directly;
+  // only the subscription-backed child gives it up.
+  if (env.CLAUDE_CODE_OAUTH_TOKEN) {
+    for (const name of CLAUDE_CREDENTIALS_OUTRANKING_SUBSCRIPTION) delete env[name];
   }
   return env;
 }
@@ -424,12 +448,21 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
         swallow("claude: tape append", error);
       }
     };
+    // A credential that cannot be read must degrade this turn to the boot
+    // environment, never fail it: losing the subscription is a billing change,
+    // losing the turn is an outage.
+    const envOverlay = opts.resolveEnvOverlay
+      ? await opts.resolveEnvOverlay().catch((error) => {
+          swallow("claude: env overlay", error);
+          return {};
+        })
+      : {};
     const sdkQuery = query({
       prompt: queue,
       options: {
         abortController: controller,
         cwd: jail,
-        env: claudeChildEnv(opts.env ?? {}, jail),
+        env: claudeChildEnv({ ...(opts.env ?? {}), ...envOverlay }, jail),
         tools: allowSubagents ? ["Agent"] : [],
         skills: [],
         settingSources: [],

@@ -98,6 +98,28 @@ test("Claude child environment excludes core credentials and user homes", () => 
   );
 });
 
+test("Claude spends the subscription rather than the API key when both are present", () => {
+  const env = claudeChildEnv(
+    {
+      PATH: "/bin",
+      ANTHROPIC_API_KEY: "anthropic-provider-key",
+      ANTHROPIC_AUTH_TOKEN: "bearer-token",
+      CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-subscription",
+    },
+    "/tmp/claude-jail",
+  );
+  // Claude Code ranks both of these above the subscription token, so leaving
+  // either one set bills the key and never touches the subscription.
+  assert.equal(env.ANTHROPIC_API_KEY, undefined);
+  assert.equal(env.ANTHROPIC_AUTH_TOKEN, undefined);
+  assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, "sk-ant-oat01-subscription");
+});
+
+test("Claude keeps the API key when no subscription token is configured", () => {
+  const env = claudeChildEnv({ PATH: "/bin", ANTHROPIC_API_KEY: "anthropic-provider-key" }, "/tmp/claude-jail");
+  assert.equal(env.ANTHROPIC_API_KEY, "anthropic-provider-key");
+});
+
 test("Claude drops only a root parent process to the unprivileged nobody identity", () => {
   assert.deepEqual(claudeProcessIdentity(0), { uid: 65534, gid: 65534 });
   assert.equal(claudeProcessIdentity(1000), undefined);

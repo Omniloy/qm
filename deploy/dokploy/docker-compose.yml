@@ -77,6 +77,10 @@ services:
       # the roster is durable and changes go through /admin.
       ADMIN_GRANTS: ${ADMIN_GRANTS}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      # Optional: runs the Claude harness on a Claude subscription instead of
+      # per-token API billing. The harness drops ANTHROPIC_API_KEY from the
+      # child when this is set, since Claude Code would otherwise prefer it.
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET}
       CAPABILITY_SECRET: ${CAPABILITY_SECRET}
       PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET}

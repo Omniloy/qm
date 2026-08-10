@@ -162,6 +162,13 @@ AUTH_CLIENT_SECRET         portal ↔ broker client credential
 ANTHROPIC_API_KEY          bills the base model
 ```
 
+`CLAUDE_CODE_OAUTH_TOKEN` is optional. Generate it with `claude setup-token`
+(one year, Pro/Max/Team/Enterprise) to run the Claude harness on a subscription
+rather than per-token API billing. Leave `ANTHROPIC_API_KEY` in place: the other
+harnesses still need it, and the Claude child drops it for itself, because
+Claude Code prefers an API key over a subscription token and would otherwise
+keep billing the key with no error to say so.
+
 `AUTH_SIGNING_JWK` is a single-line P-256 private JWK:
 
 ```bash

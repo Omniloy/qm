@@ -3907,6 +3907,30 @@
             </section>
             <section class="card">
               <div class="head">
+                <h2>Claude subscription</h2>
+                <p>
+                  Optional. Runs the Claude harness on a Claude subscription instead of per-token API billing. Generate
+                  a token with <code>claude setup-token</code> — it needs a Pro, Max, Team, or Enterprise plan, lasts a
+                  year, and is printed once. Saving checks it against Claude before storing it write-only. The Anthropic
+                  API key stays in place for the other harnesses; the Claude harness stops using it, because Claude Code
+                  prefers an API key over a subscription and would otherwise keep billing it silently.
+                </p>
+              </div>
+              <div class="body setup-form">
+                <label
+                  >Subscription token
+                  <input type="password" id="harness-claude-token" autocomplete="off" placeholder="sk-ant-oat01-…"
+                /></label>
+                <p class="muted" id="harness-claude-state">No subscription configured.</p>
+              </div>
+              <div class="foot">
+                <button class="primary" id="harness-claude-save">Validate and save</button
+                ><button class="danger" id="harness-claude-delete">Disable</button
+                ><span class="status" id="st-harness-claude"></span>
+              </div>
+            </section>
+            <section class="card">
+              <div class="head">
                 <h2>Custom providers</h2>
                 <p>
                   Point QM at any OpenAI- or Anthropic-compatible endpoint — a vendor like DeepSeek, or a gateway like
@@ -7049,6 +7073,7 @@
           api("GET", "/api/connector-catalog"),
           api("GET", "/api/scopes/" + encodeURIComponent(orgScope())),
         ]);
+        void loadHarnessAuth();
         if (!models.ok || !slack.ok || !catalog.ok || !config.ok) {
           setStatus("st-onboarding-model", "Setup status could not be loaded. Try again.", "err", true);
           renderOnboardingProviderOptions();
@@ -7162,6 +7187,58 @@
             return model;
           });
       }
+      async function loadHarnessAuth() {
+        const res = await api("GET", "/api/harness-auth");
+        const claude = (res.ok && (res.data?.harnesses || []).find((item) => item.harnessId === "claude")) || null;
+        $("harness-claude-state").textContent = describeSubscription(claude);
+        $("harness-claude-delete").disabled = !claude?.configured;
+      }
+      function describeSubscription(status) {
+        if (!status?.configured) return "No subscription configured — the Claude harness bills the Anthropic API key.";
+        const added = status.updatedAt ? new Date(status.updatedAt) : null;
+        const by = status.updatedBy ? " by " + status.updatedBy : "";
+        if (!added) return "Active" + by + ".";
+        // A setup-token lasts a year and dies quietly; the only warning anyone
+        // gets is the one shown here, so it is worth being specific.
+        const daysLeft = Math.ceil((added.getTime() + 365 * 86400000 - Date.now()) / 86400000);
+        const life =
+          daysLeft <= 0
+            ? " — expired, generate a new one"
+            : daysLeft <= 30
+              ? " — expires in " + daysLeft + " days, generate a new one soon"
+              : " — expires in " + daysLeft + " days";
+        return "Active, added " + added.toLocaleDateString() + by + life + ".";
+      }
+      $("harness-claude-save").onclick = async () => {
+        const token = $("harness-claude-token").value.trim();
+        if (!token) {
+          setStatus("st-harness-claude", "Paste the token from claude setup-token.", "err");
+          return;
+        }
+        $("harness-claude-save").disabled = true;
+        setStatus("st-harness-claude", "Checking the token with Claude…", "saving", true);
+        const saved = await api("PUT", "/api/harness-auth/claude", { token });
+        $("harness-claude-save").disabled = false;
+        if (!saved.ok) {
+          setStatus("st-harness-claude", saved.data?.message || "Claude rejected this token.", "err", true);
+          return;
+        }
+        $("harness-claude-token").value = "";
+        await loadHarnessAuth();
+        setStatus("st-harness-claude", "Subscription saved. Claude-harness turns stop billing the API key.", "ok");
+      };
+      $("harness-claude-delete").onclick = async () => {
+        if (!confirm("Disable the subscription? Claude-harness turns go back to billing the Anthropic API key."))
+          return;
+        const res = await api("DELETE", "/api/harness-auth/claude");
+        await loadHarnessAuth();
+        setStatus(
+          "st-harness-claude",
+          res.ok ? "Subscription disabled." : "That could not be disabled.",
+          res.ok ? "ok" : "err",
+          !res.ok,
+        );
+      };
       async function loadCustomProviders() {
         const res = await api("GET", "/api/custom-providers");
         if (!res.ok) return;
