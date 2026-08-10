@@ -970,6 +970,21 @@ def main():
         return
 
     if a.cmd == "open":
+        # The person's own Chrome, chosen in the app, is not a hosted provider
+        # with a doc and a create step: the extension is already running it and
+        # the relay is already reachable. Resolve it to a --cdp attach BEFORE
+        # anything else, so plain `open` just works — and before the local
+        # launch path below, which is the bug that sent it to the sandbox
+        # browser instead.
+        chosen = "" if a.force_built_in else os.environ.get("BROWSE_PROVIDER", "").strip()
+        if chosen == "extension" and not a.cdp:
+            relay = os.environ.get("QM_RELAY_URL", "").strip()
+            if not relay:
+                die("This person chose their own Chrome, but no relay URL reached this turn.\n"
+                    "Their extension may not be connected. Tell them to open the QM Browser Bridge\n"
+                    "extension and share a tab, or run: open --force-built-in to use the built-in one.")
+            a.cdp = relay
+
         if a.cdp:
             # Someone else started this one; it is theirs to close, and its
             # pane (if it has one) is registered by whoever created it.
@@ -980,10 +995,10 @@ def main():
             print("Attached to the browser you pointed at. Every verb works the same.")
             return
 
-        # The person may have chosen a hosted browser. Saying so here is the
-        # only reliable place: a doc read top-down gets acted on before its
-        # later sections, and by then the built-in browser is already running.
-        chosen = "" if a.force_built_in else os.environ.get("BROWSE_PROVIDER", "").strip()
+        # A hosted provider is different: it needs its own doc
+        # and a create step first. Saying so here is the only reliable place —
+        # a doc read top-down gets acted on before its later sections, and by
+        # then the built-in browser is already running.
         if chosen and chosen != "built-in" and re.fullmatch(r"[a-z][a-z0-9-]*", chosen):
             die(f"This person chose the {chosen} browser, not the built-in one.\n"
                 f"Read skills/browse/providers/{chosen}.md, create the browser it describes,\n"

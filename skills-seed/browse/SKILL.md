@@ -23,13 +23,19 @@ first, because opening the wrong one wastes a minute and, on a paid provider, ig
 they made deliberately.
 
 - **Unset, or `built-in`** — use the built-in browser below. This is the common case.
-- **Anything else** — that names a hosted provider. Do NOT run plain `open`. Read
+- **`extension`** — the person's own Chrome, through the QM Browser Bridge extension. Plain
+  `open` just works: it attaches to their browser over the relay, with their real sign-ins and
+  none of the automation fingerprint that gets a sandbox browser blocked. No doc, no create
+  step. There is no pane to fill — they are watching their own screen. If `open` says the relay
+  did not reach this turn, their extension is not connected: tell them to open it and share a
+  tab.
+- **Any other value** — a hosted provider. Do NOT run plain `open`. Read
   `skills/browse/providers/$BROWSE_PROVIDER.md`, create the browser it describes, then
   `open --cdp "$CDP_URL"`. Every verb behaves the same afterwards.
 
-`open` refuses and reminds you if you forget, so a plain `open` failing this way is not a
-fault — it is the reminder. Override with `open --force-built-in` only when the hosted one is
-broken or the person asks, and say which you used and why.
+For a hosted provider, `open` refuses and reminds you if you forget, so a plain `open` failing
+that way is not a fault — it is the reminder. Override with `open --force-built-in` only when
+the chosen browser is broken or the person asks, and say which you used and why.
 
 ## The verbs
 

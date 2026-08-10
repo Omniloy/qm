@@ -1,26 +1,48 @@
 const $ = (id) => document.getElementById(id);
 const ask = (message) => new Promise((resolve) => chrome.runtime.sendMessage(message, resolve));
 
+let flash = null;
+
 async function refresh() {
-  const status = await ask({ type: "status" });
-  if (status?.origin) $("origin").value = status.origin;
-  $("conn").textContent = status?.connected ? "Connected to QM" : "Not connected";
-  $("conn").className = status?.connected ? "on" : "off";
-  const shared = status?.sharedTabId != null;
-  $("tab").textContent = shared ? "Sharing one tab" : "No tab shared";
-  $("tab").className = shared ? "on" : "off";
+  const s = await ask({ type: "status" });
+  if (s?.origin) $("origin").value = s.origin;
+
+  const sharing = s?.sharedTabId != null;
+  const connected = Boolean(s?.connected);
+  $("dot").className = "dot" + (sharing && connected ? " on" : "");
+
+  if (sharing) {
+    $("state").textContent = "Sharing a tab";
+    $("detail").textContent = s.sharedTitle || "the tab you shared";
+  } else if (connected) {
+    $("state").textContent = "Connected to QM";
+    $("detail").textContent = "Ready — click Share this tab";
+  } else if (s?.origin && s?.hasToken) {
+    $("state").textContent = "Connecting…";
+    $("detail").textContent = s.origin;
+  } else {
+    $("state").textContent = "Not set up";
+    $("detail").textContent = "Add your QM connection below";
+    $("settings").open = true;
+  }
 }
 
 $("save").onclick = async () => {
   await ask({ type: "save-settings", origin: $("origin").value.trim(), token: $("token").value.trim() });
-  // Never keep the token in the field: the popup is a page like any other.
   $("token").value = "";
+  $("saved").textContent = "Saved ✓";
+  clearTimeout(flash);
+  flash = setTimeout(() => ($("saved").textContent = ""), 2500);
   await refresh();
 };
 
 $("share").onclick = async () => {
   const result = await ask({ type: "share-current-tab" });
-  if (!result?.ok) $("tab").textContent = result?.error ?? "Could not share that tab";
+  if (!result?.ok) {
+    $("state").textContent = "Could not share";
+    $("detail").textContent = result?.error ?? "try another tab";
+    return;
+  }
   await refresh();
 };
 

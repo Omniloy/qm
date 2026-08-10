@@ -1,62 +1,194 @@
 <!doctype html>
 <meta charset="utf-8" />
 <style>
+  :root {
+    color-scheme: dark;
+    --bg: #0a0a0a;
+    --surface: #161616;
+    --border: #2a2a2a;
+    --text: #fafafa;
+    --muted: #9a9a9a;
+    --accent: #4f46e5;
+    --ok: #1f9254;
+  }
+  * {
+    box-sizing: border-box;
+  }
   body {
-    font:
-      13px/1.45 system-ui,
-      sans-serif;
-    width: 300px;
+    width: 320px;
     margin: 0;
-    padding: 14px;
+    padding: 16px;
+    background: var(--bg);
+    color: var(--text);
+    font:
+      13px/1.5 system-ui,
+      -apple-system,
+      sans-serif;
+  }
+  .head {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin-bottom: 4px;
+  }
+  .mark {
+    width: 22px;
+    height: 22px;
+    border-radius: 6px;
+    background: var(--accent);
+    color: #fff;
+    font-weight: 700;
+    font-size: 13px;
+    display: grid;
+    place-items: center;
   }
   h1 {
     font-size: 14px;
-    margin: 0 0 2px;
+    margin: 0;
+    font-weight: 600;
   }
-  p {
-    color: #666;
-    margin: 0 0 10px;
+  p.sub {
+    color: var(--muted);
+    margin: 0 0 14px;
+    font-size: 12px;
+  }
+  .status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin-bottom: 12px;
+  }
+  .dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 999px;
+    background: var(--muted);
+    flex: none;
+  }
+  .dot.on {
+    background: var(--ok);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent);
+  }
+  .status .lines {
+    min-width: 0;
+  }
+  .status .title {
+    font-weight: 600;
+  }
+  .status .meta {
+    color: var(--muted);
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   label {
     display: block;
-    margin-bottom: 8px;
+    font-size: 11px;
+    color: var(--muted);
+    margin: 0 0 4px;
   }
   input {
     width: 100%;
-    box-sizing: border-box;
-    padding: 6px;
+    padding: 8px 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
     font: inherit;
+    margin-bottom: 10px;
+  }
+  input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .row {
+    display: flex;
+    gap: 8px;
   }
   button {
-    font: inherit;
-    padding: 6px 10px;
-    margin-right: 6px;
+    flex: 1;
+    padding: 9px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--text);
+    font:
+      600 13px system-ui,
+      sans-serif;
+    cursor: pointer;
   }
-  .state {
-    margin-top: 10px;
-    padding: 8px;
-    background: #f5f5f5;
-    border-radius: 6px;
+  button:hover {
+    border-color: #3a3a3a;
   }
-  .on {
-    color: #1f7a47;
-    font-weight: 600;
+  button.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
   }
-  .off {
-    color: #666;
+  button.primary:hover {
+    filter: brightness(1.08);
+  }
+  details {
+    margin-top: 12px;
+  }
+  summary {
+    color: var(--muted);
+    font-size: 11px;
+    cursor: pointer;
+  }
+  details .body {
+    padding-top: 10px;
+  }
+  .saved {
+    color: var(--ok);
+    font-size: 11px;
+    margin: 2px 0 8px;
+    min-height: 14px;
+  }
+  .foot {
+    color: var(--muted);
+    font-size: 11px;
+    margin: 12px 0 0;
+    line-height: 1.5;
   }
 </style>
-<h1>QM Browser Bridge</h1>
-<p>Shares one tab with your QM agent, so it works with your own sign-ins.</p>
-<label>QM address <input id="origin" placeholder="https://qm.example.com" /></label>
-<label>Pairing token <input id="token" type="password" placeholder="paste from QM → Keychain" /></label>
-<button id="save">Save</button>
-<div class="state">
-  <div id="conn" class="off">Not connected</div>
-  <div id="tab" class="off">No tab shared</div>
+<div class="head">
+  <span class="mark">Q</span>
+  <h1>Browser Bridge</h1>
 </div>
-<p style="margin-top: 10px"><button id="share">Share this tab</button><button id="stop">Stop sharing</button></p>
-<p style="font-size: 11px">
-  While a tab is shared your agent can read and act on it as you. Only that tab — nothing else in this browser.
+<p class="sub">Shares one tab with your QM agent, so it works with your own sign-ins.</p>
+
+<div class="status">
+  <span class="dot" id="dot"></span>
+  <div class="lines">
+    <div class="title" id="state">Not connected</div>
+    <div class="meta" id="detail">Set up below, then share a tab</div>
+  </div>
+</div>
+
+<div class="row">
+  <button class="primary" id="share">Share this tab</button>
+  <button id="stop">Stop sharing</button>
+</div>
+
+<details id="settings">
+  <summary>QM connection</summary>
+  <div class="body">
+    <label>QM address</label>
+    <input id="origin" placeholder="https://qm.example.com" autocomplete="off" />
+    <label>Pairing token</label>
+    <input id="token" type="password" placeholder="paste from QM → Keychain" autocomplete="off" />
+    <div class="saved" id="saved"></div>
+    <button id="save">Save</button>
+  </div>
+</details>
+
+<p class="foot">
+  While a tab is shared your agent can read and act on it as you — only that tab, nothing else in this browser.
 </p>
 <script src="popup.js"></script>
