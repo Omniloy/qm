@@ -1,10 +1,11 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Readable } from "node:stream";
-import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, extname, join, normalize } from "node:path";
 import { LRUCache } from "lru-cache";
+import { makeZip } from "./zip.ts";
 import {
   signedHeaders,
   withSourceAuthNonce,
@@ -41,6 +42,7 @@ const ALLOW = (process.env.WEB_UI_PRINCIPALS ?? "")
   .filter(Boolean);
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const EXTENSION_DIR = join(ROOT, "extension");
 const DIST = join(ROOT, "dist-web");
 
 const brandingCache = createBrandingCache(async () => {
@@ -1329,6 +1331,25 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const id = decodeURIComponent(path.slice("/api/keychain/grants/".length, -"/revoke".length));
       const r = await coreFetchCap("POST", `/v1/keychain/grants/${encodeURIComponent(id)}/revoke`, "{}");
       return relay(res, r);
+    }
+
+    if (method === "GET" && path === "/api/browser-relay/extension.zip") {
+      // The extension, packed on the fly from the files shipped in the image,
+      // so the download is always in step with the code rather than a stale
+      // artifact someone forgot to rebuild.
+      try {
+        const names = readdirSync(EXTENSION_DIR).filter((n) => !n.startsWith("."));
+        const entries = names.map((name) => ({ name, data: readFileSync(join(EXTENSION_DIR, name)) }));
+        const zip = makeZip(entries);
+        res.writeHead(200, {
+          "content-type": "application/zip",
+          "content-disposition": 'attachment; filename="qm-browser-bridge.zip"',
+          "content-length": String(zip.length),
+        });
+        return void res.end(zip);
+      } catch {
+        return json(res, 404, { error: "not_found", message: "the extension is not bundled in this deployment" });
+      }
     }
 
     if (method === "GET" && path === "/api/browser-relay/status") {
