@@ -28,9 +28,17 @@ test("the browser surface carries no provider concepts", () => {
   // changing them means rewriting every caller. Keeping it plain CDP is what
   // lets the same calls run against a local Chromium, a hosted session, or a
   // browser driven through an extension.
-  for (const leak of ["anchor", "kernel", "browserbase", "live_view", "liveViewUrl", "api-key", "API_KEY"]) {
+  // Provider names, a provider's own field names, and key material. Core's
+  // own field names are not on this list: browser.py already speaks core's
+  // browser-session API, and `liveViewUrl` is what that API calls the viewer
+  // it is handed — naming it says nothing about which provider produced it.
+  for (const leak of ["anchor", "kernel", "browserbase", "live_view", "api-key", "API_KEY"]) {
     assert.doesNotMatch(CLI, new RegExp(leak, "i"), `browser.py must not mention ${leak}`);
   }
+  // The pane verb takes the viewer URL as an argument rather than knowing how
+  // to get one, which is the line that keeps it provider-free.
+  assert.match(CLI, /sub\.add_parser\("pane"/);
+  assert.match(CLI, /--provider/);
 });
 
 test("a browser is available without any key at all", () => {

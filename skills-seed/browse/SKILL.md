@@ -46,6 +46,7 @@ python3 skills/browse/scripts/browser.py scroll [--by N | --to top|bottom]
 python3 skills/browse/scripts/browser.py screenshot [--path P]
 python3 skills/browse/scripts/browser.py status        # is anything open, and where
 python3 skills/browse/scripts/browser.py close         # graceful; saves sign-ins
+python3 skills/browse/scripts/browser.py pane --provider P --session S --url VIEWER_URL
 ```
 
 `open` is idempotent — if a browser is already open it reattaches rather than starting a
@@ -118,8 +119,11 @@ Two things differ, and both matter:
 
 - **`close` does not stop it.** That browser is running on someone else's hardware and bills
   until its own timeout, so follow the provider doc's Clean up step as well. `close` says so.
-- **The pane is theirs to arrange.** The provider doc's registration step gives the person a
-  live view; a hosted browser is not one QM can stream.
+- **Put it in the pane, or they cannot watch it.** QM cannot stream a browser running on
+  someone else's hardware, but the pane embeds the provider's own viewer. The provider doc's
+  **Show it in the pane** step does this in one call. Do it right after creating the browser —
+  skip it and the person gets a bare link in the conversation and has to leave the app to
+  watch their own browser work. Take it out again when you clean up.
 
 The providers:
 

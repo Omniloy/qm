@@ -62,6 +62,20 @@ It loads read-only: state gets INTO it via the Managed Auth hosted flow (below),
 your browsing. (Kernel also supports `profile.save_changes: true` to write a session's
 cookies back on browser DELETE — don't use it; concurrent runs would race their writes.)
 
+## Show it in the pane
+
+Do this immediately after creating the browser. A hosted browser cannot be streamed by QM,
+but the pane embeds this provider's own viewer, and without this step the person is handed a
+bare link in the conversation and has to leave the app to watch their own browser work.
+
+```bash
+python3 skills/browse/scripts/browser.py pane \
+  --provider kernel --session "$KERNEL_SID" --url "$LIVE_VIEW"
+```
+
+Pass the **viewer** URL, never the CDP URL — the CDP URL carries the key. If QM refuses, say
+the pane is unavailable and give them the viewer link instead; browsing still works.
+
 ## Giving the browser a file
 
 Files land in `/home/kernel`:
@@ -164,7 +178,11 @@ The profile is theirs alone, so signing in real accounts is fine — that's the 
 
 ## Clean up
 
+Both: the provider's session keeps billing, and the pane keeps showing a browser
+that has gone.
+
 ```bash
+python3 skills/browse/scripts/browser.py pane --end --session "$KERNEL_SID"
 curl -fsS -X DELETE "https://api.onkernel.com/browsers/$KERNEL_SID" -H "Authorization: Bearer $KERNEL_API_KEY"
 ```
 

@@ -814,6 +814,12 @@ def main():
     po = sub.add_parser("open", help="start or reattach to a browser")
     po.add_argument("--force-built-in", action="store_true",
                     help="use the built-in browser even when another was chosen")
+    pp = sub.add_parser("pane", help="show a browser you started elsewhere in the person's pane")
+    pp.add_argument("--provider", default="", help="the provider id, as named by BROWSE_PROVIDER")
+    pp.add_argument("--session", default="", help="that provider's session id")
+    pp.add_argument("--url", default="", help="the provider's viewer URL — never the CDP URL")
+    pp.add_argument("--minutes", type=int, default=30, help="how long the pane should expect it to live")
+    pp.add_argument("--end", action="store_true", help="take it out of the pane again")
     po.add_argument("--headful", action="store_true")
     # Drive a browser that is already running somewhere else, given its CDP
     # endpoint. Every verb behaves identically against it — a CDP URL is plain
@@ -855,6 +861,34 @@ def main():
     a = p.parse_args()
 
     # ------------------------------------------------------------ open
+    if a.cmd == "pane":
+        # A browser running on someone else's hardware cannot be streamed, but
+        # it can still be shown: the pane embeds the provider's own viewer.
+        # Without this the person is handed a bare link in the conversation and
+        # has to leave the app to watch their own browser work.
+        if a.end:
+            if not a.session:
+                die("Say which session to remove: pane --end --session ID")
+            core_call("DELETE", f"/v1/browser-sessions/{a.session}")
+            print("Taken out of the pane.")
+            return
+        if not (a.provider and a.session and a.url):
+            die("pane needs --provider, --session and --url (the viewer URL, not the CDP URL).")
+        status, payload = core_call_status("POST", "/v1/browser-sessions", {
+            "provider": a.provider,
+            "sessionId": a.session,
+            "viewer": "iframe",
+            "liveViewUrl": a.url,
+            "expiresAt": int((time.time() + max(1, a.minutes) * 60) * 1000),
+        })
+        if status == 409:
+            die((payload or {}).get("message", "there is no room for another browser right now"))
+        if not (status and 200 <= status < 300):
+            die(f"QM did not accept it ({status}): {(payload or {}).get('message', 'no reason given')}\n"
+                "Browsing still works — say the pane is unavailable and give them the viewer link instead.")
+        print("Showing in the pane. They can watch it and take control there.")
+        return
+
     if a.cmd == "open":
         if a.cdp:
             # Someone else started this one; it is theirs to close, and its
