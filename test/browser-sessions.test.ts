@@ -495,3 +495,35 @@ test("state is cheap and carries no secret", async () => {
   assert.equal(sent[0]?.body.controlMode, "agent");
   assert.equal(sent[0]?.body.liveViewUrl, undefined);
 });
+
+/* ---------------------------------------------- the computer stays awake */
+
+test("a computer with a browser open is not parked at the end of a turn", async () => {
+  // Found by using the deployed feature: teardown ends in `docker stop`, so
+  // every turn killed the browser it had just opened. The pane then offered
+  // Take control of something that no longer existed, and nothing logged an
+  // error because parking is normal.
+  //
+  // This asserts the rule the orchestrator applies, against the real store.
+  const s = store();
+  const now = Date.now();
+  const scope = scopeId("personal", ADA);
+
+  const keepWarmFor = async (sc: string): Promise<boolean> => {
+    const sep = sc.indexOf(":");
+    const kind = sc.slice(0, sep);
+    const ref = sc.slice(sep + 1);
+    return kind === "personal" && !!(await s.get(ref, Date.now()));
+  };
+
+  assert.equal(await keepWarmFor(scope), false, "no browser: park it, as before");
+  await s.put(session({ provider: "local", viewer: "stream", liveViewUrl: undefined, expiresAt: now + 60_000 }));
+  assert.equal(await keepWarmFor(scope), true, "browser open: keep the computer awake");
+
+  // A room never has a browser, so a channel turn must still park normally.
+  assert.equal(await keepWarmFor(scopeId("channel", "C1")), false);
+
+  // And once it is gone the computer is free to park again.
+  await s.clear(ADA);
+  assert.equal(await keepWarmFor(scope), false);
+});

@@ -1093,6 +1093,7 @@ export function buildApp(
     approvals,
     approvalGrants: artifactMap<CommandApprovalGrant>("approval_grants"),
     ...(processes ? { processes } : {}),
+    ...(liveBrowserSessions ? { liveBrowserSessions } : {}),
     monitors,
     crons,
     resolveBaseModelId: () => orgBaseModelId() ?? fallback.modelId,

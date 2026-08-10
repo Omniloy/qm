@@ -80,8 +80,11 @@ function stopFrames(): void {
 async function pumpFrames(rerender: () => void): Promise<void> {
   const s = session;
   if (!s || s.viewer !== "stream" || collapsed) return stopFrames();
-  if (typeof document !== "undefined" && document.hidden) {
-    // Nobody is looking. Check back rather than burning a frame a second.
+  // Nobody is looking: check back rather than burning a frame a second. But
+  // only once there is something to come back TO — skipping the very first
+  // frame leaves the pane on "waiting for the browser" indefinitely, which is
+  // indistinguishable from a broken browser.
+  if (typeof document !== "undefined" && document.hidden && frame) {
     frameTimer = setTimeout(() => void pumpFrames(rerender), 2000);
     return;
   }
