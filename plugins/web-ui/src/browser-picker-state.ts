@@ -8,6 +8,7 @@
  * and a Connect button on an already-connected provider invites a second paste
  * of a key they already gave.
  */
+import { BRAND } from "../../chassis/src/brand.ts";
 
 export const BUILT_IN_BROWSER_ID = "built-in";
 export const EXTENSION_BROWSER_ID = "extension";
@@ -37,7 +38,7 @@ const BUILT_IN: BrowserProvider = {
   id: BUILT_IN_BROWSER_ID,
   name: "Built-in",
   summary:
-    "The browser QM runs inside your sandbox. No key, no per-hour cost, and sign-ins persist between sessions. Some sites refuse it.",
+    `The browser ${BRAND.productName} runs inside your sandbox. No key, no per-hour cost, and sign-ins persist between sessions. Some sites refuse it.`,
   keyEnv: "",
   keyService: "",
   connected: true,

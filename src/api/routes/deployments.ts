@@ -663,7 +663,7 @@ export async function proxyDeploymentSubdomain(ctx: BaseCtx): Promise<boolean> {
     if (session && (await app.canManageDeployment(slug, session.sub))) ownerSub = session.sub;
   }
   if (ownerSub && ctx.method === "GET" && pathname.startsWith(APP_SHELL_PATH_PREFIX)) {
-    if (pathname === "/__claw__/version") {
+    if (pathname === "/__shell__/version") {
       const d = await app.getDeployment(slug);
       if (!d) sendJson(res, 404, { error: "not_found" });
       else sendJson(res, 200, { version: d.appliedVersion ?? d.currentVersion });
@@ -793,7 +793,7 @@ p{color:#a3a3a3;margin:0 0 8px}b{color:#fafafa}a{color:#fafafa}</style></head>
 <body><div class="card"><h1>${escapeHtml(title)}</h1>${paragraphsHtml}</div></body></html>`;
 }
 
-const REQUEST_ACCESS_PATH = "/__claw__/request-access";
+const REQUEST_ACCESS_PATH = "/__shell__/request-access";
 
 function notSharedHtml(sub: string): string {
   return gateCardHtml(

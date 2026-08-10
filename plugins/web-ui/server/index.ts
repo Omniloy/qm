@@ -17,10 +17,13 @@ import {
   readBody as readBodyCapped,
   cookie,
   PayloadTooLargeError,
-  serveEmojiFavicon,
+  serveBrandFavicon,
+  serveBrandLogoPng,
 } from "../../chassis/src/http.ts";
 import { verifyPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
 import { createBrandingCache, injectBranding } from "../../chassis/src/branding.ts";
+import { BRAND, BRAND_LOGO_PATH } from "../../chassis/src/brand.ts";
+import { BRAND_LOGO_PNG_BASE64 } from "../../chassis/src/brand-logo-png.ts";
 import {
   CORE_API_URL as CORE,
   CORE_ORG_ID as ORG,
@@ -53,14 +56,33 @@ const brandingCache = createBrandingCache(async () => {
     ...(typeof b?.accent === "string" ? { accent: b.accent } : {}),
     ...(typeof b?.mark === "string" ? { mark: b.mark } : {}),
     ...(typeof b?.selfLabel === "string" ? { selfLabel: b.selfLabel } : {}),
+    ...(typeof b?.productName === "string" ? { productName: b.productName } : {}),
+    ...(typeof b?.logoSvg === "string" ? { logoSvg: b.logoSvg } : {}),
   };
 });
 
 async function brandIndexHtml(html: string): Promise<string> {
-  const branding = await brandingCache.forRender();
-  const branded = injectBranding(html, branding);
-  const label = branding.selfLabel?.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  return label ? branded.replace(/<title>[^<]*<\/title>/, () => `<title>${label} · Web</title>`) : branded;
+  return injectBranding(html, await brandingCache.forRender());
+}
+
+const EXTENSION_TEXT_FILES = new Set(["manifest.json", "popup.html", "popup.js", "background.js", "README.md"]);
+
+function extensionZipName(branding: { productName?: string }): string {
+  const slug = (branding.productName ?? BRAND.productName)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+  return slug ? `${slug}-browser-bridge.zip` : BRAND.extensionZipName;
+}
+
+function rebrandExtensionFile(name: string, data: Buffer, branding: { productName?: string }): Buffer {
+  const productName = branding.productName ?? BRAND.productName;
+  if (productName === BRAND.productName || !EXTENSION_TEXT_FILES.has(name)) return data;
+  const rebranded = data
+    .toString("utf8")
+    .replaceAll(BRAND.extensionName, `${productName} Browser Bridge`)
+    .replaceAll(BRAND.productName, productName);
+  return Buffer.from(rebranded, "utf8");
 }
 
 const portalTokenStore = new AsyncLocalStorage<string | undefined>();
@@ -716,8 +738,15 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
   const method = req.method ?? "GET";
 
   if (method === "GET" && path === "/healthz") return json(res, 200, { ok: true });
+  if (method === "GET" && path === BRAND_LOGO_PATH) {
+    return serveBrandLogoPng(res, BRAND_LOGO_PNG_BASE64, "public, max-age=86400");
+  }
   if (method === "GET" && path === "/favicon.svg") {
-    return serveEmojiFavicon(res, process.env.WEB_UI_FAVICON_EMOJI ?? "\u{1F3F4}\u{200D}\u2620\uFE0F", "no-cache");
+    return serveBrandFavicon(res, {
+      logoSvg: brandingCache.current().logoSvg ?? BRAND.logoSvg,
+      ...(process.env.WEB_UI_FAVICON_EMOJI ? { emojiOverride: process.env.WEB_UI_FAVICON_EMOJI } : {}),
+      cacheControl: "no-cache",
+    });
   }
 
   if (method === "POST" && path === "/signin") {
@@ -1339,7 +1368,11 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
       // artifact someone forgot to rebuild.
       try {
         const names = readdirSync(EXTENSION_DIR).filter((n) => !n.startsWith("."));
-        const entries = names.map((name) => ({ name, data: readFileSync(join(EXTENSION_DIR, name)) }));
+        const branding = await brandingCache.forRender();
+        const entries = names.map((name) => ({
+          name,
+          data: rebrandExtensionFile(name, readFileSync(join(EXTENSION_DIR, name)), branding),
+        }));
         // Bake this person's QM address and a fresh pairing token into the
         // download, so a new install connects with nothing to paste. The
         // download is already gated behind their session, so the token is no
@@ -1362,7 +1395,7 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
         const zip = makeZip(entries);
         res.writeHead(200, {
           "content-type": "application/zip",
-          "content-disposition": 'attachment; filename="qm-browser-bridge.zip"',
+          "content-disposition": `attachment; filename="${extensionZipName(branding)}"`,
           "content-length": String(zip.length),
         });
         return void res.end(zip);

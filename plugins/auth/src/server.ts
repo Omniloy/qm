@@ -1,5 +1,12 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { readBody, PayloadTooLargeError, serveEmojiFavicon } from "../../chassis/src/http.ts";
+import {
+  readBody,
+  PayloadTooLargeError,
+  serveBrandFavicon,
+  serveBrandLogoPng,
+} from "../../chassis/src/http.ts";
+import { BRAND, BRAND_LOGO_PATH } from "../../chassis/src/brand.ts";
+import { BRAND_LOGO_PNG_BASE64 } from "../../chassis/src/brand-logo-png.ts";
 import { errMessage } from "../../chassis/src/errors.ts";
 import type { AuthConfig } from "./config.ts";
 import { validEmail } from "./config.ts";
@@ -372,7 +379,10 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
 
     if (method === "GET" && path === "/healthz") return sendJson(res, 200, { ok: true });
     if (method === "GET" && (path === "/favicon.ico" || path === "/favicon.svg")) {
-      return serveEmojiFavicon(res, "✉️", "max-age=86400");
+      return serveBrandFavicon(res, { logoSvg: BRAND.logoSvg, cacheControl: "max-age=86400" });
+    }
+    if (method === "GET" && path === BRAND_LOGO_PATH) {
+      return serveBrandLogoPng(res, BRAND_LOGO_PNG_BASE64, "public, max-age=86400");
     }
     if (method === "GET" && path === "/.well-known/jwks.json") {
       res.writeHead(200, { "content-type": "application/json", "cache-control": "public, max-age=300" });

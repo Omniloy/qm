@@ -3,8 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>QM Admin</title>
-    <meta name="brand-self-label" content="Agent" />
+    <title>__BRAND__ Admin</title>
+    <link rel="icon" href="__ADMIN_BASE__favicon.svg" />
+    <meta name="brand-self-label" content="Miniomni" />
+    <meta name="brand-product-name" content="Miniomni" />
     <style>
       :root {
         --bg: #fbfbfa;
@@ -83,7 +85,11 @@
         white-space: nowrap;
       }
       .brand::before {
-        content: var(--brand-mark, "A");
+        content: var(--brand-mark, "M");
+        background-image: var(--brand-logo, none);
+        background-size: contain;
+        background-repeat: no-repeat;
+        background-position: center;
         display: inline-flex;
         align-items: center;
         justify-content: center;
@@ -91,7 +97,7 @@
         height: 23px;
         margin-right: 9px;
         border-radius: 5px;
-        background: var(--brand-accent, #4f46e5);
+        background-color: var(--brand-mark-bg, var(--brand-accent, #003b7a));
         color: #fff;
         font-size: 13px;
         font-weight: 650;
@@ -3752,7 +3758,7 @@
   </head>
   <body>
     <header>
-      <div class="brand"><span id="brand-product">Agent</span>&nbsp;Admin <span id="org-tag"></span></div>
+      <div class="brand"><span id="brand-product">Miniomni</span>&nbsp;Admin <span id="org-tag"></span></div>
       <div class="header-controls" id="header-controls" aria-label="Page controls"></div>
       <div class="who hidden" id="who">
         <a class="header-button" href="/" id="dashboard-link">Dashboard</a><span class="pill" id="who-name"></span
@@ -3838,7 +3844,7 @@
               <p class="governance-eyebrow">Temporary setup guide</p>
               <h1>Onboarding</h1>
               <p class="lead">
-                Get this QM instance ready for real conversations. Secrets are validated, encrypted in durable storage,
+                Get this Miniomni instance ready for real conversations. Secrets are validated, encrypted in durable storage,
                 and never displayed again.
               </p>
             </div>
@@ -3846,13 +3852,13 @@
               <section class="setup-step">
                 <span class="badge muted" id="onboarding-model-badge">Not ready</span>
                 <h2>1. Model provider</h2>
-                <p id="onboarding-model-summary">Add the key QM will use for its base model.</p>
+                <p id="onboarding-model-summary">Add the key Miniomni will use for its base model.</p>
               </section>
               <section class="setup-step">
                 <span class="badge muted" id="onboarding-slack-badge">Optional</span>
                 <h2>2. Slack app</h2>
                 <p id="onboarding-slack-summary">
-                  Create the QM app, install it, then add its bot and Socket Mode tokens.
+                  Create the Miniomni app, install it, then add its bot and Socket Mode tokens.
                 </p>
                 <div class="foot">
                   <a
@@ -3861,7 +3867,7 @@
                     href="https://api.slack.com/apps?new_app=1"
                     target="_blank"
                     rel="noopener noreferrer"
-                    >Create QM Slack app ↗</a
+                    >Create Miniomni Slack app ↗</a
                   >
                   <button type="button" data-onboarding-target="slack">Enter Slack tokens</button>
                 </div>
@@ -3933,7 +3939,7 @@
               <div class="head">
                 <h2>Custom providers</h2>
                 <p>
-                  Point QM at any OpenAI- or Anthropic-compatible endpoint — a vendor like DeepSeek, or a gateway like
+                  Point Miniomni at any OpenAI- or Anthropic-compatible endpoint — a vendor like DeepSeek, or a gateway like
                   LiteLLM fronting many models. Keys are validated, stored write-only, and the models join the picker.
                 </p>
               </div>
@@ -4787,7 +4793,7 @@
                     href="https://api.slack.com/apps?new_app=1"
                     target="_blank"
                     rel="noopener noreferrer"
-                    >Create QM Slack app from manifest ↗</a
+                    >Create Miniomni Slack app from manifest ↗</a
                   >
                 </p>
                 <p class="hint" id="slack-installation-state">Not configured.</p>
@@ -4906,11 +4912,12 @@
       let view = DEFAULT_VIEW;
       let orgId = "acme";
 
-      const brandSelfLabel = () =>
-        document.querySelector('meta[name="brand-self-label"]')?.getAttribute("content") || "Agent";
-      // The header's product name and the tab title follow the org's assistant label.
-      document.getElementById("brand-product").textContent = brandSelfLabel();
-      document.title = `${brandSelfLabel()} Admin`;
+      const metaBrand = (name, fallback) =>
+        document.querySelector(`meta[name="${name}"]`)?.getAttribute("content") || fallback;
+      const brandSelfLabel = () => metaBrand("brand-self-label", "Miniomni");
+      const brandProductName = () => metaBrand("brand-product-name", "Miniomni");
+      document.getElementById("brand-product").textContent = brandProductName();
+      document.title = `${brandProductName()} Admin`;
       let page = 1;
 
       const FOCUS_STALE_MS = 60000;
@@ -7111,7 +7118,7 @@
         );
         $("onboarding-slack-summary").textContent = slack.data.configured
           ? "Connected to " + (slack.data.teamName || slack.data.teamId || "a Slack workspace") + "."
-          : "Create the QM app, install it, then add its bot and Socket Mode tokens.";
+          : "Create the Miniomni app, install it, then add its bot and Socket Mode tokens.";
         if (slack.data.createUrl) $("onboarding-slack-create").href = slack.data.createUrl;
 
         const configured = (catalog.data.catalog || []).filter((item) => item.configured);

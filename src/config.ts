@@ -1,4 +1,6 @@
 import { existsSync, readdirSync } from "node:fs";
+import { sanitizeLogoSvg } from "../plugins/chassis/src/svg-sanitize.ts";
+import { errMessage } from "./util/errors.ts";
 import { providerBaseUrlsFromEnv, type ProviderBaseUrls } from "./model/provider-endpoints.ts";
 import { join, resolve } from "node:path";
 import {
@@ -37,7 +39,7 @@ export interface Config {
   /** Container core runs as, when core is containerised. See CORE_CONTAINER. */
   coreContainer?: string;
   egressServiceHosts?: string[];
-  brandingDefault?: { accent?: string; mark?: string; selfLabel?: string };
+  brandingDefault?: { accent?: string; mark?: string; selfLabel?: string; productName?: string; logoSvg?: string };
   modelId?: string;
   opencodeModel?: string;
   codexModel?: string;
@@ -462,8 +464,28 @@ function orgBrandingFromEnv(env: NodeJS.ProcessEnv): Config["brandingDefault"] {
       .replace(/["\\{}]/g, "")
       .slice(0, 2) || undefined;
   const selfLabel = clean(env.ORG_BRAND_SELF_LABEL).slice(0, 40) || undefined;
-  const branding = { ...(accent ? { accent } : {}), ...(mark ? { mark } : {}), ...(selfLabel ? { selfLabel } : {}) };
+  const productName = clean(env.ORG_BRAND_PRODUCT_NAME).slice(0, 60) || undefined;
+  const logoSvg = logoSvgFromEnv(env.ORG_BRAND_LOGO_SVG);
+  const branding = {
+    ...(accent ? { accent } : {}),
+    ...(mark ? { mark } : {}),
+    ...(selfLabel ? { selfLabel } : {}),
+    ...(productName ? { productName } : {}),
+    ...(logoSvg ? { logoSvg } : {}),
+  };
   return Object.keys(branding).length ? branding : undefined;
+}
+
+function logoSvgFromEnv(raw: string | undefined): string | undefined {
+  const value = (raw ?? "").trim();
+  if (!value) return undefined;
+  try {
+    return sanitizeLogoSvg(value);
+  } catch (error) {
+    throw new Error(
+      `ORG_BRAND_LOGO_SVG is not a usable logo: ${errMessage(error)} — fix the SVG, or unset it to fall back to the shipped mark.`,
+    );
+  }
 }
 
 function harnessEnvStrict(value: string | undefined): Config["harness"] {

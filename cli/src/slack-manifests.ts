@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { QmConfig } from "./config.ts";
+import { BRAND } from "./brand.ts";
 
 function template(name: string): string {
   const source = new URL(`../templates/${name}`, import.meta.url);
@@ -44,9 +45,9 @@ export function renderSlackManifests(config: QmConfig): SlackManifests {
     display_information: { name: string; description: string };
     features: { bot_user: { display_name: string } };
   };
-  bot.display_information.name = "qm";
-  bot.display_information.description = `qm workspace agent for ${config.orgId}`;
-  bot.features.bot_user.display_name = "qm";
+  bot.display_information.name = BRAND.slackAppName;
+  bot.display_information.description = `${BRAND.slackAppName} workspace agent for ${config.orgId}`;
+  bot.features.bot_user.display_name = BRAND.slackBotHandle;
 
   const sso = JSON.parse(template("slack-sso-manifest.json")) as {
     oauth_config: { redirect_urls: string[] };

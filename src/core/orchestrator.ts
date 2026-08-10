@@ -17,6 +17,7 @@ import { orgId } from "../config.ts";
 import { renderGatewayContext } from "./gateway-context.ts";
 import { deriveTurnOutcome, approvalBlocksInput } from "./turn-outcome.ts";
 import { applyPromptVars, loadProtocolFile, type PromptVars } from "../resolution/prompt-vars.ts";
+import { BRAND } from "../../plugins/chassis/src/brand.ts";
 import { resolveReachableChannel } from "../resolution/scope-reach.ts";
 import { reachEnqueue } from "../reach/reach.ts";
 import type { DirectoryStore, DirectoryChannel, DirectoryMember } from "../directory/directory-store.ts";
@@ -787,7 +788,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         frameVars = {
           userName: actor.displayName?.trim() || "there",
           userEmail: actor.id.includes("@") ? actor.id : undefined,
-          surfaceLabel: isWeb ? "the QM web app" : "Slack",
+          surfaceLabel: isWeb ? `the ${BRAND.productName} web app` : "Slack",
           slack: isSlack,
           web: isWeb,
         };
@@ -796,7 +797,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       if (modeName === "mode-conversation" && input.proactiveOpener) {
         modeFrame += "\nNo one has written yet; open the conversation yourself per the onboarding note below.";
       }
-      const sharedCore = applyPromptVars(SHARED_CORE_MD, { botName, orgName });
+      const sharedCore = applyPromptVars(SHARED_CORE_MD, { botName, orgName, productName: BRAND.productName });
       let systemPrompt = `${modeFrame}\n\n${resolution.systemPrompt}\n\n${sharedCore}\n\n${renderSecurityPolicyPrompt(securityPolicy)}`;
       const scopeProfile = supportsScopeProfile(deps.sandbox)
         ? await deps.sandbox

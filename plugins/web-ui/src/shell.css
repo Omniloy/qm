@@ -179,7 +179,11 @@ body.resizing-sidebar {
   height: 22px;
   flex: 0 0 22px;
   border-radius: 4px;
-  background: var(--brand-accent);
+  background-color: var(--brand-mark-bg, var(--brand-accent));
+  background-image: var(--brand-logo, none);
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
   color: white;
   font-size: 16px;
   font-weight: 500;

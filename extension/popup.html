@@ -35,10 +35,7 @@
     width: 22px;
     height: 22px;
     border-radius: 6px;
-    background: var(--accent);
-    color: #fff;
-    font-weight: 700;
-    font-size: 13px;
+    background: url("icon128.png") center / contain no-repeat;
     display: grid;
     place-items: center;
   }
@@ -158,10 +155,10 @@
   }
 </style>
 <div class="head">
-  <span class="mark">Q</span>
+  <span class="mark"></span>
   <h1>Browser Bridge</h1>
 </div>
-<p class="sub">Shares one tab with your QM agent, so it works with your own sign-ins.</p>
+<p class="sub">Shares one tab with your Miniomni agent, so it works with your own sign-ins.</p>
 
 <div class="status">
   <span class="dot" id="dot"></span>
@@ -177,12 +174,12 @@
 </div>
 
 <details id="settings">
-  <summary>QM connection</summary>
+  <summary>Miniomni connection</summary>
   <div class="body">
-    <label>QM address</label>
-    <input id="origin" placeholder="https://qm.example.com" autocomplete="off" />
+    <label>Miniomni address</label>
+    <input id="origin" placeholder="https://miniomni.example.com" autocomplete="off" />
     <label>Pairing token</label>
-    <input id="token" type="password" placeholder="paste from QM → Keychain" autocomplete="off" />
+    <input id="token" type="password" placeholder="paste from Miniomni → Keychain" autocomplete="off" />
     <div class="saved" id="saved"></div>
     <button id="save">Save</button>
   </div>

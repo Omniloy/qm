@@ -1,4 +1,6 @@
-export const APP_SHELL_PATH_PREFIX = "/__claw__/";
+import { BRAND } from "../../plugins/chassis/src/brand.ts";
+
+export const APP_SHELL_PATH_PREFIX = "/__shell__/";
 
 function escAttr(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
@@ -14,14 +16,14 @@ function escAttr(value: string): string {
 export function appShellHtml(opts: { slug: string; portalUrl: string; path: string; accent?: string }): string {
   const slug = escAttr(opts.slug);
   const path = escAttr(opts.path);
-  const accent = /^[#a-zA-Z0-9(),.% -]{1,64}$/.test(opts.accent ?? "") ? (opts.accent as string) : "#4f46e5";
+  const accent = /^[#a-zA-Z0-9(),.% -]{1,64}$/.test(opts.accent ?? "") ? (opts.accent as string) : BRAND.accent;
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>${slug}</title>
+<title>${slug} · ${escAttr(BRAND.productName)}</title>
 <style>
   /* qm web-ui tokens (mini-lit default theme + shell.css) */
   :root {
@@ -173,7 +175,7 @@ export function appShellHtml(opts: { slug: string; portalUrl: string; path: stri
   const poll = async () => {
     if (document.hidden) return;
     try {
-      const r = await fetch("/__claw__/version", { cache: "no-store" });
+      const r = await fetch("/__shell__/version", { cache: "no-store" });
       if (!r.ok) return;
       const d = await r.json();
       if (typeof d.version !== "number") return;
@@ -188,7 +190,7 @@ export function appShellHtml(opts: { slug: string; portalUrl: string; path: stri
   void poll();
   setInterval(poll, 5000);
   upd.addEventListener("click", () => {
-    void fetch("/__claw__/version", { cache: "no-store" })
+    void fetch("/__shell__/version", { cache: "no-store" })
       .then((r) => r.json())
       .then((d) => reloadApp(typeof d.version === "number" ? d.version : base))
       .catch(() => reloadApp(base));

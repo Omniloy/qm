@@ -1,4 +1,5 @@
 import { orgId as configOrgId } from "../../config.ts";
+import { sanitizeLogoSvg } from "../../../plugins/chassis/src/svg-sanitize.ts";
 import type { ServerDeps } from "../deps.ts";
 import type { ApiCtx } from "./route.ts";
 import { parseCommandPolicy } from "../../policy/command-policy.ts";
@@ -498,7 +499,13 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
     apply: async (ctx, _actor, scope) => {
       const bad = orgOnly(scope, "branding is org-wide");
       if (bad) return bad;
-      const body = (ctx.body ?? {}) as { accent?: unknown; mark?: unknown; selfLabel?: unknown };
+      const body = (ctx.body ?? {}) as {
+        accent?: unknown;
+        mark?: unknown;
+        selfLabel?: unknown;
+        productName?: unknown;
+        logoSvg?: unknown;
+      };
       const clean = (v: unknown): string =>
         (typeof v === "string" ? v : "").replace(/[\u0000-\u001F\u007F-\u009F\u2028\u2029<>]/g, "").trim();
       const accent = clean(body.accent);
@@ -509,10 +516,22 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
         .replace(/["\\{}]/g, "")
         .slice(0, 2);
       const selfLabel = clean(body.selfLabel).slice(0, 40);
+      const productName = clean(body.productName).slice(0, 60);
+      const rawLogoSvg = typeof body.logoSvg === "string" ? body.logoSvg.trim() : "";
+      let logoSvg = "";
+      if (rawLogoSvg) {
+        try {
+          logoSvg = sanitizeLogoSvg(rawLogoSvg);
+        } catch (error) {
+          return { error: `branding logo rejected: ${errMessage(error)}` };
+        }
+      }
       const value: OrgBranding = {
         ...(accent ? { accent } : {}),
         ...(mark ? { mark } : {}),
         ...(selfLabel ? { selfLabel } : {}),
+        ...(productName ? { productName } : {}),
+        ...(logoSvg ? { logoSvg } : {}),
       };
       ctx.deps.config!.setBranding(scope, Object.keys(value).length ? value : null);
       return { ok: true };

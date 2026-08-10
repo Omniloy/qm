@@ -1,4 +1,5 @@
 import type { WebSocket } from "ws";
+import { BRAND } from "../../plugins/chassis/src/brand.ts";
 
 /**
  * Pairs a person's own Chrome with the browser their agent drives.
@@ -151,7 +152,7 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
             pair.cdp.send(
               JSON.stringify({
                 id: frame.id,
-                error: { code: -32000, message: "your Chrome is not connected — open the QM extension" },
+                error: { code: -32000, message: `your Chrome is not connected — open the ${BRAND.productName} extension` },
               }),
             );
           }

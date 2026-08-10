@@ -5,6 +5,7 @@ import { scopeId } from "../../types.ts";
 import { swallow } from "../../util/errors.ts";
 import type { ExecResult, SandboxHandle } from "../../sandbox/sandbox.ts";
 import type { ControlMode, LiveBrowserSession } from "../../connectors/browser-live-session-store.ts";
+import { BRAND } from "../../../plugins/chassis/src/brand.ts";
 
 /**
  * The browser a person has open: registering it, finding it, and arbitrating
@@ -101,7 +102,7 @@ async function registerSession(ctx: ApiCtx): Promise<void> {
   if (viewer === "stream" && liveViewUrl) {
     return sendJson(res, 400, {
       error: "bad_request",
-      message: "a streamed browser is reached through QM and must not carry a liveViewUrl",
+      message: `a streamed browser is reached through ${BRAND.productName} and must not carry a liveViewUrl`,
     });
   }
   if (viewer === "iframe" && /^cdp:|^wss:\/\/connect\./i.test(liveViewUrl)) {
@@ -334,7 +335,7 @@ async function paneTarget(
   }
   if (session.viewer !== "stream") {
     // A vendor's browser renders in its own viewer; we have no frames for it.
-    sendJson(ctx.res, 400, { error: "bad_request", message: "this browser is not one QM streams" });
+    sendJson(ctx.res, 400, { error: "bad_request", message: `this browser is not one ${BRAND.productName} streams` });
     return null;
   }
   return { principalId, scope: scopeId("personal", principalId), session };

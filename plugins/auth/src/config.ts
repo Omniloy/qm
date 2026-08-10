@@ -1,4 +1,5 @@
 import type { SmtpTlsMode } from "./smtp.ts";
+import { BRAND } from "../../chassis/src/brand.ts";
 
 type EmailTransportKind = "resend" | "smtp";
 
@@ -95,7 +96,7 @@ export function readConfig(env: NodeJS.ProcessEnv): AuthConfig {
     allowedEmails: listFrom(env.AUTH_ALLOWED_EMAILS),
     allowedEmailDomain: env.AUTH_ALLOWED_EMAIL_DOMAIN?.trim().toLowerCase() || undefined,
     emailFrom: env.AUTH_EMAIL_FROM?.trim() ?? "",
-    brandName: env.AUTH_BRAND_NAME?.trim() || "qm",
+    brandName: env.AUTH_BRAND_NAME?.trim() || BRAND.productName,
     transport,
     resendApiKey: env.RESEND_API_KEY ?? "",
     smtp: {

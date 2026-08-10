@@ -36,8 +36,32 @@ export function escapeHtml(s: string): string {
 }
 
 export function serveEmojiFavicon(res: ServerResponse, emoji: string, cacheControl: string): void {
-  res.writeHead(200, { "content-type": "image/svg+xml; charset=utf-8", "cache-control": cacheControl });
-  res.end(
+  serveFaviconSvg(
+    res,
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90" text-anchor="middle" x="50">${emoji}</text></svg>`,
+    cacheControl,
   );
+}
+
+export function serveFaviconSvg(res: ServerResponse, svg: string, cacheControl: string): void {
+  res.writeHead(200, { "content-type": "image/svg+xml; charset=utf-8", "cache-control": cacheControl });
+  res.end(svg);
+}
+
+export function serveBrandLogoPng(res: ServerResponse, base64: string, cacheControl: string): void {
+  const body = Buffer.from(base64, "base64");
+  res.writeHead(200, {
+    "content-type": "image/png",
+    "content-length": String(body.length),
+    "cache-control": cacheControl,
+  });
+  res.end(body);
+}
+
+export function serveBrandFavicon(
+  res: ServerResponse,
+  opts: { logoSvg: string; emojiOverride?: string; cacheControl: string },
+): void {
+  if (opts.emojiOverride) return serveEmojiFavicon(res, opts.emojiOverride, opts.cacheControl);
+  serveFaviconSvg(res, opts.logoSvg, opts.cacheControl);
 }

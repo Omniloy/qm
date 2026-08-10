@@ -1,6 +1,6 @@
-# QM Browser Bridge
+# Miniomni Browser Bridge
 
-Lets your QM agent drive **one tab** in your own Chrome, so it works with your real
+Lets your Miniomni agent drive **one tab** in your own Chrome, so it works with your real
 sign-ins and doesn't look like automation. It exists because Chrome refuses
 `--remote-debugging-port` on a real profile on purpose — an extension using
 `chrome.debugger` is the only supported way into the browser where you are actually
@@ -18,21 +18,21 @@ you nominate and nothing else — other tabs, other windows, and the rest of Chr
 of reach. Stop sharing (or close the tab) and the agent is locked out again.
 
 Because that capability is real, treat the pairing token like a password: anyone holding it
-and able to reach your QM can pair _their_ agent to a browser you share. The token expires
-on its own, and you can revoke it in QM.
+and able to reach your Miniomni can pair _their_ agent to a browser you share. The token expires
+on its own, and you can revoke it in Miniomni.
 
 ## Install (unpacked, for now)
 
 1. Open `chrome://extensions`, turn on **Developer mode**.
 2. **Load unpacked**, and pick this `extension/` folder.
-3. Click the extension, enter your QM address and the pairing token from
-   **QM → Keychain → Browser → Your Chrome**, and Save.
+3. Click the extension, enter your Miniomni address and the pairing token from
+   **Miniomni → Keychain → Browser → Your Chrome**, and Save.
 4. On any tab you want the agent to use, click the extension and **Share this tab**. A green
    `ON` badge means it is live.
 
 ## How it connects
 
-The extension opens a WebSocket to QM's relay and speaks the Chrome DevTools Protocol over
-it. QM pairs your extension with your agent by the identity inside your token, and relays the
+The extension opens a WebSocket to Miniomni's relay and speaks the Chrome DevTools Protocol over
+it. Miniomni pairs your extension with your agent by the identity inside your token, and relays the
 protocol between them. Your agent points its existing `open --cdp` at the relay, so every
 browse verb works against your tab unchanged.

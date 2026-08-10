@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { errMessage } from "../util/errors.ts";
+import { BRAND } from "../../plugins/chassis/src/brand.ts";
 
 export class CodexRpcError extends Error {
   constructor(message: string) {
@@ -83,7 +84,7 @@ export class CodexAppServer {
 
   async initialize(): Promise<void> {
     await this.request("initialize", {
-      clientInfo: { name: "qm", title: "QM", version: "1" },
+      clientInfo: { name: "qm", title: BRAND.productName, version: "1" },
       capabilities: { experimentalApi: true },
     });
     await this.notify("initialized");

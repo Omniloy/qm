@@ -2,7 +2,7 @@ import { html, render, type TemplateResult } from "lit";
 import { Activity, Globe, KeyRound, Link, LockKeyhole, Plug, Plus, RefreshCw, ShieldCheck } from "lucide";
 import { api } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
-import { icon } from "./ui";
+import { icon, productName } from "./ui";
 import { appState, replacePanePreservingFocus } from "./shell";
 import { focusDialogCancel, restoreDialogFocus, trapDialogFocus } from "./dialog-focus";
 import { isActiveGrant, isExpiredCredential, KeychainOperations, keychainSummary } from "./keychain-state";
@@ -416,10 +416,10 @@ function extensionPanel(connected: boolean): TemplateResult {
           ? ""
           : html`<ol class="kc-ext-steps">
                 <li>
-                  <a class="btn" href="/api/browser-relay/extension.zip" download="qm-browser-bridge.zip"
+                  <a class="btn" href="/api/browser-relay/extension.zip" download="miniomni-browser-bridge.zip"
                     >Download the extension</a
                   >
-                  and unzip it. It comes set up with your QM address and a pairing token — nothing to paste.
+                  and unzip it. It comes set up with your ${productName()} address and a pairing token — nothing to paste.
                 </li>
                 <li>
                   Open <code>chrome://extensions</code> (copy-paste it — Chrome blocks links there), turn on

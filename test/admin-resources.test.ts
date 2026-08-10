@@ -10,6 +10,7 @@ import { createInsecureTestServer } from "../src/api/server.ts";
 import { buildApp, type BuiltApp } from "../src/wiring.ts";
 import { testConfig } from "./support/test-config.ts";
 import { ADMIN_RESOURCES } from "../src/api/routes/admin-resources.ts";
+import { BRAND } from "../plugins/chassis/src/brand.ts";
 
 const ADMIN = { "content-type": "application/json", "x-admin-actor": "admin-alice@default-org" };
 
@@ -145,7 +146,7 @@ test("branding governance validates, round-trips through surface-config, clears,
   const surfaceBranding = async () =>
     (
       (await (await fetch(`${srv.base}/v1/surface-config`)).json()) as {
-        branding?: { accent?: string; mark?: string; selfLabel?: string };
+        branding?: { accent?: string; mark?: string; selfLabel?: string; productName?: string; logoSvg?: string };
       }
     ).branding;
   try {
@@ -187,7 +188,13 @@ test("branding governance validates, round-trips through surface-config, clears,
       await fetch(`${srv.base}/v1/admin/scopes/org:default-org`, { headers: ADMIN })
     ).json()) as { branding?: { accent?: string } };
     assert.equal(readBack.branding?.accent, "#6366f1");
-    assert.deepEqual(await surfaceBranding(), { accent: "#6366f1", mark: "Q", selfLabel: "qm" });
+    assert.deepEqual(await surfaceBranding(), {
+      accent: "#6366f1",
+      mark: "Q",
+      selfLabel: "qm",
+      productName: BRAND.productName,
+      logoSvg: BRAND.logoSvg,
+    });
     assert.equal(
       (await fetch(url, { method: "PUT", headers: ADMIN, body: JSON.stringify({ mark: "<b>xy" }) })).status,
       200,
@@ -203,7 +210,39 @@ test("branding governance validates, round-trips through surface-config, clears,
       ).status,
       200,
     );
-    assert.equal(await surfaceBranding(), undefined);
+    assert.deepEqual(await surfaceBranding(), {
+      accent: BRAND.accent,
+      productName: BRAND.productName,
+      logoSvg: BRAND.logoSvg,
+    });
+  } finally {
+    await srv.close();
+  }
+});
+
+test("branding rejects a logo that carries script, an external reference, or a disallowed element", async () => {
+  const srv = start();
+  const url = `${srv.base}/v1/admin/scopes/org:default-org/branding`;
+  const put = async (logoSvg: string) =>
+    fetch(url, { method: "PUT", headers: ADMIN, body: JSON.stringify({ logoSvg }) });
+  try {
+    for (const bad of [
+      '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0" onload="alert(1)"/></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg"><image href="https://evil.test/x.png"/></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg"><foreignObject><b>hi</b></foreignObject></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg"><path fill="url(https://evil.test/#g)" d="M0 0"/></svg>',
+      '<svg xmlns="http://www.w3.org/2000/svg"><!--<script>alert(1)</script>--></svg>',
+      "<div>not a logo</div>",
+    ]) {
+      assert.equal((await put(bad)).status, 400, bad);
+    }
+    const good = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path fill="#003B7A" d="M0 0h10v10H0z"/></svg>';
+    assert.equal((await put(good)).status, 200);
+    const resolved = (
+      (await (await fetch(`${srv.base}/v1/surface-config`)).json()) as { branding?: { logoSvg?: string } }
+    ).branding;
+    assert.equal(resolved?.logoSvg, good);
   } finally {
     await srv.close();
   }

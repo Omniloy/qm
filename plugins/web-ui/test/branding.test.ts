@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import { JSDOM } from "jsdom";
+import { BRAND } from "../../chassis/src/brand.ts";
 
 const core = createServer((req: IncomingMessage, res) => {
   if ((req.url ?? "").startsWith("/v1/surface-config")) {
@@ -54,9 +55,11 @@ test("cold start: the FIRST shell render already carries accent, mark, and self-
   );
 });
 
-test("the vite template carries the self-label anchor the server injects into", () => {
+test("the vite template carries the anchors the server injects into", () => {
   const template = readFileSync(new URL("../index.html", import.meta.url), "utf8");
-  assert.match(template, /<meta name="brand-self-label" content="QM"\s*\/?>/);
+  assert.match(template, new RegExp(`<meta name="brand-self-label" content="${BRAND.productName}"\\s*/?>`));
+  assert.match(template, new RegExp(`<meta name="brand-product-name" content="${BRAND.productName}"\\s*/?>`));
+  assert.match(template, /<title>__BRAND__ · Web<\/title>/);
 });
 
 test("brandName() reads the injected self-label and falls back to the product name", async () => {
@@ -70,5 +73,5 @@ test("brandName() reads the injected self-label and falls back to the product na
   } finally {
     delete (globalThis as { document?: Document }).document;
   }
-  assert.equal(brandName!(), "QM");
+  assert.equal(brandName!(), BRAND.productName);
 });

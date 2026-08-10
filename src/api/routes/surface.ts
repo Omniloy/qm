@@ -15,6 +15,8 @@ import {
   type HarnessId,
 } from "../../model/pi-models.ts";
 import { builtInModelCatalog, selectableCatalogForHarness, selectableModelCatalog } from "../../model/model-catalog.ts";
+import { BRAND } from "../../../plugins/chassis/src/brand.ts";
+import { sanitizeLogoSvg } from "../../../plugins/chassis/src/svg-sanitize.ts";
 import { errMessage } from "../../util/errors.ts";
 import { renderAgentApis } from "../agent-api-catalog.ts";
 import { mintCapabilityToken, CAPABILITY_TTL_MS } from "../../auth/capability-token.ts";
@@ -1060,10 +1062,18 @@ async function getSurfaceConfig(ctx: ApiCtx): Promise<void> {
     pick(branding?.selfLabel, dflt?.selfLabel)
       ?.replace(/[\u0000-\u001F\u007F-\u009F\u2028\u2029]/g, "")
       .slice(0, 40) || undefined;
+  const productName =
+    pick(branding?.productName, dflt?.productName)
+      ?.replace(/[\u0000-\u001F\u007F-\u009F\u2028\u2029<>]/g, "")
+      .slice(0, 60) || BRAND.productName;
+  const storedLogo = pick(branding?.logoSvg, dflt?.logoSvg);
+  const logoSvg = storedLogo ? renderableLogoSvg(storedLogo) : BRAND.logoSvg;
   const resolvedBranding = {
-    ...(accent ? { accent } : {}),
+    ...(accent ? { accent } : { accent: BRAND.accent }),
     ...(mark ? { mark } : {}),
     ...(selfLabel ? { selfLabel } : {}),
+    productName,
+    logoSvg,
   };
   return sendJson(res, 200, {
     webuiModels: configuredPicker.length ? configuredPicker : allowed,
@@ -1073,6 +1083,14 @@ async function getSurfaceConfig(ctx: ApiCtx): Promise<void> {
     externalSlackParticipants,
     ...(Object.keys(resolvedBranding).length ? { branding: resolvedBranding } : {}),
   });
+}
+
+function renderableLogoSvg(stored: string): string {
+  try {
+    return sanitizeLogoSvg(stored);
+  } catch {
+    return BRAND.logoSvg;
+  }
 }
 
 function runtimeFallback(ctx: ApiCtx): { harnessId: HarnessId; modelId: string } {

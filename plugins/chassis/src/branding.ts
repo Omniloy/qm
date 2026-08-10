@@ -2,6 +2,8 @@ export interface OrgBranding {
   accent?: string;
   mark?: string;
   selfLabel?: string;
+  productName?: string;
+  logoSvg?: string;
 }
 
 const REFRESH_MS = 30_000;
@@ -59,8 +61,16 @@ export function createBrandingCache(fetchBranding: () => Promise<OrgBranding>): 
 const escapeAttr = (v: string): string =>
   v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
+const escapeText = (v: string): string => v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+export const BRAND_TITLE_TOKEN = "__BRAND__";
+
+export function logoCssUrl(logoSvg: string): string {
+  return `url("data:image/svg+xml;charset=utf-8,${encodeURIComponent(logoSvg).replace(/'/g, "%27")}")`;
+}
+
 export function injectBranding(html: string, branding: OrgBranding): string {
-  const { accent, mark, selfLabel } = branding;
+  const { accent, mark, selfLabel, productName, logoSvg } = branding;
   let out = html;
   if (selfLabel) {
     out = out.replace(
@@ -68,9 +78,25 @@ export function injectBranding(html: string, branding: OrgBranding): string {
       (_m, pre: string, post: string) => `${pre}${escapeAttr(selfLabel)}${post}`,
     );
   }
-  const decls = [...(accent ? [`--brand-accent:${accent}`] : []), ...(mark ? [`--brand-mark:"${mark}"`] : [])].join(
-    ";",
+  if (productName) {
+    out = out.replace(
+      /(<meta name="brand-product-name" content=")[^"]*(")/,
+      (_m, pre: string, post: string) => `${pre}${escapeAttr(productName)}${post}`,
+    );
+  }
+  out = out.replace(/<title>([^<]*)<\/title>/, (_m, current: string) =>
+    current.includes(BRAND_TITLE_TOKEN)
+      ? `<title>${escapeText(current.replaceAll(BRAND_TITLE_TOKEN, productName ?? ""))}</title>`
+      : `<title>${escapeText(current)}</title>`,
   );
+  const decls = [
+    ...(accent ? [`--brand-accent:${accent}`] : []),
+    ...(logoSvg
+      ? [`--brand-logo:${logoCssUrl(logoSvg)}`, `--brand-mark:""`, "--brand-mark-bg:transparent"]
+      : mark
+        ? [`--brand-mark:"${mark}"`]
+        : []),
+  ].join(";");
   if (decls) out = out.replace("</head>", () => `<style>:root{${decls}}</style></head>`);
   return out;
 }
