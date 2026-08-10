@@ -61,8 +61,12 @@ services:
       # agent computer is unbounded on a box that also runs core, Postgres and
       # Traefik. One runaway loop then takes QM down with it. Sized to leave
       # room for several concurrent sandboxes.
+      # 3 GB rather than 2: a real browsing session was measured at 1,253 MB
+      # across 14 processes, which leaves almost nothing for the agent's own
+      # work under a 2 GB cap. The cap still matters — it is what stops a
+      # runaway browser from reaching the other services on this host.
       LOCAL_SANDBOX_CPUS: ${LOCAL_SANDBOX_CPUS:-2}
-      LOCAL_SANDBOX_MEMORY_MB: ${LOCAL_SANDBOX_MEMORY_MB:-2048}
+      LOCAL_SANDBOX_MEMORY_MB: ${LOCAL_SANDBOX_MEMORY_MB:-3072}
       # Sandboxes and deployed apps publish on the *host's* loopback, which only
       # a core running on the host could dial. Naming core here makes it join
       # their networks and address them by container name instead.

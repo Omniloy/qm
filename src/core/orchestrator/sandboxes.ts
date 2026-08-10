@@ -1,3 +1,4 @@
+import { parseScopeId } from "../../types.ts";
 import type { Principal, Resolution, ScopeId, Session } from "../../types.ts";
 import type { GapPhase } from "../../sessions/session-store.ts";
 import { type SandboxHandle, supportsProcessSessions } from "../../sandbox/sandbox.ts";
@@ -571,6 +572,20 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
         keepWarm = (await deps.processes.liveByScope(memoryScopeId)).length > 0;
       } catch (e) {
         swallow("orchestrator: live process check", e);
+        keepWarm = false;
+      }
+    }
+    // A browser the person still has open is the same kind of thing as a live
+    // process: parking the computer stops it mid-task, and with it whatever
+    // half-finished page, form or sign-in was on screen. The pane would then
+    // sit there offering Take control of something that no longer exists.
+    if (!keepWarm && deps.liveBrowserSessions) {
+      try {
+        // Browsers belong to a person, so only a personal scope can have one.
+        const { kind, ref } = parseScopeId(memoryScopeId);
+        keepWarm = kind === "personal" && !!(await deps.liveBrowserSessions.get(ref, Date.now()));
+      } catch (e) {
+        swallow("orchestrator: live browser check", e);
         keepWarm = false;
       }
     }

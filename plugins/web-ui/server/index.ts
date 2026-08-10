@@ -1110,6 +1110,20 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const r = await coreFetch("POST", `/v1/browser-sessions/${encodeURIComponent(id)}/handoff`, raw);
       return relay(res, r);
     }
+    // The picture, for a browser QM hosts itself. Chrome will not expose its
+    // debug port off loopback, so there is nothing to point an iframe at and
+    // nothing to leak — the frames come back through core instead.
+    if (method === "GET" && path.startsWith("/api/browser/session/") && path.endsWith("/frame")) {
+      const id = decodeURIComponent(path.slice("/api/browser/session/".length, -"/frame".length));
+      const r = await coreFetch("GET", `/v1/browser-sessions/${encodeURIComponent(id)}/frame`);
+      return relay(res, r);
+    }
+    if (method === "POST" && path.startsWith("/api/browser/session/") && path.endsWith("/input")) {
+      const id = decodeURIComponent(path.slice("/api/browser/session/".length, -"/input".length));
+      const raw = await readBody(req);
+      const r = await coreFetch("POST", `/v1/browser-sessions/${encodeURIComponent(id)}/input`, raw);
+      return relay(res, r);
+    }
     if (method === "DELETE" && path.startsWith("/api/browser/session/")) {
       const id = decodeURIComponent(path.slice("/api/browser/session/".length));
       const r = await coreFetch("DELETE", `/v1/browser-sessions/${encodeURIComponent(id)}`);

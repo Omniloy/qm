@@ -85,6 +85,7 @@ const server = createServer(built.app, {
   ...(built.processes ? { processes: built.processes } : {}),
   ...(built.browserSessionStore ? { browserSessionStore: built.browserSessionStore } : {}),
   ...(built.liveBrowserSessions ? { liveBrowserSessions: built.liveBrowserSessions } : {}),
+  maxLiveBrowsers: Number(process.env.MAX_LIVE_BROWSERS ?? "1") || 1,
   directory: built.directory,
   ...(built.ambientJudgments ? { ambientJudgments: built.ambientJudgments } : {}),
   ...(built.ackEmojiPicks ? { ackEmojiPicks: built.ackEmojiPicks } : {}),

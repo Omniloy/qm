@@ -20,6 +20,7 @@ import type { SessionStore } from "../../sessions/session-store.ts";
 import type { DeliveryStore } from "../../delivery/delivery-store.ts";
 import type { WorkspaceStore } from "../../workspace/workspace-store.ts";
 import type { Sandbox } from "../../sandbox/sandbox.ts";
+import type { LiveBrowserSessionStore } from "../../connectors/browser-live-session-store.ts";
 import type { ProcessRegistry } from "../../processes/process-registry.ts";
 import type { MonitorStore } from "../../monitors/monitor-store.ts";
 import type { CronStore } from "../../cron/cron-store.ts";
@@ -140,6 +141,8 @@ export interface OrchestratorDeps {
   tasks?: TaskStore;
   blobTransfer?: BlobTransferStore;
   processes?: ProcessRegistry;
+  /** Consulted at teardown: a computer with a browser open must not be parked. */
+  liveBrowserSessions?: LiveBrowserSessionStore;
   monitors?: MonitorStore;
   crons?: CronStore;
   control?: ControlService;

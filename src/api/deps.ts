@@ -132,6 +132,12 @@ export interface ServerDeps {
   browserSessionStore?: BrowserSessionStore;
   /** The browser a person has open right now, and who is driving it. */
   liveBrowserSessions?: LiveBrowserSessionStore;
+  /**
+   * How many browsers may be open at once across everyone. Each costs about
+   * 1.25 GB, so this is a memory bound rather than a policy — raise it when the
+   * host grows. Defaults to one.
+   */
+  maxLiveBrowsers?: number;
   directory?: DirectoryStore;
   ambientJudgments?: AmbientJudgmentStore;
   ackEmojiPicks?: AckEmojiPickStore;
