@@ -2,6 +2,7 @@ import "./support/auto-fake-sprites.ts";
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { BRAND } from "../plugins/chassis/src/brand.ts";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -115,7 +116,10 @@ test("admin stores validated Slack tokens without ever returning them", async ()
     assert.doesNotMatch(statusText, /xoxb|xapp|super-secret/);
     const createUrl = new URL((JSON.parse(statusText) as { createUrl: string }).createUrl);
     assert.equal(createUrl.searchParams.get("new_app"), "1");
-    assert.equal(JSON.parse(createUrl.searchParams.get("manifest_json")!).display_information.name, "qm");
+    assert.equal(
+      JSON.parse(createUrl.searchParams.get("manifest_json")!).display_information.name,
+      BRAND.slackAppName,
+    );
     assert.equal((await srv.built.slackInstallation.get())?.botToken, "xoxb-super-secret");
 
     const del = await fetch(`${srv.base}/v1/admin/slack-installation`, { method: "DELETE", headers: ADMIN });

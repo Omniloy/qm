@@ -26,7 +26,7 @@ import {
  * pane, so there is nothing to dismiss and nothing to explain.
  *
  * The body is a cross-origin iframe of the provider's own viewer. Pixels and
- * input go straight between the person's tab and the provider; QM carries
+ * input go straight between the person's tab and the provider; Miniomni carries
  * neither. Verified against production: SPA_CSP already allows it.
  */
 
@@ -45,12 +45,12 @@ let inFlight = false;
 let timer: ReturnType<typeof setInterval> | null = null;
 
 /**
- * The last picture of a browser QM hosts itself, and the machinery to keep it
+ * The last picture of a browser Miniomni hosts itself, and the machinery to keep it
  * fresh.
  *
  * A vendor's browser renders itself inside an iframe and needs none of this.
  * Ours has no URL to embed — Chrome will not expose its debug port off
- * loopback — so the pane asks QM for frames and draws them. The upside is that
+ * loopback — so the pane asks Miniomni for frames and draws them. The upside is that
  * there is no bearer material in the pane at all.
  */
 interface Frame {

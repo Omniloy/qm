@@ -686,7 +686,7 @@ function packagedFlyTemplateRoot(): string {
 function buildCtx(config: QmConfig, configDir: string, opts: Pick<FlyUpOpts, "buildFrom" | "buildFromPath">): FlyCtx {
   const sourceRoot = opts.buildFrom ? sourceRootFor(configDir, opts.buildFromPath) : undefined;
   if (opts.buildFrom && !sourceRoot) {
-    throw new CliError(`--build-from requires a QM checkout containing src/ and deploy/<service>/Dockerfile`);
+    throw new CliError(`--build-from requires a Miniomni checkout containing src/ and deploy/<service>/Dockerfile`);
   }
   const appPrefix = appPrefixOf(config);
   if (!config.flyOrg)

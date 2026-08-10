@@ -484,6 +484,7 @@ function logoSvgFromEnv(raw: string | undefined): string | undefined {
   } catch (error) {
     throw new Error(
       `ORG_BRAND_LOGO_SVG is not a usable logo: ${errMessage(error)} — fix the SVG, or unset it to fall back to the shipped mark.`,
+      { cause: error },
     );
   }
 }

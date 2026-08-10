@@ -1,6 +1,6 @@
 # `qm`
 
-The standalone deployment CLI for QM. The normative directory schema,
+The standalone deployment CLI for Miniomni. The normative directory schema,
 security guarantees, target behavior, and lifecycle are in
 [`docs/deploy-directory.md`](../docs/deploy-directory.md). `qm init` materializes
 the agent-consumable package runbook into the deployment repository.
@@ -28,7 +28,7 @@ stops the release rather than moving. The checked-in image manifest is a sentine
 a deployment overrides with real digests. The packed-artifact test exercises the consumer
 path locally.
 
-The CLI deploys long-running QM services; it is not the runtime. Docker runs
+The CLI deploys long-running Miniomni services; it is not the runtime. Docker runs
 them locally, Fly runs them as Fly apps with Fly Machines for agent computers, and AWS
 runs digest-pinned ARM64 tasks on ECS Fargate with Lambda MicroVM agent computers.
 

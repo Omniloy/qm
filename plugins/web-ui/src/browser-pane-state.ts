@@ -14,9 +14,9 @@ export type ControlMode = "agent" | "human_control";
 /**
  * Where the picture comes from.
  *
- * `iframe` embeds a vendor's viewer at a URL. `stream` is a browser QM hosts
+ * `iframe` embeds a vendor's viewer at a URL. `stream` is a browser Miniomni hosts
  * itself: Chrome will not expose its debug port off loopback, so there is no
- * URL to embed — the pane asks QM for frames instead, and there is
+ * URL to embed — the pane asks Miniomni for frames instead, and there is
  * correspondingly no bearer material anywhere in the pane.
  */
 export type ViewerKind = "iframe" | "stream";
@@ -130,7 +130,7 @@ export function paneActions(session: LiveSession): RowActionSpec[] {
   const human = session.controlMode === "human_control";
   return [
     { id: "minimize", label: "Minimize" },
-    // Only a vendor's viewer has a page to open. A browser QM streams has no
+    // Only a vendor's viewer has a page to open. A browser Miniomni streams has no
     // URL at all — offering it opened a blank tab, which reads as broken
     // rather than as "there is nothing to open".
     ...(session.viewer === "iframe" ? [{ id: "open", label: "Open in a new tab" } satisfies RowActionSpec] : []),

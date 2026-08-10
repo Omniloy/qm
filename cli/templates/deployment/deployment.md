@@ -1,6 +1,6 @@
-# Deploy QM
+# Deploy Miniomni
 
-This repository defines one QM deployment. The `@yc-software/qm` dependency supplies
+This repository defines one Miniomni deployment. The `@yc-software/qm` dependency supplies
 the deployment engine; this repository owns the organization-specific config,
 sandbox layer, provider coordinates, and generated Slack manifests.
 

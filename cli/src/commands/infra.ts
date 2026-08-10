@@ -396,7 +396,7 @@ function recordImagePin(
     }),
   );
   ok(`built ${image.imageArn} version ${version}`);
-  ok("recorded AWS_DEPLOY_IMAGE_VERSION and AWS_DEPLOY_EXEC_ROLE_ARN in the QM deployment config");
+  ok("recorded AWS_DEPLOY_IMAGE_VERSION and AWS_DEPLOY_EXEC_ROLE_ARN in the Miniomni deployment config");
   return { imageArn: image.imageArn, version };
 }
 

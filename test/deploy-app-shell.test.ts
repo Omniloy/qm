@@ -195,7 +195,7 @@ test("app shell: the owner version endpoint reports the applied version", async 
   const f = await widgetFixture();
   try {
     const token = await ownerToken("U1");
-    const version = await httpGet(f.port, "/__claw__/version", { Host: HOST, Cookie: `dpl_owner=${token}` });
+    const version = await httpGet(f.port, "/__shell__/version", { Host: HOST, Cookie: `dpl_owner=${token}` });
     assert.equal(version.status, 200);
     assert.equal(JSON.parse(version.body).version, 1, "the applied version is reported");
   } finally {
@@ -234,15 +234,15 @@ test("app shell: a 206 partial HTML response streams byte-exact through the fram
   }
 });
 
-test("app shell: a non-owner request to /__claw__/ falls through to the app, not a gateway 404", async () => {
+test("app shell: a non-owner request to /__shell__/ falls through to the app, not a gateway 404", async () => {
   const f = await widgetFixture((req, res) => {
     res.writeHead(200, { "content-type": "text/plain" });
     res.end(`APP SAW ${req.url}`);
   });
   try {
-    const r = await httpGet(f.port, "/__claw__/version", { Host: HOST, Cookie: viewerCookie() });
+    const r = await httpGet(f.port, "/__shell__/version", { Host: HOST, Cookie: viewerCookie() });
     assert.equal(r.status, 200, "the app's own path space is not shadowed for non-owners");
-    assert.match(r.body, /APP SAW \/__claw__\/version/);
+    assert.match(r.body, /APP SAW \/__shell__\/version/);
   } finally {
     await f.close();
   }

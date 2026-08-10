@@ -352,7 +352,7 @@ def http_json(url, timeout=5):
 # ------------------------------------------------------------------- core
 
 def core_call(method, path, body=None, timeout=8):
-    """Talk to QM. Returns None when QM is unreachable or says no.
+    """Talk to Miniomni. Returns None when Miniomni is unreachable or says no.
 
     Every caller treats failure as "no pane", never as "no browser": the person
     asked to browse, and losing the picture is not a reason to refuse the task.
@@ -362,7 +362,7 @@ def core_call(method, path, body=None, timeout=8):
 
 
 def core_call_status(method, path, body=None, timeout=8):
-    """As above, but says what QM answered.
+    """As above, but says what Miniomni answered.
 
     Some refusals are meant to be obeyed rather than shrugged off — "there is
     no room for another browser" is a real answer, not a failed lookup.
@@ -391,14 +391,14 @@ def core_call_status(method, path, body=None, timeout=8):
 
 
 def register(state):
-    """Claim a browser with QM, before spending a gigabyte starting one.
+    """Claim a browser with Miniomni, before spending a gigabyte starting one.
 
     Registered as a streamed viewer with no URL: this browser is reached
-    through QM's own authenticated endpoint, so unlike a hosted one there is no
+    through Miniomni's own authenticated endpoint, so unlike a hosted one there is no
     link that would work for whoever found it.
 
-    Returns "ok", "full" (QM says there is no room — obey it), or "no-pane"
-    (QM could not be reached, so browse anyway without one).
+    Returns "ok", "full" (Miniomni says there is no room — obey it), or "no-pane"
+    (Miniomni could not be reached, so browse anyway without one).
     """
     session_id = state.get("sessionId") or os.urandom(8).hex()
     state["sessionId"] = session_id
@@ -425,7 +425,7 @@ def unregister(state):
 
 
 def control_mode(state):
-    """Who has the wheel right now, as far as QM knows.
+    """Who has the wheel right now, as far as Miniomni knows.
 
     Unknown counts as the agent's: a browser nobody registered still has to be
     drivable, and refusing on a failed lookup would strand the task.
@@ -656,7 +656,7 @@ def watchdog(headless=True):
 
     This process is the browser's parent for its whole life. That is what keeps
     it from becoming a zombie, and it is also the only thing that can close it
-    gracefully — QM can forget a session, but only something inside this
+    gracefully — Miniomni can forget a session, but only something inside this
     computer can ask Chromium to flush its cookies and stop.
     """
     become_subreaper()
@@ -875,7 +875,7 @@ KEYS = {
 
 def main():
     p = argparse.ArgumentParser(prog="browser.py", add_help=True)
-    # Set by QM when it relays what a person did in the pane. Their input must
+    # Set by Miniomni when it relays what a person did in the pane. Their input must
     # not be refused by the check that stops the agent driving while they hold
     # the wheel — they ARE the wheel.
     p.add_argument("--from-pane", action="store_true", help=argparse.SUPPRESS)
@@ -964,7 +964,7 @@ def main():
         if status == 409:
             die((payload or {}).get("message", "there is no room for another browser right now"))
         if not (status and 200 <= status < 300):
-            die(f"QM did not accept it ({status}): {(payload or {}).get('message', 'no reason given')}\n"
+            die(f"Miniomni did not accept it ({status}): {(payload or {}).get('message', 'no reason given')}\n"
                 "Browsing still works — say the pane is unavailable and give them the viewer link instead.")
         print("Showing in the pane. They can watch it and take control there.")
         return
@@ -981,7 +981,7 @@ def main():
             relay = os.environ.get("QM_RELAY_URL", "").strip()
             if not relay:
                 die("This person chose their own Chrome, but no relay URL reached this turn.\n"
-                    "Their extension may not be connected. Tell them to open the QM Browser Bridge\n"
+                    "Their extension may not be connected. Tell them to open the Miniomni Browser Bridge\n"
                     "extension and share a tab, or run: open --force-built-in to use the built-in one.")
             a.cdp = relay
 
@@ -1039,7 +1039,7 @@ def main():
               if outcome == "ok" else
               # Worth saying rather than swallowing: the browser works, but
               # nobody can watch it, so "press Take control" is not advice to give.
-              "QM did not accept the session, so there is no pane — the person cannot watch "
+              "Miniomni did not accept the session, so there is no pane — the person cannot watch "
               "or take over. Browsing still works; say so if a sign-in comes up.")
         return
 

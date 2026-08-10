@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { BRAND } from "../../chassis/src/brand.ts";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -104,12 +105,12 @@ test("healthz is unauthenticated", async () => {
   assert.equal(r.status, 200);
 });
 
-test("favicon: served unauthenticated as an SVG of the pirate-flag emoji", async () => {
+test("favicon: served unauthenticated as the brand mark, overridable by emoji", async () => {
   for (const path of ["/favicon.ico", "/favicon.svg"]) {
     const r = await fetch(`${base}${path}`);
     assert.equal(r.status, 200);
     assert.equal(r.headers.get("content-type"), "image/svg+xml; charset=utf-8");
-    assert.match(await r.text(), /\u{1F3F4}\u{200D}☠️/u);
+    assert.equal(await r.text(), BRAND.logoSvg);
   }
 });
 

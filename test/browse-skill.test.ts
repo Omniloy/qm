@@ -139,12 +139,12 @@ test("a local browser registers as streamed, carrying no URL", () => {
 });
 
 test("losing the pane never costs the person the browser", () => {
-  // They asked to browse. If QM cannot be reached the picture is gone, but the
+  // They asked to browse. If Miniomni cannot be reached the picture is gone, but the
   // task is still doable, and refusing would be the wrong trade.
   assert.match(CLI, /never as "no browser"/);
   const open = /outcome, why = register\(state\)[\s\S]{0,1400}/.exec(CLI)?.[0] ?? "";
   assert.match(open, /Browsing still works/);
-  // The distinction that matters: "no room" is obeyed, "cannot reach QM" is not.
+  // The distinction that matters: "no room" is obeyed, "cannot reach Miniomni" is not.
   assert.match(open, /outcome == "full"/);
   assert.match(open, /outcome == "ok"/);
 });
@@ -166,7 +166,7 @@ test("input relayed from the pane is not blocked by that check", () => {
 
 test("an unknown control mode lets the agent carry on", () => {
   // A browser nobody registered still has to be drivable, and failing closed on
-  // a lookup error would strand every task whenever QM hiccups.
+  // a lookup error would strand every task whenever Miniomni hiccups.
   const cm = /def control_mode\([\s\S]{0,700}/.exec(CLI)?.[0] ?? "";
   assert.match(cm, /return "agent"/);
 });

@@ -139,7 +139,7 @@ function readTrackedContent(path: string): Buffer | null {
 
 const provisionedInfrastructure = ["deploy/sandbox/fly.toml"];
 
-test("tracked files use only QM branding", () => {
+test("tracked files carry no trace of the pre-QM brand", () => {
   const paths = execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" })
     .split("\0")
     .filter(Boolean)
@@ -243,4 +243,35 @@ test("brand guard recognizes legacy variants", () => {
   assert.deepEqual(findLegacyNames("WCAG2Config"), []);
   assert.deepEqual(findLegacyNames("wcagConfig"), []);
   assert.deepEqual(findLegacyNames("myWCAGConfig"), []);
+});
+
+
+const priorProductName = ["Q", "M"].join("");
+const priorProductNamePattern = new RegExp(`(?<![A-Za-z0-9_])${priorProductName}(?![A-Za-z0-9_])`);
+const brandGuardSelf = "test/qm-brand.test.ts";
+
+test("no user-facing text still calls the product by its previous name", () => {
+  const offenders = execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" })
+    .split("\0")
+    .filter(Boolean)
+    .filter((path) => path !== brandGuardSelf && !path.startsWith("deploy/layers/"))
+    .flatMap((path) => {
+      const content = readTrackedContent(path);
+      if (!content || isBinary(content) || isCompressedMedia(content)) return [];
+      return content
+        .toString("utf8")
+        .split(/\r?\n/)
+        .flatMap((line, index) => (priorProductNamePattern.test(line) ? [`${path}:${index + 1}:${line.trim()}`] : []));
+    });
+
+  assert.deepEqual(offenders, []);
+});
+
+test("the guard would catch the previous name coming back", () => {
+  assert.ok(priorProductNamePattern.test(`the ${priorProductName} web app`));
+  assert.ok(priorProductNamePattern.test(`"${priorProductName}"`));
+  assert.ok(priorProductNamePattern.test(`${priorProductName}.`));
+  assert.ok(!priorProductNamePattern.test("QM_RELAY_URL"), "env var prefixes are identifiers, not the brand");
+  assert.ok(!priorProductNamePattern.test("qm"), "the lowercase identifier is deliberately kept");
+  assert.ok(!priorProductNamePattern.test("acme-qm-deploy-locks"), "resource names keep the identifier");
 });

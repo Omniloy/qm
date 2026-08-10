@@ -70,7 +70,7 @@ test("the cookie-domain boot check matches the browser's suffix rule", () => {
   assert.equal(hostIsWithinDomain("qm.example.com", "qm.example.com"), true);
   assert.equal(hostIsWithinDomain("apps.qm.example.com", "qm.example.com"), true);
   assert.equal(hostIsWithinDomain("contracts.apps.qm.example.com", "qm.example.com"), true);
-  assert.equal(hostIsWithinDomain("QM.EXAMPLE.COM", ".qm.example.com"), true);
+  assert.equal(hostIsWithinDomain("qm.EXAMPLE.COM", ".qm.example.com"), true);
   assert.equal(hostIsWithinDomain("notqm.example.com", "qm.example.com"), false);
   assert.equal(hostIsWithinDomain("qm.example.com.evil.com", "qm.example.com"), false);
   assert.equal(hostIsWithinDomain("example.com", "qm.example.com"), false);

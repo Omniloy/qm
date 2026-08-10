@@ -1,4 +1,4 @@
-# QM on Dokploy — single-host Docker target.
+# Miniomni on Dokploy — single-host Docker target.
 #
 # Mirrors the wiring the `qm` CLI's docker backend applies
 # (cli/src/backends/docker.ts, cli/src/services.ts): core plus the four surface
@@ -59,7 +59,7 @@ services:
       LOCAL_SANDBOX_IMAGE: ${LOCAL_SANDBOX_IMAGE}
       # Without these two, `docker run` gets no --cpus and no --memory and an
       # agent computer is unbounded on a box that also runs core, Postgres and
-      # Traefik. One runaway loop then takes QM down with it. Sized to leave
+      # Traefik. One runaway loop then takes Miniomni down with it. Sized to leave
       # room for several concurrent sandboxes.
       # 3 GB rather than 2: a real browsing session was measured at 1,253 MB
       # across 14 processes, which leaves almost nothing for the agent's own

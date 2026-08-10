@@ -22,11 +22,11 @@ export interface BrowserProviderSpec {
   homeUrl?: string;
 }
 
-/** The always-present option: the browser QM runs in the sandbox itself. */
+/** The always-present option: the browser Miniomni runs in the sandbox itself. */
 export const BUILT_IN_BROWSER_ID = "built-in";
 
 /**
- * The person's own Chrome, reached through the QM Browser Bridge extension.
+ * The person's own Chrome, reached through the Miniomni Browser Bridge extension.
  * Offered only where the relay is exposed — otherwise there is nothing to
  * connect to and the option would be a dead end.
  */

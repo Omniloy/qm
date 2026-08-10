@@ -203,7 +203,7 @@ export async function runSetup(opts: { dir: string }): Promise<void> {
 
     if (!configPathInDir(dir)) {
       header("New deployment");
-      note("No QM deployment config here — let's create one.");
+      note("No Miniomni deployment config here — let's create one.");
       let orgId = "";
       while (!validOrgId(orgId)) {
         orgId = await ask("Organization id (lowercase DNS label, e.g. acme): ");

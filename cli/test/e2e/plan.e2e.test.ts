@@ -116,7 +116,7 @@ test("bare plan --build-from rejects an unrelated enclosing Git repository", () 
     writeConfig(dir, { orgId: "acme", target: "docker", services: ["core"] });
     const r = runCli(["plan", "--build-from"], { cwd: dir });
     assert.equal(r.code, 1, r.out);
-    assert.match(r.out, /not a QM checkout \(missing deploy\/core\/Dockerfile\)/);
+    assert.match(r.out, /not a Miniomni checkout \(missing deploy\/core\/Dockerfile\)/);
   } finally {
     rmDir(dir);
   }

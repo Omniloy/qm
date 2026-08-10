@@ -48,8 +48,7 @@ export function serveFaviconSvg(res: ServerResponse, svg: string, cacheControl: 
   res.end(svg);
 }
 
-export function serveBrandLogoPng(res: ServerResponse, base64: string, cacheControl: string): void {
-  const body = Buffer.from(base64, "base64");
+export function serveBrandLogoPng(res: ServerResponse, body: Buffer, cacheControl: string): void {
   res.writeHead(200, {
     "content-type": "image/png",
     "content-length": String(body.length),

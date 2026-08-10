@@ -205,12 +205,12 @@ test("subdomain ingress: portal sign-in admits the owner, denies strangers, boun
     assert.equal(strangerXhr.status, 403, "non-HTML denial stays JSON");
 
     assert.match(stranger.body, /Request access/, "the denial page offers a request-access button");
-    const asked = await httpPost(port, "/__claw__/request-access", {
+    const asked = await httpPost(port, "/__shell__/request-access", {
       Host: host,
       Cookie: `portal_session=${mintPortalSession("mallory@example.com")}`,
     });
     assert.equal(asked.status, 200, "a denied visitor can ask the owner for access");
-    const again = await httpPost(port, "/__claw__/request-access", {
+    const again = await httpPost(port, "/__shell__/request-access", {
       Host: host,
       Cookie: `portal_session=${mintPortalSession("mallory@example.com")}`,
     });
@@ -226,7 +226,7 @@ test("subdomain ingress: portal sign-in admits the owner, denies strangers, boun
       onBehalfOf: "mallory@example.com",
     });
 
-    const signedOutAsk = await httpPost(port, "/__claw__/request-access", { Host: host });
+    const signedOutAsk = await httpPost(port, "/__shell__/request-access", { Host: host });
     assert.equal(signedOutAsk.status, 401, "a signed-out visitor cannot send access requests");
 
     const forged = await httpGet(port, "/consultants", {

@@ -107,7 +107,7 @@ test("a browser that goes away says why it went", () => {
   assert.doesNotMatch(endedNote("lost"), /saved/);
 });
 
-/* --------------------------------------------------- a browser QM streams */
+/* --------------------------------------------------- a browser Miniomni streams */
 
 test("a click on the picture maps back to the page it came from", () => {
   // Two scalings sit between a person's click and the page: the frame is
@@ -148,7 +148,7 @@ test("a streamed browser carries no URL for the pane to embed", () => {
 
 test("a browser with no URL does not offer to open one", () => {
   // Reported from real use: "Open in a new tab" on a streamed browser opened a
-  // blank tab, because there is no viewer URL to open — QM streams the frames
+  // blank tab, because there is no viewer URL to open — Miniomni streams the frames
   // instead. An action that cannot work reads as broken, so it is not offered.
   const streamed = s({ provider: "local", viewer: "stream", liveViewUrl: undefined });
   assert.equal(

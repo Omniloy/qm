@@ -1,6 +1,6 @@
 display_information:
   name: qm
-  description: QM workspace agent
+  description: Miniomni workspace agent
   background_color: "#1f2937"
 features:
   app_home:

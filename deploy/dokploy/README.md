@@ -1,6 +1,6 @@
-# QM on Dokploy
+# Miniomni on Dokploy
 
-A single-host Docker deployment of QM, driven by [Dokploy](https://dokploy.com) as a
+A single-host Docker deployment of Miniomni, driven by [Dokploy](https://dokploy.com) as a
 Compose application. It is the same topology the `qm` CLI's `docker` backend builds
 (`cli/src/backends/docker.ts`), expressed as Compose so Dokploy owns the lifecycle,
 build, logs, and env storage.
@@ -77,7 +77,7 @@ so even an aggressive prune spares it.
 
 ## The containerised-core constraint
 
-**Read this before changing anything about core's networking or `DATA_DIR`.** QM's two
+**Read this before changing anything about core's networking or `DATA_DIR`.** Miniomni's two
 `docker` backends — `SANDBOX_BACKEND=local` and `DEPLOY_PROVIDER=docker`, the default —
 are written for a core running _directly on the Docker host_. Core drives the host
 daemon over the mounted socket, so anything it hands that daemon is interpreted from
@@ -150,7 +150,7 @@ instead, since changing the variable will no longer have any effect.
 
 | Key                         | Value                                             |
 | --------------------------- | ------------------------------------------------- |
-| `AUTH_EMAIL_FROM`           | verified sender, e.g. `QM <no-reply@example.com>` |
+| `AUTH_EMAIL_FROM`           | verified sender, e.g. `Miniomni <no-reply@example.com>` |
 | `AUTH_ALLOWED_EMAIL_DOMAIN` | domain allowed to sign in                         |
 | `AUTH_BRAND_NAME`           | name shown on the sign-in page                    |
 | `RESEND_API_KEY`            | Resend key that can send as `AUTH_EMAIL_FROM`     |
@@ -219,7 +219,7 @@ turns with it. The admin card counts that year down; the env var cannot.
 
 ## The browser-extension relay (optional)
 
-Lets a person's own Chrome drive a browse session, via the QM Browser Bridge extension, so
+Lets a person's own Chrome drive a browse session, via the Miniomni Browser Bridge extension, so
 the agent works with their real sign-ins on sites that refuse a sandbox browser. It needs a
 WebSocket the extension can reach, and core is otherwise private, so the relay gets its own
 host straight to core — scoped by Traefik to that host **and** the `/v1/browser-relay` path,

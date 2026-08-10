@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { BRAND } from "../plugins/chassis/src/brand.ts";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -200,7 +201,7 @@ test("Mode 1 (DM): live-conversation frame, org policy once, no template leaks, 
 
   assert.doesNotMatch(prompt, /no one ever reads this transcript/);
   assert.doesNotMatch(prompt, /stay_silent/);
-  assert.match(prompt, /You are QM/);
+  assert.match(prompt, new RegExp(`You are ${BRAND.productName}`));
 });
 
 test("Mode 1 (DM): org policy still renders exactly once when the scope soul duplicates it verbatim", async () => {

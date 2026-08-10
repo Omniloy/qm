@@ -23,7 +23,7 @@ import {
 import { verifyPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
 import { createBrandingCache, injectBranding } from "../../chassis/src/branding.ts";
 import { BRAND, BRAND_LOGO_PATH } from "../../chassis/src/brand.ts";
-import { BRAND_LOGO_PNG_BASE64 } from "../../chassis/src/brand-logo-png.ts";
+import { brandLogoPng } from "../../chassis/src/brand-logo.ts";
 import {
   CORE_API_URL as CORE,
   CORE_ORG_ID as ORG,
@@ -739,7 +739,7 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
 
   if (method === "GET" && path === "/healthz") return json(res, 200, { ok: true });
   if (method === "GET" && path === BRAND_LOGO_PATH) {
-    return serveBrandLogoPng(res, BRAND_LOGO_PNG_BASE64, "public, max-age=86400");
+    return serveBrandLogoPng(res, brandLogoPng(), "public, max-age=86400");
   }
   if (method === "GET" && path === "/favicon.svg") {
     return serveBrandFavicon(res, {
@@ -1141,7 +1141,7 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const r = await coreFetch("POST", `/v1/browser-sessions/${encodeURIComponent(id)}/handoff`, raw);
       return relay(res, r);
     }
-    // The picture, for a browser QM hosts itself. Chrome will not expose its
+    // The picture, for a browser Miniomni hosts itself. Chrome will not expose its
     // debug port off loopback, so there is nothing to point an iframe at and
     // nothing to leak — the frames come back through core instead.
     if (method === "GET" && path.startsWith("/api/browser/session/") && path.endsWith("/frame")) {
@@ -1373,7 +1373,7 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
           name,
           data: rebrandExtensionFile(name, readFileSync(join(EXTENSION_DIR, name)), branding),
         }));
-        // Bake this person's QM address and a fresh pairing token into the
+        // Bake this person's Miniomni address and a fresh pairing token into the
         // download, so a new install connects with nothing to paste. The
         // download is already gated behind their session, so the token is no
         // more exposed than the page they got it from.

@@ -6,7 +6,7 @@ import {
   serveBrandLogoPng,
 } from "../../chassis/src/http.ts";
 import { BRAND, BRAND_LOGO_PATH } from "../../chassis/src/brand.ts";
-import { BRAND_LOGO_PNG_BASE64 } from "../../chassis/src/brand-logo-png.ts";
+import { brandLogoPng } from "../../chassis/src/brand-logo.ts";
 import { errMessage } from "../../chassis/src/errors.ts";
 import type { AuthConfig } from "./config.ts";
 import { validEmail } from "./config.ts";
@@ -382,7 +382,7 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
       return serveBrandFavicon(res, { logoSvg: BRAND.logoSvg, cacheControl: "max-age=86400" });
     }
     if (method === "GET" && path === BRAND_LOGO_PATH) {
-      return serveBrandLogoPng(res, BRAND_LOGO_PNG_BASE64, "public, max-age=86400");
+      return serveBrandLogoPng(res, brandLogoPng(), "public, max-age=86400");
     }
     if (method === "GET" && path === "/.well-known/jwks.json") {
       res.writeHead(200, { "content-type": "application/json", "cache-control": "public, max-age=300" });

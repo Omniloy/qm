@@ -160,7 +160,7 @@ test(
       assert.equal(statSync(join(deployment, ".env")).mode & 0o777, 0o600);
       assert.doesNotMatch(
         readFileSync(join(deployment, "deployment.md"), "utf8"),
-        /QM_REPO|cli\/bin\/qm\.ts|fresh QM clone|source checkout/i,
+        /QM_REPO|cli\/bin\/qm\.ts|fresh Miniomni clone|source checkout/i,
       );
       assert.match(
         readFileSync(join(deployment, "deployment.md"), "utf8"),

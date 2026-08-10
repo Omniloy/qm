@@ -1,4 +1,4 @@
-name: Publish the QM CLI
+name: Publish the Miniomni CLI
 
 on:
   workflow_call:

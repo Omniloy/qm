@@ -95,7 +95,7 @@ async function registerSession(ctx: ApiCtx): Promise<void> {
   if (viewer === "iframe" && !liveViewUrl) {
     return sendJson(res, 400, { error: "bad_request", message: "an iframe viewer needs a liveViewUrl" });
   }
-  // A streamed browser is reached through QM's own authenticated endpoint, so
+  // A streamed browser is reached through Miniomni's own authenticated endpoint, so
   // it has no URL. Accepting one anyway would quietly store bearer material
   // for a viewer that will never render it — and it is the shape a confused
   // caller would send while pasting a CDP URL somewhere it does not belong.
@@ -265,7 +265,7 @@ async function endSession(ctx: ApiCtx): Promise<void> {
 }
 
 /**
- * Frames and input for a browser QM hosts itself.
+ * Frames and input for a browser Miniomni hosts itself.
  *
  * The picture is fetched rather than streamed. Chrome binds its debug port to
  * loopback and will not be talked out of it, so nothing outside the sandbox can

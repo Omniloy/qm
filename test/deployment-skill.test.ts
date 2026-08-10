@@ -47,7 +47,7 @@ test("package-consumer deployment skill covers both self-owned providers and the
     "cli/templates/deployment/references/slack.md",
     "cli/templates/deployment/references/email.md",
   ]) {
-    assert.doesNotMatch(read(path), /QM_REPO|cli\/bin\/qm\.ts|fresh QM clone/);
+    assert.doesNotMatch(read(path), /QM_REPO|cli\/bin\/qm\.ts|fresh Miniomni clone/);
   }
 });
 

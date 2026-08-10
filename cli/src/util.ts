@@ -277,7 +277,7 @@ export function gitTopLevel(): string {
   try {
     return git(["rev-parse", "--show-toplevel"]);
   } catch {
-    throw new CliError("not inside a git worktree (run this from a QM checkout)");
+    throw new CliError("not inside a git worktree (run this from a Miniomni checkout)");
   }
 }
 
@@ -289,7 +289,7 @@ export function resolveBuildRepoRoot(explicit?: string, requiredServices: readon
       root = gitTopLevel();
     } catch {
       throw new CliError(
-        "--build-from requires running inside the QM source repo, or pass a path: --build-from <repo>",
+        "--build-from requires running inside the Miniomni source repo, or pass a path: --build-from <repo>",
       );
     }
   }
@@ -297,7 +297,7 @@ export function resolveBuildRepoRoot(explicit?: string, requiredServices: readon
   if (missing.length) {
     const source = explicit === undefined ? root : explicit;
     throw new CliError(
-      `--build-from ${source}: not a QM checkout (missing ${missing.map((service) => `deploy/${service}/Dockerfile`).join(", ")})`,
+      `--build-from ${source}: not a Miniomni checkout (missing ${missing.map((service) => `deploy/${service}/Dockerfile`).join(", ")})`,
     );
   }
   return root;

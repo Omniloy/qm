@@ -75,7 +75,7 @@ function reject(reason: string): never {
 }
 
 function rejectExternalReference(name: string, rawValue: string): void {
-  const flattened = rawValue.replace(/^["']|["']$/g, "").replace(/[\s\-]/g, "").toLowerCase();
+  const flattened = rawValue.replace(/^["']|["']$/g, "").replace(/[\s-]/g, "").toLowerCase();
   if (EXTERNAL_SCHEME.test(flattened) || flattened.includes("url(http") || flattened.includes("url(//")) {
     reject(`the value of "${name}" references something outside the logo`);
   }

@@ -22,8 +22,8 @@ export type ControlMode = "agent" | "human_control";
  * How the pane shows this browser.
  *
  * `iframe` embeds a vendor's own viewer, reached with a URL that is bearer
- * material. `stream` means the browser is one of ours: the pane asks QM for
- * frames over QM's own authenticated endpoint, so there is no URL, nothing to
+ * material. `stream` means the browser is one of ours: the pane asks Miniomni for
+ * frames over Miniomni's own authenticated endpoint, so there is no URL, nothing to
  * encrypt, and nothing that could leak into a transcript.
  *
  * A discriminator rather than a nullable URL, so a record cannot be half of

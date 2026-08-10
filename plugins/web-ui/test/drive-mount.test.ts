@@ -100,7 +100,7 @@ test("a folder URL is derived from the id, not fetched", () => {
   assert.equal(driveFolderUrl("a/b?c"), "https://drive.google.com/drive/folders/a%2Fb%3Fc", "ids are escaped");
 });
 
-test("request access points at Drive, since QM cannot grant it", () => {
+test("request access points at Drive, since Miniomni cannot grant it", () => {
   assert.equal(
     requestAccessUrl({ externalId: "x", webViewLink: "https://drive.google.com/x" }),
     "https://drive.google.com/x",

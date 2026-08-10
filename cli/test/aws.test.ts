@@ -1426,7 +1426,7 @@ console.log("");`,
     await withAwsLease(config.aws!, async () => {
       await new Promise((resolve) => setTimeout(resolve, 40));
     });
-    assert.match(warnings.join("\n"), /"deploy" lease in acme-qm-deploy-locks was taken over by another QM operation/);
+    assert.match(warnings.join("\n"), /"deploy" lease in acme-qm-deploy-locks was taken over by another Miniomni operation/);
     assert.equal(
       readFileSync(fake.log, "utf8").match(/dynamodb update-item/g)?.length,
       1,
@@ -2844,7 +2844,7 @@ console.log("");`,
   try {
     await assert.rejects(
       withAwsLease(config.aws!, async () => {}),
-      /another QM operation holds the "deploy" lease in acme-qm-deploy-locks/,
+      /another Miniomni operation holds the "deploy" lease in acme-qm-deploy-locks/,
     );
     assert.doesNotMatch(readFileSync(fake.log, "utf8"), /dynamodb delete-item/);
   } finally {
@@ -3187,7 +3187,7 @@ test("AWS plan rejects an explicit nonexistent source checkout before cloud acce
         buildFrom: true,
         buildFromPath: "/definitely/not/a/qm/checkout",
       }),
-    /not a QM checkout/,
+    /not a Miniomni checkout/,
   );
 });
 

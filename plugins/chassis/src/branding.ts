@@ -89,14 +89,11 @@ export function injectBranding(html: string, branding: OrgBranding): string {
       ? `<title>${escapeText(current.replaceAll(BRAND_TITLE_TOKEN, productName ?? ""))}</title>`
       : `<title>${escapeText(current)}</title>`,
   );
-  const decls = [
-    ...(accent ? [`--brand-accent:${accent}`] : []),
-    ...(logoSvg
-      ? [`--brand-logo:${logoCssUrl(logoSvg)}`, `--brand-mark:""`, "--brand-mark-bg:transparent"]
-      : mark
-        ? [`--brand-mark:"${mark}"`]
-        : []),
-  ].join(";");
+  const markDecls = logoSvg
+    ? [`--brand-logo:${logoCssUrl(logoSvg)}`, `--brand-mark:""`, "--brand-mark-bg:transparent"]
+    : [];
+  if (!logoSvg && mark) markDecls.push(`--brand-mark:"${mark}"`);
+  const decls = [...(accent ? [`--brand-accent:${accent}`] : []), ...markDecls].join(";");
   if (decls) out = out.replace("</head>", () => `<style>:root{${decls}}</style></head>`);
   return out;
 }
