@@ -128,3 +128,42 @@ test("closing the browser ends the agent's use of it, not the person's Chrome", 
   assert.equal(ext.sent.length, 0);
   assert.deepEqual(parse(cdp.sent[0]!), { id: 9, result: {} });
 });
+
+test("sharing a tab is what selects the extension, and stopping gives it back", () => {
+  // The footgun this closes: the extension reported connected, the right tab
+  // was shared, and every turn still ran on the sandbox browser because
+  // "connected" and "chosen" were separate steps.
+  const seen: Array<[string, boolean]> = [];
+  const hub = createRelayHub({ onShareChanged: (id, sharing) => void seen.push([id, sharing]) });
+  const ext = fake();
+  hub.attach(PERSON, "extension", ext);
+
+  hub.deliver(PERSON, "extension", JSON.stringify({ qm: "attached", title: "LinkedIn", url: "https://linkedin.com/" }));
+  hub.deliver(PERSON, "extension", JSON.stringify({ qm: "detached" }));
+  assert.deepEqual(seen, [
+    [PERSON, true],
+    [PERSON, false],
+  ]);
+});
+
+test("a dropped socket is not a decision to stop sharing", () => {
+  // Chrome stops an idle service worker constantly; treating that as "stop
+  // sharing" would undo the person's browser choice behind their back.
+  const seen: boolean[] = [];
+  const hub = createRelayHub({ onShareChanged: (_id, sharing) => void seen.push(sharing) });
+  const ext = fake();
+  hub.attach(PERSON, "extension", ext);
+  hub.deliver(PERSON, "extension", JSON.stringify({ qm: "attached", title: "LinkedIn" }));
+  hub.detach(PERSON, "extension");
+  assert.deepEqual(seen, [true], "only the share fired, not the disconnect");
+});
+
+test("the detach signal never reaches the agent as protocol traffic", () => {
+  const hub = createRelayHub();
+  const ext = fake();
+  const cdp = fake();
+  hub.attach(PERSON, "extension", ext);
+  hub.attach(PERSON, "cdp", cdp);
+  hub.deliver(PERSON, "extension", JSON.stringify({ qm: "detached" }));
+  assert.equal(cdp.sent.length, 0, "qm control messages are ours, not CDP");
+});

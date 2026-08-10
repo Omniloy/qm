@@ -117,9 +117,13 @@ async function attach(tabId) {
   await announce();
 }
 
-async function detach() {
+async function detach(explicit = false) {
   if (attachedTabId === null) return;
   const tabId = attachedTabId;
+  // Tell QM only when the person meant it. A closing socket is a sleeping
+  // service worker, and reverting their browser choice on that would undo it
+  // every time Chrome idled this extension.
+  if (explicit) send({ qm: "detached" });
   attachedTabId = null;
   await chrome.storage.local.remove("attachedTabId");
   await badge(tabId, false);
@@ -203,7 +207,9 @@ chrome.debugger.onDetach.addListener((source) => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  if (tabId === attachedTabId) void detach();
+  // The shared tab is gone, so the share is over in the same sense as pressing
+  // stop — there is nothing left to drive.
+  if (tabId === attachedTabId) void detach(true);
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, respond) => {
@@ -221,7 +227,7 @@ chrome.runtime.onMessage.addListener((message, _sender, respond) => {
       return;
     }
     if (message.type === "stop-sharing") {
-      await detach();
+      await detach(true);
       respond({ ok: true });
       return;
     }

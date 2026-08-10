@@ -2,6 +2,8 @@ import { baseModelProviders, configuredModelForHarness, loadConfig, providerKeys
 import { buildApp, stopWithBackstop } from "./wiring.ts";
 import { createServer } from "./api/server.ts";
 import { createRelayHub } from "./browser-relay/relay.ts";
+import { EXTENSION_BROWSER_ID } from "./connectors/browser-providers.ts";
+import { personalScope } from "./types.ts";
 import { attachBrowserRelay } from "./browser-relay/server.ts";
 import { errMessage } from "./util/errors.ts";
 import { defaultModelForHarness, modelProviderAvailabilityFor } from "./model/pi-models.ts";
@@ -20,7 +22,22 @@ if (slackConfig) slackEnvironmentState = "configured";
 else if (envSlackAttempted) slackEnvironmentState = "partial";
 // Built before the server so the routes can report on it, attached after so
 // it can hook the upgrade the routes cannot see.
-const browserRelay = createRelayHub();
+const browserRelay = createRelayHub({
+  // Sharing a tab IS choosing your own Chrome. Keeping those as two steps left
+  // people connected-but-unused: the extension said it was live, the tab was
+  // right, and every turn still ran on the sandbox browser.
+  onShareChanged(principalId, sharing) {
+    const scope = personalScope(principalId);
+    const current = built.config.getBrowserProvider(scope);
+    if (sharing) {
+      if (current !== EXTENSION_BROWSER_ID) built.config.setBrowserProvider(scope, EXTENSION_BROWSER_ID);
+      return;
+    }
+    // Only undo the choice this made. Someone who picked a hosted browser and
+    // happens to close a shared tab keeps what they picked.
+    if (current === EXTENSION_BROWSER_ID) built.config.setBrowserProvider(scope, null);
+  },
+});
 const server = createServer(built.app, {
   production: config.production,
   allowUnauthenticatedCore: config.allowUnauthenticatedCore,
