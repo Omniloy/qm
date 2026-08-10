@@ -71,6 +71,20 @@ are billed extras, so reach for them on a block, not by default:
 `"browser":{"extra_stealth":{"active":true},"captcha_solver":{"active":true}}`
 (`extra_stealth` and `captcha_solver` both require the proxy).
 
+## Show it in the pane
+
+Do this immediately after creating the browser. A hosted browser cannot be streamed by QM,
+but the pane embeds this provider's own viewer, and without this step the person is handed a
+bare link in the conversation and has to leave the app to watch their own browser work.
+
+```bash
+python3 skills/browse/scripts/browser.py pane \
+  --provider anchor --session "$ANCHOR_SID" --url "$LIVE_VIEW"
+```
+
+Pass the **viewer** URL, never the CDP URL — the CDP URL carries the key. If QM refuses, say
+the pane is unavailable and give them the viewer link instead; browsing still works.
+
 ## Giving the browser a file
 
 Upload lands in `/uploads`:
@@ -142,7 +156,11 @@ broken login.
 
 ## Clean up
 
+Both: the provider's session keeps billing, and the pane keeps showing a browser
+that has gone.
+
 ```bash
+python3 skills/browse/scripts/browser.py pane --end --session "$ANCHOR_SID"
 curl -fsS -X DELETE "https://api.anchorbrowser.io/v1/sessions/$ANCHOR_SID" -H "anchor-api-key: $ANCHOR_API_KEY"
 ```
 
