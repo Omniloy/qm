@@ -113,6 +113,18 @@ never sees the request.
 
 Set these on the Dokploy Compose application. Nothing here belongs in git.
 
+A trap worth knowing before you add a key: **Dokploy's application env is not the
+service env.** Dokploy stores what you set as the Compose project's `.env`, and
+`docker-compose.yml` decides which of those variables each service actually
+receives. Adding a variable in Dokploy alone therefore succeeds, persists, and
+still leaves the container without it. A new key means two edits — Dokploy, and
+the service's `environment:` block below — and the only honest confirmation is
+reading it back out of the running container:
+
+```bash
+docker exec qm-omniloy-core printenv | grep YOUR_KEY
+```
+
 ### Identity and URLs
 
 | Key                        | Value                                                                          |
@@ -162,13 +174,6 @@ AUTH_CLIENT_SECRET         portal ↔ broker client credential
 ANTHROPIC_API_KEY          bills the base model
 ```
 
-`CLAUDE_CODE_OAUTH_TOKEN` is optional. Generate it with `claude setup-token`
-(one year, Pro/Max/Team/Enterprise) to run the Claude harness on a subscription
-rather than per-token API billing. Leave `ANTHROPIC_API_KEY` in place: the other
-harnesses still need it, and the Claude child drops it for itself, because
-Claude Code prefers an API key over a subscription token and would otherwise
-keep billing the key with no error to say so.
-
 `AUTH_SIGNING_JWK` is a single-line P-256 private JWK:
 
 ```bash
@@ -177,6 +182,38 @@ node -e "const {generateKeyPairSync}=require('node:crypto');process.stdout.write
 
 Connector OAuth clients and the optional Slack bot tokens are not set here — enter them
 at `${PUBLIC_URL}/admin` once the stack is up.
+
+## Choosing the engine
+
+`HARNESS` sets only the fallback. What people can actually reach is governed at
+`${PUBLIC_URL}/admin` → **Governance**, with the scope selector on the org
+(`org:<ORG_ID>`) — both cards stay hidden on a narrower scope, which is the usual
+reason they seem to be missing:
+
+- **Approved harnesses** — checkboxes for who may be chosen at all. Unset means
+  the fallback alone, so a harness you have configured but not approved is
+  refused with `runtime <id> is not approved`.
+- **Default harness and model** — the runtime scopes inherit. Narrower scopes can
+  override it, and both take effect from the next turn.
+
+### Running Claude on a subscription
+
+The `claude` harness runs the real Claude Code CLI, so it can authenticate as an
+account instead of billing a provider key. Generate a token with
+`claude setup-token` — it needs a Pro, Max, Team, or Enterprise plan, lasts one
+year, and is printed once — then either paste it at **Onboarding → Claude
+subscription** (encrypted, no restart) or set `CLAUDE_CODE_OAUTH_TOKEN` in the
+env above.
+
+Leave `ANTHROPIC_API_KEY` in place. The other harnesses call the API directly and
+still need it; the Claude child drops it for itself. That last part is not
+cosmetic: Claude Code resolves credentials by a fixed precedence in which an API
+key outranks a subscription token, so a deployment holding both would go on
+billing the key, succeeding every time, and telling you nothing. The only symptom
+is the invoice.
+
+The token expires quietly a year after it was minted and takes Claude-harness
+turns with it. The admin card counts that year down; the env var cannot.
 
 ## Deploying
 
