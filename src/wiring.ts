@@ -20,6 +20,7 @@ import {
   type PersistedBranding,
   type PersistedBrowseMaxSteps,
   type PersistedBrowseModel,
+  type PersistedBrowserProvider,
   type PersistedTurnWallClock,
   type PersistedDeploymentIdentity,
 } from "./resolution/config-store.ts";
@@ -168,6 +169,7 @@ import { createConsentLinkStore, type ConsentLinkStore, type ConsentLinkRecord }
 import { createModelGateway, type ModelGateway } from "./model/model-gateway.ts";
 import { createModelCredentialStore, type ModelCredentialStore } from "./model/model-credential-store.ts";
 import { createHarnessAuthStore, type HarnessAuthStore } from "./credentials/harness-auth-store.ts";
+import { loadBrowserProviders, type BrowserProviderSpec } from "./connectors/browser-providers.ts";
 import { setProviderBaseUrls } from "./model/provider-endpoints.ts";
 import { setCustomProviders } from "./model/custom-providers.ts";
 import { createCustomProviderStore, type CustomProviderStore } from "./model/custom-provider-store.ts";
@@ -345,6 +347,7 @@ export interface BuiltApp {
   modelGateway: ModelGateway;
   modelCredentials: ModelCredentialStore;
   harnessAuth: HarnessAuthStore;
+  browserProviders: readonly BrowserProviderSpec[];
   customProviders: CustomProviderStore;
   refreshCustomProviders: () => Promise<void>;
   acl: AclStore;
@@ -434,6 +437,7 @@ export function buildApp(
       ...(config.openrouterApiKey ? { openrouter: config.openrouterApiKey } : {}),
     },
   });
+  const browserProviders = loadBrowserProviders(config.skillsSeedDir);
   const harnessAuth = createHarnessAuthStore({
     backing: artifactMap("harness_credentials"),
     keyMaterial: config.connectorSecretKey ?? randomBytes(32),
@@ -465,6 +469,7 @@ export function buildApp(
     branding: artifactMap<PersistedBranding>("branding_configs"),
     browseMaxSteps: artifactMap<PersistedBrowseMaxSteps>("browse_max_steps_configs"),
     browseModels: artifactMap<PersistedBrowseModel>("browse_model_configs"),
+    browserProviders: artifactMap<PersistedBrowserProvider>("browser_provider_configs"),
     turnWallClocks: artifactMap<PersistedTurnWallClock>("turn_wall_clock_configs"),
     deploymentIdentity: artifactMap<PersistedDeploymentIdentity>("deployment_identity"),
     defaultSecurityPosture: config.securityPosture,
@@ -1224,6 +1229,7 @@ export function buildApp(
     modelGateway,
     modelCredentials,
     harnessAuth,
+    browserProviders,
     customProviders,
     refreshCustomProviders,
     ...(overrides.modelCredentialFetch ? { modelCredentialFetch: overrides.modelCredentialFetch } : {}),
@@ -1569,6 +1575,7 @@ export function buildApp(
     modelGateway,
     modelCredentials,
     harnessAuth,
+    browserProviders,
     customProviders,
     refreshCustomProviders,
     acl,

@@ -3442,6 +3442,51 @@ a.chat-row-open {
   background: color-mix(in srgb, #d99a21 14%, var(--background));
   color: #946000;
 }
+.kc-state.ok {
+  background: color-mix(in srgb, #1f9254 14%, var(--background));
+  color: #1f7a47;
+}
+/* The picker is a tab strip so four browsers cost one card, not four. */
+.kc-browser-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 10px 0 0 40px;
+  border-bottom: 1px solid var(--border);
+}
+.kc-browser-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 6px 6px 0 0;
+  background: none;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.kc-browser-tab:hover {
+  color: var(--foreground);
+  background: var(--secondary);
+}
+.kc-browser-tab.selected {
+  color: var(--foreground);
+  border-bottom-color: var(--foreground);
+}
+/* The dot marks the browser in use, which is not always the tab being read. */
+.kc-browser-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #1f9254;
+}
+.kc-browser .kc-resource-actions {
+  margin-left: 40px;
+}
 .kc-resource-description {
   max-width: 700px;
   margin: 5px 0 0 40px;

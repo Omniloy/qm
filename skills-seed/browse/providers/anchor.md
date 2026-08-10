@@ -1,3 +1,15 @@
+---
+id: anchor
+name: Anchor
+summary: Hosted Chrome with stealth, proxies, and a captcha solver. Billed per browser-hour.
+keyEnv: ANCHOR_API_KEY
+keyService: anchor
+profileEnv: ANCHOR_PROFILE
+profileService: anchor-profile
+signupUrl: https://app.anchorbrowser.io/api-keys
+homeUrl: https://anchorbrowser.io
+---
+
 # Browse provider: Anchor (anchorbrowser.io)
 
 Provider names for the shared flow in SKILL.md: API key `ANCHOR_API_KEY`, keychain service

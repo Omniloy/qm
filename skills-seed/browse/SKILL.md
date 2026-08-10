@@ -79,10 +79,19 @@ one site on a hosted browser — the next section is how, and the verbs do not c
 Hosted providers maintain the evasion that gets through those sites. They are the fallback,
 not the default: they cost money per hour and need a key.
 
-Use one when the built-in browser was blocked, or when the person asks. Which one is decided
-by whichever key is present — read the provider doc BEFORE creating anything, because it owns
-every provider-shaped step (creating and deleting the browser, profiles, routing a sign-in
-wall, giving the browser a file).
+**`BROWSE_PROVIDER` decides, when it is set.** It carries the browser this person picked in
+Keychain → Linked accounts. If it names a provider, start there rather than with the built-in
+one — they chose it, and on a paid plan they chose it for a reason. If it is unset or says
+`built-in`, the built-in browser leads and a hosted one is the fallback.
+
+Otherwise use a hosted browser when the built-in one was blocked, or when the person asks.
+Which one is then decided by whichever key is present — read the provider doc BEFORE creating
+anything, because it owns every provider-shaped step (creating and deleting the browser,
+profiles, routing a sign-in wall, giving the browser a file).
+
+If a provider answers 402 or 429, say it plainly — "Anchor is out of credit" — and name the
+other providers that have a key. That is the moment someone wants to switch, and a generic
+browser failure hides it.
 
 Once it exists, you drive it with **the same verbs**. Its create step leaves you a `CDP_URL`;
 point the browser at that and nothing else changes:
@@ -111,9 +120,9 @@ The providers:
 
 None set is not a dead end — it only means the fallback is unavailable, and the built-in
 browser still works. If a site is blocked and no key exists, say what happened and, in a DM,
-mention they can add one in **Keychain → Add credential** (service `anchor`, env key
-`ANCHOR_API_KEY`), which pastes the secret into a one-time page so it never passes through
-the conversation. In a channel or group, do not offer it: a personal key must never be minted
+mention they can connect one in **Keychain → Linked accounts → Browser**, which pastes the
+secret into a one-time page so it never passes through the conversation and switches the
+browser in the same place. In a channel or group, do not offer it: a personal key must never be minted
 into a shared room.
 
 ## Sign-ins

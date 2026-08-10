@@ -1,3 +1,15 @@
+---
+id: browserbase
+name: Browserbase
+summary: Hosted browsers with contexts and stealth. Billed per browser-hour.
+keyEnv: BROWSERBASE_API_KEY
+keyService: browserbase
+profileEnv: BROWSERBASE_CONTEXT
+profileService: browserbase-context
+signupUrl: https://www.browserbase.com/settings
+homeUrl: https://browserbase.com
+---
+
 # Browse provider: Browserbase (browserbase.com)
 
 Provider names for the shared flow in SKILL.md: API key `BROWSERBASE_API_KEY`, keychain

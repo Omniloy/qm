@@ -105,6 +105,10 @@ export interface PersistedBrowseModel {
   scopeId: ScopeId;
   modelId: string;
 }
+export interface PersistedBrowserProvider {
+  scopeId: ScopeId;
+  providerId: string;
+}
 export interface PersistedTurnWallClock {
   scopeId: ScopeId;
   sec: number;
@@ -190,6 +194,10 @@ export interface ScopedConfigStore {
   setBrowseMaxSteps(id: ScopeId, steps: number | null): void;
   getBrowseModel(id: ScopeId): string | null;
   setBrowseModel(id: ScopeId, modelId: string | null): void;
+  /** Which browser a scope reaches for. Null means the built-in one. */
+  getBrowserProvider(id: ScopeId): string | null;
+  setBrowserProvider(id: ScopeId, providerId: string | null): void;
+  getBrowserProviderDurable(id: ScopeId): Promise<string | null>;
   getTurnWallClockSecDurable(id: ScopeId): Promise<number | null>;
   setTurnWallClockSec(id: ScopeId, sec: number | null): Promise<void>;
   setConnectorClient(id: ScopeId, provider: string, input: ConnectorClientInput): Promise<void>;
@@ -223,6 +231,7 @@ export function createMemoryConfigStore(
     branding?: DurableMap<PersistedBranding>;
     browseMaxSteps?: DurableMap<PersistedBrowseMaxSteps>;
     browseModels?: DurableMap<PersistedBrowseModel>;
+    browserProviders?: DurableMap<PersistedBrowserProvider>;
     turnWallClocks?: DurableMap<PersistedTurnWallClock>;
     deploymentIdentity?: DurableMap<PersistedDeploymentIdentity>;
     connectorSecretKey?: Buffer | string;
@@ -247,6 +256,7 @@ export function createMemoryConfigStore(
   const branding = new Map<ScopeId, OrgBranding>();
   const browseMaxSteps = new Map<ScopeId, number>();
   const browseModels = new Map<ScopeId, string>();
+  const browserProviders = new Map<ScopeId, string>();
   const turnWallClocks = new Map<ScopeId, number>();
   const soulStore = opts.souls ?? createMemoryMap<PersistedSoul>();
   const soulHistoryStore = opts.soulHistory ?? createMemoryMap<PersistedSoulRevision>();
@@ -265,6 +275,7 @@ export function createMemoryConfigStore(
   const brandingStore = opts.branding ?? createMemoryMap<PersistedBranding>();
   const browseMaxStepsStore = opts.browseMaxSteps ?? createMemoryMap<PersistedBrowseMaxSteps>();
   const browseModelStore = opts.browseModels ?? createMemoryMap<PersistedBrowseModel>();
+  const browserProviderStore = opts.browserProviders ?? createMemoryMap<PersistedBrowserProvider>();
   const turnWallClockStore = opts.turnWallClocks ?? createMemoryMap<PersistedTurnWallClock>();
   const deploymentIdentity = opts.deploymentIdentity ?? createMemoryMap<PersistedDeploymentIdentity>();
   const persistWarn = (what: string) => (e: unknown) => console.error(`[config] failed to persist ${what}:`, e);
@@ -404,6 +415,7 @@ export function createMemoryConfigStore(
           for (const r of await brandingStore.all()) branding.set(r.scopeId, r.branding);
           for (const r of await browseMaxStepsStore.all()) browseMaxSteps.set(r.scopeId, r.steps);
           for (const r of await browseModelStore.all()) browseModels.set(r.scopeId, r.modelId);
+          for (const r of await browserProviderStore.all()) browserProviders.set(r.scopeId, r.providerId);
           for (const r of await turnWallClockStore.all()) turnWallClocks.set(r.scopeId, r.sec);
         })();
       }
@@ -810,6 +822,22 @@ export function createMemoryConfigStore(
         persist(`browseModel:${id}`, "browse model", () => browseModelStore.put(id, { scopeId: id, modelId }));
       }
     },
+    getBrowserProvider: (id) => browserProviders.get(id) ?? null,
+    setBrowserProvider(id, providerId) {
+      if (providerId === null) {
+        browserProviders.delete(id);
+        persist(`browserProvider:${id}`, "browser provider", () => browserProviderStore.delete(id));
+      } else {
+        browserProviders.set(id, providerId);
+        persist(`browserProvider:${id}`, "browser provider", () =>
+          browserProviderStore.put(id, { scopeId: id, providerId }),
+        );
+      }
+    },
+    // A person's own choice wins; the org's is the default they inherit.
+    getBrowserProviderDurable: async (id) =>
+      (await browserProviderStore.get(id))?.providerId ??
+      (id === org ? null : ((await browserProviderStore.get(org))?.providerId ?? null)),
     getTurnWallClockSecDurable: async (id) => (await turnWallClockStore.get(id))?.sec ?? null,
     async setTurnWallClockSec(id, sec) {
       await writeQueue(`turnWallClock:${id}`, () =>

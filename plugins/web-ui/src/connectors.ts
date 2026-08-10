@@ -1,11 +1,21 @@
 import { html, render, type TemplateResult } from "lit";
-import { Activity, KeyRound, Link, LockKeyhole, Plug, Plus, RefreshCw, ShieldCheck } from "lucide";
+import { Activity, Globe, KeyRound, Link, LockKeyhole, Plug, Plus, RefreshCw, ShieldCheck } from "lucide";
 import { api } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
 import { icon } from "./ui";
 import { appState, replacePanePreservingFocus } from "./shell";
 import { focusDialogCancel, restoreDialogFocus, trapDialogFocus } from "./dialog-focus";
 import { isActiveGrant, isExpiredCredential, KeychainOperations, keychainSummary } from "./keychain-state";
+import {
+  browserAction,
+  browserById,
+  browserSummary,
+  browserTabs,
+  connectDraft,
+  initialBrowserTab,
+  BUILT_IN_BROWSER_ID,
+  type BrowserProvider,
+} from "./browser-picker-state";
 
 interface ConnectorProvider {
   connected?: boolean;
@@ -136,6 +146,9 @@ let keychainScopeNames: Record<string, string> = {};
 let connectorNotice = "";
 let addingCredential: { service: string; envKey: string; purpose: string } | null = null;
 let secureDropUrl: string | null = null;
+let browserProviders: BrowserProvider[] = [];
+let activeBrowser = BUILT_IN_BROWSER_ID;
+let browserTab: string | null = null;
 let confirmation: { title: string; body: string; action: string; run: () => Promise<void> } | null = null;
 let confirmationOpener: HTMLElement | null = null;
 const keychainOperations = new KeychainOperations();
@@ -149,6 +162,9 @@ export function resetKeychainState(): void {
   keychainAsks = [];
   keychainUsage = [];
   keychainScopeNames = {};
+  browserProviders = [];
+  activeBrowser = BUILT_IN_BROWSER_ID;
+  browserTab = null;
   connectorNotice = "";
   addingCredential = null;
   secureDropUrl = null;
@@ -372,6 +388,126 @@ function addCredentialCard(): TemplateResult {
   </section>`;
 }
 
+function browserCard(): TemplateResult {
+  const tabs = browserTabs(browserProviders, activeBrowser);
+  const shownId = browserTab ?? initialBrowserTab(browserProviders, activeBrowser);
+  const shown = tabs.find((tab) => tab.id === shownId) ?? tabs[0]!;
+  const provider = browserById(browserProviders, shown.id);
+  const action = browserAction(shown);
+  const live = tabs.find((tab) => tab.active);
+  return html`
+    <article class="kc-resource kc-account kc-browser">
+      <div class="kc-resource-main">
+        <span class="connector-logo">${icon(Globe, 18)}</span>
+        <div class="kc-resource-copy">
+          <div class="kc-resource-title-row">
+            <h3>Browser</h3>
+            <span class="kc-state neutral">${live ? live.name : "Built-in"}</span>
+          </div>
+          <div class="kc-resource-meta">Which browser the agent uses for you</div>
+        </div>
+      </div>
+      <div class="kc-browser-tabs" role="tablist" aria-label="Browser">
+        ${tabs.map(
+          (tab) =>
+            html`<button
+              class="kc-browser-tab${tab.id === shown.id ? " selected" : ""}${tab.active ? " live" : ""}"
+              type="button"
+              role="tab"
+              aria-selected=${tab.id === shown.id ? "true" : "false"}
+              @click=${() => {
+              browserTab = tab.id;
+              drawConnectors();
+            }}
+            >
+              ${tab.name}${tab.active ? html`<span class="kc-browser-dot" aria-label="in use"></span>` : ""}
+            </button>`,
+        )}
+      </div>
+      <p class="kc-resource-description">${browserSummary(provider, shown)}</p>
+      <div class="kc-resource-actions">
+        ${
+          action.kind === "in-use"
+            ? html`<span class="kc-state ok">In use</span>`
+            : action.kind === "use"
+              ? html`<button
+                  class="btn"
+                  type="button"
+                  ?disabled=${keychainOperations.mutationInFlight}
+                  @click=${() => void chooseBrowser(shown.id)}
+                >
+                  ${action.label}
+                </button>`
+              : html`<button
+                  class="btn"
+                  type="button"
+                  ?disabled=${keychainOperations.dropInFlight}
+                  @click=${() => void connectBrowser(provider)}
+                >
+                  ${keychainOperations.dropInFlight ? "Preparing…" : action.label}
+                </button>`
+        }
+        ${
+          provider.signupUrl
+            ? html`<a class="kc-text-action" href=${provider.signupUrl} target="_blank" rel="noopener noreferrer"
+                >Get an API key ↗</a
+              >`
+            : ""
+        }
+      </div>
+    </article>
+  `;
+}
+
+async function chooseBrowser(providerId: string): Promise<void> {
+  const operation = beginKeychainMutation();
+  if (!operation) return;
+  connectorNotice = "";
+  drawConnectors();
+  try {
+    await api("/api/keychain/browser", { method: "POST", body: JSON.stringify({ provider: providerId }) });
+    if (!keychainOperations.isCurrentEpoch(operation.epoch)) return;
+    activeBrowser = providerId;
+    browserTab = providerId;
+    connectorNotice = `${browserById(browserProviders, providerId).name} is now your browser.`;
+  } catch (e) {
+    if (!keychainOperations.isCurrentEpoch(operation.epoch)) return;
+    connectorNotice = errMessage(e, "Could not switch browser.");
+  } finally {
+    if (keychainOperations.finishMutation(operation)) drawConnectors();
+  }
+}
+
+async function connectBrowser(provider: BrowserProvider): Promise<void> {
+  const draft = connectDraft(provider);
+  if (!draft || keychainOperations.dropInFlight) return;
+  const stateEpoch = keychainOperations.beginDrop();
+  if (stateEpoch === null) return;
+  connectorNotice = "";
+  drawConnectors();
+  try {
+    const result = await api<{ url?: string }>("/api/keychain/drops", {
+      method: "POST",
+      body: JSON.stringify(draft),
+    });
+    if (!keychainOperations.isCurrentEpoch(stateEpoch)) return;
+    if (!result.url) throw new Error("No one-time page URL was returned.");
+    secureDropUrl = result.url;
+    // Reuse the existing "your page is ready" card rather than inventing a
+    // second one: the paste step is identical whichever way you got here.
+    addingCredential = { service: draft.service, envKey: draft.envKey ?? "", purpose: draft.purpose };
+    connectorNotice = `Paste your ${provider.name} key on the one-time page.`;
+  } catch (e) {
+    if (!keychainOperations.isCurrentEpoch(stateEpoch)) return;
+    connectorNotice = errMessage(e, "Could not create the one-time page.");
+  } finally {
+    if (keychainOperations.isCurrentEpoch(stateEpoch)) {
+      keychainOperations.finishDrop(stateEpoch);
+      drawConnectors();
+    }
+  }
+}
+
 function confirmationCard(): TemplateResult {
   const pending = confirmation!;
   return html`<div
@@ -552,23 +688,11 @@ function drawConnectors(loading = false): void {
           <div class="kc-section-head">
             <div class="kc-section-title">
               <h2 id="kc-accounts-title">Linked accounts</h2>
-              <span>${entries.length}</span>
+              <span>${entries.length + 1}</span>
             </div>
             <p>Provider APIs the agent can use as you.</p>
           </div>
-          <div class="kc-resource-list">
-            ${
-              connectorCards.length
-                ? connectorCards
-                : html`<div class="kc-empty">
-                    ${icon(Link, 20)}
-                    <div>
-                      <strong>No accounts available</strong
-                      ><span>Your workspace has not configured any account providers yet.</span>
-                    </div>
-                  </div>`
-            }
-          </div>
+          <div class="kc-resource-list">${browserCard()}${connectorCards}</div>
         </section>
         <section class="kc-section" aria-labelledby="kc-credentials-title">
           <div class="kc-section-head">
@@ -625,6 +749,8 @@ export async function renderConnectors(): Promise<void> {
       asks?: KeychainAsk[];
       usage?: KeychainUsage[];
       scopeNames?: Record<string, string>;
+      browserProviders?: BrowserProvider[];
+      activeBrowser?: string;
     }>("/api/keychain/overview"),
   ]);
   if (seq !== appState.viewRenderSeq || !keychainOperations.isCurrentLoad(load) || appState.currentView !== "keychain")
@@ -645,6 +771,9 @@ export async function renderConnectors(): Promise<void> {
     keychainAsks = keys.value.asks ?? [];
     keychainUsage = keys.value.usage ?? [];
     keychainScopeNames = keys.value.scopeNames ?? {};
+    browserProviders = keys.value.browserProviders ?? [];
+    activeBrowser = keys.value.activeBrowser ?? BUILT_IN_BROWSER_ID;
+    if (browserTab === null) browserTab = initialBrowserTab(browserProviders, activeBrowser);
   } else {
     keychainCredentials = [];
     keychainConnectorCredentials = [];
