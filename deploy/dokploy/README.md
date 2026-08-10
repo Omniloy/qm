@@ -133,6 +133,8 @@ docker exec qm-omniloy-core printenv | grep YOUR_KEY
 | `PUBLIC_URL`               | portal origin, e.g. `https://qm.example.com` — no trailing slash               |
 | `PUBLIC_HOST`              | the same host without the scheme; Traefik's router rule                        |
 | `HARNESS`                  | `pi`, `claude`, `codex`, or `opencode`                                         |
+| `RELAY_HOST`               | optional; host for the browser-extension relay, e.g. `relay.qm.example.com`    |
+| `RELAY_PUBLIC_URL`         | optional; the same host as a URL, e.g. `https://relay.qm.example.com`          |
 | `HARNESS_SECURITY_POSTURE` | `strict`, `auto`, or `dangerous`                                               |
 | `LOCAL_SANDBOX_IMAGE`      | `qm-sandbox-local:latest`                                                      |
 | `DATA_HOST_DIR`            | host path for core's data, e.g. `/opt/qm/data`; it _is_ `DATA_DIR` — see above |
@@ -214,6 +216,24 @@ is the invoice.
 
 The token expires quietly a year after it was minted and takes Claude-harness
 turns with it. The admin card counts that year down; the env var cannot.
+
+## The browser-extension relay (optional)
+
+Lets a person's own Chrome drive a browse session, via the QM Browser Bridge extension, so
+the agent works with their real sign-ins on sites that refuse a sandbox browser. It needs a
+WebSocket the extension can reach, and core is otherwise private, so the relay gets its own
+host straight to core — scoped by Traefik to that host **and** the `/v1/browser-relay` path,
+with every endpoint refusing a request that carries no valid token.
+
+To enable it:
+
+1. Add a DNS **A record** for the relay host (e.g. `relay.qm.omniloy.com`) pointing at this
+   box, so Let's Encrypt can issue its certificate.
+2. Set `RELAY_HOST` and `RELAY_PUBLIC_URL` in the app env to that host.
+3. Redeploy. Traefik picks up the `qm-relay` router on the core service.
+
+Leave both unset and the relay simply is not exposed; the built-in and hosted browsers are
+unaffected.
 
 ## Deploying
 

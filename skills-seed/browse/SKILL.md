@@ -47,6 +47,9 @@ python3 skills/browse/scripts/browser.py screenshot [--path P]
 python3 skills/browse/scripts/browser.py status        # is anything open, and where
 python3 skills/browse/scripts/browser.py close         # graceful; saves sign-ins
 python3 skills/browse/scripts/browser.py pane --provider P --session S --url VIEWER_URL
+python3 skills/browse/scripts/browser.py cookies [--url U | --domain D]   # site cookies as JSON
+python3 skills/browse/scripts/browser.py storage [--session] [--key K]    # localStorage as JSON
+python3 skills/browse/scripts/browser.py net SUBSTR [--for N] [--bodies]  # capture matching traffic
 ```
 
 `open` is idempotent — if a browser is already open it reattaches rather than starting a
@@ -78,6 +81,42 @@ site's homepage to find one price wastes the turn.
 
 `screenshot` is for when the text is not enough: a layout question, a chart, a captcha you
 need to describe, or a page whose content is drawn rather than written.
+
+## Handing a credential to a curl-based skill
+
+Some skills do not drive the browser at all — they read the session out of one and then call
+an API directly with `curl`. The browser is how they get in; the request is plain HTTP after
+that. Three verbs pull the credential out:
+
+- `cookies` returns the site's cookies as JSON, **HttpOnly included**. That last part is why
+  this exists and page script cannot do it: the cookie that actually authenticates is usually
+  HttpOnly, invisible to `document.cookie` but not to the browser itself. Narrow with `--url`
+  (only cookies a request there would send) or `--domain`.
+- `storage` returns `localStorage` as JSON, or `sessionStorage` with `--session`, or one
+  value with `--key`. Some sites keep a bearer token here instead of in a cookie.
+- `net SUBSTR` watches traffic whose URL contains `SUBSTR` and returns what matched — request
+  headers, response status and headers, and with `--bodies` the response body too. This is for
+  the credential that never rests anywhere: it arrives once, in a login response, held only in
+  memory. Start `net` first, have the person sign in, and catch it as it lands. The request
+  headers come too, because the same login often carries device or location ids the API then
+  demands back.
+
+**What these return are secrets.** Put them into the request you are making and nowhere else —
+never into the conversation, a file the person can see, or a memory. If a skill needs the value
+saved, that is what the keychain is for.
+
+## Your own Chrome, for sites that refuse everything else
+
+A hosted browser gets past many blocks; some sites fingerprint harder and refuse it too, and
+none of them hold the person's real sign-ins. The one browser that has both is the person's
+own — so QM can drive a single tab in it through a small extension the person installs. It
+holds their cookies because it _is_ their browser, and it looks like them because it is them.
+
+When `$BROWSE_PROVIDER` is `extension` (or the person asks to use their own browser), do not run
+plain `open`. The person shares a tab from the extension; you attach with
+`open --cdp "$QM_RELAY_URL"` and every verb — including the three above — works against that
+tab. There is no pane to fill: it is on their own screen, in front of them. Tell them plainly
+that while a tab is shared you can read and act on it as them, and only that one tab.
 
 ## When a site refuses automation
 

@@ -193,6 +193,76 @@ class CDP:
             raise RuntimeError(f"page script failed{timeout_note}: {str(msg)[:200]}")
         return r.get("result", {}).get("value")
 
+    def cookies(self, urls=None):
+        """Every cookie the site holds, HttpOnly included.
+
+        This is the point of driving a real browser rather than fetching: a
+        curl-based skill needs the session the person is signed in with, and an
+        HttpOnly cookie — the kind that actually authenticates — is invisible to
+        `document.cookie`. CDP hands it over; page script cannot.
+        """
+        params = {"urls": urls} if urls else {}
+        return self.call("Network.getCookies", **params).get("cookies", [])
+
+    def storage(self, which):
+        """A snapshot of localStorage or sessionStorage as a plain object.
+
+        Some sites keep their bearer token here instead of in a cookie, so a
+        skill that calls their API needs to read it out.
+        """
+        store = "sessionStorage" if which == "session" else "localStorage"
+        return self.eval(
+            "JSON.stringify(Object.fromEntries(Object.entries(%s)))" % store) or "{}"
+
+    def watch(self, match, seconds, want_bodies):
+        """Collect requests and responses whose URL contains `match`.
+
+        The credential some sites hand out never sits in a cookie or in storage
+        at all: it arrives once, in the body of a login response, and is only
+        ever held in memory. The single way to capture it is to be listening
+        when it lands — so enable the network domain, watch traffic go by, and
+        return what matched. Request headers come too, because the same login
+        often carries device or location identifiers the API then demands back.
+        """
+        self.call("Network.enable")
+        by_req = {}
+        deadline = time.time() + seconds
+        old = self.ws.sock.gettimeout()
+        try:
+            while time.time() < deadline:
+                self.ws.sock.settimeout(max(0.1, deadline - time.time()))
+                try:
+                    msg = json.loads(self.ws.recv())
+                except socket.timeout:
+                    continue
+                method, pr = msg.get("method"), msg.get("params", {})
+                if method == "Network.requestWillBeSent":
+                    url = pr.get("request", {}).get("url", "")
+                    if match in url:
+                        e = by_req.setdefault(pr.get("requestId"), {})
+                        e["url"] = url
+                        e["requestHeaders"] = pr.get("request", {}).get("headers", {})
+                elif method == "Network.responseReceived":
+                    url = pr.get("response", {}).get("url", "")
+                    if match in url:
+                        e = by_req.setdefault(pr.get("requestId"), {})
+                        e["url"] = url
+                        e["status"] = pr.get("response", {}).get("status")
+                        e["responseHeaders"] = pr.get("response", {}).get("headers", {})
+                elif method == "Network.loadingFinished" and want_bodies:
+                    rid = pr.get("requestId")
+                    if rid in by_req and "body" not in by_req[rid]:
+                        try:
+                            self.ws.sock.settimeout(old)
+                            b = self.call("Network.getResponseBody", requestId=rid)
+                            by_req[rid]["body"] = b.get("body", "")
+                            by_req[rid]["bodyBase64"] = b.get("base64Encoded", False)
+                        except Exception:
+                            pass  # body already evicted; the meta is still useful
+        finally:
+            self.ws.sock.settimeout(old)
+        return [v for v in by_req.values() if v.get("url")]
+
     def close(self):
         self.ws.close()
 
@@ -854,6 +924,16 @@ def main():
     pf.add_argument("--quality", type=int, default=55)
     pf.add_argument("--width", type=int, default=800)
     sub.add_parser("status")
+    pc = sub.add_parser("cookies", help="the site's cookies, HttpOnly included, as JSON")
+    pc.add_argument("--url", default="", help="only cookies a request to this URL would send")
+    pc.add_argument("--domain", default="", help="keep only cookies whose domain contains this")
+    ps = sub.add_parser("storage", help="localStorage (or --session) as JSON")
+    ps.add_argument("--session", action="store_true", help="read sessionStorage instead")
+    ps.add_argument("--key", default="", help="one key's value rather than the whole store")
+    pn = sub.add_parser("net", help="capture requests/responses whose URL contains a string")
+    pn.add_argument("match", help="capture traffic whose URL contains this substring")
+    pn.add_argument("--for", dest="seconds", type=float, default=60.0, help="how many seconds to watch")
+    pn.add_argument("--bodies", action="store_true", help="also capture response bodies (e.g. a login token)")
     sub.add_parser("close")
     pw = sub.add_parser("watch", help=argparse.SUPPRESS)
     pw.add_argument("--headful", action="store_true")
@@ -1122,6 +1202,29 @@ def main():
                 "w": size["w"], "h": size["h"], "url": size["url"],
                 "title": size["title"], "jpeg": r["data"],
             }))
+        elif a.cmd == "cookies":
+            urls = [a.url] if a.url else None
+            cookies = c.cookies(urls)
+            if a.domain:
+                cookies = [ck for ck in cookies if a.domain in (ck.get("domain") or "")]
+            # JSON to stdout so a skill can pipe it straight into a curl call.
+            # The values ARE secrets — the skill must not echo them into the
+            # conversation, only into the request it is about to make.
+            sys.stdout.write(json.dumps(cookies))
+
+        elif a.cmd == "storage":
+            which = "session" if a.session else "local"
+            if a.key:
+                store = "sessionStorage" if which == "session" else "localStorage"
+                val = c.eval("%s.getItem(%s)" % (store, json.dumps(a.key)))
+                sys.stdout.write(json.dumps(val))
+            else:
+                sys.stdout.write(c.storage(which))
+
+        elif a.cmd == "net":
+            hits = c.watch(a.match, a.seconds, a.bodies)
+            sys.stdout.write(json.dumps(hits))
+
     finally:
         c.close()
 

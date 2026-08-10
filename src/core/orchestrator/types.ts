@@ -119,6 +119,8 @@ export interface OrchestratorDeps {
   signingSecret?: string;
   capabilitySecret?: string;
   apiBaseUrl?: string;
+  /** Public wss origin the browser extension dials, when the relay is exposed. */
+  relayPublicUrl?: string;
   publicWebUrl?: string;
   deploy: DeployService;
   acl: AclStore;

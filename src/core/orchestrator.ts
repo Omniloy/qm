@@ -1094,6 +1094,17 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           controlClaims,
           deps.capabilitySecret ?? deps.signingSecret,
         );
+        // If this person drives their own Chrome through the extension, hand
+        // the turn a ready relay URL. The agent's own turn token is the CDP
+        // credential — it carries the person's id, which is what the relay
+        // pairs the extension on — so `open --cdp "$QM_RELAY_URL"` just works.
+        if (deps.relayPublicUrl && !("QM_RELAY_URL" in connectorEnv)) {
+          const chosen = await deps.config?.getBrowserProviderDurable(memoryScopeId);
+          if (chosen === "extension") {
+            const wss = deps.relayPublicUrl.replace(/^http/, "ws").replace(/\/$/, "");
+            connectorEnv.QM_RELAY_URL = `${wss}/v1/browser-relay/cdp?t=${connectorEnv.AGENT_API_TOKEN}`;
+          }
+        }
         connectorEnv.AGENT_OAUTH_CONSENT_TOKEN = await mintCapabilityToken(
           {
             actorId: actor.id,

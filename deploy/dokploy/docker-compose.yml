@@ -81,6 +81,10 @@ services:
       # per-token API billing. The harness drops ANTHROPIC_API_KEY from the
       # child when this is set, since Claude Code would otherwise prefer it.
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      # The public origin the browser extension dials. Only RELAY_PUBLIC_URL
+      # reaches core (it goes into the pairing response); RELAY_HOST is used by
+      # the Traefik label above at compose-render time and needs no runtime env.
+      RELAY_PUBLIC_URL: ${RELAY_PUBLIC_URL:-}
       CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET}
       CAPABILITY_SECRET: ${CAPABILITY_SECRET}
       PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET}
@@ -95,7 +99,23 @@ services:
       # exactly that bug, so both sides read from one variable.
       - ${DATA_HOST_DIR}:${DATA_HOST_DIR}
       - /var/run/docker.sock:/var/run/docker.sock
-    networks: [qm]
+    # dokploy-network only so Traefik can reach core for the relay route below.
+    # Nothing else about core is published: the router is scoped to one host
+    # AND one path prefix, and every endpoint under it refuses a request with
+    # no valid token. The rest of core stays reachable only inside `qm`.
+    networks: [qm, dokploy-network]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      # The browser-extension relay, on its own host. WebSocket upgrades are
+      # native to Traefik, so the CDP stream needs nothing special. Both the
+      # host and the path must match, so a stray request to the relay host on
+      # any other path never reaches core.
+      - traefik.http.routers.qm-relay.rule=Host(`${RELAY_HOST}`) && PathPrefix(`/v1/browser-relay`)
+      - traefik.http.routers.qm-relay.entrypoints=websecure
+      - traefik.http.routers.qm-relay.tls.certresolver=letsencrypt
+      - traefik.http.routers.qm-relay.priority=100
+      - traefik.http.services.qm-relay.loadbalancer.server.port=8080
 
   # Holds a container open on the agent sandbox image so `docker system prune
   # --all` cannot reclaim it. Dokploy's nightly cleanup deleted it once, and

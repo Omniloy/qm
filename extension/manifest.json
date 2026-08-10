@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "QM Browser Bridge",
+  "version": "0.1.0",
+  "description": "Lets your QM agent drive one tab in this browser, so it works with your own sign-ins.",
+  "permissions": ["debugger", "storage", "tabs", "alarms"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_popup": "popup.html", "default_title": "QM Browser Bridge" }
+}

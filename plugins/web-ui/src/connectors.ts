@@ -14,6 +14,8 @@ import {
   connectDraft,
   initialBrowserTab,
   BUILT_IN_BROWSER_ID,
+  EXTENSION_BROWSER_ID,
+  isExtensionTab,
   type BrowserProvider,
 } from "./browser-picker-state";
 
@@ -154,6 +156,7 @@ let browserTab: string | null = null;
 // straight to the one-time drop endpoint over TLS and never enters
 // conversation state — the tab switch bought nothing and lost people.
 let browserConnect: { provider: BrowserProvider; path: string; value: string; error: string } | null = null;
+let extensionPairing: { token: string; relayUrl?: string } | null = null;
 let confirmation: { title: string; body: string; action: string; run: () => Promise<void> } | null = null;
 let confirmationOpener: HTMLElement | null = null;
 const keychainOperations = new KeychainOperations();
@@ -171,6 +174,7 @@ export function resetKeychainState(): void {
   activeBrowser = BUILT_IN_BROWSER_ID;
   browserTab = null;
   browserConnect = null;
+  extensionPairing = null;
   connectorNotice = "";
   addingCredential = null;
   secureDropUrl = null;
@@ -398,6 +402,53 @@ function addCredentialCard(): TemplateResult {
   </section>`;
 }
 
+function extensionPanel(connected: boolean): TemplateResult {
+  return html`
+    <div class="kc-browser-connect">
+      <p class="kc-browser-note">
+        ${
+          connected
+            ? html`<span class="kc-state ok">Extension connected</span> Your Chrome is paired and ready.`
+            : html`<span class="kc-state neutral">Not connected</span> Install the QM Browser Bridge extension, then
+                paste the token below into it.`
+        }
+      </p>
+      ${
+        extensionPairing
+          ? html`<label class="skill-field"
+                ><span
+                  >Pairing
+                  token${extensionPairing.relayUrl ? html` · QM address <code>${extensionPairing.relayUrl}</code>` : ""}</span
+                ><input
+                  class="skill-desc-input"
+                  readonly
+                  .value=${extensionPairing.token}
+                  @focus=${(e: Event) => (e.target as HTMLInputElement).select()}
+              /></label>
+              <p class="kc-browser-note">
+                Paste this into the extension. Treat it like a password — anyone with it can pair their agent to a tab
+                you share. It expires on its own; generate a new one anytime.
+              </p>`
+          : html`<div class="kc-form-actions">
+              <button class="btn" type="button" @click=${() => void getPairing()}>Get pairing token</button>
+            </div>`
+      }
+    </div>
+  `;
+}
+
+async function getPairing(): Promise<void> {
+  connectorNotice = "";
+  try {
+    const data = await api<{ token?: string; relayUrl?: string }>("/api/browser-relay/pairing", { method: "POST" });
+    if (!data?.token) throw new Error("no token returned");
+    extensionPairing = { token: data.token, ...(data.relayUrl ? { relayUrl: data.relayUrl } : {}) };
+  } catch (e) {
+    connectorNotice = errMessage(e, "Could not create a pairing token.");
+  }
+  drawConnectors();
+}
+
 function browserCard(): TemplateResult {
   const tabs = browserTabs(browserProviders, activeBrowser);
   const shownId = browserTab ?? initialBrowserTab(browserProviders, activeBrowser);
@@ -479,6 +530,7 @@ function browserCard(): TemplateResult {
             </form>`
           : ""
       }
+      ${isExtensionTab(shown.id) ? extensionPanel(shown.connected) : ""}
       <div class="kc-resource-actions">
         ${
           action.kind === "in-use"

@@ -46,6 +46,7 @@ export interface Config {
   claudeModel?: string;
   claudeBinPath?: string;
   claudeProcessEnv: NodeJS.ProcessEnv;
+  relayPublicUrl?: string;
   detectModelId?: string;
   titleModelId?: string;
   judgeModelId?: string;
@@ -724,6 +725,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(env.CODEX_MODEL ? { codexModel: env.CODEX_MODEL } : {}),
     ...(env.CODEX_BIN ? { codexBinPath: env.CODEX_BIN } : {}),
     codexProcessEnv,
+    ...(env.RELAY_PUBLIC_URL ? { relayPublicUrl: env.RELAY_PUBLIC_URL } : {}),
     ...(env.CLAUDE_MODEL ? { claudeModel: env.CLAUDE_MODEL } : {}),
     ...(env.CLAUDE_BIN ? { claudeBinPath: env.CLAUDE_BIN } : {}),
     claudeProcessEnv,

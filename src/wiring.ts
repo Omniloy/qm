@@ -616,6 +616,8 @@ export function buildApp(
       ...(config.signingSecret ? { signingSecret: config.signingSecret } : {}),
       ...(config.capabilitySecret ? { capabilitySecret: config.capabilitySecret } : {}),
       ...(config.apiBaseUrl ? { apiBaseUrl: config.apiBaseUrl } : {}),
+      ...(config.relayPublicUrl ? { relayPublicUrl: config.relayPublicUrl } : {}),
+      ...(config.relayPublicUrl ? { relayPublicUrl: config.relayPublicUrl } : {}),
       onError: sandboxOnError,
     });
   const buildAws = (): Sandbox => {

@@ -94,3 +94,23 @@ test("a provider without a profile also asks only for its key", () => {
 test("the built-in browser has nothing to connect", () => {
   assert.equal(connectDraft(browserById([ANCHOR], BUILT_IN_BROWSER_ID)), null);
 });
+
+const EXTENSION: BrowserProvider = {
+  id: "extension",
+  name: "Your Chrome",
+  summary: "Drive one tab in your own browser.",
+  keyEnv: "",
+  keyService: "",
+  connected: false,
+};
+
+test("the extension is chosen, not key-dropped, even when not attached", async () => {
+  const { browserAction, browserTabs, connectDraft, isExtensionTab } = await import("../src/browser-picker-state.ts");
+  const [, extTab] = browserTabs([EXTENSION], BUILT_IN_BROWSER_ID);
+  // A detached extension still offers "use": the person selects it, then pairs.
+  assert.deepEqual(browserAction(extTab!), { kind: "use", label: "Use my Chrome" });
+  // Nothing to paste — pairing is a token, not a stored secret.
+  assert.equal(connectDraft(EXTENSION), null);
+  assert.equal(isExtensionTab("extension"), true);
+  assert.equal(isExtensionTab("anchor"), false);
+});

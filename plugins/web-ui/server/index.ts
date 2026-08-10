@@ -1331,6 +1331,16 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
       return relay(res, r);
     }
 
+    if (method === "GET" && path === "/api/browser-relay/status") {
+      const r = await coreFetchCap("GET", "/v1/browser-relay/status");
+      return relay(res, r);
+    }
+
+    if (method === "POST" && path === "/api/browser-relay/pairing") {
+      const r = await coreFetchCap("POST", "/v1/browser-relay/pairing", "{}");
+      return relay(res, r);
+    }
+
     if (method === "POST" && path === "/api/keychain/browser") {
       let choice: { provider?: string };
       try {
