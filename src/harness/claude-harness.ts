@@ -118,10 +118,25 @@ const CLAUDE_ENV_PASSTHROUGH = [
   "CLAUDE_CODE_OAUTH_TOKEN",
 ] as const;
 
+/**
+ * Credentials that outrank a subscription token inside Claude Code.
+ *
+ * Claude Code picks one credential by a fixed precedence, and both of these sit
+ * above CLAUDE_CODE_OAUTH_TOKEN. Passing a subscription token alongside either
+ * one does not fail — it quietly bills the key instead, which is the kind of
+ * bug you find on an invoice rather than in a log.
+ */
+const CLAUDE_CREDENTIALS_OUTRANKING_SUBSCRIPTION = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] as const;
+
 export function claudeChildEnv(source: NodeJS.ProcessEnv, jail: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { HOME: jail, CLAUDE_CONFIG_DIR: join(jail, ".claude") };
   for (const name of CLAUDE_ENV_PASSTHROUGH) {
     if (source[name] !== undefined) env[name] = source[name];
+  }
+  // The core keeps its API key for the harnesses that call the API directly;
+  // only the subscription-backed child gives it up.
+  if (env.CLAUDE_CODE_OAUTH_TOKEN) {
+    for (const name of CLAUDE_CREDENTIALS_OUTRANKING_SUBSCRIPTION) delete env[name];
   }
   return env;
 }
