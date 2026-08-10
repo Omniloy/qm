@@ -16,6 +16,21 @@ It is still slower than fetching. To _retrieve_ something — read a page, check
 an API — reach for `curl` or `wget` first. Browse when you must _interact_: sign in, fill and
 submit a form, click through a flow, or when a plain fetch is genuinely blocked.
 
+## Which browser — check this before you open one
+
+`$BROWSE_PROVIDER` holds the browser this person chose in Keychain → Linked accounts. Read it
+first, because opening the wrong one wastes a minute and, on a paid provider, ignores a choice
+they made deliberately.
+
+- **Unset, or `built-in`** — use the built-in browser below. This is the common case.
+- **Anything else** — that names a hosted provider. Do NOT run plain `open`. Read
+  `skills/browse/providers/$BROWSE_PROVIDER.md`, create the browser it describes, then
+  `open --cdp "$CDP_URL"`. Every verb behaves the same afterwards.
+
+`open` refuses and reminds you if you forget, so a plain `open` failing this way is not a
+fault — it is the reminder. Override with `open --force-built-in` only when the hosted one is
+broken or the person asks, and say which you used and why.
+
 ## The verbs
 
 ```bash
@@ -79,15 +94,11 @@ one site on a hosted browser — the next section is how, and the verbs do not c
 Hosted providers maintain the evasion that gets through those sites. They are the fallback,
 not the default: they cost money per hour and need a key.
 
-**`BROWSE_PROVIDER` decides, when it is set.** It carries the browser this person picked in
-Keychain → Linked accounts. If it names a provider, start there rather than with the built-in
-one — they chose it, and on a paid plan they chose it for a reason. If it is unset or says
-`built-in`, the built-in browser leads and a hosted one is the fallback.
-
-Otherwise use a hosted browser when the built-in one was blocked, or when the person asks.
-Which one is then decided by whichever key is present — read the provider doc BEFORE creating
-anything, because it owns every provider-shaped step (creating and deleting the browser,
-profiles, routing a sign-in wall, giving the browser a file).
+If `$BROWSE_PROVIDER` already named one, you should be here from the start — see **Which
+browser** above. Otherwise come here when the built-in browser was blocked, or when the person
+asks. Which provider is then decided by whichever key is present. Read the provider doc BEFORE
+creating anything, because it owns every provider-shaped step (creating and deleting the
+browser, profiles, routing a sign-in wall, giving the browser a file).
 
 If a provider answers 402 or 429, say it plainly — "Anchor is out of credit" — and name the
 other providers that have a key. That is the moment someone wants to switch, and a generic

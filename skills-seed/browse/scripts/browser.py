@@ -812,6 +812,8 @@ def main():
     sub = p.add_subparsers(dest="cmd", required=True)
 
     po = sub.add_parser("open", help="start or reattach to a browser")
+    po.add_argument("--force-built-in", action="store_true",
+                    help="use the built-in browser even when another was chosen")
     po.add_argument("--headful", action="store_true")
     # Drive a browser that is already running somewhere else, given its CDP
     # endpoint. Every verb behaves identically against it — a CDP URL is plain
@@ -863,6 +865,16 @@ def main():
                          "startedAt": int(time.time()), "lastUsedAt": int(time.time())})
             print("Attached to the browser you pointed at. Every verb works the same.")
             return
+
+        # The person may have chosen a hosted browser. Saying so here is the
+        # only reliable place: a doc read top-down gets acted on before its
+        # later sections, and by then the built-in browser is already running.
+        chosen = "" if a.force_built_in else os.environ.get("BROWSE_PROVIDER", "").strip()
+        if chosen and chosen != "built-in" and re.fullmatch(r"[a-z][a-z0-9-]*", chosen):
+            die(f"This person chose the {chosen} browser, not the built-in one.\n"
+                f"Read skills/browse/providers/{chosen}.md, create the browser it describes,\n"
+                f"then come back and run: open --cdp \"$CDP_URL\".\n"
+                "To use the built-in browser anyway (say why), run: open --force-built-in")
 
         # Under the lock, because two turns opening at once each used to start
         # their own browser and then reap each other's.
