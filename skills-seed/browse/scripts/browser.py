@@ -991,7 +991,9 @@ def main():
             # pane (if it has one) is registered by whoever created it.
             try:
                 c = attach_remote(a.cdp)
-            except Exception as e:
+            except (Exception, SystemExit) as e:
+                # die() raises SystemExit, and a refused websocket upgrade or a
+                # closed connection both take that path.
                 if not via_extension:
                     raise
                 clear_state()
@@ -1025,9 +1027,14 @@ def main():
         with OpenLock():
             state = read_state()
             if state and state.get("cdpUrl") and a.force_built_in:
-                unregister(state)
+                stale = state.get("cdpUrl", "")
                 clear_state()
                 state = None
+                # Only a hosted provider bills for a browser we are letting go
+                # of. The relay is the person's own Chrome and costs nothing.
+                if stale and stale != os.environ.get("QM_RELAY_URL", "").strip():
+                    print("Let go of the browser that was open elsewhere. It is still running and "
+                          "billing until its own timeout — follow your provider doc's Clean up step.")
             if state and (state.get("cdpUrl") or alive(state.get("port", DEBUG_PORT))):
                 touch(state)
                 print(f"A browser is already open (provider={state.get('provider')}). Reusing it.")

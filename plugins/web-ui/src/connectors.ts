@@ -12,6 +12,7 @@ import {
   browserSummary,
   browserTabs,
   connectDraft,
+  extensionLabel,
   extensionNote,
   extensionState,
   initialBrowserTab,
@@ -407,7 +408,7 @@ function addCredentialCard(): TemplateResult {
 function extensionPanel(provider: BrowserProvider): TemplateResult {
   const state = extensionState(provider);
   const note = extensionNote(state);
-  const label = state.kind === "sharing" ? "Sharing" : state.kind === "idle" ? "No tab shared" : "Not connected";
+  const label = extensionLabel(state);
   return html`
     <div class="kc-browser-connect">
       <p class="kc-browser-note">
@@ -616,7 +617,11 @@ async function recheckExtension(): Promise<void> {
   connectorNotice = "";
   drawConnectors();
   try {
-    const status = await api<{ connected?: boolean; sharing?: boolean; title?: string }>("/api/browser-relay/status");
+    const [status, overview] = await Promise.all([
+      api<{ connected?: boolean; sharing?: boolean; title?: string }>("/api/browser-relay/status"),
+      api<{ activeBrowser?: string }>("/api/keychain/overview"),
+    ]);
+    activeBrowser = overview.activeBrowser ?? activeBrowser;
     browserProviders = browserProviders.map((provider) =>
       provider.id === EXTENSION_BROWSER_ID
         ? {

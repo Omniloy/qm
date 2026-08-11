@@ -162,14 +162,31 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
           }
           return;
         }
+        // Target is browser-level and the extension holds a tab-scoped
+        // debugger, so forwarding it would come back as a confusing protocol
+        // error rather than the reason it actually failed.
+        if (!pair.sharing && typeof frame.method === "string" && frame.method.startsWith("Target.")) {
+          if (typeof frame.id === "number") {
+            pair.cdp.send(
+              JSON.stringify({
+                id: frame.id,
+                error: {
+                  code: -32000,
+                  message: `no tab is shared — open the ${BRAND.productName} extension and press Share this tab`,
+                },
+              }),
+            );
+          }
+          return;
+        }
         pair.extension.send(raw);
         return;
       }
       // From the extension: command results and page events, plus the one
       // message that is ours — what tab it attached to.
-      let frame: { qm?: string; title?: string; url?: string };
+      let frame: { qm?: string; title?: string; url?: string; restored?: boolean };
       try {
-        frame = JSON.parse(raw) as { qm?: string; title?: string; url?: string };
+        frame = JSON.parse(raw) as { qm?: string; title?: string; url?: string; restored?: boolean };
       } catch {
         return;
       }
@@ -177,7 +194,10 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
         pair.title = frame.title ?? pair.title;
         pair.url = frame.url ?? pair.url;
         pair.sharing = true;
-        opts.onShareChanged?.(principalId, true);
+        // A restored share is the same tab the person already chose, re-asserted
+        // after Chrome idled the extension. Treating it as a fresh choice would
+        // overwrite a browser they picked in the app since.
+        if (!frame.restored) opts.onShareChanged?.(principalId, true);
         return;
       }
       if (frame.qm === "detached") {

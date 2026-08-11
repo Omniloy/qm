@@ -1,18 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-interface Target {
-  tabId: number;
-  attached: boolean;
-}
-
 interface Harness {
   sockets: FakeSocket[];
   attached: Array<{ tabId: number }>;
   detached: Array<{ tabId: number }>;
   store: Record<string, unknown>;
-  badges: Array<{ tabId: number; text: string }>;
-  fire(event: "detach", source: { tabId: number }, reason: string): void;
+  banners: Array<{ tabId: number; on: boolean }>;
+  sent(): Array<Record<string, unknown>>;
+  fire(event: string, ...args: unknown[]): void;
+  message(msg: Record<string, unknown>): Promise<Record<string, unknown>>;
+  openGate(): void;
 }
 
 class FakeSocket {
@@ -42,24 +40,33 @@ class FakeSocket {
 function install(opts: {
   store?: Record<string, unknown>;
   tabs?: Record<number, { title: string; url: string }>;
-  targets?: Target[];
   attachFails?: boolean;
+  canDrive?: boolean;
+  /** Number of leading chrome.storage.local.get calls that reject. */
+  storageFailures?: number;
+  activeTab?: number;
+  gated?: boolean;
 }): Harness {
   const store: Record<string, unknown> = { ...(opts.store ?? {}) };
   const tabs = opts.tabs ?? {};
   const attached: Array<{ tabId: number }> = [];
   const detached: Array<{ tabId: number }> = [];
-  const badges: Array<{ tabId: number; text: string }> = [];
-  const listeners: Record<string, Array<(...a: unknown[]) => void>> = {};
+  const banners: Array<{ tabId: number; on: boolean }> = [];
+  const listeners: Record<string, Array<(...a: unknown[]) => unknown>> = {};
   const on = (name: string) => ({
-    addListener: (fn: (...a: unknown[]) => void) => void (listeners[name] ??= []).push(fn),
+    addListener: (fn: (...a: unknown[]) => unknown) => void (listeners[name] ??= []).push(fn),
   });
+  let release = (): void => {};
+  let storageCalls = 0;
+  const gate = opts.gated ? new Promise<void>((r) => (release = r)) : Promise.resolve();
   FakeSocket.all = [];
 
   const chrome = {
     storage: {
       local: {
         get: async (keys: string | string[]) => {
+          await gate;
+          if (storageCalls++ < (opts.storageFailures ?? 0)) throw new Error("storage is unavailable");
           const want = Array.isArray(keys) ? keys : [keys];
           const out: Record<string, unknown> = {};
           for (const k of want) if (k in store) out[k] = store[k];
@@ -75,8 +82,12 @@ function install(opts: {
         if (!tab) throw new Error("No tab with id");
         return { id, ...tab };
       },
-      query: async () => Object.entries(tabs).map(([id, t]) => ({ id: Number(id), ...t })),
+      query: async () => {
+        const id = opts.activeTab ?? Number(Object.keys(tabs)[0]);
+        return tabs[id] ? [{ id, ...tabs[id] }] : [];
+      },
       onRemoved: on("removed"),
+      onCreated: on("created"),
     },
     debugger: {
       attach: async ({ tabId }: { tabId: number }) => {
@@ -84,16 +95,20 @@ function install(opts: {
         attached.push({ tabId });
       },
       detach: async ({ tabId }: { tabId: number }) => void detached.push({ tabId }),
-      sendCommand: async () => ({}),
-      getTargets: async () => opts.targets ?? [],
+      sendCommand: async () => {
+        if (opts.canDrive === false) throw new Error("Debugger is not attached to the tab with id: 7");
+        return {};
+      },
       onEvent: on("event"),
       onDetach: on("detach"),
     },
-    action: {
-      setBadgeText: async ({ tabId, text }: { tabId: number; text: string }) => void badges.push({ tabId, text }),
-      setBadgeBackgroundColor: async () => {},
+    action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
+    scripting: {
+      executeScript: async ({ target, args }: { target: { tabId: number }; args: unknown[] }) => {
+        banners.push({ tabId: target.tabId, on: Boolean(args?.[0]) });
+        return [];
+      },
     },
-    scripting: { executeScript: async () => [] },
     alarms: { create: () => {}, onAlarm: on("alarm") },
     runtime: {
       getURL: (p: string) => `chrome-extension://test/${p}`,
@@ -114,10 +129,16 @@ function install(opts: {
     attached,
     detached,
     store,
-    badges,
-    fire: (event, source, reason) => {
-      for (const fn of listeners[event] ?? []) fn(source, reason);
+    banners,
+    sent: () => (FakeSocket.all[0]?.sent ?? []).map((s) => JSON.parse(s) as Record<string, unknown>),
+    fire: (event, ...args) => {
+      for (const fn of listeners[event] ?? []) fn(...args);
     },
+    message: (msg) =>
+      new Promise((resolve) => {
+        for (const fn of listeners.message ?? []) fn(msg, {}, resolve);
+      }),
+    openGate: () => release(),
   };
 }
 
@@ -136,98 +157,141 @@ async function until(cond: () => boolean, ms = 2000): Promise<boolean> {
 }
 
 const PAIRED = { origin: "https://qm.example.com", token: "tok" };
+const GMAIL = { 7: { title: "Gmail", url: "https://mail.google.com/" } };
+const shares = (h: Harness): Array<Record<string, unknown>> => h.sent().filter((m) => m.qm === "attached");
 
 test("a restarted worker picks the shared tab back up and re-announces it", async () => {
-  const h = install({
-    store: { ...PAIRED, attachedTabId: 7 },
-    tabs: { 7: { title: "Gmail", url: "https://mail.google.com/" } },
-    targets: [],
-  });
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: GMAIL });
   await bootWorker();
 
   assert.ok(await until(() => h.attached.length > 0), "re-attached the debugger to the saved tab");
   assert.deepEqual(h.attached, [{ tabId: 7 }]);
+  assert.ok(await until(() => shares(h).length > 0), "announced on the new socket");
+  assert.equal(shares(h)[0]!.title, "Gmail");
+});
 
-  assert.ok(await until(() => (h.sockets[0]?.sent.length ?? 0) > 0), "announced on the new socket");
-  assert.deepEqual(JSON.parse(h.sockets[0]!.sent[0]!), {
-    qm: "attached",
-    title: "Gmail",
-    url: "https://mail.google.com/",
-  });
+test("a restored share is marked restored, so it cannot re-pick the browser", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: GMAIL });
+  await bootWorker();
+
+  assert.ok(await until(() => shares(h).length > 0));
+  assert.equal(
+    shares(h)[0]!.restored,
+    true,
+    "a keepalive reconnect would otherwise overwrite a browser chosen in the app",
+  );
+});
+
+test("a tab this extension cannot actually drive is forgotten, not announced", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: GMAIL, canDrive: false });
+  await bootWorker();
+
+  assert.ok(await until(() => !("attachedTabId" in h.store)), "dropped the tab it cannot drive");
+  assert.equal(shares(h).length, 0, "and claimed no share, so open still fails honestly");
 });
 
 test("a saved tab that has since closed is forgotten rather than re-attached", async () => {
-  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: {}, targets: [] });
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: {} });
   await bootWorker();
 
   assert.ok(await until(() => !("attachedTabId" in h.store)), "dropped the stale tab id");
   assert.deepEqual(h.attached, [], "never attached to a tab that is gone");
-  const sent = h.sockets[0]?.sent ?? [];
-  assert.equal(sent.length, 0, "and claimed no share it cannot honour");
-});
-
-test("a debugger that outlived the worker is reused, not attached twice", async () => {
-  const h = install({
-    store: { ...PAIRED, attachedTabId: 7 },
-    tabs: { 7: { title: "Gmail", url: "https://mail.google.com/" } },
-    targets: [{ tabId: 7, attached: true }],
-  });
-  await bootWorker();
-
-  assert.ok(await until(() => (h.sockets[0]?.sent.length ?? 0) > 0), "still announced the share");
-  assert.deepEqual(h.attached, [], "no second attach");
+  assert.equal(shares(h).length, 0);
 });
 
 test("a tab the debugger refuses is forgotten instead of left half-shared", async () => {
   const h = install({
     store: { ...PAIRED, attachedTabId: 7 },
     tabs: { 7: { title: "Web Store", url: "https://chromewebstore.google.com/" } },
-    targets: [],
     attachFails: true,
+    canDrive: false,
   });
   await bootWorker();
 
   assert.ok(await until(() => !("attachedTabId" in h.store)), "dropped the tab it cannot drive");
-  assert.equal(h.sockets[0]?.sent.length ?? 0, 0);
+  assert.equal(shares(h).length, 0);
 });
 
 test("nothing is restored when no tab was ever shared", async () => {
-  const h = install({ store: { ...PAIRED }, tabs: { 7: { title: "Gmail", url: "https://x/" } } });
+  const h = install({ store: { ...PAIRED }, tabs: GMAIL });
   await bootWorker();
 
   assert.ok(await until(() => h.sockets.length > 0), "still connects");
   assert.deepEqual(h.attached, []);
-  assert.equal(h.sockets[0]?.sent.length ?? 0, 0);
+  assert.equal(shares(h).length, 0);
 });
 
-test("the person cancelling the debugger bar is a real stop, and says so", async () => {
+test("sharing a different tab mid-restore wins, and the restore backs off", async () => {
   const h = install({
     store: { ...PAIRED, attachedTabId: 7 },
-    tabs: { 7: { title: "Gmail", url: "https://mail.google.com/" } },
-    targets: [{ tabId: 7, attached: true }],
+    tabs: { ...GMAIL, 9: { title: "Bank", url: "https://bank.example/" } },
+    activeTab: 9,
+    gated: true,
   });
   await bootWorker();
-  assert.ok(await until(() => (h.sockets[0]?.sent.length ?? 0) > 0));
 
-  h.fire("detach", { tabId: 7 }, "canceled_by_user");
+  const answered = h.message({ type: "share-current-tab" });
+  h.openGate();
+  const reply = await answered;
 
-  assert.ok(
-    await until(() => h.sockets[0]!.sent.some((s) => JSON.parse(s).qm === "detached")),
-    "MiniOmni is told the share ended",
+  assert.equal(reply.ok, true);
+  assert.equal(h.store.attachedTabId, 9, "storage holds the tab the person picked");
+  const titles = shares(h).map((m) => m.title);
+  assert.ok(!titles.includes("Gmail"), `never announced the abandoned tab, got ${JSON.stringify(titles)}`);
+  assert.deepEqual(
+    h.banners.filter((b) => b.on).map((b) => b.tabId),
+    [9],
+    "and only the chosen tab is marked as shared",
   );
 });
 
-test("a tab closing detaches without claiming the person chose to stop", async () => {
-  const h = install({
-    store: { ...PAIRED, attachedTabId: 7 },
-    tabs: { 7: { title: "Gmail", url: "https://mail.google.com/" } },
-    targets: [{ tabId: 7, attached: true }],
-  });
+test("stopping mid-restore is not quietly undone", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: GMAIL, gated: true });
   await bootWorker();
-  assert.ok(await until(() => (h.sockets[0]?.sent.length ?? 0) > 0));
+
+  const answered = h.message({ type: "stop-sharing" });
+  h.openGate();
+  await answered;
+
+  assert.ok(await until(() => !("attachedTabId" in h.store)), "the share is really gone");
+  assert.ok(
+    h.sent().some((m) => m.qm === "detached"),
+    "and MiniOmni is told, so the browser choice is handed back",
+  );
+});
+
+test("a storage failure does not brick the keepalive reconnect", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: GMAIL, storageFailures: 3 });
+  await bootWorker();
+
+  assert.equal(h.sockets.length, 0, "boot could not read the token, so nothing connected");
+
+  assert.ok(
+    await until(() => {
+      h.fire("alarm");
+      return h.sockets.length > 0;
+    }),
+    "the alarm still recovers — a rejected promise must not poison the only retry path",
+  );
+});
+
+test("the person cancelling the debugger bar is a real stop, and says so", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: GMAIL });
+  await bootWorker();
+  assert.ok(await until(() => shares(h).length > 0));
+
+  h.fire("detach", { tabId: 7 }, "canceled_by_user");
+
+  assert.ok(await until(() => h.sent().some((m) => m.qm === "detached")), "MiniOmni is told the share ended");
+});
+
+test("a tab closing detaches without claiming the person chose to stop", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: GMAIL });
+  await bootWorker();
+  assert.ok(await until(() => shares(h).length > 0));
 
   h.fire("detach", { tabId: 7 }, "target_closed");
 
-  await new Promise((r) => setTimeout(r, 50));
-  assert.ok(!h.sockets[0]!.sent.some((s) => JSON.parse(s).qm === "detached"), "no explicit stop from a closing target");
+  await new Promise((r) => setTimeout(r, 60));
+  assert.ok(!h.sent().some((m) => m.qm === "detached"), "no explicit stop from a closing target");
 });

@@ -35,6 +35,11 @@ export function extensionState(provider: BrowserProvider): ExtensionState {
   return { kind: "sharing", tab: provider.sharedTabTitle ?? "a tab" };
 }
 
+export function extensionLabel(state: ExtensionState): string {
+  if (state.kind === "sharing") return "Sharing";
+  return state.kind === "idle" ? "No tab shared" : "Not connected";
+}
+
 export function extensionNote(state: ExtensionState): { tone: "ok" | "warning" | "neutral"; text: string } {
   if (state.kind === "sharing") return { tone: "ok", text: `${state.tab} — the agent can act on that tab as you.` };
   if (state.kind === "idle") {

@@ -101,8 +101,9 @@ test("the handshake is refused when no tab is shared, so open fails at open", ()
 
   hub.deliver(PERSON, "cdp", JSON.stringify({ id: 1, method: "Target.getTargets" }));
 
-  assert.equal(cdp.sent.length, 0, "no synthetic page is invented");
-  assert.deepEqual(parse(ext.sent[0]!), { id: 1, method: "Target.getTargets" });
+  assert.equal(ext.sent.length, 0, "a browser-level command is never sent to a tab-scoped debugger");
+  const reply = parse(cdp.sent[0]!) as { error: { message: string } };
+  assert.match(reply.error.message, /no tab is shared/, "and the reason names the real problem");
 });
 
 test("a shared tab still gets the synthetic handshake", () => {

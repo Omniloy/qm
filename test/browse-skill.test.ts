@@ -254,7 +254,7 @@ test("forcing the built-in browser lets go of a browser somewhere else", () => {
   const reuseAt = open.indexOf("Reusing it");
   assert.ok(forceAt > 0 && reuseAt > 0, "both branches are in open");
   assert.ok(forceAt < reuseAt, "the stale remote record is dropped before the reuse check");
-  assert.match(open, /unregister\(state\)/);
+  assert.match(open, /billing until its own timeout/, "and a hosted browser we let go of is not left silent");
 });
 
 test("a refusal to open is passed on as news, not as a failure", () => {
