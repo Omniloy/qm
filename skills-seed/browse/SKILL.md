@@ -234,10 +234,16 @@ python3 skills/browse/scripts/browser.py close
 ```
 
 Closing is graceful on purpose: the browser writes its cookies to disk on the way out, so a
-sign-in someone just completed is saved rather than lost. It is fine to leave a browser open
-between turns in the same conversation — it is reaped automatically once it has been idle a
-while — but close it when the task is finished, so the pane does not sit there implying work
-is still happening.
+sign-in someone just completed is saved rather than lost.
+
+**Do not close it just because your answer is ready.** The pane below the conversation is how
+the person sees what you actually did and takes the wheel if they want it, and a browser that
+disappears the moment you finish is one they never got to look at — a short task ends before
+anyone can glance at it. Leave it open: it is reaped automatically once it has been idle a
+while, and the pane shows the last thing it displayed even after it goes.
+
+Close it yourself only when you have a reason beyond being finished: the person asks, the task
+is genuinely over and they have seen the result, or you are about to open a different browser.
 
 ## Reporting
 

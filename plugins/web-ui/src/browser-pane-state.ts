@@ -80,6 +80,19 @@ export function paneVisible(session: LiveSession | null, threadRef: string | nul
   return session.expiresAt > nowMs;
 }
 
+/**
+ * Whether the picture on screen belongs to a browser that is no longer the one
+ * being shown.
+ *
+ * A different browser means the frame is of the wrong page and must go. A
+ * browser that simply ended is not a different browser: its last frame is the
+ * only record of what the agent did, and a short task is over before anyone
+ * can look at it.
+ */
+export function dropStaleFrame(previousSessionId: string | null, nextSessionId: string | null): boolean {
+  return nextSessionId !== null && nextSessionId !== previousSessionId;
+}
+
 export interface PaneStatus {
   label: string;
   /** True while a person holds the wheel — the accent state, and the loud one. */

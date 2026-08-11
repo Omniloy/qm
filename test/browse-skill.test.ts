@@ -257,6 +257,11 @@ test("forcing the built-in browser lets go of a browser somewhere else", () => {
   assert.match(open, /billing until its own timeout/, "and a hosted browser we let go of is not left silent");
 });
 
+test("the browser is not closed the moment the answer is ready", () => {
+  assert.match(SKILL, /Do not close it just because your answer is ready/);
+  assert.match(SKILL, /reaped automatically once it has been idle/);
+});
+
 test("a refusal to open is passed on as news, not as a failure", () => {
   assert.match(CLI, /Nothing is broken and nothing is lost/);
 });
