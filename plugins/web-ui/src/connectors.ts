@@ -12,6 +12,8 @@ import {
   browserSummary,
   browserTabs,
   connectDraft,
+  extensionNote,
+  extensionState,
   initialBrowserTab,
   BUILT_IN_BROWSER_ID,
   EXTENSION_BROWSER_ID,
@@ -152,6 +154,7 @@ let secureDropUrl: string | null = null;
 let browserProviders: BrowserProvider[] = [];
 let activeBrowser = BUILT_IN_BROWSER_ID;
 let browserTab: string | null = null;
+let relayChecking = false;
 // The paste happens here rather than in a handed-off tab. It still goes
 // straight to the one-time drop endpoint over TLS and never enters
 // conversation state — the tab switch bought nothing and lost people.
@@ -172,6 +175,7 @@ export function resetKeychainState(): void {
   browserProviders = [];
   activeBrowser = BUILT_IN_BROWSER_ID;
   browserTab = null;
+  relayChecking = false;
   browserConnect = null;
   connectorNotice = "";
   addingCredential = null;
@@ -400,26 +404,35 @@ function addCredentialCard(): TemplateResult {
   </section>`;
 }
 
-function extensionPanel(connected: boolean): TemplateResult {
+function extensionPanel(provider: BrowserProvider): TemplateResult {
+  const state = extensionState(provider);
+  const note = extensionNote(state);
+  const label = state.kind === "sharing" ? "Sharing" : state.kind === "idle" ? "No tab shared" : "Not connected";
   return html`
     <div class="kc-browser-connect">
       <p class="kc-browser-note">
-        ${
-          connected
-            ? html`<span class="kc-state ok">Extension connected</span> Your Chrome is paired and ready.`
-            : html`<span class="kc-state neutral">Not connected</span> Install the extension, then paste the pairing
-                token into it.`
-        }
+        <span class="kc-state ${note.tone}">${label}</span>
+        ${note.text}
       </p>
       ${
-        connected
+        state.kind === "absent"
+          ? ""
+          : html`<div class="kc-form-actions">
+              <button class="btn" type="button" ?disabled=${relayChecking} @click=${() => void recheckExtension()}>
+                ${relayChecking ? "Checking…" : "Re-check"}
+              </button>
+            </div>`
+      }
+      ${
+        state.kind !== "absent"
           ? ""
           : html`<ol class="kc-ext-steps">
                 <li>
                   <a class="btn" href="/api/browser-relay/extension.zip" download="miniomni-browser-bridge.zip"
                     >Download the extension</a
                   >
-                  and unzip it. It comes set up with your ${productName()} address and a pairing token — nothing to paste.
+                  and unzip it. It comes set up with your ${productName()} address and a pairing token — nothing to
+                  paste.
                 </li>
                 <li>
                   Open <code>chrome://extensions</code> (copy-paste it — Chrome blocks links there), turn on
@@ -516,7 +529,7 @@ function browserCard(): TemplateResult {
             </form>`
           : ""
       }
-      ${isExtensionTab(shown.id) ? extensionPanel(shown.connected) : ""}
+      ${isExtensionTab(shown.id) ? extensionPanel(provider) : ""}
       <div class="kc-resource-actions">
         ${
           action.kind === "in-use"
@@ -587,6 +600,31 @@ async function submitBrowserKey(): Promise<void> {
       keychainOperations.finishDrop(stateEpoch);
       drawConnectors();
     }
+  }
+}
+
+async function recheckExtension(): Promise<void> {
+  if (relayChecking) return;
+  relayChecking = true;
+  connectorNotice = "";
+  drawConnectors();
+  try {
+    const status = await api<{ connected?: boolean; sharing?: boolean; title?: string }>("/api/browser-relay/status");
+    browserProviders = browserProviders.map((provider) =>
+      provider.id === EXTENSION_BROWSER_ID
+        ? {
+            ...provider,
+            connected: Boolean(status.connected),
+            sharing: Boolean(status.sharing),
+            ...(status.title ? { sharedTabTitle: status.title } : { sharedTabTitle: undefined }),
+          }
+        : provider,
+    );
+  } catch (e) {
+    connectorNotice = errMessage(e, "Could not reach the extension just now.");
+  } finally {
+    relayChecking = false;
+    drawConnectors();
   }
 }
 

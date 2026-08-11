@@ -88,7 +88,46 @@ test("losing the extension closes the agent's side rather than hanging it", () =
   hub.attach(PERSON, "cdp", cdp);
   hub.detach(PERSON, "extension");
   assert.equal(cdp.closed.length, 1);
-  assert.deepEqual(hub.connected(PERSON), { extension: false, cdp: false });
+  assert.deepEqual(hub.connected(PERSON), { extension: false, cdp: false, sharing: false });
+});
+
+test("a connected extension with no shared tab is not reported as sharing", () => {
+  const hub = createRelayHub();
+  const ext = fake();
+  hub.attach(PERSON, "extension", ext);
+
+  assert.deepEqual(hub.connected(PERSON), { extension: true, cdp: false, sharing: false });
+  assert.equal(hub.describe(PERSON), null, "and has no tab to name");
+});
+
+test("sharing is reported only while a tab is actually shared", () => {
+  const hub = createRelayHub();
+  const ext = fake();
+  hub.attach(PERSON, "extension", ext);
+  hub.deliver(PERSON, "extension", JSON.stringify({ qm: "attached", title: "Gmail", url: "https://mail/" }));
+
+  assert.equal(hub.connected(PERSON).sharing, true);
+  assert.deepEqual(hub.describe(PERSON), { title: "Gmail", url: "https://mail/" });
+
+  hub.deliver(PERSON, "extension", JSON.stringify({ qm: "detached" }));
+
+  assert.equal(hub.connected(PERSON).sharing, false, "stopping sharing is visible immediately");
+  assert.equal(hub.describe(PERSON), null, "and the stale tab title goes with it");
+});
+
+test("a share does not survive the socket that announced it", () => {
+  const hub = createRelayHub();
+  hub.attach(PERSON, "extension", fake());
+  hub.deliver(PERSON, "extension", JSON.stringify({ qm: "attached", title: "Gmail" }));
+  hub.detach(PERSON, "extension");
+
+  hub.attach(PERSON, "extension", fake());
+
+  assert.equal(
+    hub.connected(PERSON).sharing,
+    false,
+    "a reconnected extension re-announces; assuming the old share would revive a dead tab",
+  );
 });
 
 test("a reconnecting extension replaces the stale socket", () => {

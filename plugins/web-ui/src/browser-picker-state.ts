@@ -23,6 +23,27 @@ export interface BrowserProvider {
   profileService?: string;
   signupUrl?: string;
   connected?: boolean;
+  sharing?: boolean;
+  sharedTabTitle?: string;
+}
+
+export type ExtensionState = { kind: "absent" } | { kind: "idle" } | { kind: "sharing"; tab: string };
+
+export function extensionState(provider: BrowserProvider): ExtensionState {
+  if (!provider.connected) return { kind: "absent" };
+  if (!provider.sharing) return { kind: "idle" };
+  return { kind: "sharing", tab: provider.sharedTabTitle ?? "a tab" };
+}
+
+export function extensionNote(state: ExtensionState): { tone: "ok" | "warning" | "neutral"; text: string } {
+  if (state.kind === "sharing") return { tone: "ok", text: `${state.tab} — the agent can act on that tab as you.` };
+  if (state.kind === "idle") {
+    return {
+      tone: "warning",
+      text: "The extension is connected, but no tab is shared — open it and press Share this tab.",
+    };
+  }
+  return { tone: "neutral", text: "Install the extension, then paste the pairing token into it." };
 }
 
 export interface BrowserTab {
@@ -37,8 +58,7 @@ export interface BrowserTab {
 const BUILT_IN: BrowserProvider = {
   id: BUILT_IN_BROWSER_ID,
   name: "Built-in",
-  summary:
-    `The browser ${BRAND.productName} runs inside your sandbox. No key, no per-hour cost, and sign-ins persist between sessions. Some sites refuse it.`,
+  summary: `The browser ${BRAND.productName} runs inside your sandbox. No key, no per-hour cost, and sign-ins persist between sessions. Some sites refuse it.`,
   keyEnv: "",
   keyService: "",
   connected: true,

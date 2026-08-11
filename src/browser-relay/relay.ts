@@ -42,7 +42,7 @@ export interface RelayHub {
   detach(principalId: string, side: RelaySide): void;
   /** A frame from one side, to be acted on or forwarded. */
   deliver(principalId: string, side: RelaySide, raw: string): void;
-  connected(principalId: string): { extension: boolean; cdp: boolean };
+  connected(principalId: string): { extension: boolean; cdp: boolean; sharing: boolean };
   describe(principalId: string): { title?: string; url?: string } | null;
 }
 
@@ -152,7 +152,10 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
             pair.cdp.send(
               JSON.stringify({
                 id: frame.id,
-                error: { code: -32000, message: `your Chrome is not connected — open the ${BRAND.productName} extension` },
+                error: {
+                  code: -32000,
+                  message: `your Chrome is not connected — open the ${BRAND.productName} extension`,
+                },
               }),
             );
           }
@@ -191,12 +194,16 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
 
     connected(principalId) {
       const pair = pairs.get(principalId);
-      return { extension: Boolean(pair?.extension), cdp: Boolean(pair?.cdp) };
+      return {
+        extension: Boolean(pair?.extension),
+        cdp: Boolean(pair?.cdp),
+        sharing: Boolean(pair?.extension && pair.sharing),
+      };
     },
 
     describe(principalId) {
       const pair = pairs.get(principalId);
-      if (!pair?.extension) return null;
+      if (!pair?.extension || !pair.sharing) return null;
       return { ...(pair.title ? { title: pair.title } : {}), ...(pair.url ? { url: pair.url } : {}) };
     },
   };
