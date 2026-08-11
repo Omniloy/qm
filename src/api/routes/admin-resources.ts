@@ -516,7 +516,10 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
         .replace(/["\\{}]/g, "")
         .slice(0, 2);
       const selfLabel = clean(body.selfLabel).slice(0, 40);
-      const productName = clean(body.productName).slice(0, 60);
+      const productName = clean(body.productName)
+        .replace(/["'`\\]/g, "")
+        .trim()
+        .slice(0, 60);
       const rawLogoSvg = typeof body.logoSvg === "string" ? body.logoSvg.trim() : "";
       let logoSvg = "";
       if (rawLogoSvg) {

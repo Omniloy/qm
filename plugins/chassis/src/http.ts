@@ -44,7 +44,12 @@ export function serveEmojiFavicon(res: ServerResponse, emoji: string, cacheContr
 }
 
 export function serveFaviconSvg(res: ServerResponse, svg: string, cacheControl: string): void {
-  res.writeHead(200, { "content-type": "image/svg+xml; charset=utf-8", "cache-control": cacheControl });
+  res.writeHead(200, {
+    "content-type": "image/svg+xml; charset=utf-8",
+    "cache-control": cacheControl,
+    "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+    "x-content-type-options": "nosniff",
+  });
   res.end(svg);
 }
 

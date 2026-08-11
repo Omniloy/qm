@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { QmConfig } from "../src/config.ts";
 import { deploymentOutputs, renderSlackFiles } from "../src/commands/outputs.ts";
+import { BRAND } from "../src/brand.ts";
 
 const config: QmConfig = {
   contract: 1,
@@ -45,7 +46,7 @@ test("email-first outputs return the bot and web/admin URLs without advertising 
     const bot = new URL(output.slack.bot.createUrl);
     assert.equal(bot.origin + bot.pathname, "https://api.slack.com/apps");
     assert.equal(bot.searchParams.get("new_app"), "1");
-    assert.match(bot.searchParams.get("manifest_yaml") ?? "", /name: qm/);
+    assert.match(bot.searchParams.get("manifest_yaml") ?? "", new RegExp(`name: ${BRAND.slackAppName}`));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -60,7 +61,10 @@ test("Slack OIDC outputs include the separate SSO app manifest", () => {
     assert.equal(output.slack.sso?.redirectUrl, "https://qm.acme.example/auth/callback");
     assert.equal(output.slack.sso?.manifest, join(dir, "slack-sso-manifest.yml"));
     const sso = new URL(output.slack.sso!.createUrl);
-    assert.match(sso.searchParams.get("manifest_yaml") ?? "", /name: qm SSO/);
+    assert.match(
+      sso.searchParams.get("manifest_yaml") ?? "",
+      new RegExp(`name: ${BRAND.slackAppName} SSO`),
+    );
     assert.match(sso.searchParams.get("manifest_yaml") ?? "", /qm\.acme\.example\/auth\/callback/);
   } finally {
     rmSync(dir, { recursive: true, force: true });

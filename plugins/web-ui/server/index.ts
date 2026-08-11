@@ -67,8 +67,12 @@ async function brandIndexHtml(html: string): Promise<string> {
 
 const EXTENSION_TEXT_FILES = new Set(["manifest.json", "popup.html", "popup.js", "background.js", "README.md"]);
 
+function extensionProductName(branding: { productName?: string }): string {
+  return (branding.productName ?? "").trim() || BRAND.productName;
+}
+
 function extensionZipName(branding: { productName?: string }): string {
-  const slug = (branding.productName ?? BRAND.productName)
+  const slug = extensionProductName(branding)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "");
@@ -76,12 +80,19 @@ function extensionZipName(branding: { productName?: string }): string {
 }
 
 function rebrandExtensionFile(name: string, data: Buffer, branding: { productName?: string }): Buffer {
-  const productName = branding.productName ?? BRAND.productName;
+  const productName = extensionProductName(branding);
   if (productName === BRAND.productName || !EXTENSION_TEXT_FILES.has(name)) return data;
   const rebranded = data
     .toString("utf8")
     .replaceAll(BRAND.extensionName, `${productName} Browser Bridge`)
     .replaceAll(BRAND.productName, productName);
+  if (name.endsWith(".json")) {
+    try {
+      JSON.parse(rebranded);
+    } catch {
+      return data;
+    }
+  }
   return Buffer.from(rebranded, "utf8");
 }
 

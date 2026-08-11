@@ -1064,7 +1064,8 @@ async function getSurfaceConfig(ctx: ApiCtx): Promise<void> {
       .slice(0, 40) || undefined;
   const productName =
     pick(branding?.productName, dflt?.productName)
-      ?.replace(/[\u0000-\u001F\u007F-\u009F\u2028\u2029<>]/g, "")
+      ?.replace(/[\u0000-\u001F\u007F-\u009F\u2028\u2029<>"'`\\]/g, "")
+      .trim()
       .slice(0, 60) || BRAND.productName;
   const storedLogo = pick(branding?.logoSvg, dflt?.logoSvg);
   const logoSvg = storedLogo ? renderableLogoSvg(storedLogo) : BRAND.logoSvg;

@@ -464,7 +464,11 @@ function orgBrandingFromEnv(env: NodeJS.ProcessEnv): Config["brandingDefault"] {
       .replace(/["\\{}]/g, "")
       .slice(0, 2) || undefined;
   const selfLabel = clean(env.ORG_BRAND_SELF_LABEL).slice(0, 40) || undefined;
-  const productName = clean(env.ORG_BRAND_PRODUCT_NAME).slice(0, 60) || undefined;
+  const productName =
+    clean(env.ORG_BRAND_PRODUCT_NAME)
+      .replace(/["'`\\]/g, "")
+      .trim()
+      .slice(0, 60) || undefined;
   const logoSvg = logoSvgFromEnv(env.ORG_BRAND_LOGO_SVG);
   const branding = {
     ...(accent ? { accent } : {}),

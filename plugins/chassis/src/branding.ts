@@ -1,3 +1,5 @@
+import { BRAND } from "./brand.ts";
+
 export interface OrgBranding {
   accent?: string;
   mark?: string;
@@ -84,9 +86,10 @@ export function injectBranding(html: string, branding: OrgBranding): string {
       (_m, pre: string, post: string) => `${pre}${escapeAttr(productName)}${post}`,
     );
   }
+  const titleName = productName ?? BRAND.productName;
   out = out.replace(/<title>([^<]*)<\/title>/, (_m, current: string) =>
     current.includes(BRAND_TITLE_TOKEN)
-      ? `<title>${escapeText(current.replaceAll(BRAND_TITLE_TOKEN, productName ?? ""))}</title>`
+      ? `<title>${escapeText(current.replaceAll(BRAND_TITLE_TOKEN, titleName))}</title>`
       : `<title>${escapeText(current)}</title>`,
   );
   const markDecls = logoSvg

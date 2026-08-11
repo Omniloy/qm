@@ -53,6 +53,8 @@ async function fetchBrand(): Promise<OrgBranding> {
     ...(typeof b?.accent === "string" ? { accent: b.accent } : {}),
     ...(typeof b?.mark === "string" ? { mark: b.mark } : {}),
     ...(typeof b?.selfLabel === "string" ? { selfLabel: b.selfLabel } : {}),
+    ...(typeof b?.productName === "string" ? { productName: b.productName } : {}),
+    ...(typeof b?.logoSvg === "string" ? { logoSvg: b.logoSvg } : {}),
   };
 }
 const brandCache = createBrandingCache(fetchBrand);
@@ -62,7 +64,13 @@ async function refreshBrandNow(): Promise<void> {
 }
 let shellCache: { key: string; html: string; gzip: Buffer; etag: string } | null = null;
 function brandedShell(branding: OrgBranding): { html: string; gzip: Buffer; etag: string } {
-  const key = JSON.stringify([branding.accent, branding.mark, branding.selfLabel]);
+  const key = JSON.stringify([
+    branding.accent,
+    branding.mark,
+    branding.selfLabel,
+    branding.productName,
+    branding.logoSvg,
+  ]);
   if (shellCache?.key === key) return shellCache;
   const html = injectBranding(BASE_HTML, branding);
   shellCache = {

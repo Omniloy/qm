@@ -13,6 +13,7 @@ import { renderEnvExample } from "../src/secrets.ts";
 import { runChecks } from "../src/commands/check.ts";
 import { renderTerraformVars } from "../src/terraform.ts";
 import { requiredSlackScopes, slackManifestBotScopes } from "../src/backends/doctor.ts";
+import { BRAND } from "../src/brand.ts";
 
 function quiet<T>(fn: () => T): T {
   const log = console.log,
@@ -100,8 +101,8 @@ test("init scaffolds a loadable config, generated local secrets, and a valid san
     }
     assert.doesNotMatch(env, /ORG_ID=|PORT=|HARNESS=/);
     const manifest = readFileSync(join(dir, "slack-app-manifest.yml"), "utf8");
-    assert.match(manifest, /^ {2}name: qm$/m);
-    assert.match(manifest, /^ {4}display_name: qm$/m);
+    assert.match(manifest, new RegExp(`^ {2}name: ${BRAND.slackAppName}$`, "m"));
+    assert.match(manifest, new RegExp(`^ {4}display_name: ${BRAND.slackBotHandle}$`, "m"));
     assert.equal(existsSync(join(dir, "slack-sso-manifest.yml")), false);
 
     const skill = readFileSync(join(dir, "sandbox", "skills", "greet", "SKILL.md"), "utf8");
@@ -210,9 +211,9 @@ test("init keeps stable qm Slack branding for long org ids", () => {
     try {
       quiet(() => runInit({ dir, org }));
       const manifest = readFileSync(join(dir, "slack-app-manifest.yml"), "utf8");
-      assert.match(manifest, /^ {2}name: qm$/m);
-      assert.match(manifest, /^ {4}display_name: qm$/m);
-      assert.ok(manifest.includes(`qm workspace agent for ${org}`));
+      assert.match(manifest, new RegExp(`^ {2}name: ${BRAND.slackAppName}$`, "m"));
+      assert.match(manifest, new RegExp(`^ {4}display_name: ${BRAND.slackBotHandle}$`, "m"));
+      assert.ok(manifest.includes(`${BRAND.slackAppName} workspace agent for ${org}`));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -279,7 +280,7 @@ test("init --target aws scaffolds the full hosted topology, Terraform, and the o
       assert.ok(env.includes(name), `hosted AWS scaffold offers deferred ${name}`);
     }
     const manifest = readFileSync(join(dir, "slack-app-manifest.yml"), "utf8");
-    assert.match(manifest, /^ {2}name: qm$/m);
+    assert.match(manifest, new RegExp(`^ {2}name: ${BRAND.slackAppName}$`, "m"));
     assert.equal(existsSync(join(dir, "slack-sso-manifest.yml")), false);
     const agents = readFileSync(join(dir, "AGENTS.md"), "utf8");
     assert.match(agents, /CloudFront/);
@@ -556,9 +557,13 @@ test("the scaffold is an npm-backed deployment repository with no CI coupling an
     const manifest = readFileSync(join(dir, "slack-app-manifest.yml"), "utf8");
     assert.ok(!manifest.trimStart().startsWith("{"), "the .yml manifest holds YAML, not a JSON blob");
     assert.match(manifest, /^display_information:/m);
-    assert.match(manifest, /^ {2}name: qm$/m);
+    assert.match(manifest, new RegExp(`^ {2}name: ${BRAND.slackAppName}$`, "m"));
     assert.match(manifest, /^ {6}- chat:write$/m);
-    assert.match(manifest, /background_color: "#1f2937"/, "values YAML would misread are quoted");
+    assert.match(
+      manifest,
+      new RegExp(`background_color: "${BRAND.accent}"`),
+      "values YAML would misread are quoted",
+    );
     assert.deepEqual(
       slackManifestBotScopes(manifest),
       requiredSlackScopes(dir),

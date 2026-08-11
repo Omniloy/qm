@@ -261,7 +261,10 @@ test("no user-facing text still calls the product by its previous name", () => {
       return content
         .toString("utf8")
         .split(/\r?\n/)
-        .flatMap((line, index) => (priorProductNamePattern.test(line) ? [`${path}:${index + 1}:${line.trim()}`] : []));
+        .flatMap((line, index) => {
+          const searchable = line.replace(/(["']integrity["']\s*:\s*["'])[^"'\r\n]*(["'])/gi, "$1$2");
+          return priorProductNamePattern.test(searchable) ? [`${path}:${index + 1}:${line.trim()}`] : [];
+        });
     });
 
   assert.deepEqual(offenders, []);
@@ -269,6 +272,10 @@ test("no user-facing text still calls the product by its previous name", () => {
 
 test("the guard would catch the previous name coming back", () => {
   assert.ok(priorProductNamePattern.test(`the ${priorProductName} web app`));
+  assert.ok(
+    !priorProductNamePattern.test(`"integrity": "sha512-J+${priorProductName}/4x8ZgA=="`.replace(/(["']integrity["']\s*:\s*["'])[^"'\r\n]*(["'])/gi, "$1$2")),
+    "base64 integrity hashes are scrubbed before matching, like the older guard does",
+  );
   assert.ok(priorProductNamePattern.test(`"${priorProductName}"`));
   assert.ok(priorProductNamePattern.test(`${priorProductName}.`));
   assert.ok(!priorProductNamePattern.test("QM_RELAY_URL"), "env var prefixes are identifiers, not the brand");
