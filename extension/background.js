@@ -5,8 +5,8 @@
  * this is the only way an agent can work in the browser where someone is
  * actually signed in. It attaches Chrome's debugger to ONE tab the person
  * nominates and relays the protocol to MiniOmni. It is deliberately not a
- * whole-browser bridge: the tab is the boundary, and everything outside it
- * stays out of reach.
+ * whole-browser bridge: one tab at a time, within the window that tab is in,
+ * and the rest of Chrome stays out of reach.
  */
 
 const RELAY_PATH = "/v1/browser-relay/extension";
