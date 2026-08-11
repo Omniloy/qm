@@ -16,17 +16,10 @@ let socket = null;
 let attachedTabId = null;
 let reconnectDelay = 1000;
 let restoreYielded = false;
-let shareIsRestored = false;
-let lastIssue = null;
-const ready = withTimeout(bootstrapFromConfig().then(restoreShare), 5000).catch(() => {});
-
-function withTimeout(promise, ms) {
-  return Promise.race([promise, new Promise((resolve) => setTimeout(resolve, ms))]);
-}
-
-function yieldRestore() {
-  restoreYielded = true;
-}
+const ready = Promise.race([
+  bootstrapFromConfig().then(restoreShare),
+  new Promise((resolve) => setTimeout(resolve, 5000)),
+]).catch(() => {});
 
 async function settings() {
   const { origin, token } = await chrome.storage.local.get(["origin", "token"]);
@@ -111,10 +104,10 @@ function send(payload) {
 }
 
 /** Tell MiniOmni which tab this is, so the agent's page list names something real. */
-async function announce(restored = false) {
-  if (attachedTabId === null) return;
+async function announce(tabId, restored) {
+  if (tabId === null) return;
   try {
-    const tab = await chrome.tabs.get(attachedTabId);
+    const tab = await chrome.tabs.get(tabId);
     send({
       qm: "attached",
       title: tab.title || "Your Chrome",
@@ -126,29 +119,6 @@ async function announce(restored = false) {
   }
 }
 
-function noteIssue(text) {
-  lastIssue = { text, at: Date.now() };
-  send({ qm: "note", text });
-}
-
-async function reattach(tabId) {
-  try {
-    await chrome.debugger.attach({ tabId }, PROTOCOL_VERSION);
-  } catch {
-    // Possibly still ours from a session that outlived its worker; the drive
-    // check below is what actually decides.
-  }
-  if (!(await canDrive(tabId))) return false;
-  attachedTabId = tabId;
-  shareIsRestored = true;
-  lastIssue = null;
-  await chrome.storage.local.set({ attachedTabId: tabId }).catch(() => {});
-  await announce(true);
-  await badge(tabId, true);
-  await showBanner(tabId, true);
-  return true;
-}
-
 async function canDrive(tabId) {
   try {
     await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", { expression: "1", returnByValue: true });
@@ -158,28 +128,30 @@ async function canDrive(tabId) {
   }
 }
 
-async function attach(tabId) {
-  await detach();
-  await chrome.debugger.attach({ tabId }, PROTOCOL_VERSION);
+async function claim(tabId, restored) {
+  try {
+    await chrome.debugger.attach({ tabId }, PROTOCOL_VERSION);
+  } catch (e) {
+    if (!restored) throw e;
+  }
+  if (!(await canDrive(tabId))) return false;
+  if (attachedTabId !== null && attachedTabId !== tabId) await detach();
   attachedTabId = tabId;
-  shareIsRestored = false;
   await chrome.storage.local.set({ attachedTabId: tabId });
-  await announce();
+  await chrome.storage.local.remove("pendingDetach").catch(() => {});
+  await announce(tabId, restored);
   await badge(tabId, true);
   await showBanner(tabId, true);
+  return true;
 }
 
 async function detach(explicit = false) {
-  // The stored tab is the fallback, not a duplicate: a person can press Stop
-  // while a restore is still in flight, and memory is empty at that moment.
   const stored = await chrome.storage.local.get("attachedTabId").catch(() => ({}));
   const tabId = attachedTabId ?? (typeof stored.attachedTabId === "number" ? stored.attachedTabId : null);
   if (tabId === null) return;
   // Tell MiniOmni only when the person meant it. A closing socket is a sleeping
   // service worker, and reverting their browser choice on that would undo it
   // every time Chrome idled this extension.
-  // Stopping while the socket is down still has to reach MiniOmni, or it goes on
-  // reporting a share the person ended and keeps their browser choice pinned.
   if (explicit && !send({ qm: "detached" })) {
     await chrome.storage.local.set({ pendingDetach: true }).catch(() => {});
   }
@@ -207,17 +179,8 @@ async function restoreShare() {
     return forget();
   }
   if (yielded()) return;
-  if (!(await reattach(saved))) {
-    noteIssue("the shared tab could not be driven after Chrome restarted the extension");
-    return forget();
-  }
-  // Only stand down from the tab this restore claimed. A person who shared a
-  // different tab meanwhile owns attachedTabId now, and clearing it would take
-  // their choice away a second time.
-  if (restoreYielded && attachedTabId === saved) {
-    await chrome.debugger.detach({ tabId: saved }).catch(() => {});
-    attachedTabId = null;
-  }
+  if (!(await claim(saved, true))) return forget();
+  if (restoreYielded && attachedTabId === saved) await detach();
 }
 
 /**
@@ -228,16 +191,13 @@ async function restoreShare() {
  * what went wrong.
  */
 /**
- * The tabs the agent may see and move to.
  *
- * Scoped to the window holding the shared tab. A person working on something
- * has it in front of them, and listing every window would disclose the rest of
- * their browsing to answer a question about this one.
  */
 async function windowTabs() {
   if (attachedTabId === null) return [];
   const current = await chrome.tabs.get(attachedTabId).catch(() => null);
-  const tabs = await chrome.tabs.query(current ? { windowId: current.windowId } : { currentWindow: true });
+  if (!current) return [];
+  const tabs = await chrome.tabs.query({ windowId: current.windowId });
   return tabs
     .filter((tab) => typeof tab.id === "number")
     .map((tab) => ({
@@ -263,7 +223,7 @@ async function onQmCommand(id, method, params) {
       });
     }
     try {
-      await attach(wanted);
+      if (!(await claim(wanted, false))) throw new Error("that tab cannot be driven");
       const now = await chrome.tabs.get(wanted);
       return send({ id, result: { tabId: wanted, title: now.title || "", url: now.url || "" } });
     } catch (e) {
@@ -295,8 +255,6 @@ async function onCommand(frame) {
 function connect() {
   void (async () => {
     await ready;
-    // A storage read that fails must cost this attempt only. The keepalive
-    // alarm is the sole way back, so nothing here may reject.
     const { origin, token } = await settings().catch(() => ({ origin: "", token: "" }));
     if (!origin || !token) return;
     if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
@@ -312,8 +270,7 @@ function connect() {
           send({ qm: "detached" });
           await chrome.storage.local.remove("pendingDetach").catch(() => {});
         }
-        if (lastIssue) send({ qm: "note", text: lastIssue.text });
-        await announce(shareIsRestored);
+        await announce(attachedTabId, true);
       })();
     };
     socket.onmessage = (event) => {
@@ -345,7 +302,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   // The agent navigating the tab replaces the page, so re-announce the new one
   // and re-paint the banner it just wiped out.
   if (method === "Page.frameNavigated") {
-    void announce(true);
+    void announce(attachedTabId, true);
     void showBanner(attachedTabId, true);
   }
 });
@@ -358,30 +315,18 @@ chrome.debugger.onDetach.addListener((source, reason) => {
       await detach(true);
       return;
     }
-    // Everything else is Chrome moving the tab rather than a decision: a
-    // process swap, or a target replaced under us. Take it back instead of
-    // ending a share the person never stopped.
-    const tabId = attachedTabId;
-    attachedTabId = null;
-    if (await reattach(tabId)) return;
-    noteIssue(`the debugger detached (${reason}) and the tab could not be taken back`);
+    if (await claim(attachedTabId, true)) return;
     await detach(true);
   })();
 });
 
-// A link that opens a new tab is the same piece of work continuing, so the
-// share follows it. Anything the shared tab did not open is left alone: the
-// boundary is still one tab at a time, and the person still chose the flow.
 chrome.tabs.onCreated.addListener((tab) => {
   void (async () => {
     await ready;
     if (attachedTabId === null || tab.openerTabId !== attachedTabId) return;
     if (typeof tab.id !== "number") return;
     const from = attachedTabId;
-    if (!(await reattach(tab.id))) {
-      noteIssue("a tab opened from the shared one could not be driven");
-      await reattach(from);
-    }
+    if (!(await claim(tab.id, true))) await claim(from, true);
   })();
 });
 
@@ -395,16 +340,14 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, respond) => {
-  // Claimed synchronously, before any await: a person pressing Share or Stop
-  // has decided, and a restore still in flight must not overwrite them.
-  if (message.type === "share-current-tab" || message.type === "stop-sharing") yieldRestore();
+  if (message.type === "share-current-tab" || message.type === "stop-sharing") restoreYielded = true;
   void (async () => {
     await ready;
     if (message.type === "share-current-tab") {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab?.id) return respond({ ok: false, error: "no active tab" });
       try {
-        await attach(tab.id);
+        if (!(await claim(tab.id, false))) throw new Error("that tab cannot be driven");
         connect();
         respond({ ok: true, tabId: tab.id, title: tab.title });
       } catch (e) {
@@ -439,7 +382,6 @@ chrome.runtime.onMessage.addListener((message, _sender, respond) => {
         connected: Boolean(socket && socket.readyState === WebSocket.OPEN),
         sharedTabId: attachedTabId,
         sharedTitle,
-        ...(lastIssue ? { lastIssue: lastIssue.text } : {}),
       });
       return;
     }

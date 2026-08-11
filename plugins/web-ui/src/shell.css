@@ -7271,8 +7271,6 @@ img.browser-pane-view.drivable:focus-visible {
   border-style: dashed;
   opacity: 0.8;
 }
-/* The last frame of a browser that has closed. Desaturated so it reads as a
-   record of what happened rather than something still live and clickable. */
 .browser-pane-view.ended-shot {
   filter: grayscale(0.55);
   cursor: default;

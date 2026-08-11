@@ -248,39 +248,3 @@ test("the detach signal never reaches the agent as protocol traffic", () => {
   hub.deliver(PERSON, "extension", JSON.stringify({ qm: "detached" }));
   assert.equal(cdp.sent.length, 0, "qm control messages are ours, not CDP");
 });
-
-test("the extension's account of a lost share is kept and reported", () => {
-  const hub = createRelayHub();
-  hub.attach(PERSON, "extension", fake());
-
-  hub.deliver(PERSON, "extension", JSON.stringify({ qm: "note", text: "the debugger detached (target_closed)" }));
-
-  assert.equal(hub.lastIssue(PERSON), "the debugger detached (target_closed)");
-});
-
-test("a note is never mistaken for protocol traffic", () => {
-  const hub = createRelayHub();
-  const cdp = fake();
-  hub.attach(PERSON, "extension", fake());
-  hub.attach(PERSON, "cdp", cdp);
-
-  hub.deliver(PERSON, "extension", JSON.stringify({ qm: "note", text: "something" }));
-
-  assert.equal(cdp.sent.length, 0, "qm control messages are ours, not CDP");
-});
-
-test("a share that comes back clears the outstanding problem", () => {
-  const hub = createRelayHub();
-  hub.attach(PERSON, "extension", fake());
-  hub.deliver(PERSON, "extension", JSON.stringify({ qm: "note", text: "lost it" }));
-
-  hub.deliver(PERSON, "extension", JSON.stringify({ qm: "attached", title: "Gmail", restored: true }));
-
-  assert.equal(hub.lastIssue(PERSON), null, "a working share is not an outstanding issue");
-});
-
-test("no news is not bad news", () => {
-  const hub = createRelayHub();
-  hub.attach(PERSON, "extension", fake());
-  assert.equal(hub.lastIssue(PERSON), null);
-});

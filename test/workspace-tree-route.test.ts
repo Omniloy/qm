@@ -39,9 +39,7 @@ describe("workspace tree route", async () => {
   });
 
   beforeEach(async () => {
-    const handle = await built.sandbox.provision([
-      { scopeId: scopeId("personal", "U1"), mountPath: "", mode: "rw" },
-    ]);
+    const handle = await built.sandbox.provision([{ scopeId: scopeId("personal", "U1"), mountPath: "", mode: "rw" }]);
     await built.sandbox.writeFile(handle, "licit/ted.py", "print(1)");
     await built.sandbox.writeFile(handle, "licit/hits/candidates.json", "[]");
     await built.sandbox.writeFile(handle, "notes.md", "hello");
@@ -125,16 +123,16 @@ describe("workspace tree route", async () => {
 
   it("refuses a mounted layer reached through redundant dot segments", async () => {
     for (const probe of ["././global/org-policy.md", "./team-T9/../team-T9/roadmap.md", ".//global/org-policy.md"]) {
-      const r = await get(
-        `/v1/workspace/file?scope=personal:U1&path=${encodeURIComponent(probe)}`,
-        await capFor("U1"),
-      );
+      const r = await get(`/v1/workspace/file?scope=personal:U1&path=${encodeURIComponent(probe)}`, await capFor("U1"));
       assert.equal(r.status, 404, `${probe} was served`);
     }
   });
 
   it("serves a file named with a redundant dot segment that is not hidden", async () => {
-    const r = await get(`/v1/workspace/file?scope=personal:U1&path=${encodeURIComponent("./licit/ted.py")}`, await capFor("U1"));
+    const r = await get(
+      `/v1/workspace/file?scope=personal:U1&path=${encodeURIComponent("./licit/ted.py")}`,
+      await capFor("U1"),
+    );
     assert.equal(r.status, 200);
     assert.equal(await r.text(), "print(1)");
   });

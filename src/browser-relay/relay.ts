@@ -31,8 +31,6 @@ interface Pair {
   url?: string;
   /** True between "share this tab" and "stop sharing". */
   sharing?: boolean;
-  /** Why the extension last lost a share, in its own words. */
-  note?: string;
 }
 
 /** The single page the sandbox is allowed to see, whatever Chrome calls it. */
@@ -46,12 +44,15 @@ export interface RelayHub {
   deliver(principalId: string, side: RelaySide, raw: string): void;
   connected(principalId: string): { extension: boolean; cdp: boolean; sharing: boolean };
   describe(principalId: string): { title?: string; url?: string } | null;
-  /** The extension's own account of why a share last ended, if it gave one. */
-  lastIssue(principalId: string): string | null;
 }
 
 function reply(socket: RelaySocket, id: number, result: unknown): void {
   socket.send(JSON.stringify({ id, result }));
+}
+
+function refuse(socket: RelaySocket, id: number | undefined, message: string): void {
+  if (typeof id !== "number") return;
+  socket.send(JSON.stringify({ id, error: { code: -32000, message } }));
 }
 
 /**
@@ -153,34 +154,15 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
           if (handshake(pair, frame.method, frame.id, pair.cdp)) return;
         }
         if (!pair.extension) {
-          if (typeof frame.id === "number") {
-            pair.cdp.send(
-              JSON.stringify({
-                id: frame.id,
-                error: {
-                  code: -32000,
-                  message: `your Chrome is not connected — open the ${BRAND.productName} extension`,
-                },
-              }),
-            );
-          }
+          refuse(pair.cdp, frame.id, `your Chrome is not connected — open the ${BRAND.productName} extension`);
           return;
         }
-        // Target is browser-level and the extension holds a tab-scoped
-        // debugger, so forwarding it would come back as a confusing protocol
-        // error rather than the reason it actually failed.
         if (!pair.sharing && typeof frame.method === "string" && frame.method.startsWith("Target.")) {
-          if (typeof frame.id === "number") {
-            pair.cdp.send(
-              JSON.stringify({
-                id: frame.id,
-                error: {
-                  code: -32000,
-                  message: `no tab is shared — open the ${BRAND.productName} extension and press Share this tab`,
-                },
-              }),
-            );
-          }
+          refuse(
+            pair.cdp,
+            frame.id,
+            `no tab is shared — open the ${BRAND.productName} extension and press Share this tab`,
+          );
           return;
         }
         pair.extension.send(raw);
@@ -188,15 +170,9 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
       }
       // From the extension: command results and page events, plus the one
       // message that is ours — what tab it attached to.
-      let frame: { qm?: string; title?: string; url?: string; restored?: boolean; text?: string };
+      let frame: { qm?: string; title?: string; url?: string; restored?: boolean };
       try {
-        frame = JSON.parse(raw) as {
-          qm?: string;
-          title?: string;
-          url?: string;
-          restored?: boolean;
-          text?: string;
-        };
+        frame = JSON.parse(raw) as { qm?: string; title?: string; url?: string; restored?: boolean };
       } catch {
         return;
       }
@@ -204,15 +180,7 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
         pair.title = frame.title ?? pair.title;
         pair.url = frame.url ?? pair.url;
         pair.sharing = true;
-        delete pair.note;
-        // A restored share is the same tab the person already chose, re-asserted
-        // after Chrome idled the extension. Treating it as a fresh choice would
-        // overwrite a browser they picked in the app since.
         if (!frame.restored) opts.onShareChanged?.(principalId, true);
-        return;
-      }
-      if (frame.qm === "note") {
-        pair.note = frame.text;
         return;
       }
       if (frame.qm === "detached") {
@@ -235,10 +203,6 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
         cdp: Boolean(pair?.cdp),
         sharing: Boolean(pair?.extension && pair.sharing),
       };
-    },
-
-    lastIssue(principalId) {
-      return pairs.get(principalId)?.note ?? null;
     },
 
     describe(principalId) {

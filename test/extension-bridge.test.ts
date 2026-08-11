@@ -43,7 +43,6 @@ function install(opts: {
   tabs?: Record<number, { title: string; url: string }>;
   attachFails?: boolean;
   canDrive?: boolean;
-  /** Number of leading chrome.storage.local.get calls that reject. */
   storageFailures?: number;
   activeTab?: number;
   gated?: boolean;
@@ -202,17 +201,15 @@ test("a saved tab that has since closed is forgotten rather than re-attached", a
   assert.equal(shares(h).length, 0);
 });
 
-test("a tab the debugger refuses is forgotten instead of left half-shared", async () => {
-  const h = install({
-    store: { ...PAIRED, attachedTabId: 7 },
-    tabs: { 7: { title: "Web Store", url: "https://chromewebstore.google.com/" } },
-    attachFails: true,
-    canDrive: false,
-  });
+test("a debugger session that outlived the worker is kept, not abandoned", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: GMAIL, attachFails: true });
   await bootWorker();
 
-  assert.ok(await until(() => !("attachedTabId" in h.store)), "dropped the tab it cannot drive");
-  assert.equal(shares(h).length, 0);
+  assert.ok(
+    await until(() => shares(h).length > 0),
+    "attach throws when something is already attached; the drive check is what decides",
+  );
+  assert.equal(h.store.attachedTabId, 7);
 });
 
 test("nothing is restored when no tab was ever shared", async () => {
@@ -288,17 +285,6 @@ test("the person cancelling the debugger bar is a real stop, and says so", async
   assert.ok(await until(() => h.sent().some((m) => m.qm === "detached")), "MiniOmni is told the share ended");
 });
 
-test("a tab closing detaches without claiming the person chose to stop", async () => {
-  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: GMAIL });
-  await bootWorker();
-  assert.ok(await until(() => shares(h).length > 0));
-
-  h.fire("detach", { tabId: 7 }, "target_closed");
-
-  await new Promise((r) => setTimeout(r, 60));
-  assert.ok(!h.sent().some((m) => m.qm === "detached"), "no explicit stop from a closing target");
-});
-
 test("a detach Chrome caused is recovered from, not treated as a decision", async () => {
   const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: GMAIL });
   await bootWorker();
@@ -312,7 +298,7 @@ test("a detach Chrome caused is recovered from, not treated as a decision", asyn
   assert.ok(!h.sent().some((m) => m.qm === "note"), "nothing to report — the share survived");
 });
 
-test("a share that cannot be recovered says why, instead of failing per command", async () => {
+test("a share that cannot be recovered is ended, not left half-alive", async () => {
   const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: GMAIL });
   await bootWorker();
   assert.ok(await until(() => shares(h).length > 0));
@@ -321,13 +307,8 @@ test("a share that cannot be recovered says why, instead of failing per command"
   h.fire("detach", { tabId: 7 }, "target_closed");
 
   assert.ok(
-    await until(() => h.sent().some((m) => m.qm === "note")),
-    "MiniOmni is told what happened, rather than the agent discovering it one command at a time",
+    await until(() => h.sent().some((m) => m.qm === "detached")),
+    "the relay stops reporting a share that no longer works",
   );
-  const note = h.sent().find((m) => m.qm === "note");
-  assert.match(String(note!.text), /target_closed/);
-  assert.ok(
-    h.sent().some((m) => m.qm === "detached"),
-    "and the share is properly ended",
-  );
+  assert.ok(await until(() => !("attachedTabId" in h.store)), "and nothing is left to restore");
 });

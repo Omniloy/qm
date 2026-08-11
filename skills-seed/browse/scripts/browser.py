@@ -104,7 +104,11 @@ class WS:
         out = self.rest[:n]
         self.rest = self.rest[n:]
         while len(out) < n:
-            chunk = self.sock.recv(min(1 << 20, n - len(out)))
+            try:
+                chunk = self.sock.recv(min(1 << 20, n - len(out)))
+            except (socket.timeout, TimeoutError):
+                self.rest = out + self.rest
+                raise
             if not chunk:
                 die("the browser closed the connection")
             out += chunk
@@ -183,9 +187,6 @@ class CDP:
                 if "error" in msg:
                     raise RuntimeError(f"{method}: {msg['error'].get('message', msg['error'])}")
                 return msg.get("result", {})
-            # Most verbs have no use for events, but interception is waiting for
-            # one — and over a relay it routinely arrives before the reply to the
-            # command that caused it. Dropping it here hung every download.
             if msg.get("method"):
                 self.events.append(msg)
                 del self.events[:-200]
@@ -196,17 +197,21 @@ class CDP:
             if held.get("method") == method:
                 return self.events.pop(i).get("params", {})
         deadline = time.time() + seconds
-        while time.time() < deadline:
-            self.ws.sock.settimeout(max(1, deadline - time.time()))
-            try:
-                msg = json.loads(self.ws.recv())
-            except (socket.timeout, TimeoutError, OSError):
-                break
-            if msg.get("method") == method:
-                return msg.get("params", {})
-            if msg.get("method"):
-                self.events.append(msg)
-                del self.events[:-200]
+        previous = self.ws.sock.gettimeout()
+        try:
+            while time.time() < deadline:
+                self.ws.sock.settimeout(max(1, deadline - time.time()))
+                try:
+                    msg = json.loads(self.ws.recv())
+                except (socket.timeout, TimeoutError, OSError):
+                    break
+                if msg.get("method") == method:
+                    return msg.get("params", {})
+                if msg.get("method"):
+                    self.events.append(msg)
+                    del self.events[:-200]
+        finally:
+            self.ws.sock.settimeout(previous)
         raise RuntimeError(f"{method} never arrived")
 
     def eval(self, expr, timeout_note=""):
@@ -862,6 +867,33 @@ def click_without_waiting(c, ref):
     return b
 
 
+MAX_NAME = 120
+
+
+def safe_output_path(folder, name):
+    """Where a download is allowed to land.
+
+    Both halves are attacker-influenced: the folder and name come from an agent
+    that has been reading a web page, and the fallback name comes from the
+    server. A file that escapes the workspace is the whole risk of this verb.
+    """
+    leaf = os.path.basename((name or "").strip().replace("\\", "/").rstrip("/")) or "download.bin"
+    if leaf in (".", ".."):
+        leaf = "download.bin"
+    leaf = leaf[:MAX_NAME]
+    root = os.path.realpath(os.getcwd())
+    folder = (folder or "").strip()
+    if os.path.isabs(folder) or ".." in folder.replace("\\", "/").split("/"):
+        die(f"--dir must stay inside the workspace, and {folder!r} does not.")
+    outdir = os.path.realpath(os.path.join(root, folder))
+    if outdir != root and not outdir.startswith(root + os.sep):
+        die(f"--dir must stay inside the workspace, and {folder!r} does not.")
+    path = os.path.realpath(os.path.join(outdir, leaf))
+    if not path.startswith(root + os.sep):
+        die("That filename would write outside the workspace.")
+    return outdir, path
+
+
 def tab_ids(c):
     """The tabs open right now, or None when this browser has no notion of them."""
     try:
@@ -1082,8 +1114,6 @@ def main():
             try:
                 c = attach_remote(a.cdp)
             except (Exception, SystemExit) as e:
-                # die() raises SystemExit, and a refused websocket upgrade or a
-                # closed connection both take that path.
                 if not via_extension:
                     raise
                 clear_state()
@@ -1120,8 +1150,6 @@ def main():
                 stale = state.get("cdpUrl", "")
                 clear_state()
                 state = None
-                # Only a hosted provider bills for a browser we are letting go
-                # of. The relay is the person's own Chrome and costs nothing.
                 if stale and stale != os.environ.get("QM_RELAY_URL", "").strip():
                     print("Let go of the browser that was open elsewhere. It is still running and "
                           "billing until its own timeout — follow your provider doc's Clean up step.")
@@ -1185,32 +1213,21 @@ def main():
         c, state = connect()
         target = a.url
         if not target and a.click is not None:
-            # A link is better than a click: fetching its href leaves the tab
-            # alone, so a PDF that would have opened in the viewer never does.
             target = href_behind(c, a.click)
             if target:
                 print(f"Following the link behind [{a.click}] instead of clicking it.")
-        name = a.name or (urllib.parse.urlparse(target).path.rsplit("/", 1)[-1] if target else "") or "download.bin"
-        outdir = os.path.join(os.getcwd(), a.dir)
-        os.makedirs(outdir, exist_ok=True)
-        path = os.path.join(outdir, name)
+        name = a.name or (urllib.parse.urlparse(target).path.rsplit("/", 1)[-1] if target else "")
+        outdir, path = safe_output_path(a.dir, name)
         try:
-            # Response stage: the bytes exist and Chrome has not yet decided to
-            # save them, which is the only moment we can take them instead.
             opened_tabs = None
             pattern = target if target else "*"
             c.call("Fetch.enable", patterns=[{"urlPattern": pattern, "requestStage": "Response"}])
             if target:
-                # Issued from the page so it carries the person's session, and
-                # deliberately NOT a navigation: navigating to a PDF or an
-                # attachment tears down the very tab we are driving.
                 c.call("Runtime.evaluate", expression=(
                     "fetch(%s, {credentials:'include', mode:'no-cors'}).catch(()=>{}); 1" % json.dumps(target)))
             else:
                 opened_tabs = tab_ids(c)
                 click_without_waiting(c, a.click)
-            # With a click we do not know the URL, so everything in the tab is
-            # paused and let through until the one that is a file shows up.
             deadline = time.time() + a.timeout
             paused = None
             while time.time() < deadline:
@@ -1228,9 +1245,6 @@ def main():
                 hs = {h.get("name", "").lower(): h.get("value", "")
                       for h in (ev.get("responseHeaders") or [])}
                 ct = hs.get("content-type", "").split(";")[0].strip().lower()
-                # A document-level response that is not a web page is the tab
-                # about to become Chrome's PDF viewer, which is the other way a
-                # file arrives — and the way that kills the share if it lands.
                 opens_in_the_tab = ev.get("resourceType") == "Document" and ct and not ct.startswith("text/html")
                 looks_like_a_file = ("attachment" in hs.get("content-disposition", "").lower()
                                      or opens_in_the_tab
@@ -1255,9 +1269,6 @@ def main():
                     "If it needs a sign-in, open the page in the shared tab first.")
             ctype = headers.get("content-type", "")
             disp = headers.get("content-disposition", "")
-            # A web page where a file was expected is almost always a sign-in
-            # wall or an error page, and saving it produces a file that looks
-            # fine until someone opens it.
             if "text/html" in ctype and "attachment" not in disp.lower():
                 c.call("Fetch.failRequest", requestId=rid, errorReason="Aborted")
                 die("That URL returned a web page, not a file — usually a sign-in wall or an\n"
@@ -1282,9 +1293,6 @@ def main():
                     if r.get("eof"):
                         break
             c.call("IO.close", handle=stream)
-            # Aborted on purpose: letting it through would hand the file to
-            # Chrome's downloader, which means their Downloads folder and, if
-            # they ask where to save, a dialog nothing here can answer.
             c.call("Fetch.failRequest", requestId=rid, errorReason="Aborted")
             rel = os.path.relpath(path, os.getcwd())
             print(f"Saved {rel} ({total // 1024} KB, {headers.get('content-type', 'unknown type')}).")
@@ -1294,8 +1302,6 @@ def main():
             try:
                 c.call("Fetch.disable")
             except Exception:
-                # A pattern left armed would hang every matching request in
-                # that tab until the browser is closed.
                 pass
             c.close()
 

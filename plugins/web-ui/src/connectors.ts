@@ -17,7 +17,6 @@ import {
   extensionState,
   initialBrowserTab,
   BUILT_IN_BROWSER_ID,
-  EXTENSION_BROWSER_ID,
   isExtensionTab,
   type BrowserProvider,
 } from "./browser-picker-state";
@@ -617,23 +616,7 @@ async function recheckExtension(): Promise<void> {
   connectorNotice = "";
   drawConnectors();
   try {
-    const [status, overview] = await Promise.all([
-      api<{ connected?: boolean; sharing?: boolean; title?: string }>("/api/browser-relay/status"),
-      api<{ activeBrowser?: string }>("/api/keychain/overview"),
-    ]);
-    activeBrowser = overview.activeBrowser ?? activeBrowser;
-    browserProviders = browserProviders.map((provider) =>
-      provider.id === EXTENSION_BROWSER_ID
-        ? {
-            ...provider,
-            connected: Boolean(status.connected),
-            sharing: Boolean(status.sharing),
-            ...(status.title ? { sharedTabTitle: status.title } : { sharedTabTitle: undefined }),
-          }
-        : provider,
-    );
-  } catch (e) {
-    connectorNotice = errMessage(e, "Could not reach the extension just now.");
+    await renderConnectors();
   } finally {
     relayChecking = false;
     drawConnectors();
