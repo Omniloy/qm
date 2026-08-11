@@ -46,7 +46,7 @@ test("the live-view URL is encrypted at rest, because it is bearer material", as
 });
 
 test("a streamed browser stores no secret, because it has none", async () => {
-  // Our own browser is reached through Miniomni's authenticated endpoint. There is
+  // Our own browser is reached through MiniOmni's authenticated endpoint. There is
   // no viewer URL to hold, so there must be no ciphertext either — an empty
   // one would only invite a later reader to trust it.
   const map = createMemoryMap<StoredLiveBrowserSession>();
@@ -194,7 +194,7 @@ test("the CDP URL is refused where the viewer URL belongs", async () => {
 });
 
 test("a streamed browser may not carry a viewer URL", async () => {
-  // It is reached through Miniomni, so a URL here is either meaningless or — worse —
+  // It is reached through MiniOmni, so a URL here is either meaningless or — worse —
   // a CDP URL being pasted where a viewer URL was expected.
   const s = store();
   const { ctx: c, sent } = ctx({
@@ -435,7 +435,7 @@ test("typed text never reaches a shell", async () => {
   );
 });
 
-test("input Miniomni relays is exempt from the agent's control check", async () => {
+test("input MiniOmni relays is exempt from the agent's control check", async () => {
   // Otherwise the person's own click would be refused on the grounds that the
   // person has control, and takeover would deadlock.
   const s = store();

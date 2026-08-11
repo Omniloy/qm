@@ -1,4 +1,4 @@
-name: Build signed Miniomni images
+name: Build signed MiniOmni images
 
 on:
   workflow_call:

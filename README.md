@@ -2,12 +2,12 @@
 
 A multiplayer agent harness for work. In Slack and on the web.
 
-![The Miniomni web UI: two concurrent sessions, a sidebar of personal files, crons, keychain, deploys, memory, and skills](./docs/screenshots/web-ui-hero.png)
+![The MiniOmni web UI: two concurrent sessions, a sidebar of personal files, crons, keychain, deploys, memory, and skills](./docs/screenshots/web-ui-hero.png)
 
-## What is Miniomni?
+## What is MiniOmni?
 
 Most agents are designed like personal assistants. You can make one work for a whole
-company, but it quickly gets complex. Miniomni is designed for startups. Employees each get
+company, but it quickly gets complex. MiniOmni is designed for startups. Employees each get
 their own isolated workspace and work independently without affecting each other, and
 they can also collaborate with the agent in channels, group messages, and projects.
 
@@ -79,7 +79,7 @@ via one wiring file.
 
 ## Security and secrets
 
-Miniomni's approach follows local coding agents like OpenCode, Codex, and Claude Code: the
+MiniOmni's approach follows local coding agents like OpenCode, Codex, and Claude Code: the
 agent acts as the person it's working for, with their credentials and permissions, and
 everything it does is audited. An org picks one security posture, which narrower scopes
 can only tighten:
@@ -176,4 +176,4 @@ messages, and screenshots for organization identifiers before it pushes. Nothing
 
 ## License
 
-Except where otherwise noted, Miniomni is available under the [MIT License](./LICENSE).
+Except where otherwise noted, MiniOmni is available under the [MIT License](./LICENSE).

@@ -1,7 +1,7 @@
 {
   "display_information": {
-    "name": "Miniomni SSO",
-    "description": "Sign in to your Miniomni deployment with Slack",
+    "name": "MiniOmni SSO",
+    "description": "Sign in to your MiniOmni deployment with Slack",
     "background_color": "#003B7A"
   },
   "oauth_config": {

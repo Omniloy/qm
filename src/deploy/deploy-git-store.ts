@@ -64,7 +64,7 @@ export interface DeployGitStoreOptions {
 
 const CURRENT_REF = "refs/heads/current";
 const DEFAULT_REPO_ROOT = join(tmpdir(), "qm-deploy-git");
-const GIT_AUTHOR = ["-c", "user.name=Miniomni", "-c", "user.email=deployments@qm.local"];
+const GIT_AUTHOR = ["-c", "user.name=MiniOmni", "-c", "user.email=deployments@qm.local"];
 const ARCHIVE_ETAG_FILE = "qm-archive-etag";
 
 interface GitResult {

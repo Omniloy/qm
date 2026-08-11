@@ -105,7 +105,7 @@ function version(): string {
 
 const CLI_NAME = "qm";
 
-const HELP = `${bold(CLI_NAME)} — control-plane CLI for a Miniomni deployment
+const HELP = `${bold(CLI_NAME)} — control-plane CLI for a MiniOmni deployment
 
 ${bold("USAGE")}
   ${CLI_NAME} <command> [options]
@@ -158,7 +158,7 @@ ${bold("DEPLOY (operator)")} ${dim("— runs in the deployment directory")}
     --env-file <path>                      path to .env (default: .env in the deploy dir)
     --sandbox-dir <path>                   path to the sandbox layer dir (default: sandbox/ in the deploy dir)
 
-${bold("DEVELOP (contributor)")} ${dim("— runs in the Miniomni repo")}
+${bold("DEVELOP (contributor)")} ${dim("— runs in the MiniOmni repo")}
   dev up [--org <id>] · dev down · dev status · dev restart · dev canary · dev logs · dev doctor [options]
                                            run the supervised contributor engine in scripts/dev/
   dev --ci [up|down]                       CI mode: core only (Slack in-process), no pool lease (live-e2e)

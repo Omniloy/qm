@@ -353,7 +353,7 @@ function publishedRepository(opts: SandboxPublishOpts): string {
   const app = opts.config.sandbox?.app;
   if (app) return flySandboxRepository(app);
   if (opts.config.sandbox?.image) return imageRepository(opts.config.sandbox.image);
-  die("sandbox publish needs sandbox.app in the Miniomni deployment config or --app <registry/repository>.");
+  die("sandbox publish needs sandbox.app in the MiniOmni deployment config or --app <registry/repository>.");
 }
 
 function authenticateFlyRegistry(opts: SandboxPublishOpts, references: string[]): void {

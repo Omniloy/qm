@@ -1,4 +1,4 @@
 interface:
-  display_name: "Deploy Miniomni"
-  short_description: "Deploy and onboard Miniomni in your cloud"
+  display_name: "Deploy MiniOmni"
+  short_description: "Deploy and onboard MiniOmni in your cloud"
   default_prompt: "Use $deploy-qm to deploy this repository into my AWS or Fly.io account."

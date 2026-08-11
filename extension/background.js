@@ -1,10 +1,10 @@
 /**
- * Miniomni Browser Bridge — the extension half of the relay.
+ * MiniOmni Browser Bridge — the extension half of the relay.
  *
  * Chrome refuses `--remote-debugging-port` on a real profile on purpose, so
  * this is the only way an agent can work in the browser where someone is
  * actually signed in. It attaches Chrome's debugger to ONE tab the person
- * nominates and relays the protocol to Miniomni. It is deliberately not a
+ * nominates and relays the protocol to MiniOmni. It is deliberately not a
  * whole-browser bridge: the tab is the boundary, and everything outside it
  * stays out of reach.
  */
@@ -22,7 +22,7 @@ async function settings() {
 }
 
 /**
- * The download is built for this person on this Miniomni, so it can carry both the
+ * The download is built for this person on this MiniOmni, so it can carry both the
  * address and a pairing token. Load them once, the first time, so a fresh
  * install connects with nothing to paste.
  */
@@ -65,7 +65,7 @@ function pageBanner(on) {
   if (existing) return;
   const el = document.createElement("div");
   el.id = ID;
-  el.textContent = "● Miniomni is using this tab";
+  el.textContent = "● MiniOmni is using this tab";
   el.setAttribute("data-qm-bridge", "1");
   el.style.cssText = [
     "position:fixed",
@@ -96,7 +96,7 @@ function send(payload) {
   if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload));
 }
 
-/** Tell Miniomni which tab this is, so the agent's page list names something real. */
+/** Tell MiniOmni which tab this is, so the agent's page list names something real. */
 async function announce() {
   if (attachedTabId === null) return;
   try {
@@ -120,7 +120,7 @@ async function attach(tabId) {
 async function detach(explicit = false) {
   if (attachedTabId === null) return;
   const tabId = attachedTabId;
-  // Tell Miniomni only when the person meant it. A closing socket is a sleeping
+  // Tell MiniOmni only when the person meant it. A closing socket is a sleeping
   // service worker, and reverting their browser choice on that would undo it
   // every time Chrome idled this extension.
   if (explicit) send({ qm: "detached" });
@@ -145,7 +145,7 @@ async function detach(explicit = false) {
 async function onCommand(frame) {
   const { id, method, params } = frame;
   if (attachedTabId === null) {
-    return send({ id, error: { code: -32000, message: "no tab is shared — click the Miniomni extension and pick one" } });
+    return send({ id, error: { code: -32000, message: "no tab is shared — click the MiniOmni extension and pick one" } });
   }
   try {
     const result = await chrome.debugger.sendCommand({ tabId: attachedTabId }, method, params || {});

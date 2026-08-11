@@ -11,7 +11,7 @@ import { BRAND } from "../../chassis/src/brand.ts";
 const core = createServer((req: IncomingMessage, res) => {
   if ((req.url ?? "").startsWith("/v1/surface-config")) {
     res.writeHead(200, { "content-type": "application/json" });
-    return void res.end(JSON.stringify({ branding: { accent: "#f0652f", mark: "Y", selfLabel: "Miniomni" } }));
+    return void res.end(JSON.stringify({ branding: { accent: "#f0652f", mark: "Y", selfLabel: "MiniOmni" } }));
   }
   res.writeHead(200, { "content-type": "application/json" });
   res.end("{}");
@@ -50,7 +50,7 @@ test("cold start: the FIRST shell render already carries accent, mark, and self-
   assert.match(html, /--brand-mark:"Y"/, "mark injected on the first render");
   assert.match(
     html,
-    /<meta name="brand-self-label" content="Miniomni"\s*\/?>/,
+    /<meta name="brand-self-label" content="MiniOmni"\s*\/?>/,
     "self-label meta injected regardless of template formatting",
   );
 });

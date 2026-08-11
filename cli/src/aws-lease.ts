@@ -41,7 +41,7 @@ export function acquireAwsLease(aws: AwsConfig, key = "deploy"): AwsLease {
   } catch (error) {
     if (/ConditionalCheckFailedException/.test(errMessage(error))) {
       throw new CliError(
-        `another Miniomni operation holds the ${JSON.stringify(key)} lease in ${table}; it expires within ${LEASE_SECONDS / 60} minutes, or delete that item to release it manually`,
+        `another MiniOmni operation holds the ${JSON.stringify(key)} lease in ${table}; it expires within ${LEASE_SECONDS / 60} minutes, or delete that item to release it manually`,
       );
     }
     throw error;
@@ -87,7 +87,7 @@ function renewAwsLease(aws: AwsConfig, lease: AwsLease): void {
       clearInterval(lease.renewTimer);
       lease.renewTimer = undefined;
       warn(
-        `the ${JSON.stringify(lease.key)} lease in ${lease.table} was taken over by another Miniomni operation; this run no longer holds it and a concurrent operation may be mutating the stack`,
+        `the ${JSON.stringify(lease.key)} lease in ${lease.table} was taken over by another MiniOmni operation; this run no longer holds it and a concurrent operation may be mutating the stack`,
       );
     } else {
       warn(`could not renew the ${JSON.stringify(lease.key)} lease in ${lease.table}: ${errMessage(error)}`);

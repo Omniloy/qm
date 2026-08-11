@@ -1,6 +1,6 @@
 # Deployment directory contract
 
-Contract v1 makes a Miniomni deployment a committed, portable directory. The `qm` CLI is the only interpreter of that directory: it validates the same inputs it uses to render containers, task definitions, secret routing, and the agent-computer layer.
+Contract v1 makes a MiniOmni deployment a committed, portable directory. The `qm` CLI is the only interpreter of that directory: it validates the same inputs it uses to render containers, task definitions, secret routing, and the agent-computer layer.
 
 ## Layout
 

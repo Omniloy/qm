@@ -11,7 +11,7 @@ test("the archive is a real zip that unzip can extract byte-for-byte", () => {
   // so this round-trips through the actual tool rather than re-parsing our own
   // bytes with our own assumptions.
   const entries = [
-    { name: "manifest.json", data: Buffer.from('{"name":"Miniomni"}\n', "utf8") },
+    { name: "manifest.json", data: Buffer.from('{"name":"MiniOmni"}\n', "utf8") },
     { name: "background.js", data: Buffer.from("console.log('hi');\n", "utf8") },
   ];
   const zip = makeZip(entries);

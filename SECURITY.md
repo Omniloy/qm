@@ -1,6 +1,6 @@
 # Security policy
 
-Miniomni is designed to isolate each person's data and activity by scope. It is early,
+MiniOmni is designed to isolate each person's data and activity by scope. It is early,
 experimental software: that design goal is not a promise that data cannot leak,
 a certification, or a substitute for a deployment-specific security review.
 
@@ -23,13 +23,13 @@ that planned controls will ship.
 
 ### Scope
 
-Miniomni's interactive agent surfaces currently assume one organization of authenticated
+MiniOmni's interactive agent surfaces currently assume one organization of authenticated
 internal users. Guests and external users are outside that interaction boundary,
 apart from a deployment's explicit, admin-controlled exception for internal users in
 Slack rooms that include external participants. Published apps are a separate,
 deliberate exception: an owner can distribute a capability link to visitors outside
 the organization. Holding that link authorizes reach to that app only; it does not
-create a Miniomni principal or authorize interaction with the agent or control plane. Miniomni is
+create a MiniOmni principal or authorize interaction with the agent or control plane. MiniOmni is
 not a hardened public or multi-tenant service boundary.
 
 ### Protected assets and actors
@@ -42,14 +42,14 @@ plugins, model and browser providers, and connected services.
 
 The security goals are to prevent unauthorized cross-scope reads, writes, and
 deliveries; keep credentials within their authorized scope; authenticate actors; and
-preserve attribution and audit evidence. Miniomni does not guarantee correct model output
+preserve attribution and audit evidence. MiniOmni does not guarantee correct model output
 or continuous availability.
 
 ### Trust boundaries and operator assumptions
 
 - The deployment operator controls the cloud account, network, identity provider,
   database, object storage, runtime configuration, encryption keys, and initial admin
-  grants. Miniomni does not protect a deployment from a malicious or compromised operator.
+  grants. MiniOmni does not protect a deployment from a malicious or compromised operator.
 - An org admin is a privileged content reader, not only a policy administrator.
   Admin content reads are scope-authorized and audited, but require no additional
   user approval.
@@ -64,12 +64,12 @@ or continuous availability.
   or initiating principal where implemented; it does not make the content safe.
 - A published app and its runtime are a separate trust boundary. App code receives
   visitor requests and data, may hold explicitly supplied app environment, and may
-  use configured per-app acting-as access. Miniomni keeps ambient author credentials out of
+  use configured per-app acting-as access. MiniOmni keeps ambient author credentials out of
   the app, but does not review app code or guarantee how it handles visitor data.
 
 ### What the controls do and do not guarantee
 
-Miniomni resolves a principal and scope for each turn, separates scope workspaces, uses
+MiniOmni resolves a principal and scope for each turn, separates scope workspaces, uses
 signed ingress and capability tokens, applies grants and audience checks, and records
 security-relevant actions. These controls are designed to reduce cross-scope access
 and make actions attributable. They are not a formal non-interference proof or a
@@ -115,7 +115,7 @@ these, not through them.
 - **Browser actions sit outside some core gates.** Actions inside the browser runner
   do not re-enter command policy or human-in-the-loop approval. They rely on
   task-level consent and the runner's spend checks. Browser traffic exits through the
-  browser provider rather than Miniomni's egress proxy.
+  browser provider rather than MiniOmni's egress proxy.
 - **Sandbox credentials are plaintext while in use.** Credentials and capability
   tokens materialized as environment variables or files are readable by processes in
   that sandbox. Scope isolation and auditing limit exposure, and short-lived

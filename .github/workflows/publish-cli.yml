@@ -1,4 +1,4 @@
-name: Publish the Miniomni CLI
+name: Publish the MiniOmni CLI
 
 on:
   workflow_call:

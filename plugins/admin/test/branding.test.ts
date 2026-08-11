@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 
-let coreBranding = { accent: "#f0652f", mark: "Y", selfLabel: "Miniomni" };
+let coreBranding = { accent: "#f0652f", mark: "Y", selfLabel: "MiniOmni" };
 const core = createServer((req: IncomingMessage, res) => {
   if ((req.url ?? "").startsWith("/v1/surface-config")) {
     res.writeHead(200, { "content-type": "application/json" });
@@ -43,7 +43,7 @@ test("cold start: the FIRST shell render already carries the org branding", asyn
   assert.match(html, /--brand-accent:#f0652f/, "accent style injected on the first render");
   assert.match(
     html,
-    /<meta name="brand-self-label" content="Miniomni"\s*\/?>/,
+    /<meta name="brand-self-label" content="MiniOmni"\s*\/?>/,
     "self-label meta injected regardless of the shell's formatting",
   );
   assert.match(html, /--brand-mark:"Y"/, "brand mark variable injected for the badge");

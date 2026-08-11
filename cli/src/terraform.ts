@@ -189,5 +189,5 @@ export function renderTerraformVars(config: QmConfig, configDir: string): void {
   const existing = readFileSync(path, "utf8");
   const declared = declaredInDir(configDir);
   writeFileSync(path, terraformVars(config, existing, ...(declared ? [declared] : [])));
-  ok("rendered infra/terraform.tfvars from the Miniomni deployment config");
+  ok("rendered infra/terraform.tfvars from the MiniOmni deployment config");
 }

@@ -578,8 +578,8 @@ test("surfaceHeaderText names the agent, its model, and the project link — deg
     "Quartermaster is using Claude Opus 4.8 here. <https://claw.acme.dev/projects/channel/C1|More settings>",
   );
   assert.equal(
-    surfaceHeaderText({ agentLabel: "Miniomni", modelName: "Claude Opus 4.8" }, undefined),
-    "Miniomni is using Claude Opus 4.8 here.",
+    surfaceHeaderText({ agentLabel: "MiniOmni", modelName: "Claude Opus 4.8" }, undefined),
+    "MiniOmni is using Claude Opus 4.8 here.",
   );
   assert.equal(
     surfaceHeaderText({ modelName: "Claude Opus 4.8" }, undefined),
@@ -587,7 +587,7 @@ test("surfaceHeaderText names the agent, its model, and the project link — deg
     "an unbranded deployment keeps the bare model line",
   );
   assert.equal(surfaceHeaderText({}, "https://claw.acme.dev"), "<https://claw.acme.dev|More settings>");
-  assert.equal(surfaceHeaderText({ agentLabel: "Miniomni", modelName: "  " }, "  "), undefined);
+  assert.equal(surfaceHeaderText({ agentLabel: "MiniOmni", modelName: "  " }, "  "), undefined);
 });
 
 test("headerUpdate rewrites only an empty or self-authored header", () => {
@@ -701,7 +701,7 @@ test("a model change during an in-flight ensure is re-run, not dropped", async (
     },
   };
   const ensure = createSurfaceHeaderEnsurer({
-    headerFacts: async () => ({ agentLabel: "Miniomni", modelName: model }),
+    headerFacts: async () => ({ agentLabel: "MiniOmni", modelName: model }),
     webUiPublicUrl: "https://claw.acme.dev",
     ids: { botUserId: "U0BOT" },
   });
@@ -711,7 +711,7 @@ test("a model change during an in-flight ensure is re-run, not dropped", async (
   await new Promise((r) => setTimeout(r, 150));
   assert.deepEqual(
     purposes.map((p) => p.split(" <")[0]),
-    ["Miniomni is using Claude Opus 4.8 here.", "Miniomni is using Claude Haiku 4.5 here."],
+    ["MiniOmni is using Claude Opus 4.8 here.", "MiniOmni is using Claude Haiku 4.5 here."],
     "the change that landed mid-probe still reaches the description",
   );
 });

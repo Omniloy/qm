@@ -1,8 +1,8 @@
 export const BRAND = {
-  productName: "Miniomni",
+  productName: "MiniOmni",
   cliName: "qm",
-  slackAppName: "Miniomni",
+  slackAppName: "MiniOmni",
   slackBotHandle: "miniomni",
-  slackAppDescription: "Miniomni workspace agent",
+  slackAppDescription: "MiniOmni workspace agent",
   accent: "#003B7A",
 } as const;

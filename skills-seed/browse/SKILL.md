@@ -23,7 +23,7 @@ first, because opening the wrong one wastes a minute and, on a paid provider, ig
 they made deliberately.
 
 - **Unset, or `built-in`** — use the built-in browser below. This is the common case.
-- **`extension`** — the person's own Chrome, through the Miniomni Browser Bridge extension. Plain
+- **`extension`** — the person's own Chrome, through the MiniOmni Browser Bridge extension. Plain
   `open` just works: it attaches to their browser over the relay, with their real sign-ins and
   none of the automation fingerprint that gets a sandbox browser blocked. No doc, no create
   step. There is no pane to fill — they are watching their own screen. If `open` says the relay
@@ -115,7 +115,7 @@ saved, that is what the keychain is for.
 
 A hosted browser gets past many blocks; some sites fingerprint harder and refuse it too, and
 none of them hold the person's real sign-ins. The one browser that has both is the person's
-own — so Miniomni can drive a single tab in it through a small extension the person installs. It
+own — so MiniOmni can drive a single tab in it through a small extension the person installs. It
 holds their cookies because it _is_ their browser, and it looks like them because it is them.
 
 When `$BROWSE_PROVIDER` is `extension` (or the person asks to use their own browser), do not run
@@ -169,8 +169,8 @@ Two things differ, and both matter:
   `$B pane --provider P --session S --url VIEWER_URL`. The person then watches it and takes
   control in the app, exactly as with the built-in one.
 
-  The mechanism differs and the outcome does not: Miniomni streams its own browser frame by frame
-  and embeds a hosted provider's viewer instead. "Miniomni cannot stream it" is never a reason to
+  The mechanism differs and the outcome does not: MiniOmni streams its own browser frame by frame
+  and embeds a hosted provider's viewer instead. "MiniOmni cannot stream it" is never a reason to
   fall back to the built-in browser or to paste a link into the conversation — it only means
   the pane shows the provider's viewer. Take it out again when you clean up.
 

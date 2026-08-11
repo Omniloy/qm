@@ -307,7 +307,7 @@ for (const contender of ["build-image", "delete-image"] as const) {
           contender === "build-image"
             ? buildAwsMicrovmImage(config(), configPath, { intervalMs: 0 })
             : deleteAwsMicrovmImage(config(), { intervalMs: 0 });
-        await assert.rejects(second, /another Miniomni operation holds the "deploy" lease/);
+        await assert.rejects(second, /another MiniOmni operation holds the "deploy" lease/);
         const whileHeld = calls();
         assert.equal(whileHeld.match(/lambda-microvms (?:create|update)-microvm-image/g)?.length, 1);
         assert.doesNotMatch(whileHeld, /terminate-microvm|delete-microvm-image-version|delete-microvm-image --/);

@@ -15,14 +15,14 @@ async function refresh() {
     $("state").textContent = "Sharing a tab";
     $("detail").textContent = s.sharedTitle || "the tab you shared";
   } else if (connected) {
-    $("state").textContent = "Connected to Miniomni";
+    $("state").textContent = "Connected to MiniOmni";
     $("detail").textContent = "Ready — click Share this tab";
   } else if (s?.origin && s?.hasToken) {
     $("state").textContent = "Connecting…";
     $("detail").textContent = s.origin;
   } else {
     $("state").textContent = "Not set up";
-    $("detail").textContent = "Add your Miniomni connection below";
+    $("detail").textContent = "Add your MiniOmni connection below";
     $("settings").open = true;
   }
 }

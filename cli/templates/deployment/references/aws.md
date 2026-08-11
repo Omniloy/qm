@@ -20,7 +20,7 @@ docker buildx version
 If Lambda MicroVMs are unavailable, stop before mutation and offer Fly.io. Set
 the account, region, service coordinates, and an operator-owned GitHub
 repository and exact branch in the generated config and Terraform variables.
-Never trust the upstream Miniomni repository.
+Never trust the upstream MiniOmni repository.
 
 Configure a private encrypted Terraform backend, then:
 

@@ -101,7 +101,7 @@ test("an explicit Fly --build-from path never falls back to another checkout", (
   const cfg = flyConfig("fly-explicit-build-from");
   const { result } = fly(["plan", "--build-from", "/definitely/not/a/qm/checkout"], cfg, { secrets: [] });
   assert.equal(result.code, 1, result.out);
-  assert.match(result.out, /--build-from requires a Miniomni checkout/);
+  assert.match(result.out, /--build-from requires a MiniOmni checkout/);
 });
 
 test("Fly rejects conflicting image-source flags instead of silently ignoring one", () => {

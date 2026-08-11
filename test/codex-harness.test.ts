@@ -325,7 +325,7 @@ test("Codex observability preserves image presence without persisting bytes", ()
   );
 });
 
-test("Codex interrupts the provider after a terminal Miniomni tool", async (t) => {
+test("Codex interrupts the provider after a terminal MiniOmni tool", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "qm-codex-stop-test-"));
   const harness = createCodexHarness({
     binaryPath: terminatingCodexBinary(dir),

@@ -84,7 +84,7 @@ export const driveFolderUrl = (externalId: string): string =>
   `https://drive.google.com/drive/folders/${encodeURIComponent(externalId)}`;
 
 /**
- * Where "Open" and "Request access" send someone. Miniomni cannot grant Drive
+ * Where "Open" and "Request access" send someone. MiniOmni cannot grant Drive
  * access, so the only honest action for someone locked out is to open the
  * folder in Drive and let Google run its own request flow.
  *
@@ -173,7 +173,7 @@ export function folderActions(row: MountRow, state: BandState): RowActionSpec[] 
       : { reason: off ? "This folder is off" : "This folder cannot be listed with your account right now" }),
   });
 
-  // Turning a folder off is a Miniomni-side flag, so it works even when Google is
+  // Turning a folder off is a MiniOmni-side flag, so it works even when Google is
   // unreachable — which is exactly when someone may want to stop the agent
   // tripping over a folder it cannot read.
   actions.push({ id: "move", label: "Change context…" });

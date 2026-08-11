@@ -4,11 +4,11 @@ import test from "node:test";
 
 const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 
-test("admin shell uses the Miniomni identity with org-injectable branding", () => {
+test("admin shell uses the MiniOmni identity with org-injectable branding", () => {
   assert.match(html, /<title>__BRAND__ Admin<\/title>/);
-  assert.match(html, /<meta name="brand-self-label" content="Miniomni" \/>/);
-  assert.match(html, /<meta name="brand-product-name" content="Miniomni" \/>/);
-  assert.match(html, /<div class="brand"><span id="brand-product">Miniomni<\/span>&nbsp;Admin /);
+  assert.match(html, /<meta name="brand-self-label" content="MiniOmni" \/>/);
+  assert.match(html, /<meta name="brand-product-name" content="MiniOmni" \/>/);
+  assert.match(html, /<div class="brand"><span id="brand-product">MiniOmni<\/span>&nbsp;Admin /);
   assert.doesNotMatch(html, new RegExp(["Work", "Claw"].join(" "), "i"));
   assert.doesNotMatch(html, new RegExp(["Quarter", "master"].join(""), "i"));
 });

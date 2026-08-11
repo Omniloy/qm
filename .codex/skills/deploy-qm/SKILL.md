@@ -1,9 +1,9 @@
 ---
 name: deploy-qm
-description: Deploy the Miniomni package from an organization-owned repository into Fly.io or AWS, onboard an administrator, configure connectors, and optionally activate Slack.
+description: Deploy the MiniOmni package from an organization-owned repository into Fly.io or AWS, onboard an administrator, configure connectors, and optionally activate Slack.
 ---
 
-# Deploy Miniomni
+# Deploy MiniOmni
 
 Read [`../../../deployment.md`](../../../deployment.md) completely and follow it
 as the authoritative workflow. Read only the selected provider reference. Read
@@ -19,5 +19,5 @@ provider such as Slack, which needs no email at all — read `references/email.m
 only once the operator has chosen the broker.
 
 Use the installed `@yc-software/qm` dependency through `npm exec qm -- <command>`. Do
-not require or clone the Miniomni source repository. Complete every acceptance check
+not require or clone the MiniOmni source repository. Complete every acceptance check
 and return the handoff required by `deployment.md`.

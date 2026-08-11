@@ -497,7 +497,7 @@ function warnUnforwardedEnvKeys(ctx: DockerCtx): void {
   if (!dropped.length) return;
   warn(
     `.env keys not forwarded to any container: ${dropped.join(", ")} — only computed secret names are ` +
-      `injected. Move non-secret settings to "env.<service>" in the Miniomni deployment config.`,
+      `injected. Move non-secret settings to "env.<service>" in the MiniOmni deployment config.`,
   );
 }
 

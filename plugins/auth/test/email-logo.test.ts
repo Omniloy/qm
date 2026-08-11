@@ -3,7 +3,7 @@ import test from "node:test";
 import { renderSignInEmail } from "../src/email.ts";
 
 function logoSrc(link: string): string | undefined {
-  const email = renderSignInEmail({ to: "a@b.test", brandName: "Miniomni", link, ttlMinutes: 10 });
+  const email = renderSignInEmail({ to: "a@b.test", brandName: "MiniOmni", link, ttlMinutes: 10 });
   return /<img src="([^"]+)"/.exec(email.html ?? "")?.[1];
 }
 
@@ -16,7 +16,7 @@ test("an auth service at an origin root still gets a correct logo url", () => {
 });
 
 test("an unusable link drops the image rather than emitting a broken one", () => {
-  const email = renderSignInEmail({ to: "a@b.test", brandName: "Miniomni", link: "not-a-url", ttlMinutes: 10 });
+  const email = renderSignInEmail({ to: "a@b.test", brandName: "MiniOmni", link: "not-a-url", ttlMinutes: 10 });
   assert.doesNotMatch(email.html ?? "", /<img/);
-  assert.match(email.subject, /Sign in to Miniomni/);
+  assert.match(email.subject, /Sign in to MiniOmni/);
 });

@@ -1,7 +1,7 @@
 // QA: end-to-end custom-provider lifecycle against a REAL fake upstream.
 // Boots the app, registers a provider pointing at a local OpenAI-compatible
 // server, and proves: validation, catalog surfacing, key hygiene, a real
-// model call leaving Miniomni and hitting the endpoint, edit-without-key, delete.
+// model call leaving MiniOmni and hitting the endpoint, edit-without-key, delete.
 import "./support/auto-fake-sprites.ts";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -152,7 +152,7 @@ test("QA: full custom-provider lifecycle against a live fake upstream", async ()
     assert.equal(modelSupportedByHarness("qa-chat", "codex"), false);
     assert.equal(modelServiceable("qa-chat", { anthropic: false, openai: false, openrouter: false }), true);
 
-    // 6. REAL model call through Miniomni's pi path → fake upstream answers
+    // 6. REAL model call through MiniOmni's pi path → fake upstream answers
     const reply = await oneShot(
       "qa",
       model as unknown as Model<Api>,

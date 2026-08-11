@@ -1152,7 +1152,7 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const r = await coreFetch("POST", `/v1/browser-sessions/${encodeURIComponent(id)}/handoff`, raw);
       return relay(res, r);
     }
-    // The picture, for a browser Miniomni hosts itself. Chrome will not expose its
+    // The picture, for a browser MiniOmni hosts itself. Chrome will not expose its
     // debug port off loopback, so there is nothing to point an iframe at and
     // nothing to leak — the frames come back through core instead.
     if (method === "GET" && path.startsWith("/api/browser/session/") && path.endsWith("/frame")) {
@@ -1384,7 +1384,7 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
           name,
           data: rebrandExtensionFile(name, readFileSync(join(EXTENSION_DIR, name)), branding),
         }));
-        // Bake this person's Miniomni address and a fresh pairing token into the
+        // Bake this person's MiniOmni address and a fresh pairing token into the
         // download, so a new install connects with nothing to paste. The
         // download is already gated behind their session, so the token is no
         // more exposed than the page they got it from.

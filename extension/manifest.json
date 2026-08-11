@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Miniomni Browser Bridge",
+  "name": "MiniOmni Browser Bridge",
   "version": "0.1.0",
-  "description": "Lets your Miniomni agent drive one tab in this browser, so it works with your own sign-ins.",
+  "description": "Lets your MiniOmni agent drive one tab in this browser, so it works with your own sign-ins.",
   "permissions": ["debugger", "storage", "tabs", "alarms", "scripting"],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "background.js", "type": "module" },
@@ -14,7 +14,7 @@
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Miniomni Browser Bridge",
+    "default_title": "MiniOmni Browser Bridge",
     "default_icon": {
       "16": "icon16.png",
       "32": "icon32.png",

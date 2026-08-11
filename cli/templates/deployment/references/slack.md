@@ -13,7 +13,7 @@ Slack sign-in with no bot.
 
 ## The bot app
 
-Miniomni uses one private Socket Mode app per deployment and workspace.
+MiniOmni uses one private Socket Mode app per deployment and workspace.
 
 Run `npm exec qm -- outputs` and open the exact bot manifest creation URL.
 Install the app, create an app-level token with `connections:write`, and enter
