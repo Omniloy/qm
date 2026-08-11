@@ -23,6 +23,7 @@ export function appShellHtml(opts: { slug: string; portalUrl: string; path: stri
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg">
 <title>${slug} · ${escAttr(BRAND.productName)}</title>
 <style>
   /* qm web-ui tokens (mini-lit default theme + shell.css) */

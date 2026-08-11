@@ -13,7 +13,7 @@
   --meta-lane: 18px;
   --brand-accent: #4f46e5;
   --dev-accent: #8a5a00;
-  --brand-mark: "A";
+  --brand-mark: "";
 }
 
 html,
@@ -180,7 +180,7 @@ body.resizing-sidebar {
   flex: 0 0 22px;
   border-radius: 4px;
   background-color: var(--brand-mark-bg, var(--brand-accent));
-  background-image: var(--brand-logo, none);
+  background-image: var(--brand-logo, url("/favicon.svg"));
   background-size: contain;
   background-repeat: no-repeat;
   background-position: center;
