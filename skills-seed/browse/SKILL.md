@@ -225,6 +225,11 @@ posts for it, leaves nothing in the DOM and opens no tab — `snapshot` shows yo
 nothing else. `--click REF` is for exactly that: it watches the tab, clicks, and keeps the
 first response that comes back as a file, letting everything else through untouched.
 
+If that ref turns out to sit in a plain link, it follows the href instead of clicking, and
+says so. That is the important case for a PDF that **opens in the browser** rather than
+downloading: clicking would turn the tab into Chrome's PDF viewer, which ends the share and
+leaves you with nothing to drive. Fetching the same URL leaves the tab exactly where it is.
+
 It names the file from the server's `Content-Disposition` when you do not. If it answers with
 a web page rather than a file, it stops and says so — that is a sign-in wall, and the fix is
 to open the page in the shared tab first so the session exists, then download the real file

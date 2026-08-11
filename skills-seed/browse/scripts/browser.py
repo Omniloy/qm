@@ -845,6 +845,36 @@ def do_click(c, ref, selector):
     print(f"clicked {b['tag']} -> {info['title'][:60]} ({info['url'][:100]})")
 
 
+def click_without_waiting(c, ref):
+    """Click and return immediately.
+
+    do_click settles the page and reads location afterwards, which never comes
+    back when the click turned the tab into Chrome's PDF viewer — the exact
+    case interception exists for.
+    """
+    b = box_of(c, ref, "")
+    for typ in ("mousePressed", "mouseReleased"):
+        c.call("Input.dispatchMouseEvent", type=typ, x=b["x"], y=b["y"],
+               button="left", clickCount=1)
+    return b
+
+
+def href_behind(c, ref):
+    """The link a ref sits in, if any.
+
+    A file behind a plain link never needs clicking: fetching the href keeps the
+    tab where it is, so nothing navigates into a viewer and nothing breaks.
+    """
+    sel = json.dumps(f'[data-qmref="{ref}"]')
+    try:
+        got = c.eval("(() => { const e = document.querySelector(%s);"
+                     " const a = e && e.closest && e.closest('a');"
+                     " return (a && a.href) || ''; })()" % sel)
+    except Exception:
+        return ""
+    return got if isinstance(got, str) and got.startswith("http") else ""
+
+
 def press_key(c, name):
     """Send a key the way a keyboard would.
 
@@ -1127,6 +1157,12 @@ def main():
             die("Give a URL, or --click REF to keep whatever file a button starts.")
         c, state = connect()
         target = a.url
+        if not target and a.click is not None:
+            # A link is better than a click: fetching its href leaves the tab
+            # alone, so a PDF that would have opened in the viewer never does.
+            target = href_behind(c, a.click)
+            if target:
+                print(f"Following the link behind [{a.click}] instead of clicking it.")
         name = a.name or (urllib.parse.urlparse(target).path.rsplit("/", 1)[-1] if target else "") or "download.bin"
         outdir = os.path.join(os.getcwd(), a.dir)
         os.makedirs(outdir, exist_ok=True)
@@ -1143,7 +1179,7 @@ def main():
                 c.call("Runtime.evaluate", expression=(
                     "fetch(%s, {credentials:'include', mode:'no-cors'}).catch(()=>{}); 1" % json.dumps(target)))
             else:
-                do_click(c, a.click, "")
+                click_without_waiting(c, a.click)
             # With a click we do not know the URL, so everything in the tab is
             # paused and let through until the one that is a file shows up.
             deadline = time.time() + a.timeout
@@ -1152,7 +1188,13 @@ def main():
                 ev = c.wait_event("Fetch.requestPaused", seconds=max(1, int(deadline - time.time())))
                 hs = {h.get("name", "").lower(): h.get("value", "")
                       for h in (ev.get("responseHeaders") or [])}
+                ct = hs.get("content-type", "").split(";")[0].strip().lower()
+                # A document-level response that is not a web page is the tab
+                # about to become Chrome's PDF viewer, which is the other way a
+                # file arrives — and the way that kills the share if it lands.
+                opens_in_the_tab = ev.get("resourceType") == "Document" and ct and not ct.startswith("text/html")
                 looks_like_a_file = ("attachment" in hs.get("content-disposition", "").lower()
+                                     or opens_in_the_tab
                                      or (target != "" and ev.get("request", {}).get("url") == target))
                 if target or looks_like_a_file:
                     paused = ev

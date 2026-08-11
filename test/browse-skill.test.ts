@@ -434,3 +434,23 @@ test("events are kept rather than dropped while waiting for a reply", () => {
   assert.match(call, /self\.events\.append/, "an interception event routinely beats the reply over a relay");
   assert.doesNotMatch(call, /Events are not interesting/);
 });
+
+test("a file behind a link is fetched, never opened in the tab", () => {
+  assert.match(SKILL, /opens in the browser/);
+  assert.match(CLI, /def href_behind/);
+  const dl = /if a\.cmd == "download":[\s\S]*?if a\.cmd in \("tabs", "tab"\):/.exec(CLI)?.[0] ?? "";
+  assert.match(dl, /href_behind/, "a link's href beats clicking it");
+});
+
+test("a click made for a download does not wait for the page afterwards", () => {
+  assert.match(CLI, /def click_without_waiting/);
+  const dl = /if a\.cmd == "download":[\s\S]*?if a\.cmd in \("tabs", "tab"\):/.exec(CLI)?.[0] ?? "";
+  assert.match(dl, /click_without_waiting/);
+  assert.doesNotMatch(dl, /do_click\(/);
+});
+
+test("a document that is not a web page counts as a file", () => {
+  const dl = /if a\.cmd == "download":[\s\S]*?if a\.cmd in \("tabs", "tab"\):/.exec(CLI)?.[0] ?? "";
+  assert.match(dl, /resourceType/);
+  assert.match(dl, /Document/);
+});
