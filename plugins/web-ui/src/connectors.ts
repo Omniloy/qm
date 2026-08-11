@@ -418,10 +418,17 @@ function extensionPanel(provider: BrowserProvider): TemplateResult {
         state.kind === "absent"
           ? ""
           : html`<div class="kc-form-actions">
-              <button class="btn" type="button" ?disabled=${relayChecking} @click=${() => void recheckExtension()}>
-                ${relayChecking ? "Checking…" : "Re-check"}
-              </button>
-            </div>`
+                <button class="btn" type="button" ?disabled=${relayChecking} @click=${() => void recheckExtension()}>
+                  ${relayChecking ? "Checking…" : "Re-check"}
+                </button>
+                <a class="btn" href="/api/browser-relay/extension.zip" download="miniomni-browser-bridge.zip"
+                  >Download again</a
+                >
+              </div>
+              <p class="kc-browser-note">
+                Updating? Download, unzip over the old folder, then press the reload arrow on the extension in
+                <code>chrome://extensions</code>.
+              </p>`
       }
       ${
         state.kind !== "absent"
