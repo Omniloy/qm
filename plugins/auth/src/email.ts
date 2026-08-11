@@ -116,7 +116,7 @@ export function renderMessage(cfg: AuthConfig, message: OutgoingEmail, nowMs = D
 
 function logoUrl(link: string): string | undefined {
   try {
-    return new URL(BRAND_LOGO_PATH, link).toString();
+    return new URL(`.${BRAND_LOGO_PATH}`, link).toString();
   } catch {
     return undefined;
   }
