@@ -62,6 +62,9 @@ python3 skills/browse/scripts/browser.py pane --provider P --session S --url VIE
 python3 skills/browse/scripts/browser.py cookies [--url U | --domain D]   # site cookies as JSON
 python3 skills/browse/scripts/browser.py storage [--session] [--key K]    # localStorage as JSON
 python3 skills/browse/scripts/browser.py net SUBSTR [--for N] [--bodies]  # capture matching traffic
+python3 skills/browse/scripts/browser.py download URL [--as NAME] [--dir D]  # save a file here
+python3 skills/browse/scripts/browser.py tabs                     # tabs you can move to
+python3 skills/browse/scripts/browser.py tab ID                   # move the share to one
 ```
 
 `open` is idempotent — if a browser is already open it reattaches rather than starting a
@@ -198,6 +201,33 @@ mention they can connect one in **Keychain → Linked accounts → Browser**, wh
 secret into a one-time page so it never passes through the conversation and switches the
 browser in the same place. In a channel or group, do not offer it: a personal key must never be minted
 into a shared room.
+
+## Getting a file, and moving between tabs
+
+**Never navigate to a file.** Opening a PDF, or clicking something that starts a download,
+replaces the tab's document with something the bridge cannot drive — in the person's own
+Chrome that ends the share, and you are left pressing them to share a tab again. It is also
+pointless: a file the browser downloads lands in _their_ Downloads folder, not here.
+
+`download` avoids all of it. It asks for the URL from inside the page, so the request carries
+their session exactly as a click would, takes the bytes as they arrive, and stops the browser
+from ever turning it into a download. The file lands in your workspace, where you can read it
+and where it shows up on their Files page.
+
+```bash
+$B download "https://example.com/invoice.pdf"          # -> downloads/invoice.pdf
+$B download "$URL" --as trip-receipt.pdf --dir facturas
+```
+
+It names the file from the server's `Content-Disposition` when you do not. If it answers with
+a web page rather than a file, it stops and says so — that is a sign-in wall, and the fix is
+to open the page in the shared tab first so the session exists, then download the real file
+URL. Find that URL the way you would anything else: `snapshot` and read the link's href.
+
+**A new tab is not lost.** A tab the shared one opens is followed automatically, so a flow
+that pops a receipt into a new tab keeps working. For a tab the person opened themselves,
+`tabs` lists what is open in that window and `tab ID` moves you there. You still drive exactly
+one tab at a time, and the banner moves with you so they can see which.
 
 ## Sign-ins
 

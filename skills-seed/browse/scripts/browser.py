@@ -184,6 +184,20 @@ class CDP:
                 return msg.get("result", {})
             # Events are not interesting to a one-shot verb; drop them.
 
+    def wait_event(self, method, seconds=25):
+        """Block until one event arrives, ignoring replies meant for nobody.
+
+        `call` drops events on the floor because a one-shot verb has no use for
+        them. Interception is the exception: the whole point is the event.
+        """
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            self.ws.sock.settimeout(max(1, deadline - time.time()))
+            msg = json.loads(self.ws.recv())
+            if msg.get("method") == method:
+                return msg.get("params", {})
+        raise RuntimeError(f"{method} never arrived")
+
     def eval(self, expr, timeout_note=""):
         r = self.call("Runtime.evaluate", expression=expr, returnByValue=True,
                       awaitPromise=True)
@@ -924,6 +938,15 @@ def main():
     pf.add_argument("--quality", type=int, default=55)
     pf.add_argument("--width", type=int, default=800)
     sub.add_parser("status")
+    pdl = sub.add_parser("download", help="save a file into the workspace without downloading it in the browser")
+    pdl.add_argument("url")
+    pdl.add_argument("--as", dest="name", default="", help="what to call it (default: from the server)")
+    pdl.add_argument("--dir", default="downloads", help="workspace folder to put it in")
+    pdl.add_argument("--max-mb", dest="max_mb", type=int, default=100)
+    pdl.add_argument("--timeout", type=int, default=25)
+    sub.add_parser("tabs", help="the tabs you can move to, in the window you are sharing from")
+    ptab = sub.add_parser("tab", help="move the share to another tab in that window")
+    ptab.add_argument("tab_id", type=int)
     pc = sub.add_parser("cookies", help="the site's cookies, HttpOnly included, as JSON")
     pc.add_argument("--url", default="", help="only cookies a request to this URL would send")
     pc.add_argument("--domain", default="", help="keep only cookies whose domain contains this")
@@ -1088,6 +1111,104 @@ def main():
         finally:
             c.close()
         return
+
+    if a.cmd == "download":
+        c, state = connect()
+        target = a.url
+        name = a.name or (urllib.parse.urlparse(target).path.rsplit("/", 1)[-1] or "download.bin")
+        outdir = os.path.join(os.getcwd(), a.dir)
+        os.makedirs(outdir, exist_ok=True)
+        path = os.path.join(outdir, name)
+        try:
+            # Response stage: the bytes exist and Chrome has not yet decided to
+            # save them, which is the only moment we can take them instead.
+            c.call("Fetch.enable", patterns=[{"urlPattern": target, "requestStage": "Response"}])
+            # Issued from the page so it carries the person's session, and
+            # deliberately NOT a navigation: navigating to a PDF or an
+            # attachment tears down the very tab we are driving.
+            c.call("Runtime.evaluate", expression=(
+                "fetch(%s, {credentials:'include', mode:'no-cors'}).catch(()=>{}); 1" % json.dumps(target)))
+            paused = c.wait_event("Fetch.requestPaused", seconds=a.timeout)
+            rid = paused["requestId"]
+            status = paused.get("responseStatusCode")
+            headers = {h.get("name", "").lower(): h.get("value", "")
+                       for h in (paused.get("responseHeaders") or [])}
+            if status and not (200 <= int(status) < 300):
+                c.call("Fetch.failRequest", requestId=rid, errorReason="Aborted")
+                die(f"That URL answered {status}, so there is nothing to save. "
+                    "If it needs a sign-in, open the page in the shared tab first.")
+            ctype = headers.get("content-type", "")
+            disp = headers.get("content-disposition", "")
+            # A web page where a file was expected is almost always a sign-in
+            # wall or an error page, and saving it produces a file that looks
+            # fine until someone opens it.
+            if "text/html" in ctype and "attachment" not in disp.lower():
+                c.call("Fetch.failRequest", requestId=rid, errorReason="Aborted")
+                die("That URL returned a web page, not a file — usually a sign-in wall or an\n"
+                    "error page. Open it in the shared tab first so the session is established,\n"
+                    "then find the real file URL and download that.")
+            if not a.name:
+                m = re.search(r'filename\*?=(?:UTF-8\'\'|")?([^";]+)', disp)
+                if m:
+                    name = urllib.parse.unquote(m.group(1).strip().strip('"'))
+                    path = os.path.join(outdir, os.path.basename(name))
+            stream = c.call("Fetch.takeResponseBodyAsStream", requestId=rid)["stream"]
+            total = 0
+            with open(path, "wb") as f:
+                while True:
+                    r = c.call("IO.read", handle=stream, size=1 << 16)
+                    data = r.get("data", "")
+                    raw = base64.b64decode(data) if r.get("base64Encoded") else data.encode()
+                    f.write(raw)
+                    total += len(raw)
+                    if total > a.max_mb * 1024 * 1024:
+                        raise RuntimeError(f"larger than --max-mb {a.max_mb}")
+                    if r.get("eof"):
+                        break
+            c.call("IO.close", handle=stream)
+            # Aborted on purpose: letting it through would hand the file to
+            # Chrome's downloader, which means their Downloads folder and, if
+            # they ask where to save, a dialog nothing here can answer.
+            c.call("Fetch.failRequest", requestId=rid, errorReason="Aborted")
+            rel = os.path.relpath(path, os.getcwd())
+            print(f"Saved {rel} ({total // 1024} KB, {headers.get('content-type', 'unknown type')}).")
+            print("It is in the workspace, so it is on the Files page and you can open it here.")
+            return
+        finally:
+            try:
+                c.call("Fetch.disable")
+            except Exception:
+                # A pattern left armed would hang every matching request in
+                # that tab until the browser is closed.
+                pass
+            c.close()
+
+    if a.cmd in ("tabs", "tab"):
+        state = read_state()
+        if not state or not state.get("cdpUrl"):
+            die("Moving between tabs is for the person's own Chrome, through the extension.\n"
+                "The built-in browser has one page and `go` is how you move it.")
+        c, _ = connect()
+        try:
+            if a.cmd == "tabs":
+                tabs = c.call("qm.listTabs").get("tabs", [])
+                if not tabs:
+                    print("No tabs to move to.")
+                    return
+                for t in tabs:
+                    mark = "*" if t.get("shared") else " "
+                    where = " (front)" if t.get("active") else ""
+                    print(f"{mark} [{t['tabId']}] {t.get('title','')[:70]}{where}")
+                    print(f"      {t.get('url','')[:110]}")
+                print("\n* is the tab you are driving. Move with: tab <id>")
+                return
+            r = c.call("qm.switchTab", tabId=a.tab_id)
+            print(f"Now driving [{r['tabId']}] {r.get('title','')[:70]}")
+            print(f"  {r.get('url','')[:110]}")
+            print("The person can see the banner move; you are still on one tab only.")
+            return
+        finally:
+            c.close()
 
     # ------------------------------------------------------------ close
     if a.cmd == "close":

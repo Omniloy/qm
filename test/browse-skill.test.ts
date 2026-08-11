@@ -397,3 +397,27 @@ test("the frame follows the scroll, instead of photographing the page top", () =
   assert.match(frame, /sx: scrollX, sy: scrollY/);
   assert.match(frame, /"x": size\["sx"\], "y": size\["sy"\]/);
 });
+
+test("a file is fetched rather than navigated to, which is what breaks the bridge", () => {
+  assert.match(SKILL, /Never navigate to a file/);
+  assert.match(SKILL, /download URL/);
+  const dl = /if a\.cmd == "download":[\s\S]*?if a\.cmd in \("tabs", "tab"\):/.exec(CLI)?.[0] ?? "";
+  assert.ok(dl.length > 0, "the verb exists");
+  assert.match(dl, /Fetch\.enable/);
+  assert.match(dl, /Fetch\.takeResponseBodyAsStream/);
+  assert.match(dl, /IO\.read/);
+  assert.match(dl, /Fetch\.failRequest/, "the browser must never turn it into a download");
+  assert.match(dl, /Fetch\.disable/, "a pattern left armed hangs every matching request");
+});
+
+test("a sign-in wall is not saved as if it were the file", () => {
+  const dl = /if a\.cmd == "download":[\s\S]*?if a\.cmd in \("tabs", "tab"\):/.exec(CLI)?.[0] ?? "";
+  assert.match(dl, /text\/html/);
+  assert.match(dl, /returned a web page, not a file/);
+});
+
+test("a tab the shared one opens is followed, and others can be picked", () => {
+  assert.match(SKILL, /A new tab is not lost/);
+  assert.match(CLI, /qm\.listTabs/);
+  assert.match(CLI, /qm\.switchTab/);
+});

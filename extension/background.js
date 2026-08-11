@@ -142,6 +142,7 @@ async function reattach(tabId) {
   attachedTabId = tabId;
   shareIsRestored = true;
   lastIssue = null;
+  await chrome.storage.local.set({ attachedTabId: tabId }).catch(() => {});
   await announce(true);
   await badge(tabId, true);
   await showBanner(tabId, true);
@@ -226,8 +227,57 @@ async function restoreShare() {
  * failure is a turn that hangs until its wall clock rather than one that says
  * what went wrong.
  */
+/**
+ * The tabs the agent may see and move to.
+ *
+ * Scoped to the window holding the shared tab. A person working on something
+ * has it in front of them, and listing every window would disclose the rest of
+ * their browsing to answer a question about this one.
+ */
+async function windowTabs() {
+  if (attachedTabId === null) return [];
+  const current = await chrome.tabs.get(attachedTabId).catch(() => null);
+  const tabs = await chrome.tabs.query(current ? { windowId: current.windowId } : { currentWindow: true });
+  return tabs
+    .filter((tab) => typeof tab.id === "number")
+    .map((tab) => ({
+      tabId: tab.id,
+      title: tab.title || "",
+      url: tab.url || "",
+      active: Boolean(tab.active),
+      shared: tab.id === attachedTabId,
+    }));
+}
+
+async function onQmCommand(id, method, params) {
+  if (method === "qm.listTabs") {
+    return send({ id, result: { tabs: await windowTabs() } });
+  }
+  if (method === "qm.switchTab") {
+    const wanted = params?.tabId;
+    const allowed = await windowTabs();
+    if (!allowed.some((tab) => tab.tabId === wanted)) {
+      return send({
+        id,
+        error: { code: -32000, message: "that tab is not in the window you are sharing from" },
+      });
+    }
+    try {
+      await attach(wanted);
+      const now = await chrome.tabs.get(wanted);
+      return send({ id, result: { tabId: wanted, title: now.title || "", url: now.url || "" } });
+    } catch (e) {
+      return send({ id, error: { code: -32000, message: String((e && e.message) || e) } });
+    }
+  }
+  return send({ id, error: { code: -32000, message: `unknown control command ${method}` } });
+}
+
 async function onCommand(frame) {
   const { id, method, params } = frame;
+  if (typeof method === "string" && method.startsWith("qm.") && attachedTabId !== null) {
+    return onQmCommand(id, method, params);
+  }
   if (attachedTabId === null) {
     return send({
       id,
@@ -316,6 +366,22 @@ chrome.debugger.onDetach.addListener((source, reason) => {
     if (await reattach(tabId)) return;
     noteIssue(`the debugger detached (${reason}) and the tab could not be taken back`);
     await detach(true);
+  })();
+});
+
+// A link that opens a new tab is the same piece of work continuing, so the
+// share follows it. Anything the shared tab did not open is left alone: the
+// boundary is still one tab at a time, and the person still chose the flow.
+chrome.tabs.onCreated.addListener((tab) => {
+  void (async () => {
+    await ready;
+    if (attachedTabId === null || tab.openerTabId !== attachedTabId) return;
+    if (typeof tab.id !== "number") return;
+    const from = attachedTabId;
+    if (!(await reattach(tab.id))) {
+      noteIssue("a tab opened from the shared one could not be driven");
+      await reattach(from);
+    }
   })();
 });
 
