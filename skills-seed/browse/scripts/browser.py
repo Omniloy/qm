@@ -977,7 +977,8 @@ def main():
         # launch path below, which is the bug that sent it to the sandbox
         # browser instead.
         chosen = "" if a.force_built_in else os.environ.get("BROWSE_PROVIDER", "").strip()
-        if chosen == "extension" and not a.cdp:
+        via_extension = chosen == "extension" and not a.cdp
+        if via_extension:
             relay = os.environ.get("QM_RELAY_URL", "").strip()
             if not relay:
                 die("This person chose their own Chrome, but no relay URL reached this turn.\n"
@@ -988,7 +989,21 @@ def main():
         if a.cdp:
             # Someone else started this one; it is theirs to close, and its
             # pane (if it has one) is registered by whoever created it.
-            c = attach_remote(a.cdp)
+            try:
+                c = attach_remote(a.cdp)
+            except Exception as e:
+                if not via_extension:
+                    raise
+                clear_state()
+                die("Their Chrome is not sharing a tab, so there is nothing to drive "
+                    f"({str(e)[:80]}).\n"
+                    "Ask them to open the MiniOmni Browser Bridge extension and press Share this tab,\n"
+                    "then run: open\n"
+                    "Do NOT quietly switch to the built-in browser: it has none of their sign-ins, "
+                    "and a task aimed at their own browser will fail in a way that looks like your "
+                    "mistake rather than a disconnected extension.\n"
+                    "If they would rather use the built-in browser anyway, they can say so and you "
+                    "run: open --force-built-in")
             c.close()
             write_state({"provider": "remote", "cdpUrl": a.cdp,
                          "startedAt": int(time.time()), "lastUsedAt": int(time.time())})
@@ -1009,6 +1024,10 @@ def main():
         # their own browser and then reap each other's.
         with OpenLock():
             state = read_state()
+            if state and state.get("cdpUrl") and a.force_built_in:
+                unregister(state)
+                clear_state()
+                state = None
             if state and (state.get("cdpUrl") or alive(state.get("port", DEBUG_PORT))):
                 touch(state)
                 print(f"A browser is already open (provider={state.get('provider')}). Reusing it.")

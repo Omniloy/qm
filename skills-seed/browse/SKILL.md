@@ -26,9 +26,15 @@ they made deliberately.
 - **`extension`** — the person's own Chrome, through the MiniOmni Browser Bridge extension. Plain
   `open` just works: it attaches to their browser over the relay, with their real sign-ins and
   none of the automation fingerprint that gets a sandbox browser blocked. No doc, no create
-  step. There is no pane to fill — they are watching their own screen. If `open` says the relay
-  did not reach this turn, their extension is not connected: tell them to open it and share a
-  tab.
+  step. There is no pane to fill — they are watching their own screen.
+
+  When `open` says their Chrome is not sharing a tab, **stop and ask**. Chrome stops the
+  extension when it goes quiet, so this is ordinary rather than alarming: tell them plainly
+  that the extension is not sharing, ask them to press **Share this tab**, and run `open`
+  again. Do **not** fall back to the built-in browser on your own — it holds none of their
+  sign-ins, so the task fails later and further from the cause, and they chose their own
+  browser for a reason. Fall back only if they say to, and say which browser you used.
+
 - **Any other value** — a hosted provider. Do NOT run plain `open`. Read
   `skills/browse/providers/$BROWSE_PROVIDER.md`, create the browser it describes, then
   `open --cdp "$CDP_URL"`. Every verb behaves the same afterwards.
@@ -118,11 +124,15 @@ none of them hold the person's real sign-ins. The one browser that has both is t
 own — so MiniOmni can drive a single tab in it through a small extension the person installs. It
 holds their cookies because it _is_ their browser, and it looks like them because it is them.
 
-When `$BROWSE_PROVIDER` is `extension` (or the person asks to use their own browser), do not run
-plain `open`. The person shares a tab from the extension; you attach with
-`open --cdp "$QM_RELAY_URL"` and every verb — including the three above — works against that
-tab. There is no pane to fill: it is on their own screen, in front of them. Tell them plainly
-that while a tab is shared you can read and act on it as them, and only that one tab.
+When `$BROWSE_PROVIDER` is `extension` (or the person asks to use their own browser), plain
+`open` is all you need — it resolves the relay for you. The person shares a tab from the
+extension, and every verb — including the three above — works against that tab. There is no
+pane to fill: it is on their own screen, in front of them. Tell them plainly that while a tab
+is shared you can read and act on it as them, and only that one tab.
+
+`open` fails when no tab is shared, which is the common case after their Chrome has been
+idle. That is a question for them, not a reason to switch browsers — see **Which browser**
+above.
 
 ## When a site refuses automation
 

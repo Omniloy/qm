@@ -22,6 +22,7 @@ test("the browser-level handshake is answered here, not forwarded", () => {
   const ext = fake();
   const cdp = fake();
   hub.attach(PERSON, "extension", ext);
+  hub.deliver(PERSON, "extension", JSON.stringify({ qm: "attached", title: "Your Chrome" }));
   hub.attach(PERSON, "cdp", cdp);
 
   hub.deliver(PERSON, "cdp", JSON.stringify({ id: 1, method: "Target.getTargets" }));
@@ -89,6 +90,46 @@ test("losing the extension closes the agent's side rather than hanging it", () =
   hub.detach(PERSON, "extension");
   assert.equal(cdp.closed.length, 1);
   assert.deepEqual(hub.connected(PERSON), { extension: false, cdp: false, sharing: false });
+});
+
+test("the handshake is refused when no tab is shared, so open fails at open", () => {
+  const hub = createRelayHub();
+  const ext = fake();
+  const cdp = fake();
+  hub.attach(PERSON, "extension", ext);
+  hub.attach(PERSON, "cdp", cdp);
+
+  hub.deliver(PERSON, "cdp", JSON.stringify({ id: 1, method: "Target.getTargets" }));
+
+  assert.equal(cdp.sent.length, 0, "no synthetic page is invented");
+  assert.deepEqual(parse(ext.sent[0]!), { id: 1, method: "Target.getTargets" });
+});
+
+test("a shared tab still gets the synthetic handshake", () => {
+  const hub = createRelayHub();
+  const ext = fake();
+  const cdp = fake();
+  hub.attach(PERSON, "extension", ext);
+  hub.attach(PERSON, "cdp", cdp);
+  hub.deliver(PERSON, "extension", JSON.stringify({ qm: "attached", title: "Gmail", url: "https://mail/" }));
+
+  hub.deliver(PERSON, "cdp", JSON.stringify({ id: 1, method: "Target.getTargets" }));
+
+  const reply = parse(cdp.sent[0]!) as { result: { targetInfos: Array<{ title: string }> } };
+  assert.equal(reply.result.targetInfos[0]!.title, "Gmail");
+  assert.equal(ext.sent.length, 0, "and it is answered here, not forwarded");
+});
+
+test("with no extension at all the agent is told, not left hanging", () => {
+  const hub = createRelayHub();
+  const cdp = fake();
+  hub.attach(PERSON, "cdp", cdp);
+
+  hub.deliver(PERSON, "cdp", JSON.stringify({ id: 4, method: "Target.getTargets" }));
+
+  const reply = parse(cdp.sent[0]!) as { id: number; error: { message: string } };
+  assert.equal(reply.id, 4);
+  assert.match(reply.error.message, /not connected/);
 });
 
 test("a connected extension with no shared tab is not reported as sharing", () => {

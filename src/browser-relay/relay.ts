@@ -57,6 +57,14 @@ function reply(socket: RelaySocket, id: number, result: unknown): void {
  * the client — and every skill built on it — unchanged.
  */
 function handshake(pair: Pair, method: string, id: number, cdp: RelaySocket): boolean {
+  // Chrome's debugger API exposes no Browser domain, so a graceful
+  // browser-level close has nothing to call. Closing the person's own browser
+  // would be wrong anyway — this ends the agent's use of it, nothing more.
+  if (method === "Browser.close" || method === "Browser.getVersion") {
+    reply(cdp, id, method === "Browser.close" ? {} : { product: "Chrome/extension", protocolVersion: "1.3" });
+    return true;
+  }
+  if (!pair.sharing) return false;
   if (method === "Target.getTargets") {
     reply(cdp, id, {
       targetInfos: [
@@ -78,13 +86,6 @@ function handshake(pair: Pair, method: string, id: number, cdp: RelaySocket): bo
   }
   if (method === "Target.setDiscoverTargets" || method === "Target.setAutoAttach") {
     reply(cdp, id, {});
-    return true;
-  }
-  // Chrome's debugger API exposes no Browser domain, so a graceful
-  // browser-level close has nothing to call. Closing the person's own browser
-  // would be wrong anyway — this ends the agent's use of it, nothing more.
-  if (method === "Browser.close" || method === "Browser.getVersion") {
-    reply(cdp, id, method === "Browser.close" ? {} : { product: "Chrome/extension", protocolVersion: "1.3" });
     return true;
   }
   return false;

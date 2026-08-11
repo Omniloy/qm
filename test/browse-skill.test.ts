@@ -11,6 +11,8 @@ const CLI = read("skills-seed/browse/scripts/browser.py");
 // SAYS. Code and shape assertions keep using the raw text.
 const SKILL = RAW.replace(/\s+/g, " ");
 
+const openBlock = (): string => /if a\.cmd == "open":[\s\S]*?if a\.cmd == "watch":/.exec(CLI)?.[0] ?? "";
+
 /* ----------------------------------------------------------- the surface */
 
 test("every verb the skill documents actually exists in the CLI", () => {
@@ -225,12 +227,34 @@ test("refs are preferred over selectors, and re-taken after the page changes", (
 test("the browser is claimed before it is started", () => {
   // A browser costs about 1.25 GB. Registering first means a refusal arrives
   // while there is still nothing to throw away.
-  const open = /if a\.cmd == "open":[\s\S]{0,3800}/.exec(CLI)?.[0] ?? "";
+  const open = openBlock();
   const claimAt = open.indexOf("register(state)");
   const launchAt = open.indexOf("start_watchdog");
   assert.ok(claimAt > 0 && launchAt > 0, "both steps are in open");
   assert.ok(claimAt < launchAt, "the claim comes first");
   assert.match(open, /outcome == "full"/);
+});
+
+test("a relay with no shared tab stops the turn rather than switching browsers", () => {
+  const open = openBlock();
+  assert.match(open, /via_extension/, "the extension path is distinguished from a hosted --cdp");
+  assert.match(open, /not sharing a tab/);
+  assert.match(open, /Do NOT quietly switch to the built-in browser/);
+  assert.match(open, /clear_state\(\)/, "and it leaves no remote state behind to be reused");
+});
+
+test("the skill tells the agent to ask rather than fall back on its own", () => {
+  assert.match(SKILL, /stop and ask/i);
+  assert.match(SKILL, /Do \*\*not\*\* fall back to the built-in browser on your own/);
+});
+
+test("forcing the built-in browser lets go of a browser somewhere else", () => {
+  const open = openBlock();
+  const forceAt = open.indexOf("a.force_built_in:");
+  const reuseAt = open.indexOf("Reusing it");
+  assert.ok(forceAt > 0 && reuseAt > 0, "both branches are in open");
+  assert.ok(forceAt < reuseAt, "the stale remote record is dropped before the reuse check");
+  assert.match(open, /unregister\(state\)/);
 });
 
 test("a refusal to open is passed on as news, not as a failure", () => {
@@ -333,7 +357,7 @@ test("two turns opening at once do not each start a browser", () => {
   // it while every call reported success.
   assert.match(CLI, /class OpenLock/);
   assert.match(CLI, /fcntl\.flock\(self\.fd, fcntl\.LOCK_EX\)/);
-  const open = /if a\.cmd == "open":[\s\S]{0,2800}/.exec(CLI)?.[0] ?? "";
+  const open = openBlock();
   assert.match(open, /with OpenLock\(\):/);
   // The loser must reuse rather than fail — it is what it would have done had
   // it arrived a moment later.
