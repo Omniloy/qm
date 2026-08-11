@@ -240,3 +240,161 @@ unaffected.
 Point a Dokploy Compose application at this repository with
 `Compose Path = ./deploy/dokploy/docker-compose.yml`, set the env above, and deploy.
 Builds run on the host, so the first deploy is slow; later ones reuse layer cache.
+
+## Standing up a new instance
+
+Everything below is one Dokploy Compose application; there is no second app to create
+and no domain record to add. Run the steps in order — three of them have to happen
+before the first deploy or it fails in ways that look like something else.
+
+### Before the first deploy
+
+1. **DNS.** An **A record** for `PUBLIC_HOST` pointing at the new host, and a second for
+   `RELAY_HOST` if you want the browser-extension relay. Traefik requests certificates
+   on first request, so a missing record surfaces as a TLS error rather than a 404.
+2. **The sandbox image**, built on the server — see [Prerequisite](#prerequisite-the-sandbox-image).
+   Core starts happily without it and only fails when someone sends the first turn.
+3. **A GitHub source in Dokploy**, if the repository is private. Check with
+   `GET /api/admin.haveGithubConfigured`; without it the deploy fails at clone.
+
+**You do not create a domain.** The portal and the relay are routed by Traefik labels in
+`docker-compose.yml` keyed on `${PUBLIC_HOST}` and `${RELAY_HOST}`, with
+`certresolver=letsencrypt`. `domain.create` is for Dokploy *applications*, not compose
+services, and calling it here adds a record that routes nothing.
+
+Note also that two MiniOmni stacks on one host collide in two places: the Traefik
+router names (`qm-portal`, `qm-relay`) are literals in the compose file, and sandbox
+containers, volumes and networks all use a fixed `qm-` prefix keyed only on the scope
+id, not on `appName`. One stack per host is the tested arrangement.
+
+### The API path
+
+Authentication is `Authorization: Bearer <token>` with a token from Dokploy's own
+API-keys screen. `x-api-key` and a lowercase `authorization` header both return 401,
+which reads like a bad token and is not.
+
+```bash
+DOKPLOY_URL=https://<your-dokploy-host>
+DOKPLOY_API_KEY=<token>            # keep this out of the repo
+API() { curl -sS -H "Authorization: Bearer $DOKPLOY_API_KEY" \
+             -H 'content-type: application/json' "$@"; }
+```
+
+**1. Create the project.**
+
+```bash
+API -X POST -d '{"name":"MiniOmni"}' "$DOKPLOY_URL/api/project.create"
+# -> {"projectId":"..."}
+```
+
+**2. Create the compose application.** `compose.create` returns `null` even when it
+succeeds, so read the id back rather than parsing the response:
+
+```bash
+API -X POST -d '{"name":"miniomni","projectId":"'"$PROJECT_ID"'"}' \
+    "$DOKPLOY_URL/api/compose.create" >/dev/null
+COMPOSE_ID=$(API "$DOKPLOY_URL/api/project.one?projectId=$PROJECT_ID" \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["compose"][0]["composeId"])')
+```
+
+**3. Configure it.** `appName` is **not** derived from `name` — set it explicitly in the
+same call or every container lands under `undefined-<hash>`. It is also the prefix you
+will use for every later `docker` command, so pick it deliberately.
+
+```bash
+API -X POST "$DOKPLOY_URL/api/compose.update" -d '{
+  "composeId": "'"$COMPOSE_ID"'",
+  "appName":   "miniomni",
+  "sourceType":"github",
+  "owner":     "<org>",
+  "repository":"qm",
+  "branch":    "main",
+  "composePath":"./deploy/dokploy/docker-compose.yml"
+}' >/dev/null
+```
+
+**4. Set the env.** `env` is one newline-joined string holding every key from
+[Application env](#application-env). Build it from a local file that is never committed,
+and send the response to `/dev/null` — see the warning below.
+
+```bash
+API -X POST "$DOKPLOY_URL/api/compose.update" \
+  -d "$(python3 -c 'import json,sys;print(json.dumps({"composeId":sys.argv[1],"env":open(sys.argv[2]).read()}))' \
+        "$COMPOSE_ID" ./instance.env)" >/dev/null
+```
+
+> **`compose.update` returns the application's entire env in plaintext**, including
+> `ANTHROPIC_API_KEY`, `POSTGRES_PASSWORD` and every signing secret. Always discard or
+> redact the response; never let it reach a terminal transcript, a CI log, or an agent
+> session.
+
+**5. Deploy.**
+
+```bash
+API -X POST -d '{"composeId":"'"$COMPOSE_ID"'"}' "$DOKPLOY_URL/api/compose.deploy" >/dev/null
+```
+
+### Confirming it actually deployed
+
+**A green `compose.deploy` proves nothing, and neither does `composeStatus: done`.** Both
+can report success while the previous containers are still serving. The reliable signals
+are on the host: the checked-out commit, and the container ages.
+
+```bash
+cd /etc/dokploy/compose/<appName> && git rev-parse --abbrev-ref HEAD && git rev-parse --short HEAD
+docker ps --format '{{.Names}}\t{{.Status}}' | grep <appName>
+```
+
+To wait for a specific commit to be live rather than guessing:
+
+```bash
+until [ "$(git -C /etc/dokploy/compose/<appName> rev-parse --short HEAD)" = "<sha>" ] \
+   && docker ps --format '{{.Names}} {{.Status}}' \
+      | grep -qE "<appName>-core Up (Less than a|[1-9]) (second|minute)"; do sleep 15; done
+```
+
+Build logs are at `/etc/dokploy/logs/<appName>/`, newest last. Then confirm the env
+actually reached the container, which is the only honest check that step 4 worked:
+
+```bash
+docker exec <appName>-core printenv | grep -E 'CORE_CONTAINER|DATA_HOST_DIR|PUBLIC_URL'
+```
+
+### Smoke test
+
+In order, because each step depends on the last:
+
+1. `https://$PUBLIC_HOST` serves the sign-in page over a valid certificate — proves DNS,
+   Traefik and the portal.
+2. Sign in with an address matching `AUTH_ALLOWED_EMAIL_DOMAIN`, and confirm the account
+   in `ADMIN_GRANTS` can reach `/admin` — proves the broker and the grant.
+3. At `/admin` → **Governance** with the scope selector on `org:<ORG_ID>`, approve at
+   least one harness (see [Choosing the engine](#choosing-the-engine)).
+4. Send one chat turn. A sandbox container appears on the host within seconds:
+
+   ```bash
+   docker ps --filter 'name=qm-sbx-' --format '{{.Names}}\t{{.Status}}'
+   ```
+
+   Note the `qm-` prefix is fixed in `src/sandbox/local-sandbox.ts` and is unrelated to
+   `appName`: sandbox containers are `qm-sbx-<slug>`, their home volumes `qm-home-<slug>`
+   and their networks `qm-net-<slug>`.
+
+   No container plus `exec daemon never became reachable` means `CORE_CONTAINER` is unset
+   or does not match `container_name`. A container that starts and dies usually means the
+   sandbox image was never built.
+5. Ask the agent to write and publish a small app, then open it under `/d/<id>` — this is
+   the only step that exercises `DATA_HOST_DIR` and `PORTAL_DEPLOYMENTS_ENABLED`.
+   `MODULE_NOT_FOUND` means `DATA_DIR` is a named volume or a mismatched bind path.
+
+### Moving an instance to a feature branch
+
+The steady state is `main`. To test a branch on a real stack, repoint and redeploy, then
+**put it back after merging** — a feature branch left selected is invisible, because the
+app keeps working:
+
+```bash
+API -X POST -d '{"composeId":"'"$COMPOSE_ID"'","branch":"<branch>"}' \
+    "$DOKPLOY_URL/api/compose.update" >/dev/null
+API -X POST -d '{"composeId":"'"$COMPOSE_ID"'"}' "$DOKPLOY_URL/api/compose.deploy" >/dev/null
+```
