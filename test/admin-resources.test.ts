@@ -237,8 +237,7 @@ test("branding rejects a logo that carries script, an external reference, or a d
     ]) {
       assert.equal((await put(bad)).status, 400, bad);
     }
-    const good =
-      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path fill="#003B7A" d="M0 0h10v10H0z"/></svg>';
+    const good = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path fill="#003B7A" d="M0 0h10v10H0z"/></svg>';
     assert.equal((await put(good)).status, 200);
     const resolved = (
       (await (await fetch(`${srv.base}/v1/surface-config`)).json()) as { branding?: { logoSvg?: string } }
