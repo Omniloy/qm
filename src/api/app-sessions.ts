@@ -3,7 +3,15 @@ import { orgId as orgIdOf } from "../config.ts";
 import { parseScopeId, scopeId } from "../types.ts";
 import { fileArtifactId } from "../files/file-artifact-store.ts";
 import { transcriptEntries, windowedTranscript } from "../sessions/session-store.ts";
-import { supportsProcessSessions } from "../sandbox/sandbox.ts";
+import { supportsProcessSessions, type Sandbox, type SandboxHandle } from "../sandbox/sandbox.ts";
+import { resolveEnvironmentId } from "../environments/environment-store.ts";
+import {
+  hiddenWorkspaceReason,
+  isHiddenWorkspacePath,
+  normalizeWorkspacePath,
+} from "../workspace/workspace-layout.ts";
+import { shq } from "../util/shell.ts";
+import { swallowAs } from "../util/errors.ts";
 import { processIsGone } from "../sandbox/process-poll.ts";
 import { cronRef, deployRef, encodeRef, fileRef, skillRef } from "../acl/resource-ref.ts";
 import { samePerson } from "../directory/person.ts";
@@ -14,8 +22,12 @@ import { MAX_ATTACHMENT_BYTES, mimeFromName, safeAttachmentName } from "../core/
 import { projectIdFromGroupRef, projectScopeId } from "../projects/project-store.ts";
 
 import type { App, AppDeps } from "./app-types.ts";
-import { toFileItem, type ScopeDeployment } from "./app-types.ts";
+import { MAX_WORKSPACE_FILE_BYTES, MAX_WORKSPACE_PATHS, toFileItem, type ScopeDeployment } from "./app-types.ts";
 import type { AppHelpers } from "./app-helpers.ts";
+
+function releaseWorkspaceHandle(sandbox: Sandbox, handle: SandboxHandle): Promise<void> {
+  return sandbox.teardown(handle).catch(swallowAs("workspace browse teardown", undefined));
+}
 
 export function createSessionMethods(
   deps: AppDeps,
@@ -30,6 +42,8 @@ export function createSessionMethods(
   | "openFileForViewer"
   | "deleteFileForViewer"
   | "moveFileForViewer"
+  | "workspaceTreeForViewer"
+  | "openWorkspaceFileForViewer"
   | "listSessions"
   | "sessionBackground"
   | "readSessionBackgroundOutput"
@@ -235,6 +249,58 @@ export function createSessionMethods(
         scopeLabel: `${current} -> ${target}`,
       });
       return "ok";
+    },
+
+    async workspaceTreeForViewer(principalId, scope, opts) {
+      if (!deps.sandbox) return "unavailable";
+      if (!(await canUseContext(principalId, scope))) return "forbidden";
+      if (!opts?.wake) return "not_loaded";
+      const sandbox = deps.sandbox;
+      const envScope = await resolveEnvironmentId(deps.environments, scope);
+      const handle = await sandbox.provision([{ scopeId: envScope, mountPath: "", mode: "rw" }]);
+      try {
+        const paths: string[] = [];
+        const hiddenDirs = new Set<string>();
+        for (const raw of await sandbox.listDir(handle, ".")) {
+          const normalized = normalizeWorkspacePath(raw);
+          if (normalized === null) continue;
+          const reason = hiddenWorkspaceReason(normalized);
+          if (reason === "mount") hiddenDirs.add(normalized.split("/")[0]!);
+          if (reason !== null) continue;
+          paths.push(normalized);
+        }
+        paths.sort();
+        return {
+          scopeId: scope,
+          paths: paths.slice(0, MAX_WORKSPACE_PATHS),
+          truncated: paths.length > MAX_WORKSPACE_PATHS,
+          hiddenDirs: [...hiddenDirs].sort(),
+        };
+      } finally {
+        await releaseWorkspaceHandle(sandbox, handle);
+      }
+    },
+
+    async openWorkspaceFileForViewer(principalId, scope, path) {
+      if (!deps.sandbox) return "unavailable";
+      if (!(await canUseContext(principalId, scope))) return "forbidden";
+      const normalized = normalizeWorkspacePath(path);
+      if (normalized === null || isHiddenWorkspacePath(normalized)) return "not_found";
+      const sandbox = deps.sandbox;
+      const envScope = await resolveEnvironmentId(deps.environments, scope);
+      const handle = await sandbox.provision([{ scopeId: envScope, mountPath: "", mode: "rw" }]);
+      try {
+        const sized = await sandbox.run(handle, `wc -c < ${shq(normalized)}`, { timeoutMs: 15_000 });
+        if (sized.code !== 0) return "not_found";
+        if (Number(sized.stdout.trim()) > MAX_WORKSPACE_FILE_BYTES) return "too_large";
+        const bytes = await sandbox.readFileBytes(handle, normalized);
+        if (bytes === null) return "not_found";
+        if (bytes.byteLength > MAX_WORKSPACE_FILE_BYTES) return "too_large";
+        const name = normalized.split("/").pop() || normalized;
+        return { name, mimetype: mimeFromName(name), bytes };
+      } finally {
+        await releaseWorkspaceHandle(sandbox, handle);
+      }
     },
 
     async listSessions(principalId) {

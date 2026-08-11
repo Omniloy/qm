@@ -15,6 +15,7 @@ import { skillPackRoutes } from "./skill-packs.ts";
 import { surfaceRoutes } from "./surface.ts";
 import { cronRoutes } from "./crons.ts";
 import { reachRoutes } from "./reach.ts";
+import { workspaceRoutes } from "./workspace.ts";
 import { directoryRoutes } from "./directory.ts";
 import { contextRoutes } from "./context.ts";
 import { surfaceCacheRoutes } from "./surface-cache.ts";
@@ -57,6 +58,7 @@ export const apiRoutes: ReadonlyArray<Route<ApiCtx>> = [
   ...contextPolicyRoutes,
   ...cronRoutes,
   ...reachRoutes,
+  ...workspaceRoutes,
   ...directoryRoutes,
   ...contextRoutes,
   ...surfaceCacheRoutes,

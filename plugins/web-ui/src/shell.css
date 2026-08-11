@@ -4594,6 +4594,83 @@ a.chat-row-open {
   font-size: 11px;
   font-weight: 400;
 }
+
+.list-tabs {
+  display: flex;
+  gap: 2px;
+  margin: 4px 0 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
+}
+.list-tab {
+  font: inherit;
+  font-size: 13px;
+  padding: 7px 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+.list-tab:hover {
+  color: var(--foreground);
+}
+.list-tab.active {
+  color: var(--foreground);
+  border-bottom-color: var(--foreground);
+  font-weight: 500;
+}
+
+.workspace-row {
+  grid-template-columns: auto minmax(180px, 1fr) auto;
+}
+button.workspace-row {
+  cursor: pointer;
+}
+.workspace-crumbs {
+  justify-content: space-between;
+}
+.workspace-path {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+.workspace-crumb {
+  font: inherit;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+.workspace-crumb:hover {
+  color: var(--foreground);
+  background: var(--muted);
+}
+.workspace-crumb.current {
+  color: var(--foreground);
+  font-weight: 500;
+  cursor: default;
+}
+.workspace-crumb-sep {
+  color: var(--muted-foreground);
+}
+.workspace-idle {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+}
+.workspace-idle div {
+  max-width: 420px;
+}
+.workspace-hint {
+  margin-top: 10px;
+}
 .btn.compact {
   padding: 4px 8px;
   font-size: 11px;

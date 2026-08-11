@@ -1,5 +1,5 @@
 import { html, nothing, render } from "lit";
-import { File, Image, Upload } from "lucide";
+import { ChevronRight, File, Folder, Image, Upload } from "lucide";
 import { api, reportSigninRequired, type SigninRequired, withBase } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
 import { browserRenderableImage, fieldSelect, formatBytes, icon, relTime } from "./ui";
@@ -16,6 +16,7 @@ import {
 import { fileActions } from "./file-actions";
 import { resetRowMenus, rowMenuTpl } from "./row-actions";
 import { contextPickerTpl, openContextPicker, resetContextPicker } from "./context-picker";
+import { crumbsOf, levelOf, nearestExistingDir, type TreeEntry } from "./workspace-tree";
 
 interface FileItem {
   id: string;
@@ -51,6 +52,64 @@ let deleteBusy = false;
 let deleteError = "";
 let filesRequestSeq = 0;
 let filesLoadAllQueued = false;
+
+interface WorkspaceState {
+  paths: string[];
+  truncated: boolean;
+  hiddenDirs: string[];
+  dir: string;
+  error: string;
+}
+
+let filesTab: "delivered" | "workspace" = "delivered";
+let wsLoading = false;
+const wsByScope = new Map<string, WorkspaceState>();
+
+function wsScope(): string {
+  return filesScope ?? personalScopeId() ?? "";
+}
+
+function currentWorkspace(): WorkspaceState | undefined {
+  return wsByScope.get(wsScope());
+}
+
+function setWsDir(dir: string): void {
+  const ws = currentWorkspace();
+  if (ws) ws.dir = dir;
+  drawFiles();
+}
+
+async function loadWorkspace(): Promise<void> {
+  const scope = wsScope();
+  if (!scope || wsLoading) return;
+  const priorDir = wsByScope.get(scope)?.dir ?? "";
+  wsLoading = true;
+  drawFiles();
+  try {
+    const r = await api<{ paths?: string[]; truncated?: boolean; hiddenDirs?: string[] }>(
+      `/api/workspace/tree?scope=${encodeURIComponent(scope)}&wake=true`,
+    );
+    const paths = r.paths ?? [];
+    wsByScope.set(scope, {
+      paths,
+      truncated: r.truncated === true,
+      hiddenDirs: r.hiddenDirs ?? [],
+      dir: nearestExistingDir(paths, priorDir),
+      error: "",
+    });
+  } catch (e) {
+    wsByScope.set(scope, {
+      paths: [],
+      truncated: false,
+      hiddenDirs: [],
+      dir: "",
+      error: errMessage(e),
+    });
+  } finally {
+    wsLoading = false;
+    drawFiles();
+  }
+}
 
 function fileScope(f: FileItem): string | null {
   return f.createdInScope ?? (f.ownerScopeId?.startsWith("personal:") ? f.ownerScopeId : null) ?? personalScopeId();
@@ -135,7 +194,41 @@ function drawFiles(loading = false): void {
           </button>
         </div>
       </div>
+      <div class="list-tabs" role="tablist">
+        <button
+          class="list-tab ${filesTab === "delivered" ? "active" : ""}"
+          type="button"
+          role="tab"
+          aria-selected=${filesTab === "delivered"}
+          @click=${() => {
+            filesTab = "delivered";
+            drawFiles();
+          }}
+        >
+          Delivered
+        </button>
+        <button
+          class="list-tab ${filesTab === "workspace" ? "active" : ""}"
+          type="button"
+          role="tab"
+          aria-selected=${filesTab === "workspace"}
+          @click=${() => {
+            filesTab = "workspace";
+            drawFiles();
+          }}
+        >
+          Workspace
+        </button>
+      </div>
       ${status ? html`<div class="status" aria-live="polite">${status}</div>` : nothing}
+      ${filesTab === "workspace" ? workspaceTpl() : deliveredTpl(visible, filtered, dropLabel, uploadTarget)}
+    `,
+    filesHost,
+  );
+}
+
+function deliveredTpl(visible: FileRow[], filtered: boolean, dropLabel: string, uploadTarget: string | null) {
+  return html`
       <button
         class="file-drop ${filesDragActive ? "dragging" : ""}"
         type="button"
@@ -219,9 +312,7 @@ function drawFiles(loading = false): void {
       ${filesNextCursor ? html`<div class="list-footer"><button class="btn" type="button" ?disabled=${filesLoadingMore} @click=${() => void loadMoreFiles()}>${filesLoadingMore ? "Loading…" : "Load more"}</button></div>` : nothing}
       ${drivePickerTpl(uploadTarget ?? "", () => drawFiles())} ${contextPickerTpl(() => drawFiles())}
       ${deleteFileConfirmTpl()}
-    `,
-    filesHost,
-  );
+    `;
 }
 
 async function moveFile(f: FileRow, scopeId: string): Promise<void> {
@@ -269,6 +360,95 @@ function onFileAction(id: string, f: FileRow): void {
       drawFiles();
       return;
   }
+}
+
+function workspaceRow(e: TreeEntry) {
+  if (e.kind === "dir") {
+    return html`<button
+      class="list-row file-row workspace-row"
+      type="button"
+      @click=${() => setWsDir(e.path)}
+    >
+      <span class="file-row-icon">${icon(Folder, 17)}</span>
+      <span class="list-row-title"><span>${e.name}</span></span>
+      <span class="list-row-meta"
+        ><span>${e.fileCount} ${e.fileCount === 1 ? "file" : "files"}</span>${icon(ChevronRight, 15)}</span
+      >
+    </button>`;
+  }
+  const url = withBase(
+    `/api/workspace/file?scope=${encodeURIComponent(wsScope())}&path=${encodeURIComponent(e.path)}`,
+  );
+  return html`<article class="list-row file-row workspace-row">
+    <span class="file-row-icon">${icon(File, 17)}</span>
+    <span class="list-row-title"><span>${e.name}</span></span>
+    <span class="list-row-meta"
+      ><a class="btn compact" href=${url} target="_blank" rel="noreferrer">Open</a></span
+    >
+  </article>`;
+}
+
+function workspaceTpl(): ReturnType<typeof html> {
+  const scope = wsScope();
+  const ws = currentWorkspace();
+  if (ws?.error) {
+    return html`<div class="empty compact">
+      ${ws.error}
+      <div><button class="btn" type="button" @click=${() => void loadWorkspace()}>Try again</button></div>
+    </div>`;
+  }
+  if (!ws) {
+    return html`<div class="empty compact workspace-idle">
+      <strong>Workspace not loaded</strong>
+      <div>
+        Listing reads the agent's computer for this context, so it does not happen until you ask. Loading it may start
+        the machine if it is asleep.
+      </div>
+      <div>
+        <button class="btn primary" type="button" ?disabled=${wsLoading || !scope} @click=${() => void loadWorkspace()}>
+          ${wsLoading ? "Loading…" : "Load workspace"}
+        </button>
+      </div>
+    </div>`;
+  }
+  const level = levelOf(ws.paths, ws.dir);
+  const crumbs = crumbsOf(ws.dir);
+  return html`
+    <div class="list-toolbar workspace-crumbs">
+      <nav class="workspace-path" aria-label="Workspace path">
+        ${crumbs.map((c, i) =>
+          i === crumbs.length - 1
+            ? html`<span class="workspace-crumb current">${c.label}</span>`
+            : html`<button
+                  class="workspace-crumb"
+                  type="button"
+                  @click=${() => setWsDir(c.path)}
+                >
+                  ${c.label}</button
+                ><span class="workspace-crumb-sep">/</span>`,
+        )}
+      </nav>
+      <button class="btn compact" type="button" ?disabled=${wsLoading} @click=${() => void loadWorkspace()}>
+        ${wsLoading ? "Refreshing…" : "Refresh"}
+      </button>
+    </div>
+    ${ws.truncated
+      ? html`<div class="status" aria-live="polite">
+          This workspace has more files than the listing carries. Showing the first
+          ${ws.paths.length.toLocaleString()}; ask the agent about the rest.
+        </div>`
+      : nothing}
+    ${level.length
+      ? html`<div class="list-rows file-list">${level.map(workspaceRow)}</div>`
+      : html`<div class="empty compact">This folder is empty.</div>`}
+    ${ws.hiddenDirs.length
+      ? html`<div class="pane-subtitle workspace-hint">
+          Not shown: ${ws.hiddenDirs.join(", ")} — shared org and team folders mounted into this workspace, plus
+          installed skills.
+        </div>`
+      : nothing}
+    <div class="pane-subtitle workspace-hint">Ask the agent to move, rename or share anything here.</div>
+  `;
 }
 
 function fileRow(f: FileRow) {

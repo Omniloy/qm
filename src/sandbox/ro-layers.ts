@@ -8,6 +8,8 @@ import { swallow } from "../util/errors.ts";
 import { makeTar } from "./tar.ts";
 import type { SandboxHandle } from "./sandbox.ts";
 
+export const RO_LAYERS_MANIFEST = ".ro-layers.manifest";
+
 export interface RoLayerNames {
   manifest: string;
   tar: string;

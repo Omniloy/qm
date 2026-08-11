@@ -16,6 +16,8 @@ const USER_SCOPED: Rule[] = [
   pat("GET", "/v1/sessions/:id/background/:pid/output", { in: "query", name: "viewer" }),
   pat("GET", "/v1/files/:id/content", { in: "query", name: "viewer" }),
   pat("GET", "/v1/files", { in: "query", name: "viewer" }),
+  pat("GET", "/v1/workspace/tree"),
+  pat("GET", "/v1/workspace/file"),
   pat("POST", "/v1/files/upload", { in: "body", name: "principalId" }),
   pat("POST", "/v1/sessions/:id", { in: "body", name: "principalId" }),
   pat("POST", "/v1/sessions/:id/title", { in: "body", name: "principalId" }),

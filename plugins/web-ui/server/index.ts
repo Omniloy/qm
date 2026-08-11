@@ -1228,6 +1228,43 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
       return relay(res, r);
     }
 
+    if (method === "GET" && path === "/api/workspace/tree") {
+      const qs = new URLSearchParams();
+      const scope = url.searchParams.get("scope");
+      if (scope) qs.set("scope", scope);
+      if (url.searchParams.get("wake") === "true") qs.set("wake", "true");
+      const r = await coreFetch("GET", `/v1/workspace/tree?${qs.toString()}`);
+      return relay(res, r);
+    }
+
+    if (method === "GET" && path === "/api/workspace/file") {
+      const qs = new URLSearchParams();
+      const scope = url.searchParams.get("scope");
+      if (scope) qs.set("scope", scope);
+      const wpath = url.searchParams.get("path");
+      if (wpath) qs.set("path", wpath);
+      const corePath = withSourceAuthNonce(`/v1/workspace/file?${qs.toString()}`, CORE_SIGNING_SECRET);
+      const portalTok = portalTokenStore.getStore();
+      const r = await fetch(`${CORE}${corePath}`, {
+        headers: {
+          ...signedHeaders(CORE_SIGNING_SECRET, "GET", corePath, ""),
+          ...(portalTok ? { [PORTAL_IDENTITY_HEADER]: portalTok } : {}),
+        },
+        redirect: "manual",
+      });
+      if (!r.ok || !r.body) return relay(res, { status: r.status, text: await r.text() });
+      res.writeHead(200, {
+        "content-type": r.headers.get("content-type") ?? "application/octet-stream",
+        ...(r.headers.get("content-length") ? { "content-length": r.headers.get("content-length")! } : {}),
+        ...(r.headers.get("content-disposition")
+          ? { "content-disposition": r.headers.get("content-disposition")! }
+          : {}),
+        "content-security-policy": UNTRUSTED_CONTENT_SANDBOX_CSP,
+        "x-content-type-options": "nosniff",
+      });
+      return Readable.fromWeb(r.body as Parameters<typeof Readable.fromWeb>[0]).pipe(res);
+    }
+
     // Deliberately one branch per verb rather than a passthrough: /api/files
     // has no generic relay, and adding one would expose every /v1/files route
     // this surface has never audited. No viewer parameter — core reads the
