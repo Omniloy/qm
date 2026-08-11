@@ -62,7 +62,7 @@ python3 skills/browse/scripts/browser.py pane --provider P --session S --url VIE
 python3 skills/browse/scripts/browser.py cookies [--url U | --domain D]   # site cookies as JSON
 python3 skills/browse/scripts/browser.py storage [--session] [--key K]    # localStorage as JSON
 python3 skills/browse/scripts/browser.py net SUBSTR [--for N] [--bodies]  # capture matching traffic
-python3 skills/browse/scripts/browser.py download URL [--as NAME] [--dir D]  # save a file here
+python3 skills/browse/scripts/browser.py download URL|--click REF [--as NAME]  # save a file here
 python3 skills/browse/scripts/browser.py tabs                     # tabs you can move to
 python3 skills/browse/scripts/browser.py tab ID                   # move the share to one
 ```
@@ -217,7 +217,13 @@ and where it shows up on their Files page.
 ```bash
 $B download "https://example.com/invoice.pdf"          # -> downloads/invoice.pdf
 $B download "$URL" --as trip-receipt.pdf --dir facturas
+$B snapshot && $B download --click 13 --as invoice.pdf # when the URL is unknowable
 ```
+
+**Often there is no URL to find.** A Download button that builds the file in page script, or
+posts for it, leaves nothing in the DOM and opens no tab — `snapshot` shows you a button and
+nothing else. `--click REF` is for exactly that: it watches the tab, clicks, and keeps the
+first response that comes back as a file, letting everything else through untouched.
 
 It names the file from the server's `Content-Disposition` when you do not. If it answers with
 a web page rather than a file, it stops and says so — that is a sign-in wall, and the fix is

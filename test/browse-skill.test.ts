@@ -421,3 +421,16 @@ test("a tab the shared one opens is followed, and others can be picked", () => {
   assert.match(CLI, /qm\.listTabs/);
   assert.match(CLI, /qm\.switchTab/);
 });
+
+test("a file with no findable URL is caught by clicking for it", () => {
+  assert.match(SKILL, /Often there is no URL to find/);
+  const dl = /if a\.cmd == "download":[\s\S]*?if a\.cmd in \("tabs", "tab"\):/.exec(CLI)?.[0] ?? "";
+  assert.match(dl, /--click/);
+  assert.match(dl, /Fetch\.continueRequest/, "traffic that is not the file must not be held up");
+});
+
+test("events are kept rather than dropped while waiting for a reply", () => {
+  const call = /def call\(self, method[\s\S]{0,900}/.exec(CLI)?.[0] ?? "";
+  assert.match(call, /self\.events\.append/, "an interception event routinely beats the reply over a relay");
+  assert.doesNotMatch(call, /Events are not interesting/);
+});

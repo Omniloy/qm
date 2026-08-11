@@ -168,6 +168,7 @@ class CDP:
         self.ws = WS(ws_url, timeout)
         self.n = 0
         self.session_id = session_id
+        self.events = []
 
     def call(self, method, **params):
         self.n += 1
@@ -182,20 +183,27 @@ class CDP:
                 if "error" in msg:
                     raise RuntimeError(f"{method}: {msg['error'].get('message', msg['error'])}")
                 return msg.get("result", {})
-            # Events are not interesting to a one-shot verb; drop them.
+            # Most verbs have no use for events, but interception is waiting for
+            # one — and over a relay it routinely arrives before the reply to the
+            # command that caused it. Dropping it here hung every download.
+            if msg.get("method"):
+                self.events.append(msg)
+                del self.events[:-200]
 
     def wait_event(self, method, seconds=25):
-        """Block until one event arrives, ignoring replies meant for nobody.
-
-        `call` drops events on the floor because a one-shot verb has no use for
-        them. Interception is the exception: the whole point is the event.
-        """
+        """The next event of this kind, from the buffer or from the wire."""
+        for i, held in enumerate(self.events):
+            if held.get("method") == method:
+                return self.events.pop(i).get("params", {})
         deadline = time.time() + seconds
         while time.time() < deadline:
             self.ws.sock.settimeout(max(1, deadline - time.time()))
             msg = json.loads(self.ws.recv())
             if msg.get("method") == method:
                 return msg.get("params", {})
+            if msg.get("method"):
+                self.events.append(msg)
+                del self.events[:-200]
         raise RuntimeError(f"{method} never arrived")
 
     def eval(self, expr, timeout_note=""):
@@ -939,7 +947,9 @@ def main():
     pf.add_argument("--width", type=int, default=800)
     sub.add_parser("status")
     pdl = sub.add_parser("download", help="save a file into the workspace without downloading it in the browser")
-    pdl.add_argument("url")
+    pdl.add_argument("url", nargs="?", default="")
+    pdl.add_argument("--click", type=int, default=None,
+                     help="a ref from snapshot: click it and keep whatever file it starts")
     pdl.add_argument("--as", dest="name", default="", help="what to call it (default: from the server)")
     pdl.add_argument("--dir", default="downloads", help="workspace folder to put it in")
     pdl.add_argument("--max-mb", dest="max_mb", type=int, default=100)
@@ -1113,22 +1123,47 @@ def main():
         return
 
     if a.cmd == "download":
+        if not a.url and a.click is None:
+            die("Give a URL, or --click REF to keep whatever file a button starts.")
         c, state = connect()
         target = a.url
-        name = a.name or (urllib.parse.urlparse(target).path.rsplit("/", 1)[-1] or "download.bin")
+        name = a.name or (urllib.parse.urlparse(target).path.rsplit("/", 1)[-1] if target else "") or "download.bin"
         outdir = os.path.join(os.getcwd(), a.dir)
         os.makedirs(outdir, exist_ok=True)
         path = os.path.join(outdir, name)
         try:
             # Response stage: the bytes exist and Chrome has not yet decided to
             # save them, which is the only moment we can take them instead.
-            c.call("Fetch.enable", patterns=[{"urlPattern": target, "requestStage": "Response"}])
-            # Issued from the page so it carries the person's session, and
-            # deliberately NOT a navigation: navigating to a PDF or an
-            # attachment tears down the very tab we are driving.
-            c.call("Runtime.evaluate", expression=(
-                "fetch(%s, {credentials:'include', mode:'no-cors'}).catch(()=>{}); 1" % json.dumps(target)))
-            paused = c.wait_event("Fetch.requestPaused", seconds=a.timeout)
+            pattern = target if target else "*"
+            c.call("Fetch.enable", patterns=[{"urlPattern": pattern, "requestStage": "Response"}])
+            if target:
+                # Issued from the page so it carries the person's session, and
+                # deliberately NOT a navigation: navigating to a PDF or an
+                # attachment tears down the very tab we are driving.
+                c.call("Runtime.evaluate", expression=(
+                    "fetch(%s, {credentials:'include', mode:'no-cors'}).catch(()=>{}); 1" % json.dumps(target)))
+            else:
+                do_click(c, a.click, "")
+            # With a click we do not know the URL, so everything in the tab is
+            # paused and let through until the one that is a file shows up.
+            deadline = time.time() + a.timeout
+            paused = None
+            while time.time() < deadline:
+                ev = c.wait_event("Fetch.requestPaused", seconds=max(1, int(deadline - time.time())))
+                hs = {h.get("name", "").lower(): h.get("value", "")
+                      for h in (ev.get("responseHeaders") or [])}
+                looks_like_a_file = ("attachment" in hs.get("content-disposition", "").lower()
+                                     or (target != "" and ev.get("request", {}).get("url") == target))
+                if target or looks_like_a_file:
+                    paused = ev
+                    break
+                try:
+                    c.call("Fetch.continueRequest", requestId=ev["requestId"])
+                except Exception:
+                    pass
+            if paused is None:
+                die("Nothing that looked like a file came back within the timeout.\n"
+                    "If the button opens a new tab, run `tabs` and `tab <id>` first, then retry.")
             rid = paused["requestId"]
             status = paused.get("responseStatusCode")
             headers = {h.get("name", "").lower(): h.get("value", "")
