@@ -11,6 +11,8 @@ const CLI = read("skills-seed/browse/scripts/browser.py");
 // SAYS. Code and shape assertions keep using the raw text.
 const SKILL = RAW.replace(/\s+/g, " ");
 
+const openBlock = (): string => /if a\.cmd == "open":[\s\S]*?if a\.cmd == "watch":/.exec(CLI)?.[0] ?? "";
+
 /* ----------------------------------------------------------- the surface */
 
 test("every verb the skill documents actually exists in the CLI", () => {
@@ -225,12 +227,39 @@ test("refs are preferred over selectors, and re-taken after the page changes", (
 test("the browser is claimed before it is started", () => {
   // A browser costs about 1.25 GB. Registering first means a refusal arrives
   // while there is still nothing to throw away.
-  const open = /if a\.cmd == "open":[\s\S]{0,3800}/.exec(CLI)?.[0] ?? "";
+  const open = openBlock();
   const claimAt = open.indexOf("register(state)");
   const launchAt = open.indexOf("start_watchdog");
   assert.ok(claimAt > 0 && launchAt > 0, "both steps are in open");
   assert.ok(claimAt < launchAt, "the claim comes first");
   assert.match(open, /outcome == "full"/);
+});
+
+test("a relay with no shared tab stops the turn rather than switching browsers", () => {
+  const open = openBlock();
+  assert.match(open, /via_extension/, "the extension path is distinguished from a hosted --cdp");
+  assert.match(open, /not sharing a tab/);
+  assert.match(open, /Do NOT quietly switch to the built-in browser/);
+  assert.match(open, /clear_state\(\)/, "and it leaves no remote state behind to be reused");
+});
+
+test("the skill tells the agent to ask rather than fall back on its own", () => {
+  assert.match(SKILL, /stop and ask/i);
+  assert.match(SKILL, /Do \*\*not\*\* fall back to the built-in browser on your own/);
+});
+
+test("forcing the built-in browser lets go of a browser somewhere else", () => {
+  const open = openBlock();
+  const forceAt = open.indexOf("a.force_built_in:");
+  const reuseAt = open.indexOf("Reusing it");
+  assert.ok(forceAt > 0 && reuseAt > 0, "both branches are in open");
+  assert.ok(forceAt < reuseAt, "the stale remote record is dropped before the reuse check");
+  assert.match(open, /billing until its own timeout/, "and a hosted browser we let go of is not left silent");
+});
+
+test("the browser is not closed the moment the answer is ready", () => {
+  assert.match(SKILL, /Do not close it just because your answer is ready/);
+  assert.match(SKILL, /reaped automatically once it has been idle/);
 });
 
 test("a refusal to open is passed on as news, not as a failure", () => {
@@ -333,7 +362,7 @@ test("two turns opening at once do not each start a browser", () => {
   // it while every call reported success.
   assert.match(CLI, /class OpenLock/);
   assert.match(CLI, /fcntl\.flock\(self\.fd, fcntl\.LOCK_EX\)/);
-  const open = /if a\.cmd == "open":[\s\S]{0,2800}/.exec(CLI)?.[0] ?? "";
+  const open = openBlock();
   assert.match(open, /with OpenLock\(\):/);
   // The loser must reuse rather than fail — it is what it would have done had
   // it arrived a moment later.
@@ -367,4 +396,73 @@ test("the frame follows the scroll, instead of photographing the page top", () =
   const frame = /elif a\.cmd == "frame":[\s\S]{0,2000}/.exec(CLI)?.[0] ?? "";
   assert.match(frame, /sx: scrollX, sy: scrollY/);
   assert.match(frame, /"x": size\["sx"\], "y": size\["sy"\]/);
+});
+
+test("a file is fetched rather than navigated to, which is what breaks the bridge", () => {
+  assert.match(SKILL, /Never navigate to a file/);
+  assert.match(SKILL, /download URL/);
+  const dl = /if a\.cmd == "download":[\s\S]*?if a\.cmd in \("tabs", "tab"\):/.exec(CLI)?.[0] ?? "";
+  assert.ok(dl.length > 0, "the verb exists");
+  assert.match(dl, /Fetch\.enable/);
+  assert.match(dl, /Fetch\.takeResponseBodyAsStream/);
+  assert.match(dl, /IO\.read/);
+  assert.match(dl, /Fetch\.failRequest/, "the browser must never turn it into a download");
+  assert.match(dl, /Fetch\.disable/, "a pattern left armed hangs every matching request");
+});
+
+test("a sign-in wall is not saved as if it were the file", () => {
+  const dl = /if a\.cmd == "download":[\s\S]*?if a\.cmd in \("tabs", "tab"\):/.exec(CLI)?.[0] ?? "";
+  assert.match(dl, /text\/html/);
+  assert.match(dl, /returned a web page, not a file/);
+});
+
+test("a tab the shared one opens is followed, and others can be picked", () => {
+  assert.match(SKILL, /A new tab is not lost/);
+  assert.match(CLI, /qm\.listTabs/);
+  assert.match(CLI, /qm\.switchTab/);
+});
+
+test("a file with no findable URL is caught by clicking for it", () => {
+  assert.match(SKILL, /Often there is no URL to find/);
+  const dl = /if a\.cmd == "download":[\s\S]*?if a\.cmd in \("tabs", "tab"\):/.exec(CLI)?.[0] ?? "";
+  assert.match(dl, /--click/);
+  assert.match(dl, /Fetch\.continueRequest/, "traffic that is not the file must not be held up");
+});
+
+test("events are kept rather than dropped while waiting for a reply", () => {
+  const call = /def call\(self, method[\s\S]{0,900}/.exec(CLI)?.[0] ?? "";
+  assert.match(call, /self\.events\.append/, "an interception event routinely beats the reply over a relay");
+  assert.doesNotMatch(call, /Events are not interesting/);
+});
+
+test("a file behind a link is fetched, never opened in the tab", () => {
+  assert.match(SKILL, /opens in the browser/);
+  assert.match(CLI, /def href_behind/);
+  const dl = /if a\.cmd == "download":[\s\S]*?if a\.cmd in \("tabs", "tab"\):/.exec(CLI)?.[0] ?? "";
+  assert.match(dl, /href_behind/, "a link's href beats clicking it");
+});
+
+test("a click made for a download does not wait for the page afterwards", () => {
+  assert.match(CLI, /def click_without_waiting/);
+  const dl = /if a\.cmd == "download":[\s\S]*?if a\.cmd in \("tabs", "tab"\):/.exec(CLI)?.[0] ?? "";
+  assert.match(dl, /click_without_waiting/);
+  assert.doesNotMatch(dl, /do_click\(/);
+});
+
+test("a document that is not a web page counts as a file", () => {
+  const dl = /if a\.cmd == "download":[\s\S]*?if a\.cmd in \("tabs", "tab"\):/.exec(CLI)?.[0] ?? "";
+  assert.match(dl, /resourceType/);
+  assert.match(dl, /Document/);
+});
+
+test("a download that lands in a new tab says where it went", () => {
+  const dl = /if a\.cmd == "download":[\s\S]*?if a\.cmd in \("tabs", "tab"\):/.exec(CLI)?.[0] ?? "";
+  assert.match(dl, /new_tab_url/);
+  assert.match(dl, /opened a new tab instead/);
+  assert.match(CLI, /def new_tab_url/);
+});
+
+test("waiting for an interception cannot end in a socket traceback", () => {
+  const wait = /def wait_event\([\s\S]{0,900}/.exec(CLI)?.[0] ?? "";
+  assert.match(wait, /socket\.timeout|TimeoutError/);
 });

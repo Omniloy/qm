@@ -56,11 +56,12 @@ export async function relayStatus(ctx: ApiCtx): Promise<void> {
   const principalId = callerOf(ctx);
   if (!principalId) return sendJson(res, 403, { error: "forbidden", message: "an identified caller is required" });
   const hub = deps.browserRelay;
-  if (!hub) return sendJson(res, 200, { connected: false, available: false });
+  if (!hub) return sendJson(res, 200, { connected: false, sharing: false, available: false });
   const state = hub.connected(principalId);
   return sendJson(res, 200, {
     available: true,
     connected: state.extension,
+    sharing: state.sharing,
     inUse: state.cdp,
     ...(hub.describe(principalId) ?? {}),
   });

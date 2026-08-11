@@ -6,6 +6,8 @@ import {
   browserById,
   browserTabs,
   connectDraft,
+  extensionNote,
+  extensionState,
   initialBrowserTab,
   type BrowserProvider,
 } from "../src/browser-picker-state.ts";
@@ -113,4 +115,65 @@ test("the extension is chosen, not key-dropped, even when not attached", async (
   assert.equal(connectDraft(EXTENSION), null);
   assert.equal(isExtensionTab("extension"), true);
   assert.equal(isExtensionTab("anchor"), false);
+});
+
+test("a connected extension with no shared tab reads as neither ready nor absent", () => {
+  const provider = { id: "extension", name: "Your Chrome", summary: "", keyEnv: "", keyService: "", connected: true };
+
+  assert.deepEqual(extensionState(provider), { kind: "idle" });
+  const note = extensionNote(extensionState(provider));
+  assert.equal(note.tone, "warning");
+  assert.match(note.text, /no tab is shared/);
+});
+
+test("a shared tab is named, so the card answers which one", () => {
+  const provider = {
+    id: "extension",
+    name: "Your Chrome",
+    summary: "",
+    keyEnv: "",
+    keyService: "",
+    connected: true,
+    sharing: true,
+    sharedTabTitle: "Gmail",
+  };
+
+  assert.deepEqual(extensionState(provider), { kind: "sharing", tab: "Gmail" });
+  assert.equal(extensionNote(extensionState(provider)).tone, "ok");
+  assert.match(extensionNote(extensionState(provider)).text, /Gmail/);
+});
+
+test("sharing without a title still reads as sharing", () => {
+  const provider = {
+    id: "extension",
+    name: "Your Chrome",
+    summary: "",
+    keyEnv: "",
+    keyService: "",
+    connected: true,
+    sharing: true,
+  };
+
+  assert.deepEqual(extensionState(provider), { kind: "sharing", tab: "a tab" });
+});
+
+test("an absent extension keeps the install instructions", () => {
+  const provider = { id: "extension", name: "Your Chrome", summary: "", keyEnv: "", keyService: "" };
+
+  assert.deepEqual(extensionState(provider), { kind: "absent" });
+  assert.equal(extensionNote(extensionState(provider)).tone, "neutral");
+});
+
+test("a stale sharing flag cannot outlive the connection", () => {
+  const provider = {
+    id: "extension",
+    name: "Your Chrome",
+    summary: "",
+    keyEnv: "",
+    keyService: "",
+    connected: false,
+    sharing: true,
+  };
+
+  assert.deepEqual(extensionState(provider), { kind: "absent" }, "no socket means nothing is shared");
 });

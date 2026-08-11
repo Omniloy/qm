@@ -22,6 +22,10 @@ export default tseslint.config(
     languageOptions: { globals: globals.node },
   },
   {
+    files: ["extension/**/*.js"],
+    languageOptions: { globals: { ...globals.browser, ...globals.webextensions } },
+  },
+  {
     rules: {
       "no-empty": ["error", { allowEmptyCatch: false }],
 

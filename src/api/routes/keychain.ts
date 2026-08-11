@@ -21,6 +21,20 @@ import { BRAND } from "../../../plugins/chassis/src/brand.ts";
 const CONSENT_ON_TRIGGERED_TURN =
   "consent can only be recorded on a turn its owner themself sent — this turn was fired by a trigger, not a person";
 
+interface BrowserPickerEntry {
+  id: string;
+  name: string;
+  summary: string;
+  keyEnv: string;
+  keyService: string;
+  profileEnv?: string;
+  profileService?: string;
+  signupUrl?: string;
+  connected: boolean;
+  sharing?: boolean;
+  sharedTabTitle?: string;
+}
+
 async function resolveScopeNames(
   app: ApiCtx["app"],
   deps: ApiCtx["deps"],
@@ -174,7 +188,7 @@ async function handleKeychain(ctx: ApiCtx): Promise<void> {
       // person's current choice. Connected is derived from the credential they
       // already hold, so connecting and choosing stay one story.
       const services = new Set(credentials.map((credential) => credential.service));
-      const browserProviders = (deps.browserProviders ?? []).map((spec) => ({
+      const browserProviders: BrowserPickerEntry[] = (deps.browserProviders ?? []).map((spec) => ({
         id: spec.id,
         name: spec.name,
         summary: spec.summary,
@@ -190,15 +204,17 @@ async function handleKeychain(ctx: ApiCtx): Promise<void> {
       // hosted provider, whose connection is a stored key rather than a live
       // socket.
       if (deps.relayPublicUrl) {
-        const live = deps.browserRelay?.connected(actorId).extension ?? false;
+        const live = deps.browserRelay?.connected(actorId);
+        const sharedTab = deps.browserRelay?.describe(actorId)?.title;
         browserProviders.push({
           id: EXTENSION_BROWSER_ID,
           name: "Your Chrome",
-          summary:
-            `Drive one tab in your own browser through the ${BRAND.extensionName} extension, so it has your real sign-ins and does not look like automation.`,
+          summary: `Drive one tab in your own browser through the ${BRAND.extensionName} extension, so it has your real sign-ins and does not look like automation.`,
           keyEnv: "",
           keyService: "",
-          connected: live,
+          connected: live?.extension ?? false,
+          sharing: live?.sharing ?? false,
+          ...(sharedTab ? { sharedTabTitle: sharedTab } : {}),
         });
       }
       const activeBrowser =

@@ -12,6 +12,7 @@ import {
   frameInterval,
   toPageCoords,
   type LiveSession,
+  dropStaleFrame,
 } from "../src/browser-pane-state.ts";
 
 const NOW = 1_800_000_000_000;
@@ -161,5 +162,13 @@ test("a browser with no URL does not offer to open one", () => {
   assert.deepEqual(
     paneActions(streamed).map((a) => a.id),
     ["minimize", "release", "end"],
+  );
+});
+
+test("a browser that simply ended keeps its last frame on screen", () => {
+  assert.equal(
+    dropStaleFrame("abc", null),
+    false,
+    "a short task is over before anyone can look; the last frame is the only record",
   );
 });

@@ -26,9 +26,15 @@ they made deliberately.
 - **`extension`** — the person's own Chrome, through the MiniOmni Browser Bridge extension. Plain
   `open` just works: it attaches to their browser over the relay, with their real sign-ins and
   none of the automation fingerprint that gets a sandbox browser blocked. No doc, no create
-  step. There is no pane to fill — they are watching their own screen. If `open` says the relay
-  did not reach this turn, their extension is not connected: tell them to open it and share a
-  tab.
+  step. There is no pane to fill — they are watching their own screen.
+
+  When `open` says their Chrome is not sharing a tab, **stop and ask**. Chrome stops the
+  extension when it goes quiet, so this is ordinary rather than alarming: tell them plainly
+  that the extension is not sharing, ask them to press **Share this tab**, and run `open`
+  again. Do **not** fall back to the built-in browser on your own — it holds none of their
+  sign-ins, so the task fails later and further from the cause, and they chose their own
+  browser for a reason. Fall back only if they say to, and say which browser you used.
+
 - **Any other value** — a hosted provider. Do NOT run plain `open`. Read
   `skills/browse/providers/$BROWSE_PROVIDER.md`, create the browser it describes, then
   `open --cdp "$CDP_URL"`. Every verb behaves the same afterwards.
@@ -56,6 +62,9 @@ python3 skills/browse/scripts/browser.py pane --provider P --session S --url VIE
 python3 skills/browse/scripts/browser.py cookies [--url U | --domain D]   # site cookies as JSON
 python3 skills/browse/scripts/browser.py storage [--session] [--key K]    # localStorage as JSON
 python3 skills/browse/scripts/browser.py net SUBSTR [--for N] [--bodies]  # capture matching traffic
+python3 skills/browse/scripts/browser.py download URL|--click REF [--as NAME]  # save a file here
+python3 skills/browse/scripts/browser.py tabs                     # tabs you can move to
+python3 skills/browse/scripts/browser.py tab ID                   # move the share to one
 ```
 
 `open` is idempotent — if a browser is already open it reattaches rather than starting a
@@ -118,11 +127,15 @@ none of them hold the person's real sign-ins. The one browser that has both is t
 own — so MiniOmni can drive a single tab in it through a small extension the person installs. It
 holds their cookies because it _is_ their browser, and it looks like them because it is them.
 
-When `$BROWSE_PROVIDER` is `extension` (or the person asks to use their own browser), do not run
-plain `open`. The person shares a tab from the extension; you attach with
-`open --cdp "$QM_RELAY_URL"` and every verb — including the three above — works against that
-tab. There is no pane to fill: it is on their own screen, in front of them. Tell them plainly
-that while a tab is shared you can read and act on it as them, and only that one tab.
+When `$BROWSE_PROVIDER` is `extension` (or the person asks to use their own browser), plain
+`open` is all you need — it resolves the relay for you. The person shares a tab from the
+extension, and every verb — including the three above — works against that tab. There is no
+pane to fill: it is on their own screen, in front of them. Tell them plainly that while a tab
+is shared you can read and act on it as them, and only that one tab.
+
+`open` fails when no tab is shared, which is the common case after their Chrome has been
+idle. That is a question for them, not a reason to switch browsers — see **Which browser**
+above.
 
 ## When a site refuses automation
 
@@ -189,6 +202,44 @@ secret into a one-time page so it never passes through the conversation and swit
 browser in the same place. In a channel or group, do not offer it: a personal key must never be minted
 into a shared room.
 
+## Getting a file, and moving between tabs
+
+**Never navigate to a file.** Opening a PDF, or clicking something that starts a download,
+replaces the tab's document with something the bridge cannot drive — in the person's own
+Chrome that ends the share, and you are left pressing them to share a tab again. It is also
+pointless: a file the browser downloads lands in _their_ Downloads folder, not here.
+
+`download` avoids all of it. It asks for the URL from inside the page, so the request carries
+their session exactly as a click would, takes the bytes as they arrive, and stops the browser
+from ever turning it into a download. The file lands in your workspace, where you can read it
+and where it shows up on their Files page.
+
+```bash
+$B download "https://example.com/invoice.pdf"          # -> downloads/invoice.pdf
+$B download "$URL" --as trip-receipt.pdf --dir facturas
+$B snapshot && $B download --click 13 --as invoice.pdf # when the URL is unknowable
+```
+
+**Often there is no URL to find.** A Download button that builds the file in page script, or
+posts for it, leaves nothing in the DOM and opens no tab — `snapshot` shows you a button and
+nothing else. `--click REF` is for exactly that: it watches the tab, clicks, and keeps the
+first response that comes back as a file, letting everything else through untouched.
+
+If that ref turns out to sit in a plain link, it follows the href instead of clicking, and
+says so. That is the important case for a PDF that **opens in the browser** rather than
+downloading: clicking would turn the tab into Chrome's PDF viewer, which ends the share and
+leaves you with nothing to drive. Fetching the same URL leaves the tab exactly where it is.
+
+It names the file from the server's `Content-Disposition` when you do not. If it answers with
+a web page rather than a file, it stops and says so — that is a sign-in wall, and the fix is
+to open the page in the shared tab first so the session exists, then download the real file
+URL. Find that URL the way you would anything else: `snapshot` and read the link's href.
+
+**A new tab is not lost.** A tab the shared one opens is followed automatically, so a flow
+that pops a receipt into a new tab keeps working. For a tab the person opened themselves,
+`tabs` lists what is open in that window and `tab ID` moves you there. You still drive exactly
+one tab at a time, and the banner moves with you so they can see which.
+
 ## Sign-ins
 
 Sign-ins live in the browser's profile on this computer and persist between conversations.
@@ -224,10 +275,16 @@ python3 skills/browse/scripts/browser.py close
 ```
 
 Closing is graceful on purpose: the browser writes its cookies to disk on the way out, so a
-sign-in someone just completed is saved rather than lost. It is fine to leave a browser open
-between turns in the same conversation — it is reaped automatically once it has been idle a
-while — but close it when the task is finished, so the pane does not sit there implying work
-is still happening.
+sign-in someone just completed is saved rather than lost.
+
+**Do not close it just because your answer is ready.** The pane below the conversation is how
+the person sees what you actually did and takes the wheel if they want it, and a browser that
+disappears the moment you finish is one they never got to look at — a short task ends before
+anyone can glance at it. Leave it open: it is reaped automatically once it has been idle a
+while, and the pane shows the last thing it displayed even after it goes.
+
+Close it yourself only when you have a reason beyond being finished: the person asks, the task
+is genuinely over and they have seen the result, or you are about to open a different browser.
 
 ## Reporting
 

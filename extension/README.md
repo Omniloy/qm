@@ -13,9 +13,13 @@ its cookies (HttpOnly ones too) and the tokens it holds. That is the point: a si
 blocks a sandbox browser, or needs a login you already have, works because this _is_ your
 browser.
 
-The boundary is the tab. The extension attaches Chrome's debugger to exactly the one tab
-you nominate and nothing else — other tabs, other windows, and the rest of Chrome stay out
-of reach. Stop sharing (or close the tab) and the agent is locked out again.
+The boundary is one tab at a time, inside the window you shared from. The extension attaches
+Chrome's debugger to a single tab, and the agent can list the other tabs in that window and
+move to one of them — so a receipt that opens in a new tab still works. Other windows, and
+the rest of Chrome, stay out of reach. A tab your shared tab opens is followed automatically,
+which does mean a page you are on can move the share within that window. The green banner and
+the toolbar badge always mark the tab being driven. Stop sharing (or close the tab) and the
+agent is locked out again.
 
 Because that capability is real, treat the pairing token like a password: anyone holding it
 and able to reach your MiniOmni can pair _their_ agent to a browser you share. The token expires

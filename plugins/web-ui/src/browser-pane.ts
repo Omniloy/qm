@@ -10,6 +10,7 @@ import {
   paneActions,
   primaryAction,
   timeLeft,
+  dropStaleFrame,
   endedNote,
   frameInterval,
   toPageCoords,
@@ -222,9 +223,7 @@ export async function refreshBrowserPane(rerender: () => void): Promise<void> {
       ended = { threadRef: session.threadRef, note: endedNote(session.expiresAt <= Date.now() ? "expired" : "lost") };
     }
     if (next) ended = null;
-    // A different browser means the picture on screen is of the old one.
-    // Keeping it would show someone the wrong page and let them click it.
-    if (next?.sessionId !== session?.sessionId) {
+    if (dropStaleFrame(session?.sessionId ?? null, next?.sessionId ?? null)) {
       frame = null;
       frameFailures = 0;
     }
@@ -306,6 +305,16 @@ export function browserPaneTpl(threadRef: string | null, rerender: () => void): 
           Dismiss
         </button>
       </div>
+      ${
+        frame
+          ? html`<img
+              class="browser-pane-view ended-shot"
+              src=${`data:image/jpeg;base64,${frame.jpeg}`}
+              alt=${frame.title || "The last thing the browser showed"}
+              draggable="false"
+            />`
+          : nothing
+      }
     </section>`;
   }
   const s = session!;

@@ -80,6 +80,13 @@ export function paneVisible(session: LiveSession | null, threadRef: string | nul
   return session.expiresAt > nowMs;
 }
 
+/**
+ *
+ */
+export function dropStaleFrame(previousSessionId: string | null, nextSessionId: string | null): boolean {
+  return nextSessionId !== null && nextSessionId !== previousSessionId;
+}
+
 export interface PaneStatus {
   label: string;
   /** True while a person holds the wheel — the accent state, and the loud one. */

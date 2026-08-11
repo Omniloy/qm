@@ -7271,6 +7271,10 @@ img.browser-pane-view.drivable:focus-visible {
   border-style: dashed;
   opacity: 0.8;
 }
+.browser-pane-view.ended-shot {
+  filter: grayscale(0.55);
+  cursor: default;
+}
 
 .context-choices {
   display: flex;

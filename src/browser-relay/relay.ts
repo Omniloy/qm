@@ -42,12 +42,17 @@ export interface RelayHub {
   detach(principalId: string, side: RelaySide): void;
   /** A frame from one side, to be acted on or forwarded. */
   deliver(principalId: string, side: RelaySide, raw: string): void;
-  connected(principalId: string): { extension: boolean; cdp: boolean };
+  connected(principalId: string): { extension: boolean; cdp: boolean; sharing: boolean };
   describe(principalId: string): { title?: string; url?: string } | null;
 }
 
 function reply(socket: RelaySocket, id: number, result: unknown): void {
   socket.send(JSON.stringify({ id, result }));
+}
+
+function refuse(socket: RelaySocket, id: number | undefined, message: string): void {
+  if (typeof id !== "number") return;
+  socket.send(JSON.stringify({ id, error: { code: -32000, message } }));
 }
 
 /**
@@ -57,6 +62,14 @@ function reply(socket: RelaySocket, id: number, result: unknown): void {
  * the client — and every skill built on it — unchanged.
  */
 function handshake(pair: Pair, method: string, id: number, cdp: RelaySocket): boolean {
+  // Chrome's debugger API exposes no Browser domain, so a graceful
+  // browser-level close has nothing to call. Closing the person's own browser
+  // would be wrong anyway — this ends the agent's use of it, nothing more.
+  if (method === "Browser.close" || method === "Browser.getVersion") {
+    reply(cdp, id, method === "Browser.close" ? {} : { product: "Chrome/extension", protocolVersion: "1.3" });
+    return true;
+  }
+  if (!pair.sharing) return false;
   if (method === "Target.getTargets") {
     reply(cdp, id, {
       targetInfos: [
@@ -78,13 +91,6 @@ function handshake(pair: Pair, method: string, id: number, cdp: RelaySocket): bo
   }
   if (method === "Target.setDiscoverTargets" || method === "Target.setAutoAttach") {
     reply(cdp, id, {});
-    return true;
-  }
-  // Chrome's debugger API exposes no Browser domain, so a graceful
-  // browser-level close has nothing to call. Closing the person's own browser
-  // would be wrong anyway — this ends the agent's use of it, nothing more.
-  if (method === "Browser.close" || method === "Browser.getVersion") {
-    reply(cdp, id, method === "Browser.close" ? {} : { product: "Chrome/extension", protocolVersion: "1.3" });
     return true;
   }
   return false;
@@ -148,14 +154,15 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
           if (handshake(pair, frame.method, frame.id, pair.cdp)) return;
         }
         if (!pair.extension) {
-          if (typeof frame.id === "number") {
-            pair.cdp.send(
-              JSON.stringify({
-                id: frame.id,
-                error: { code: -32000, message: `your Chrome is not connected — open the ${BRAND.productName} extension` },
-              }),
-            );
-          }
+          refuse(pair.cdp, frame.id, `your Chrome is not connected — open the ${BRAND.productName} extension`);
+          return;
+        }
+        if (!pair.sharing && typeof frame.method === "string" && frame.method.startsWith("Target.")) {
+          refuse(
+            pair.cdp,
+            frame.id,
+            `no tab is shared — open the ${BRAND.productName} extension and press Share this tab`,
+          );
           return;
         }
         pair.extension.send(raw);
@@ -163,9 +170,9 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
       }
       // From the extension: command results and page events, plus the one
       // message that is ours — what tab it attached to.
-      let frame: { qm?: string; title?: string; url?: string };
+      let frame: { qm?: string; title?: string; url?: string; restored?: boolean };
       try {
-        frame = JSON.parse(raw) as { qm?: string; title?: string; url?: string };
+        frame = JSON.parse(raw) as { qm?: string; title?: string; url?: string; restored?: boolean };
       } catch {
         return;
       }
@@ -173,7 +180,7 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
         pair.title = frame.title ?? pair.title;
         pair.url = frame.url ?? pair.url;
         pair.sharing = true;
-        opts.onShareChanged?.(principalId, true);
+        if (!frame.restored) opts.onShareChanged?.(principalId, true);
         return;
       }
       if (frame.qm === "detached") {
@@ -191,12 +198,16 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
 
     connected(principalId) {
       const pair = pairs.get(principalId);
-      return { extension: Boolean(pair?.extension), cdp: Boolean(pair?.cdp) };
+      return {
+        extension: Boolean(pair?.extension),
+        cdp: Boolean(pair?.cdp),
+        sharing: Boolean(pair?.extension && pair.sharing),
+      };
     },
 
     describe(principalId) {
       const pair = pairs.get(principalId);
-      if (!pair?.extension) return null;
+      if (!pair?.extension || !pair.sharing) return null;
       return { ...(pair.title ? { title: pair.title } : {}), ...(pair.url ? { url: pair.url } : {}) };
     },
   };

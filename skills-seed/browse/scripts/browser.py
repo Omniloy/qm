@@ -104,7 +104,11 @@ class WS:
         out = self.rest[:n]
         self.rest = self.rest[n:]
         while len(out) < n:
-            chunk = self.sock.recv(min(1 << 20, n - len(out)))
+            try:
+                chunk = self.sock.recv(min(1 << 20, n - len(out)))
+            except (socket.timeout, TimeoutError):
+                self.rest = out + self.rest
+                raise
             if not chunk:
                 die("the browser closed the connection")
             out += chunk
@@ -168,6 +172,7 @@ class CDP:
         self.ws = WS(ws_url, timeout)
         self.n = 0
         self.session_id = session_id
+        self.events = []
 
     def call(self, method, **params):
         self.n += 1
@@ -182,7 +187,32 @@ class CDP:
                 if "error" in msg:
                     raise RuntimeError(f"{method}: {msg['error'].get('message', msg['error'])}")
                 return msg.get("result", {})
-            # Events are not interesting to a one-shot verb; drop them.
+            if msg.get("method"):
+                self.events.append(msg)
+                del self.events[:-200]
+
+    def wait_event(self, method, seconds=25):
+        """The next event of this kind, from the buffer or from the wire."""
+        for i, held in enumerate(self.events):
+            if held.get("method") == method:
+                return self.events.pop(i).get("params", {})
+        deadline = time.time() + seconds
+        previous = self.ws.sock.gettimeout()
+        try:
+            while time.time() < deadline:
+                self.ws.sock.settimeout(max(1, deadline - time.time()))
+                try:
+                    msg = json.loads(self.ws.recv())
+                except (socket.timeout, TimeoutError, OSError):
+                    break
+                if msg.get("method") == method:
+                    return msg.get("params", {})
+                if msg.get("method"):
+                    self.events.append(msg)
+                    del self.events[:-200]
+        finally:
+            self.ws.sock.settimeout(previous)
+        raise RuntimeError(f"{method} never arrived")
 
     def eval(self, expr, timeout_note=""):
         r = self.call("Runtime.evaluate", expression=expr, returnByValue=True,
@@ -823,6 +853,87 @@ def do_click(c, ref, selector):
     print(f"clicked {b['tag']} -> {info['title'][:60]} ({info['url'][:100]})")
 
 
+def click_without_waiting(c, ref):
+    """Click and return immediately.
+
+    do_click settles the page and reads location afterwards, which never comes
+    back when the click turned the tab into Chrome's PDF viewer — the exact
+    case interception exists for.
+    """
+    b = box_of(c, ref, "")
+    for typ in ("mousePressed", "mouseReleased"):
+        c.call("Input.dispatchMouseEvent", type=typ, x=b["x"], y=b["y"],
+               button="left", clickCount=1)
+    return b
+
+
+MAX_NAME = 120
+
+
+def safe_output_path(folder, name):
+    """Where a download is allowed to land.
+
+    Both halves are attacker-influenced: the folder and name come from an agent
+    that has been reading a web page, and the fallback name comes from the
+    server. A file that escapes the workspace is the whole risk of this verb.
+    """
+    leaf = os.path.basename((name or "").strip().replace("\\", "/").rstrip("/")) or "download.bin"
+    if leaf in (".", ".."):
+        leaf = "download.bin"
+    leaf = leaf[:MAX_NAME]
+    root = os.path.realpath(os.getcwd())
+    folder = (folder or "").strip()
+    if os.path.isabs(folder) or ".." in folder.replace("\\", "/").split("/"):
+        die(f"--dir must stay inside the workspace, and {folder!r} does not.")
+    outdir = os.path.realpath(os.path.join(root, folder))
+    if outdir != root and not outdir.startswith(root + os.sep):
+        die(f"--dir must stay inside the workspace, and {folder!r} does not.")
+    path = os.path.realpath(os.path.join(outdir, leaf))
+    if not path.startswith(root + os.sep):
+        die("That filename would write outside the workspace.")
+    return outdir, path
+
+
+def tab_ids(c):
+    """The tabs open right now, or None when this browser has no notion of them."""
+    try:
+        return {t["tabId"] for t in c.call("qm.listTabs").get("tabs", [])}
+    except Exception:
+        return None
+
+
+def new_tab_url(c, before):
+    """The URL of a tab that appeared since, if one did.
+
+    A Download button that targets a new tab puts the file somewhere our
+    interception is not listening, and the new tab is often a viewer we cannot
+    drive — but its URL is all we need to fetch the file properly.
+    """
+    try:
+        for t in c.call("qm.listTabs").get("tabs", []):
+            if t["tabId"] not in before and str(t.get("url", "")).startswith("http"):
+                return t["url"]
+    except Exception:
+        return ""
+    return ""
+
+
+def href_behind(c, ref):
+    """The link a ref sits in, if any.
+
+    A file behind a plain link never needs clicking: fetching the href keeps the
+    tab where it is, so nothing navigates into a viewer and nothing breaks.
+    """
+    sel = json.dumps(f'[data-qmref="{ref}"]')
+    try:
+        got = c.eval("(() => { const e = document.querySelector(%s);"
+                     " const a = e && e.closest && e.closest('a');"
+                     " return (a && a.href) || ''; })()" % sel)
+    except Exception:
+        return ""
+    return got if isinstance(got, str) and got.startswith("http") else ""
+
+
 def press_key(c, name):
     """Send a key the way a keyboard would.
 
@@ -924,6 +1035,17 @@ def main():
     pf.add_argument("--quality", type=int, default=55)
     pf.add_argument("--width", type=int, default=800)
     sub.add_parser("status")
+    pdl = sub.add_parser("download", help="save a file into the workspace without downloading it in the browser")
+    pdl.add_argument("url", nargs="?", default="")
+    pdl.add_argument("--click", type=int, default=None,
+                     help="a ref from snapshot: click it and keep whatever file it starts")
+    pdl.add_argument("--as", dest="name", default="", help="what to call it (default: from the server)")
+    pdl.add_argument("--dir", default="downloads", help="workspace folder to put it in")
+    pdl.add_argument("--max-mb", dest="max_mb", type=int, default=100)
+    pdl.add_argument("--timeout", type=int, default=25)
+    sub.add_parser("tabs", help="the tabs you can move to, in the window you are sharing from")
+    ptab = sub.add_parser("tab", help="move the share to another tab in that window")
+    ptab.add_argument("tab_id", type=int)
     pc = sub.add_parser("cookies", help="the site's cookies, HttpOnly included, as JSON")
     pc.add_argument("--url", default="", help="only cookies a request to this URL would send")
     pc.add_argument("--domain", default="", help="keep only cookies whose domain contains this")
@@ -977,7 +1099,8 @@ def main():
         # launch path below, which is the bug that sent it to the sandbox
         # browser instead.
         chosen = "" if a.force_built_in else os.environ.get("BROWSE_PROVIDER", "").strip()
-        if chosen == "extension" and not a.cdp:
+        via_extension = chosen == "extension" and not a.cdp
+        if via_extension:
             relay = os.environ.get("QM_RELAY_URL", "").strip()
             if not relay:
                 die("This person chose their own Chrome, but no relay URL reached this turn.\n"
@@ -988,7 +1111,21 @@ def main():
         if a.cdp:
             # Someone else started this one; it is theirs to close, and its
             # pane (if it has one) is registered by whoever created it.
-            c = attach_remote(a.cdp)
+            try:
+                c = attach_remote(a.cdp)
+            except (Exception, SystemExit) as e:
+                if not via_extension:
+                    raise
+                clear_state()
+                die("Their Chrome is not sharing a tab, so there is nothing to drive "
+                    f"({str(e)[:80]}).\n"
+                    "Ask them to open the MiniOmni Browser Bridge extension and press Share this tab,\n"
+                    "then run: open\n"
+                    "Do NOT quietly switch to the built-in browser: it has none of their sign-ins, "
+                    "and a task aimed at their own browser will fail in a way that looks like your "
+                    "mistake rather than a disconnected extension.\n"
+                    "If they would rather use the built-in browser anyway, they can say so and you "
+                    "run: open --force-built-in")
             c.close()
             write_state({"provider": "remote", "cdpUrl": a.cdp,
                          "startedAt": int(time.time()), "lastUsedAt": int(time.time())})
@@ -1009,6 +1146,13 @@ def main():
         # their own browser and then reap each other's.
         with OpenLock():
             state = read_state()
+            if state and state.get("cdpUrl") and a.force_built_in:
+                stale = state.get("cdpUrl", "")
+                clear_state()
+                state = None
+                if stale and stale != os.environ.get("QM_RELAY_URL", "").strip():
+                    print("Let go of the browser that was open elsewhere. It is still running and "
+                          "billing until its own timeout — follow your provider doc's Clean up step.")
             if state and (state.get("cdpUrl") or alive(state.get("port", DEBUG_PORT))):
                 touch(state)
                 print(f"A browser is already open (provider={state.get('provider')}). Reusing it.")
@@ -1062,6 +1206,131 @@ def main():
         finally:
             c.close()
         return
+
+    if a.cmd == "download":
+        if not a.url and a.click is None:
+            die("Give a URL, or --click REF to keep whatever file a button starts.")
+        c, state = connect()
+        target = a.url
+        if not target and a.click is not None:
+            target = href_behind(c, a.click)
+            if target:
+                print(f"Following the link behind [{a.click}] instead of clicking it.")
+        name = a.name or (urllib.parse.urlparse(target).path.rsplit("/", 1)[-1] if target else "")
+        outdir, path = safe_output_path(a.dir, name)
+        try:
+            opened_tabs = None
+            pattern = target if target else "*"
+            c.call("Fetch.enable", patterns=[{"urlPattern": pattern, "requestStage": "Response"}])
+            if target:
+                c.call("Runtime.evaluate", expression=(
+                    "fetch(%s, {credentials:'include', mode:'no-cors'}).catch(()=>{}); 1" % json.dumps(target)))
+            else:
+                opened_tabs = tab_ids(c)
+                click_without_waiting(c, a.click)
+            deadline = time.time() + a.timeout
+            paused = None
+            while time.time() < deadline:
+                if not target and opened_tabs is not None:
+                    fresh = new_tab_url(c, opened_tabs)
+                    if fresh:
+                        die("That opened a new tab instead of sending the file to this one:\n"
+                            f"  {fresh}\n"
+                            "Download it directly — the tab it landed in is a viewer, not a page:\n"
+                            f'  download "{fresh}"')
+                try:
+                    ev = c.wait_event("Fetch.requestPaused", seconds=3)
+                except RuntimeError:
+                    continue
+                hs = {h.get("name", "").lower(): h.get("value", "")
+                      for h in (ev.get("responseHeaders") or [])}
+                ct = hs.get("content-type", "").split(";")[0].strip().lower()
+                opens_in_the_tab = ev.get("resourceType") == "Document" and ct and not ct.startswith("text/html")
+                looks_like_a_file = ("attachment" in hs.get("content-disposition", "").lower()
+                                     or opens_in_the_tab
+                                     or (target != "" and ev.get("request", {}).get("url") == target))
+                if target or looks_like_a_file:
+                    paused = ev
+                    break
+                try:
+                    c.call("Fetch.continueRequest", requestId=ev["requestId"])
+                except Exception:
+                    pass
+            if paused is None:
+                die("Nothing that looked like a file came back within the timeout.\n"
+                    "If the button opens a new tab, run `tabs` and `tab <id>` first, then retry.")
+            rid = paused["requestId"]
+            status = paused.get("responseStatusCode")
+            headers = {h.get("name", "").lower(): h.get("value", "")
+                       for h in (paused.get("responseHeaders") or [])}
+            if status and not (200 <= int(status) < 300):
+                c.call("Fetch.failRequest", requestId=rid, errorReason="Aborted")
+                die(f"That URL answered {status}, so there is nothing to save. "
+                    "If it needs a sign-in, open the page in the shared tab first.")
+            ctype = headers.get("content-type", "")
+            disp = headers.get("content-disposition", "")
+            if "text/html" in ctype and "attachment" not in disp.lower():
+                c.call("Fetch.failRequest", requestId=rid, errorReason="Aborted")
+                die("That URL returned a web page, not a file — usually a sign-in wall or an\n"
+                    "error page. Open it in the shared tab first so the session is established,\n"
+                    "then find the real file URL and download that.")
+            if not a.name:
+                m = re.search(r'filename\*?=(?:UTF-8\'\'|")?([^";]+)', disp)
+                if m:
+                    name = urllib.parse.unquote(m.group(1).strip().strip('"'))
+                    path = os.path.join(outdir, os.path.basename(name))
+            stream = c.call("Fetch.takeResponseBodyAsStream", requestId=rid)["stream"]
+            total = 0
+            with open(path, "wb") as f:
+                while True:
+                    r = c.call("IO.read", handle=stream, size=1 << 16)
+                    data = r.get("data", "")
+                    raw = base64.b64decode(data) if r.get("base64Encoded") else data.encode()
+                    f.write(raw)
+                    total += len(raw)
+                    if total > a.max_mb * 1024 * 1024:
+                        raise RuntimeError(f"larger than --max-mb {a.max_mb}")
+                    if r.get("eof"):
+                        break
+            c.call("IO.close", handle=stream)
+            c.call("Fetch.failRequest", requestId=rid, errorReason="Aborted")
+            rel = os.path.relpath(path, os.getcwd())
+            print(f"Saved {rel} ({total // 1024} KB, {headers.get('content-type', 'unknown type')}).")
+            print("It is in the workspace, so it is on the Files page and you can open it here.")
+            return
+        finally:
+            try:
+                c.call("Fetch.disable")
+            except Exception:
+                pass
+            c.close()
+
+    if a.cmd in ("tabs", "tab"):
+        state = read_state()
+        if not state or not state.get("cdpUrl"):
+            die("Moving between tabs is for the person's own Chrome, through the extension.\n"
+                "The built-in browser has one page and `go` is how you move it.")
+        c, _ = connect()
+        try:
+            if a.cmd == "tabs":
+                tabs = c.call("qm.listTabs").get("tabs", [])
+                if not tabs:
+                    print("No tabs to move to.")
+                    return
+                for t in tabs:
+                    mark = "*" if t.get("shared") else " "
+                    where = " (front)" if t.get("active") else ""
+                    print(f"{mark} [{t['tabId']}] {t.get('title','')[:70]}{where}")
+                    print(f"      {t.get('url','')[:110]}")
+                print("\n* is the tab you are driving. Move with: tab <id>")
+                return
+            r = c.call("qm.switchTab", tabId=a.tab_id)
+            print(f"Now driving [{r['tabId']}] {r.get('title','')[:70]}")
+            print(f"  {r.get('url','')[:110]}")
+            print("The person can see the banner move; you are still on one tab only.")
+            return
+        finally:
+            c.close()
 
     # ------------------------------------------------------------ close
     if a.cmd == "close":
