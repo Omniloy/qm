@@ -7,7 +7,7 @@ import { swallowAs, errMessage } from "../util/errors.ts";
 import { shq } from "../util/shell.ts";
 import { nonInteractiveShellPrefix } from "./sandbox-env.ts";
 import { createExecProcessSessions, type ExecProcessIo } from "./exec-process-session.ts";
-import { materializeRoLayers } from "./ro-layers.ts";
+import { materializeRoLayers, RO_LAYERS_MANIFEST } from "./ro-layers.ts";
 import {
   BLOB_TRANSFER_TTL_MS,
   createExecBackup,
@@ -37,7 +37,6 @@ import type {
 const HOME_DIR = "/home/sprite";
 const WORKSPACE_BASENAME = "workspace";
 const RO_LAYERS_TAR = ".ro-layers.tar";
-const RO_LAYERS_MANIFEST = ".ro-layers.manifest";
 const MISSING_RC = 44;
 const READ_CHUNK = 512 * 1024;
 const EXIT_GRACE_MS = 60_000;

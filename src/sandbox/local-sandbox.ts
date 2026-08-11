@@ -10,7 +10,7 @@ import { swallowAs, errMessage } from "../util/errors.ts";
 import { shq } from "../util/shell.ts";
 import { nonInteractiveShellPrefix } from "./sandbox-env.ts";
 import { createExecProcessSessions, type ExecProcessIo } from "./exec-process-session.ts";
-import { materializeRoLayers } from "./ro-layers.ts";
+import { materializeRoLayers, RO_LAYERS_MANIFEST } from "./ro-layers.ts";
 import { createExecBackup, createExecFileOps, posixJoin } from "./exec-file-ops.ts";
 import { spawnDockerExec, type DockerExec } from "./docker-exec.ts";
 import { ephemeralCredLinkScript } from "../credentials/resident-paths.ts";
@@ -32,7 +32,6 @@ const HOME_DIR = "/root";
 const WORKSPACE_BASENAME = "workspace";
 const AGENT_PORT = 8080;
 const RO_LAYERS_TAR = ".ro-layers.tar";
-const RO_LAYERS_MANIFEST = ".ro-layers.manifest";
 const FINGERPRINT_LABEL = "qm.sandbox-fingerprint";
 const BUILD_HINT = "run `npm run sandbox:local:build`";
 

@@ -6,6 +6,7 @@ import type { AclStore } from "../acl/acl-store.ts";
 import { audienceEgressFloor, audienceDeniedFloor } from "./audience-floor.ts";
 import { principalEntitledToScope } from "./context-filter.ts";
 import { resolveSecurityPolicy } from "../security/security-posture.ts";
+import { ORG_MOUNT_PATH, teamMountPath } from "../workspace/workspace-layout.ts";
 
 export interface ResolutionService {
   scopeFor(conversation: Conversation, actor: Principal): ScopeId;
@@ -35,12 +36,12 @@ export function createResolutionService(orgId: string, config: ScopedConfigStore
       await config.refreshSecurity([...liveConfigScopes]);
 
       const layers: WorkspaceLayer[] = [
-        { scopeId: orgScope, mountPath: "global", mode: "ro" },
+        { scopeId: orgScope, mountPath: ORG_MOUNT_PATH, mode: "ro" },
         { scopeId: scope, mountPath: "", mode: "rw" },
       ];
       if (isDm && actor.teamIds) {
         for (const tid of actor.teamIds) {
-          layers.push({ scopeId: scopeId("team", tid), mountPath: `team-${tid}`, mode: "ro" });
+          layers.push({ scopeId: scopeId("team", tid), mountPath: teamMountPath(tid), mode: "ro" });
         }
       }
 

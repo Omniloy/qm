@@ -321,6 +321,16 @@ export interface App {
    * personal scope is how a file is taken back out of a project.
    */
   moveFileForViewer(id: string, principalId: string, scopeId: ScopeId): Promise<"ok" | "not_found" | "forbidden">;
+  workspaceTreeForViewer(
+    principalId: string,
+    scope: ScopeId,
+    opts?: { wake?: boolean },
+  ): Promise<WorkspaceListing | "not_loaded" | "forbidden" | "unavailable">;
+  openWorkspaceFileForViewer(
+    principalId: string,
+    scope: ScopeId,
+    path: string,
+  ): Promise<OpenedWorkspaceFile | "not_found" | "too_large" | "forbidden" | "unavailable">;
   grant(g: Grant): Promise<void>;
   revokeGrant(ownerScopeId: ScopeId, ref: string, granteeScopeId: ScopeId, revokedBy: string): Promise<void>;
   promoteSkill(id: string, targetScopeId: ScopeId, actorId: string, liveActor: boolean): Promise<Skill>;
@@ -582,6 +592,23 @@ interface OpenedFile {
   mimetype: string;
   sizeBytes: number;
   stream: Readable;
+}
+
+export const MAX_WORKSPACE_PATHS = 10_000;
+
+export const MAX_WORKSPACE_FILE_BYTES = 25 * 1024 * 1024;
+
+export interface WorkspaceListing {
+  scopeId: ScopeId;
+  paths: string[];
+  truncated: boolean;
+  hiddenDirs: string[];
+}
+
+export interface OpenedWorkspaceFile {
+  name: string;
+  mimetype: string;
+  bytes: Uint8Array;
 }
 
 export interface ScopeDeployment {

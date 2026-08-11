@@ -10,7 +10,7 @@ import { swallow, swallowAs, errMessage } from "../util/errors.ts";
 import { shq } from "../util/shell.ts";
 import { nonInteractiveShellPrefix } from "./sandbox-env.ts";
 import { createExecProcessSessions, type ExecProcessIo } from "./exec-process-session.ts";
-import { materializeRoLayers } from "./ro-layers.ts";
+import { materializeRoLayers, RO_LAYERS_MANIFEST } from "./ro-layers.ts";
 import { createExecBackup, createExecFileOps, posixJoin } from "./exec-file-ops.ts";
 import { createMicrovmApi, createMicrovmClient, type AwsMicrovmApi } from "./aws-microvm-api.ts";
 import type {
@@ -34,7 +34,6 @@ const WORKSPACE_BASENAME = "workspace";
 const WORKSPACE_DIR = `${HOME_DIR}/${WORKSPACE_BASENAME}`;
 const HOME_TAR = "/tmp/agent-home.tar";
 const RO_LAYERS_TAR = ".ro-layers.tar";
-const RO_LAYERS_MANIFEST = ".ro-layers.manifest";
 const SNAPSHOT_PRUNE = [
   "./.cache",
   "./.cache/*",
