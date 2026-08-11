@@ -454,3 +454,15 @@ test("a document that is not a web page counts as a file", () => {
   assert.match(dl, /resourceType/);
   assert.match(dl, /Document/);
 });
+
+test("a download that lands in a new tab says where it went", () => {
+  const dl = /if a\.cmd == "download":[\s\S]*?if a\.cmd in \("tabs", "tab"\):/.exec(CLI)?.[0] ?? "";
+  assert.match(dl, /new_tab_url/);
+  assert.match(dl, /opened a new tab instead/);
+  assert.match(CLI, /def new_tab_url/);
+});
+
+test("waiting for an interception cannot end in a socket traceback", () => {
+  const wait = /def wait_event\([\s\S]{0,900}/.exec(CLI)?.[0] ?? "";
+  assert.match(wait, /socket\.timeout|TimeoutError/);
+});

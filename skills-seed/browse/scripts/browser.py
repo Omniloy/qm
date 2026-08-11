@@ -198,7 +198,10 @@ class CDP:
         deadline = time.time() + seconds
         while time.time() < deadline:
             self.ws.sock.settimeout(max(1, deadline - time.time()))
-            msg = json.loads(self.ws.recv())
+            try:
+                msg = json.loads(self.ws.recv())
+            except (socket.timeout, TimeoutError, OSError):
+                break
             if msg.get("method") == method:
                 return msg.get("params", {})
             if msg.get("method"):
@@ -859,6 +862,30 @@ def click_without_waiting(c, ref):
     return b
 
 
+def tab_ids(c):
+    """The tabs open right now, or None when this browser has no notion of them."""
+    try:
+        return {t["tabId"] for t in c.call("qm.listTabs").get("tabs", [])}
+    except Exception:
+        return None
+
+
+def new_tab_url(c, before):
+    """The URL of a tab that appeared since, if one did.
+
+    A Download button that targets a new tab puts the file somewhere our
+    interception is not listening, and the new tab is often a viewer we cannot
+    drive — but its URL is all we need to fetch the file properly.
+    """
+    try:
+        for t in c.call("qm.listTabs").get("tabs", []):
+            if t["tabId"] not in before and str(t.get("url", "")).startswith("http"):
+                return t["url"]
+    except Exception:
+        return ""
+    return ""
+
+
 def href_behind(c, ref):
     """The link a ref sits in, if any.
 
@@ -1170,6 +1197,7 @@ def main():
         try:
             # Response stage: the bytes exist and Chrome has not yet decided to
             # save them, which is the only moment we can take them instead.
+            opened_tabs = None
             pattern = target if target else "*"
             c.call("Fetch.enable", patterns=[{"urlPattern": pattern, "requestStage": "Response"}])
             if target:
@@ -1179,13 +1207,24 @@ def main():
                 c.call("Runtime.evaluate", expression=(
                     "fetch(%s, {credentials:'include', mode:'no-cors'}).catch(()=>{}); 1" % json.dumps(target)))
             else:
+                opened_tabs = tab_ids(c)
                 click_without_waiting(c, a.click)
             # With a click we do not know the URL, so everything in the tab is
             # paused and let through until the one that is a file shows up.
             deadline = time.time() + a.timeout
             paused = None
             while time.time() < deadline:
-                ev = c.wait_event("Fetch.requestPaused", seconds=max(1, int(deadline - time.time())))
+                if not target and opened_tabs is not None:
+                    fresh = new_tab_url(c, opened_tabs)
+                    if fresh:
+                        die("That opened a new tab instead of sending the file to this one:\n"
+                            f"  {fresh}\n"
+                            "Download it directly — the tab it landed in is a viewer, not a page:\n"
+                            f'  download "{fresh}"')
+                try:
+                    ev = c.wait_event("Fetch.requestPaused", seconds=3)
+                except RuntimeError:
+                    continue
                 hs = {h.get("name", "").lower(): h.get("value", "")
                       for h in (ev.get("responseHeaders") or [])}
                 ct = hs.get("content-type", "").split(";")[0].strip().lower()
