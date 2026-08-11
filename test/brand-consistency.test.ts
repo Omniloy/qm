@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import test from "node:test";
 import { BRAND } from "../plugins/chassis/src/brand.ts";
 import { BRAND as CLI_BRAND } from "../cli/src/brand.ts";
@@ -42,4 +43,25 @@ test("the extension manifest carries the brand and every icon it declares", () =
     const bytes = readFileSync(new URL(`../extension/${file}`, import.meta.url));
     assert.ok(bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])), file);
   }
+});
+
+test("the favicon is linked absolutely, so it survives a nested route", () => {
+  const server = readFileSync(join(process.cwd(), "plugins/web-ui/server/index.ts"), "utf8");
+  const rewrites = server.match(/"%BASE_URL%favicon\.svg",\s*"([^"]+)"/g) ?? [];
+  assert.ok(rewrites.length > 0, "the shell rewrites the favicon placeholder");
+  for (const r of rewrites) {
+    assert.match(r, /"\/favicon\.svg"/, `a relative href resolves against the current path: ${r}`);
+  }
+});
+
+test("the sidebar mark is the brand logo, not an upstream letter", () => {
+  const css = readFileSync(join(process.cwd(), "plugins/web-ui/src/shell.css"), "utf8");
+  assert.doesNotMatch(css, /--brand-mark:\s*"A"/, "upstream's letter mark");
+  assert.doesNotMatch(css, /--brand-accent:\s*#4f46e5/i, "upstream's indigo");
+  assert.match(css, /--brand-logo,\s*url\("\/favicon\.svg"\)/, "the mark falls back to the brand logo");
+});
+
+test("a deployed app carries an icon", () => {
+  const shell = readFileSync(join(process.cwd(), "src/deploy/app-shell.ts"), "utf8");
+  assert.match(shell, /<link rel="icon" href="\/favicon\.svg">/);
 });

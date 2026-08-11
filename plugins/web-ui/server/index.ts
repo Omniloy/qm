@@ -672,7 +672,7 @@ async function serveAppEditHtml(req: IncomingMessage, res: ServerResponse, url: 
   if (!APPS_FRAME_DOMAIN || !/^[a-z0-9-]{1,63}$/.test(slug)) return false;
   let html: string;
   if (vite) {
-    const raw = readFileSync(join(ROOT, "index.html"), "utf8").replace("%BASE_URL%favicon.svg", "favicon.svg");
+    const raw = readFileSync(join(ROOT, "index.html"), "utf8").replace("%BASE_URL%favicon.svg", "/favicon.svg");
     html = await vite.transformIndexHtml(req.url ?? "/", raw);
   } else {
     const filePath = join(DIST, "index.html");
@@ -737,7 +737,7 @@ async function serveVite(req: IncomingMessage, res: ServerResponse, path: string
   if (res.headersSent || res.writableEnded) return true;
   if (extname(path)) return false;
   let html = readFileSync(join(ROOT, "index.html"), "utf8");
-  html = html.replace("%BASE_URL%favicon.svg", "favicon.svg");
+  html = html.replace("%BASE_URL%favicon.svg", "/favicon.svg");
   html = await vite.transformIndexHtml(req.url ?? "/", html);
   sendHtml(res, 200, await brandIndexHtml(html));
   return true;
