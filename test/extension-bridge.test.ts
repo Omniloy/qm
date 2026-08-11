@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 interface Harness {
+  canDrive: boolean;
   sockets: FakeSocket[];
   attached: Array<{ tabId: number }>;
   detached: Array<{ tabId: number }>;
@@ -96,7 +97,7 @@ function install(opts: {
       },
       detach: async ({ tabId }: { tabId: number }) => void detached.push({ tabId }),
       sendCommand: async () => {
-        if (opts.canDrive === false) throw new Error("Debugger is not attached to the tab with id: 7");
+        if (!harness.canDrive) throw new Error("Debugger is not attached to the tab with id: 7");
         return {};
       },
       onEvent: on("event"),
@@ -124,7 +125,8 @@ function install(opts: {
     throw new Error("no baked config");
   };
 
-  return {
+  const harness: Harness = {
+    canDrive: opts.canDrive !== false,
     sockets: FakeSocket.all,
     attached,
     detached,
@@ -140,6 +142,7 @@ function install(opts: {
       }),
     openGate: () => release(),
   };
+  return harness;
 }
 
 let bust = 0;
@@ -294,4 +297,37 @@ test("a tab closing detaches without claiming the person chose to stop", async (
 
   await new Promise((r) => setTimeout(r, 60));
   assert.ok(!h.sent().some((m) => m.qm === "detached"), "no explicit stop from a closing target");
+});
+
+test("a detach Chrome caused is recovered from, not treated as a decision", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: GMAIL });
+  await bootWorker();
+  assert.ok(await until(() => shares(h).length > 0));
+  const before = h.attached.length;
+
+  h.fire("detach", { tabId: 7 }, "target_closed");
+
+  assert.ok(await until(() => h.attached.length > before), "took the tab back");
+  assert.ok(!h.sent().some((m) => m.qm === "detached"), "and never claimed the person stopped");
+  assert.ok(!h.sent().some((m) => m.qm === "note"), "nothing to report — the share survived");
+});
+
+test("a share that cannot be recovered says why, instead of failing per command", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: GMAIL });
+  await bootWorker();
+  assert.ok(await until(() => shares(h).length > 0));
+
+  h.canDrive = false;
+  h.fire("detach", { tabId: 7 }, "target_closed");
+
+  assert.ok(
+    await until(() => h.sent().some((m) => m.qm === "note")),
+    "MiniOmni is told what happened, rather than the agent discovering it one command at a time",
+  );
+  const note = h.sent().find((m) => m.qm === "note");
+  assert.match(String(note!.text), /target_closed/);
+  assert.ok(
+    h.sent().some((m) => m.qm === "detached"),
+    "and the share is properly ended",
+  );
 });

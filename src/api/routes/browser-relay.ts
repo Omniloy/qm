@@ -63,6 +63,7 @@ export async function relayStatus(ctx: ApiCtx): Promise<void> {
     connected: state.extension,
     sharing: state.sharing,
     inUse: state.cdp,
+    ...(hub.lastIssue(principalId) ? { lastIssue: hub.lastIssue(principalId) } : {}),
     ...(hub.describe(principalId) ?? {}),
   });
 }

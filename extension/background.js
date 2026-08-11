@@ -17,6 +17,7 @@ let attachedTabId = null;
 let reconnectDelay = 1000;
 let restoreYielded = false;
 let shareIsRestored = false;
+let lastIssue = null;
 const ready = withTimeout(bootstrapFromConfig().then(restoreShare), 5000).catch(() => {});
 
 function withTimeout(promise, ms) {
@@ -125,6 +126,28 @@ async function announce(restored = false) {
   }
 }
 
+function noteIssue(text) {
+  lastIssue = { text, at: Date.now() };
+  send({ qm: "note", text });
+}
+
+async function reattach(tabId) {
+  try {
+    await chrome.debugger.attach({ tabId }, PROTOCOL_VERSION);
+  } catch {
+    // Possibly still ours from a session that outlived its worker; the drive
+    // check below is what actually decides.
+  }
+  if (!(await canDrive(tabId))) return false;
+  attachedTabId = tabId;
+  shareIsRestored = true;
+  lastIssue = null;
+  await announce(true);
+  await badge(tabId, true);
+  await showBanner(tabId, true);
+  return true;
+}
+
 async function canDrive(tabId) {
   try {
     await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", { expression: "1", returnByValue: true });
@@ -183,22 +206,17 @@ async function restoreShare() {
     return forget();
   }
   if (yielded()) return;
-  try {
-    await chrome.debugger.attach({ tabId: saved }, PROTOCOL_VERSION);
-  } catch {
-    // Already attached is not failure — this worker may be younger than the
-    // debugger session. Anything else is proven by the drive check below.
+  if (!(await reattach(saved))) {
+    noteIssue("the shared tab could not be driven after Chrome restarted the extension");
+    return forget();
   }
-  if (!(await canDrive(saved))) return forget();
-  if (yielded()) {
+  // Only stand down from the tab this restore claimed. A person who shared a
+  // different tab meanwhile owns attachedTabId now, and clearing it would take
+  // their choice away a second time.
+  if (restoreYielded && attachedTabId === saved) {
     await chrome.debugger.detach({ tabId: saved }).catch(() => {});
-    return;
+    attachedTabId = null;
   }
-  attachedTabId = saved;
-  shareIsRestored = true;
-  await announce(true);
-  await badge(saved, true);
-  await showBanner(saved, true);
 }
 
 /**
@@ -244,6 +262,7 @@ function connect() {
           send({ qm: "detached" });
           await chrome.storage.local.remove("pendingDetach").catch(() => {});
         }
+        if (lastIssue) send({ qm: "note", text: lastIssue.text });
         await announce(shareIsRestored);
       })();
     };
@@ -285,7 +304,18 @@ chrome.debugger.onDetach.addListener((source, reason) => {
   void (async () => {
     await ready;
     if (source.tabId !== attachedTabId) return;
-    await detach(reason === "canceled_by_user" || reason === "replaced_with_devtools");
+    if (reason === "canceled_by_user" || reason === "replaced_with_devtools") {
+      await detach(true);
+      return;
+    }
+    // Everything else is Chrome moving the tab rather than a decision: a
+    // process swap, or a target replaced under us. Take it back instead of
+    // ending a share the person never stopped.
+    const tabId = attachedTabId;
+    attachedTabId = null;
+    if (await reattach(tabId)) return;
+    noteIssue(`the debugger detached (${reason}) and the tab could not be taken back`);
+    await detach(true);
   })();
 });
 
@@ -343,6 +373,7 @@ chrome.runtime.onMessage.addListener((message, _sender, respond) => {
         connected: Boolean(socket && socket.readyState === WebSocket.OPEN),
         sharedTabId: attachedTabId,
         sharedTitle,
+        ...(lastIssue ? { lastIssue: lastIssue.text } : {}),
       });
       return;
     }
