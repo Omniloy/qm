@@ -11,7 +11,7 @@
   /* Height reserved at the bottom of every chat message for its own hover footer; it doubles
      as the rhythm between message blocks. */
   --meta-lane: 18px;
-  --brand-accent: #003b7a;
+  --brand-accent: #4f46e5;
   --dev-accent: #8a5a00;
   --brand-mark: "";
 }

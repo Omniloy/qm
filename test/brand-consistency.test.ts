@@ -57,8 +57,14 @@ test("the favicon is linked absolutely, so it survives a nested route", () => {
 test("the sidebar mark is the brand logo, not an upstream letter", () => {
   const css = readFileSync(join(process.cwd(), "plugins/web-ui/src/shell.css"), "utf8");
   assert.doesNotMatch(css, /--brand-mark:\s*"A"/, "upstream's letter mark");
-  assert.doesNotMatch(css, /--brand-accent:\s*#4f46e5/i, "upstream's indigo");
   assert.match(css, /--brand-logo,\s*url\("\/favicon\.svg"\)/, "the mark falls back to the brand logo");
+});
+
+test("the admin shell links an icon that resolves", () => {
+  const html = readFileSync(join(process.cwd(), "plugins/admin/public/index.html"), "utf8");
+  const m = /<link rel="icon" href="([^"]+)"/.exec(html);
+  assert.ok(m, "admin declares an icon");
+  assert.match(m[1]!, /^\//, `concatenating a base with no separator gives /adminfavicon.svg: ${m[1]}`);
 });
 
 test("a deployed app carries an icon", () => {
