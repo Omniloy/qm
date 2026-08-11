@@ -15,6 +15,7 @@ const PROTOCOL_VERSION = "1.3";
 let socket = null;
 let attachedTabId = null;
 let reconnectDelay = 1000;
+const ready = bootstrapFromConfig().then(restoreShare);
 
 async function settings() {
   const { origin, token } = await chrome.storage.local.get(["origin", "token"]);
@@ -135,6 +136,28 @@ async function detach(explicit = false) {
   }
 }
 
+async function restoreShare() {
+  const { attachedTabId: saved } = await chrome.storage.local.get("attachedTabId");
+  if (typeof saved !== "number") return;
+  const forget = () => chrome.storage.local.remove("attachedTabId");
+  try {
+    await chrome.tabs.get(saved);
+  } catch {
+    return forget();
+  }
+  const targets = await chrome.debugger.getTargets().catch(() => []);
+  if (!targets.some((t) => t.tabId === saved && t.attached)) {
+    try {
+      await chrome.debugger.attach({ tabId: saved }, PROTOCOL_VERSION);
+    } catch {
+      return forget();
+    }
+  }
+  attachedTabId = saved;
+  await badge(saved, true);
+  await showBanner(saved, true);
+}
+
 /**
  * Commands arrive addressed to a session that only exists in the relay, so the
  * sessionId is stripped before Chrome sees it. Errors are returned rather than
@@ -145,7 +168,10 @@ async function detach(explicit = false) {
 async function onCommand(frame) {
   const { id, method, params } = frame;
   if (attachedTabId === null) {
-    return send({ id, error: { code: -32000, message: "no tab is shared — click the MiniOmni extension and pick one" } });
+    return send({
+      id,
+      error: { code: -32000, message: "no tab is shared — click the MiniOmni extension and pick one" },
+    });
   }
   try {
     const result = await chrome.debugger.sendCommand({ tabId: attachedTabId }, method, params || {});
@@ -157,6 +183,7 @@ async function onCommand(frame) {
 
 function connect() {
   void (async () => {
+    await ready;
     const { origin, token } = await settings();
     if (!origin || !token) return;
     if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
@@ -202,8 +229,9 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   }
 });
 
-chrome.debugger.onDetach.addListener((source) => {
-  if (source.tabId === attachedTabId) void detach();
+chrome.debugger.onDetach.addListener((source, reason) => {
+  if (source.tabId !== attachedTabId) return;
+  void detach(reason === "canceled_by_user" || reason === "replaced_with_devtools");
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
@@ -265,6 +293,6 @@ chrome.runtime.onMessage.addListener((message, _sender, respond) => {
 // wakes it to reconnect after Chrome has stopped it.
 chrome.alarms.create("qm-keepalive", { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener(() => connect());
-chrome.runtime.onStartup.addListener(() => void bootstrapFromConfig().then(connect));
-chrome.runtime.onInstalled.addListener(() => void bootstrapFromConfig().then(connect));
-void bootstrapFromConfig().then(connect);
+chrome.runtime.onStartup.addListener(() => connect());
+chrome.runtime.onInstalled.addListener(() => connect());
+void connect();
