@@ -135,6 +135,17 @@ test("only the browser-facing broker routes are exposed", async () => {
   }
 });
 
+test("the brand logo is public, because the sign-in email has to load it unauthenticated", async () => {
+  const before = seen.length;
+  await fetch(`${base}/idp/brand/logo.png`, { redirect: "manual" });
+  assert.equal(seen.length, before + 1, "GET /idp/brand/logo.png reaches the broker");
+  assert.equal(seen.at(-1)!.url, "/brand/logo.png");
+
+  const blocked = seen.length;
+  await fetch(`${base}/idp/brand/logo.png`, { method: "POST", headers: { origin: PUBLIC } });
+  assert.equal(seen.length, blocked, "only GET is exposed");
+});
+
 test("confirming a sign-in posts through, same-origin only", async () => {
   const confirmed = await fetch(`${base}/idp/verify`, {
     method: "POST",

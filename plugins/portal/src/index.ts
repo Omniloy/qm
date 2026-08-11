@@ -41,7 +41,7 @@ import { coreClaimStore, withinRateLimit } from "../../chassis/src/claims.ts";
 import { mintPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
 import { errMessage } from "../../chassis/src/errors.ts";
 import { json, escapeHtml, serveBrandFavicon } from "../../chassis/src/http.ts";
-import { BRAND } from "../../chassis/src/brand.ts";
+import { BRAND, BRAND_LOGO_PATH } from "../../chassis/src/brand.ts";
 import {
   CORE_API_URL as CORE,
   CORE_ORG_ID as ORG,
@@ -148,6 +148,7 @@ const BROKER_PUBLIC_ROUTES: ReadonlyArray<{ method: string; path: string }> = [
   { method: "POST", path: "/authorize" },
   { method: "GET", path: "/verify" },
   { method: "POST", path: "/verify" },
+  { method: "GET", path: BRAND_LOGO_PATH },
 ];
 
 export function brokerRouteFor(method: string, pathname: string): string | null {
