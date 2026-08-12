@@ -137,6 +137,30 @@ const CLAUDE_ENV_PASSTHROUGH = [
  */
 const CLAUDE_CREDENTIALS_OUTRANKING_SUBSCRIPTION = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] as const;
 
+const SDK_STDERR_TAIL = 16_384;
+
+interface SdkStderr {
+  tail: string;
+}
+
+function noteSdkStderr(into: SdkStderr, data: string): void {
+  const text = String(data ?? "");
+  if (!text.trim()) return;
+  into.tail = `${into.tail}${text}`.slice(-SDK_STDERR_TAIL);
+  for (const line of text.split("\n")) {
+    if (line.trim()) console.error(`[claude-sdk] ${line.trimEnd()}`);
+  }
+}
+
+export function sdkStderrTail(into: SdkStderr): string {
+  return into.tail.trim();
+}
+
+function withSdkStderr(message: string, into: SdkStderr): string {
+  const tail = sdkStderrTail(into);
+  return tail ? `${message}\n[claude-sdk stderr]\n${tail.slice(-4000)}` : message;
+}
+
 export function claudeChildEnv(source: NodeJS.ProcessEnv, jail: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { HOME: jail, CLAUDE_CONFIG_DIR: join(jail, ".claude") };
   for (const name of CLAUDE_ENV_PASSTHROUGH) {
@@ -457,10 +481,12 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
           return {};
         })
       : {};
+    const sdkStderr: SdkStderr = { tail: "" };
     const sdkQuery = query({
       prompt: queue,
       options: {
         abortController: controller,
+        stderr: (data) => noteSdkStderr(sdkStderr, data),
         cwd: jail,
         env: claudeChildEnv({ ...(opts.env ?? {}), ...envOverlay }, jail),
         tools: allowSubagents ? ["Agent"] : [],
@@ -780,10 +806,15 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
             ...(tapeWriteFailed ? { tapeWriteFailed: true } : {}),
           };
         }
-        throw new Error("Claude Agent SDK ended without a result");
+        throw new Error(withSdkStderr("Claude Agent SDK ended without a result", sdkStderr));
       }
       if (finalResult.subtype !== "success")
-        throw new Error(finalResult.errors.join("; ") || `Claude Agent SDK failed: ${finalResult.subtype}`);
+        throw new Error(
+          withSdkStderr(
+            finalResult.errors.join("; ") || `Claude Agent SDK failed: ${finalResult.subtype}`,
+            sdkStderr,
+          ),
+        );
       const terminal = ref.silentRequested || ref.pausedOnApproval;
       const reply = terminal ? "" : finalResult.result.trim();
       const usageTotals = [...callUsage.values()].reduce(
