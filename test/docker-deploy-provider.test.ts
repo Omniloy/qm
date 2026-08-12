@@ -1,10 +1,27 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { mkdtempSync, writeFileSync, readFileSync, chmodSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDockerDeployProvider } from "../src/deploy/docker-deploy-provider.ts";
 import type { Deployment } from "../src/deploy/deploy-store.ts";
+
+const listeningApp = async (): Promise<{ port: number; close: () => Promise<void> }> => {
+  const server = createServer((_req, res) => res.end("ok"));
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return {
+    port: (server.address() as AddressInfo).port,
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
+};
+
+const freePort = async (): Promise<number> => {
+  const app = await listeningApp();
+  await app.close();
+  return app.port;
+};
 
 // A stand-in for the `docker` binary rather than a mocked module: the provider
 // builds its own exec, and what matters here is the exact argv it produces.
@@ -20,8 +37,9 @@ const fakeDocker = (): { bin: string; calls: () => string[][]; reset: () => void
       'case "$1 $2" in',
       '  "network create") [ "$FAKE_NET_EXISTS" = 1 ] && { echo "network with name agent-deploynet already exists" >&2; exit 1; }; exit 0 ;;',
       '  "network connect") [ -n "$FAKE_CONNECT_ERR" ] && { echo "$FAKE_CONNECT_ERR" >&2; exit 1; }; exit 0 ;;',
+      '  "logs --tail") printf "%s\\n" "$FAKE_LOGS"; exit 0 ;;',
       "esac",
-      'if [ "$1" = "inspect" ]; then echo "$FAKE_RUNNING"; [ -n "$FAKE_RUNNING" ] || exit 1; fi',
+      'if [ "$1" = "inspect" ]; then echo "$FAKE_RUNNING $FAKE_EXIT_CODE"; [ -n "$FAKE_RUNNING" ] || exit 1; fi',
       "exit 0",
     ].join("\n"),
     { mode: 0o755 },
@@ -111,17 +129,58 @@ test("a host-side core still resolves through the published loopback port", asyn
   // The upstream arrangement, which must keep working: no coreContainer means
   // core is on the host, so the container name would not resolve for it.
   const docker = fakeDocker();
-  t.after(() => delete process.env.FAKE_RUNNING);
+  const app = await listeningApp();
+  t.after(async () => {
+    delete process.env.FAKE_RUNNING;
+    await app.close();
+  });
   process.env.FAKE_RUNNING = "true";
 
-  const p = createDockerDeployProvider({ docker: docker.bin, basePort: 9200 });
+  const p = createDockerDeployProvider({ docker: docker.bin, basePort: app.port });
   const d = deployment();
   assert.equal(await p.resolveEndpoint!(d, {} as never), null, "no port is allocated until apply runs");
 
   await p.apply(d, { version: 1, createdAt: 0, entrypoint: "node server.js", snapshotDir: "/data/x" });
-  assert.deepEqual(await p.resolveEndpoint!(d, {} as never), { host: "127.0.0.1", port: 9200 });
+  assert.deepEqual(await p.resolveEndpoint!(d, {} as never), { host: "127.0.0.1", port: app.port });
   assert.ok(
     !docker.calls().some((c) => c[0] === "network" && c[1] === "connect"),
     "nothing should be connected to the deploy network when core is not a container",
+  );
+});
+
+test("an entrypoint that exits fails the deploy with its output", async (t) => {
+  // The bug this guards: `entrypoint: "server.js"` (no `node`) makes the
+  // container exit 127 the instant it starts. Returning an endpoint anyway
+  // reported a healthy deploy and left the link answering 502 forever.
+  const docker = fakeDocker();
+  t.after(() => {
+    delete process.env.FAKE_RUNNING;
+    delete process.env.FAKE_EXIT_CODE;
+    delete process.env.FAKE_LOGS;
+  });
+  process.env.FAKE_RUNNING = "false";
+  process.env.FAKE_EXIT_CODE = "127";
+  process.env.FAKE_LOGS = "sh: server.js: not found";
+
+  const p = createDockerDeployProvider({ docker: docker.bin, basePort: await freePort() });
+  await assert.rejects(
+    () => p.apply(deployment(), { version: 1, createdAt: 0, entrypoint: "server.js", snapshotDir: "/data/x" }),
+    /exited \(status 127\)[\s\S]*server\.js: not found/,
+  );
+});
+
+test("a deploy that never binds the port is not reported as running", async (t) => {
+  const docker = fakeDocker();
+  t.after(() => {
+    delete process.env.FAKE_RUNNING;
+    delete process.env.FAKE_LOGS;
+  });
+  process.env.FAKE_RUNNING = "true";
+  process.env.FAKE_LOGS = "";
+
+  const p = createDockerDeployProvider({ docker: docker.bin, basePort: await freePort(), readyWindowMs: 300 });
+  await assert.rejects(
+    () => p.apply(deployment(), { version: 1, createdAt: 0, entrypoint: "node server.js", snapshotDir: "/data/x" }),
+    /never listened on port 8080/,
   );
 });

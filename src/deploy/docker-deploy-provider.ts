@@ -1,9 +1,15 @@
 import type { Deployment, DeploymentVersion } from "./deploy-store.ts";
 import type { DeployEndpoint, DeployProvider } from "./deploy-provider.ts";
 import { spawnDockerExec } from "../sandbox/docker-exec.ts";
+import { sleep } from "../util/async.ts";
 
 const NETWORK = "agent-deploynet";
 const APP_PORT = 8080;
+const APP_READY_WINDOW_MS = 60_000;
+const APP_READY_POLL_MS = 250;
+const APP_READY_PROBE_TIMEOUT_MS = 2_000;
+const FAILURE_LOG_LINES = "40";
+const FAILURE_LOG_BYTES = 2_000;
 // The snapshot is mounted read-only, so an app has nowhere to keep state unless
 // it gets one. The AWS provider gives apps a writable /data; this is the local
 // equivalent — a per-deployment named volume that survives redeploys.
@@ -22,6 +28,7 @@ export interface DockerDeployProviderOptions {
    * container name. See CORE_CONTAINER.
    */
   coreContainer?: string;
+  readyWindowMs?: number;
 }
 
 export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {}): DeployProvider {
@@ -49,6 +56,44 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
 
   const name = (d: Deployment) => `agent-deploy-${d.id.slice(0, 12)}`;
 
+  const containerState = async (n: string): Promise<{ running: boolean; exitCode: number }> => {
+    const r = await dexec(["inspect", "-f", "{{.State.Running}} {{.State.ExitCode}}", n]);
+    const [running, exitCode] = r.stdout.trim().split(/\s+/);
+    return { running: r.code === 0 && running === "true", exitCode: Number(exitCode) || 0 };
+  };
+
+  const listening = async (endpoint: DeployEndpoint): Promise<boolean> => {
+    try {
+      await fetch(`http://${endpoint.host}:${endpoint.port}/`, {
+        signal: AbortSignal.timeout(APP_READY_PROBE_TIMEOUT_MS),
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const notReady = async (n: string, why: string): Promise<Error> => {
+    const logs = await dexec(["logs", "--tail", FAILURE_LOG_LINES, n]);
+    const out = `${logs.stdout}${logs.stderr}`.trim().slice(-FAILURE_LOG_BYTES);
+    const tail = out ? `; last output from the entrypoint:\n${out}` : "; the entrypoint produced no output";
+    return new Error(`${why}${tail}`);
+  };
+
+  const waitAppReady = async (n: string, endpoint: DeployEndpoint): Promise<void> => {
+    const window = opts.readyWindowMs ?? APP_READY_WINDOW_MS;
+    const deadline = Date.now() + window;
+    for (;;) {
+      if (await listening(endpoint)) return;
+      const state = await containerState(n);
+      if (!state.running)
+        throw await notReady(n, `the entrypoint exited (status ${state.exitCode}) without binding port ${APP_PORT}`);
+      if (Date.now() >= deadline)
+        throw await notReady(n, `the app never listened on port ${APP_PORT} within ${window / 1000}s`);
+      await sleep(APP_READY_POLL_MS);
+    }
+  };
+
   /** Idempotent: create the deploy network and put core on it. */
   const ensureCoreOnNetwork = async (): Promise<void> => {
     await dexec(["network", "create", NETWORK]);
@@ -67,8 +112,7 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
       // deploy network whenever its own container is recreated, so rejoining
       // here is what keeps published apps reachable across a redeploy.
       await ensureCoreOnNetwork();
-      const running = await dexec(["inspect", "-f", "{{.State.Running}}", name(d)]);
-      if (running.code !== 0 || running.stdout.trim() !== "true") return null;
+      if (!(await containerState(name(d))).running) return null;
       if (opts.coreContainer) return { host: name(d), port: APP_PORT };
       const port = ports.get(name(d));
       return port === undefined ? null : { host: "127.0.0.1", port };
@@ -116,8 +160,9 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
       }
       // Containerised core shares the deploy network, so it reaches the app at
       // its container name; the published host port is for humans only.
-      if (opts.coreContainer) return { host: name(d), port: APP_PORT };
-      return { host: "127.0.0.1", port: hostPort };
+      const endpoint = opts.coreContainer ? { host: name(d), port: APP_PORT } : { host: "127.0.0.1", port: hostPort };
+      await waitAppReady(name(d), endpoint);
+      return endpoint;
     },
 
     async destroy(d: Deployment): Promise<void> {
