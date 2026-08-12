@@ -13,6 +13,7 @@ const OWNER = scopeId("personal", "u1");
 function harness() {
   const started: string[] = [];
   let refuse: string | null = null;
+  let gone = false;
   const deploy = createDeployService({
     deployStore: createDeployStore(),
     provider: {
@@ -22,10 +23,13 @@ function harness() {
           throw new Error(`the entrypoint exited (status 127) without binding port 8080`);
         }
         started.push(version.entrypoint);
+        gone = false;
         return { host: "127.0.0.1", port: 20500 + version.version };
       },
-      destroy: async () => {},
-      resolveEndpoint: async (d) => d.endpoint ?? null,
+      destroy: async () => {
+        gone = true;
+      },
+      resolveEndpoint: async (d) => (gone ? null : (d.endpoint ?? null)),
     },
     auditLog: { record() {}, events: async () => [], tail: async () => [] },
     acl: createAclStore(),
@@ -36,6 +40,9 @@ function harness() {
     started: () => started,
     refuseEntrypoint: (e: string | null) => {
       refuse = e;
+    },
+    vanishContainer: () => {
+      gone = true;
     },
   };
 }
@@ -81,8 +88,7 @@ test("a first publish that will not start is stopped, not left claiming to run",
 
   const all = await h.deploy.listDeployments();
   assert.equal(all.length, 1);
-  assert.equal(all[0]!.status, "stopped");
-  assert.equal(all[0]!.endpoint, null);
+  assert.notEqual(all[0]!.status, "running", "a deployment that never started must not claim to be running");
   assert.equal((await h.deploy.reachDeployment(all[0]!.id, "u1", { bypassAcl: true })).status, "not_found");
 });
 
@@ -102,4 +108,48 @@ test("a rollback to a version that will not start does not strand the app", asyn
   const after = await h.deploy.getDeployment(d.id);
   assert.equal(after?.status, "running");
   assert.equal(after?.appliedVersion, 2, "the version that still starts should be the one serving");
+});
+
+test("a failed redeploy does not resurrect an app the reaper stopped", async () => {
+  // The revert path relaunches whatever was serving before the attempt — but a
+  // deployment the idle reaper deliberately shut down was serving nothing, and
+  // bringing it back would reset its idle clock and burn its memory budget on
+  // stale code every time a broken push lands.
+  const h = harness();
+  const d = await h.deploy.deploy({
+    ownerScopeId: OWNER,
+    createdBy: "u1",
+    entrypoint: "node server.js",
+    files,
+  });
+  assert.equal(await h.deploy.reapIdleDeployments(-1), 1);
+  assert.equal((await h.deploy.getDeployment(d.id))?.status, "stopped");
+  const beforeStarts = h.started().length;
+
+  h.refuseEntrypoint("server.js");
+  await assert.rejects(() => h.deploy.redeploy(d.id, { entrypoint: "server.js", files }), /exited \(status 127\)/);
+
+  assert.equal((await h.deploy.getDeployment(d.id))?.status, "stopped", "it should still be stopped");
+  assert.equal(h.started().length, beforeStarts, "nothing should have been relaunched");
+});
+
+test("a transient failure while repairing leaves the app recoverable", async () => {
+  // Marking the deployment stopped here would be a one-way door: the reaper
+  // owns that state and only a fresh deploy leaves it, so a docker blip would
+  // 404 a healthy app forever.
+  const h = harness();
+  const d = await h.deploy.deploy({
+    ownerScopeId: OWNER,
+    createdBy: "u1",
+    entrypoint: "node server.js",
+    files,
+  });
+
+  h.vanishContainer();
+  h.refuseEntrypoint("node server.js");
+  await assert.rejects(() => h.deploy.reachDeployment(d.id, "u1", { bypassAcl: true }), /exited \(status 127\)/);
+
+  h.refuseEntrypoint(null);
+  const again = await h.deploy.reachDeployment(d.id, "u1", { bypassAcl: true });
+  assert.equal(again.status, "ok", "once docker recovers, the next request should repair the app");
 });

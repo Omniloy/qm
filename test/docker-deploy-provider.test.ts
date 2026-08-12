@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { createServer as netCreateServer, type AddressInfo, type Socket } from "node:net";
+import type { AddressInfo } from "node:net";
 import { mkdtempSync, writeFileSync, readFileSync, chmodSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,22 +17,10 @@ const listeningApp = async (): Promise<{ port: number; close: () => Promise<void
   };
 };
 
-// Accepts the connection and then says nothing. A port with no listener at all
-// would be racy: freeing an ephemeral port hands it back to the kernel, and a
-// parallel test that grabs it makes the readiness probe succeed.
-const blackholeApp = async (): Promise<{ port: number; close: () => Promise<void> }> => {
-  const held: Socket[] = [];
-  const server = netCreateServer((socket) => held.push(socket));
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return {
-    port: (server.address() as AddressInfo).port,
-    close: () =>
-      new Promise<void>((resolve) => {
-        for (const socket of held) socket.destroy();
-        server.close(() => resolve());
-      }),
-  };
-};
+// Readiness is a TCP connect, so "not listening" needs a port nothing can be
+// listening on. A released ephemeral port is racy — a parallel test can claim
+// it — but port 1 is privileged, so an unprivileged test run cannot bind it.
+const CLOSED_PORT = "1";
 
 // A stand-in for the `docker` binary rather than a mocked module: the provider
 // builds its own exec, and what matters here is the exact argv it produces.
@@ -194,12 +182,10 @@ test("an entrypoint that exits fails the deploy with its output", async (t) => {
     delete process.env.FAKE_LOGS;
     delete process.env.FAKE_HOST_PORT;
   });
-  const app = await blackholeApp();
-  t.after(() => app.close());
   process.env.FAKE_RUNNING = "false";
   process.env.FAKE_EXIT_CODE = "127";
   process.env.FAKE_LOGS = "sh: server.js: not found";
-  process.env.FAKE_HOST_PORT = String(app.port);
+  process.env.FAKE_HOST_PORT = CLOSED_PORT;
 
   const p = createDockerDeployProvider({ docker: docker.bin });
   await assert.rejects(
@@ -219,13 +205,11 @@ test("a deploy that never binds the port is not reported as running", async (t) 
     delete process.env.FAKE_LOGS;
     delete process.env.FAKE_HOST_PORT;
   });
-  const app = await blackholeApp();
-  t.after(() => app.close());
   process.env.FAKE_RUNNING = "true";
   process.env.FAKE_LOGS = "";
-  process.env.FAKE_HOST_PORT = String(app.port);
+  process.env.FAKE_HOST_PORT = CLOSED_PORT;
 
-  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 300 });
+  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 1000 });
   await assert.rejects(
     () => p.apply(deployment(), { version: 1, createdAt: 0, entrypoint: "node server.js", snapshotDir: "/data/x" }),
     /never listened on port 8080/,
@@ -249,16 +233,14 @@ test("a docker that cannot be reached is not reported as a clean exit", async (t
   // "exited (status 0)" blames the app for a daemon outage and, on a redeploy,
   // does so after its predecessor has already been removed.
   const docker = fakeDocker();
-  const app = await blackholeApp();
-  t.after(async () => {
+  t.after(() => {
     delete process.env.FAKE_HOST_PORT;
     delete process.env.FAKE_LOGS;
-    await app.close();
   });
-  process.env.FAKE_HOST_PORT = String(app.port);
+  process.env.FAKE_HOST_PORT = CLOSED_PORT;
   process.env.FAKE_LOGS = "Cannot connect to the Docker daemon";
 
-  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 300 });
+  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 1000 });
   await assert.rejects(
     () => p.apply(deployment(), { version: 1, createdAt: 0, entrypoint: "node server.js", snapshotDir: "/data/x" }),
     (e: Error) => {
@@ -271,14 +253,12 @@ test("a docker that cannot be reached is not reported as a clean exit", async (t
 
 test("a per-apply ready window overrides the provider default", async (t) => {
   const docker = fakeDocker();
-  const app = await blackholeApp();
-  t.after(async () => {
+  t.after(() => {
     delete process.env.FAKE_RUNNING;
     delete process.env.FAKE_HOST_PORT;
-    await app.close();
   });
   process.env.FAKE_RUNNING = "true";
-  process.env.FAKE_HOST_PORT = String(app.port);
+  process.env.FAKE_HOST_PORT = CLOSED_PORT;
 
   const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 60_000 });
   const started = Date.now();
@@ -287,9 +267,61 @@ test("a per-apply ready window overrides the provider default", async (t) => {
       p.apply(
         deployment(),
         { version: 1, createdAt: 0, entrypoint: "node server.js", snapshotDir: "/data/x" },
-        { readyWindowMs: 300 },
+        { readyWindowMs: 1000 },
       ),
-    /never listened on port 8080 within 0s/,
+    /never listened on port 8080 within 1s/,
   );
   assert.ok(Date.now() - started < 20_000, "the per-apply window should not fall back to the 60s default");
+});
+
+test("waitForReady:false launches without judging the app", async (t) => {
+  // The repair path relaunches a version that already ran. Gating it on
+  // readiness would hold the deployment lock while a slow boot is judged and
+  // then delete a container that was about to serve.
+  const docker = fakeDocker();
+  t.after(() => {
+    delete process.env.FAKE_RUNNING;
+    delete process.env.FAKE_HOST_PORT;
+  });
+  process.env.FAKE_RUNNING = "true";
+  process.env.FAKE_HOST_PORT = CLOSED_PORT;
+
+  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 60_000 });
+  const endpoint = await p.apply(
+    deployment(),
+    { version: 1, createdAt: 0, entrypoint: "node server.js", snapshotDir: "/data/x" },
+    { waitForReady: false },
+  );
+
+  assert.deepEqual(endpoint, { host: "127.0.0.1", port: 1 });
+  assert.equal(
+    docker.calls().filter((c) => c[0] === "rm").length,
+    1,
+    "only the pre-run cleanup should remove a container — the launched one must survive",
+  );
+});
+
+test("an entrypoint that dies before docker reports a port still explains itself", async (t) => {
+  // The fast-crash case on a host-side core: the container is gone by the time
+  // `docker port` runs, so the port lookup fails first. That must still carry
+  // the exit status and the log tail, and still clean up.
+  const docker = fakeDocker();
+  t.after(() => {
+    delete process.env.FAKE_RUNNING;
+    delete process.env.FAKE_EXIT_CODE;
+    delete process.env.FAKE_LOGS;
+  });
+  process.env.FAKE_RUNNING = "false";
+  process.env.FAKE_EXIT_CODE = "127";
+  process.env.FAKE_LOGS = "sh: server.js: not found";
+
+  const p = createDockerDeployProvider({ docker: docker.bin });
+  await assert.rejects(
+    () => p.apply(deployment(), { version: 1, createdAt: 0, entrypoint: "server.js", snapshotDir: "/data/x" }),
+    /exited \(status 127\)[\s\S]*server\.js: not found/,
+  );
+  assert.ok(
+    docker.calls().some((c) => c[0] === "rm" && c.includes("agent-deploy-c7574bd2282f")),
+    "the dead container should not be left squatting the name",
+  );
 });

@@ -110,8 +110,6 @@ export interface DeployServiceDeps {
   managesArtifactHome?: (homeScopeId: ScopeId, createdBy: string, principalId: string) => Promise<boolean>;
 }
 
-const REACH_REPAIR_READY_WINDOW_MS = 10_000;
-
 const NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -151,6 +149,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
       const allPaths = ((await deps.deployStore.treeOf(id, version.version)) ?? []).map((f) => f.path);
       const gitBundle = await deps.deployStore.bundleOf(id, version.version);
       endpoint = await deps.provider.reconcile(d, version, {
+        ...applyOpts,
         ...(gitBundle ? { gitBundle } : {}),
         changedPaths: diff ? [...diff.added, ...diff.modified].map((f) => f.path) : allPaths,
         deletedPaths: diff?.deleted.map((f) => f.path) ?? [],
@@ -171,35 +170,41 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
     await deps.deployStore.setAppliedVersion(id, version);
   };
 
-  // A version that will not start must not leave the store claiming the app is
-  // running: reachDeployment would keep routing to an address nothing answers.
-  // Put the last version that did start back in charge, and if there is none —
-  // or it will not start either — say the app is stopped so reach 404s instead
-  // of handing out a link that 502s.
+  // A version that will not start must not take the app down with it. Put back
+  // whatever was actually serving before the attempt and rethrow, so the caller
+  // still learns the deploy failed.
+  //
+  // Deliberately not a state change of its own: "stopped" is where the idle
+  // reaper parks apps and nothing but a fresh deploy leaves it, so writing it
+  // here would turn a docker hiccup into a permanent 404. A deployment that was
+  // never running stays not-running (its created state), and one that was stays
+  // as it was, free to be repaired on the next request.
   const applyOrRevert = async (
     id: string,
     version: DeploymentVersion,
     fromVersion?: number,
   ): Promise<DeployEndpoint> => {
+    const before = await deps.deployStore.get(id);
     try {
       return await applyVersion(id, version, fromVersion);
     } catch (e) {
       // currentVersion stays on the candidate — it records what was asked for,
-      // and the hosted git ref and a later retry both read it. What must go
-      // back is appliedVersion: the version actually serving traffic.
-      const previous = fromVersion === undefined ? undefined : await deps.deployStore.versionOf(id, fromVersion);
-      if (previous && previous.version !== version.version) {
-        try {
-          const restored = await applyVersion(id, previous, fromVersion);
-          await markVersionRunning(id, previous.version, restored);
-          throw e;
-        } catch (restoreFailed) {
-          if (restoreFailed === e) throw e;
-          console.error(`[deploy] ${id}: reverting to v${previous.version} failed:`, errMessage(restoreFailed));
-        }
+      // and the hosted git ref and a later retry both read it. What goes back
+      // is appliedVersion: the version that was actually serving traffic.
+      //
+      // appliedVersion, not fromVersion: callers pass `appliedVersion ??
+      // currentVersion`, and that fallback would "revert" to a version which
+      // has never started, buying a second failure and a second ready window.
+      const restoreTo = before?.status === "running" ? before.appliedVersion : undefined;
+      if (restoreTo === undefined || restoreTo === version.version) throw e;
+      const previous = await deps.deployStore.versionOf(id, restoreTo);
+      if (!previous) throw e;
+      try {
+        const restored = await applyVersion(id, previous, fromVersion);
+        await markVersionRunning(id, previous.version, restored);
+      } catch (restoreFailed) {
+        console.error(`[deploy] ${id}: reverting to v${previous.version} failed:`, errMessage(restoreFailed));
       }
-      await deps.deployStore.setStatus(id, "stopped");
-      await deps.deployStore.setEndpoint(id, null);
       throw e;
     }
   };
@@ -225,22 +230,15 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         if (!endpointsEqual(again, cur.endpoint)) await deps.deployStore.setEndpoint(cur.id, again);
         return again;
       }
-      // This repair runs inside a proxied request, so it waits far less than a
-      // publish would: a viewer should not hold the deployment lock for a
-      // minute while a container that will not start is given every chance.
-      // Failing marks the app stopped, so the requests behind this one 404
-      // immediately instead of each relaunching it and waiting again.
-      try {
-        const fresh = await applyVersion(cur.id, v, cur.appliedVersion ?? cur.currentVersion, {
-          readyWindowMs: REACH_REPAIR_READY_WINDOW_MS,
-        });
-        await markVersionRunning(cur.id, v.version, fresh);
-        return fresh;
-      } catch (e) {
-        await deps.deployStore.setStatus(cur.id, "stopped");
-        await deps.deployStore.setEndpoint(cur.id, null);
-        throw e;
-      }
+      // This relaunch happens inside a proxied request, and the version being
+      // relaunched already ran once. Waiting for a readiness verdict here would
+      // hold the deployment lock — and every request queued behind it — while a
+      // slow-booting app is judged, and failing that judgement would delete a
+      // container that was about to serve. Launch it and let the proxy report
+      // the truth: a 502 that clears itself in a second, not a hard failure.
+      const fresh = await applyVersion(cur.id, v, want, { waitForReady: false });
+      await markVersionRunning(cur.id, v.version, fresh);
+      return fresh;
     });
   };
 

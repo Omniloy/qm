@@ -1,5 +1,6 @@
 import type { Deployment, DeploymentVersion } from "./deploy-store.ts";
 import type { DeployApplyOptions, DeployEndpoint, DeployProvider } from "./deploy-provider.ts";
+import { connect } from "node:net";
 import { spawnDockerExec } from "../sandbox/docker-exec.ts";
 import { sleep } from "../util/async.ts";
 
@@ -60,22 +61,41 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
     return { running: running === "true", exitCode: Number.isInteger(parsed) ? parsed : null };
   };
 
-  const listening = async (endpoint: DeployEndpoint): Promise<boolean> => {
-    try {
-      await fetch(`http://${endpoint.host}:${endpoint.port}/`, {
-        signal: AbortSignal.timeout(APP_READY_PROBE_TIMEOUT_MS),
-      });
-      return true;
-    } catch {
-      return false;
-    }
-  };
+  // Readiness is "something accepted a connection on the port", not "something
+  // answered GET / with HTTP". A WebSocket-only server, or one whose index does
+  // slow work on a cold start, is up — asking it for a prompt HTTP response
+  // would call a healthy app dead and delete it.
+  const listening = (endpoint: DeployEndpoint): Promise<boolean> =>
+    new Promise((resolve) => {
+      const socket = connect({ host: endpoint.host, port: endpoint.port });
+      const done = (ok: boolean): void => {
+        socket.destroy();
+        resolve(ok);
+      };
+      socket.setTimeout(APP_READY_PROBE_TIMEOUT_MS, () => done(false));
+      socket.once("connect", () => done(true));
+      socket.once("error", () => done(false));
+    });
 
   const notReady = async (n: string, why: string): Promise<Error> => {
     const logs = await dexec(["logs", "--tail", FAILURE_LOG_LINES, n]);
     const out = `${logs.stdout}${logs.stderr}`.trim().slice(-FAILURE_LOG_BYTES);
     const tail = out ? `; last output from the entrypoint:\n${out}` : "; the entrypoint produced no output";
     return new Error(`${why}${tail}`);
+  };
+
+  // Docker reports no published port for a container that has already exited,
+  // so the usual reason we cannot find one is the entrypoint dying instantly —
+  // say that, with its output, rather than blaming the port lookup.
+  const requirePublishedPort = async (n: string): Promise<number> => {
+    const port = await publishedPort(n);
+    if (port !== null) return port;
+    const state = await containerState(n);
+    if (state && !state.running) {
+      const status = state.exitCode === null ? "" : ` (status ${state.exitCode})`;
+      throw await notReady(n, `the entrypoint exited${status} without binding port ${APP_PORT}`);
+    }
+    throw await notReady(n, `docker published no host port for ${APP_PORT}`);
   };
 
   const waitAppReady = async (n: string, endpoint: DeployEndpoint, window: number): Promise<void> => {
@@ -153,25 +173,25 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
         version.entrypoint,
       ]);
       if (r.code !== 0) throw new Error(`deploy run failed: ${r.stderr.trim()}`);
-      // Containerised core shares the deploy network, so it reaches the app at
-      // its container name; the published host port is for humans only.
-      let endpoint: DeployEndpoint;
-      if (opts.coreContainer) endpoint = { host: name(d), port: APP_PORT };
-      else {
-        const port = await publishedPort(name(d));
-        if (port === null) throw new Error(`deploy run failed: ${name(d)} published no host port for ${APP_PORT}`);
-        endpoint = { host: "127.0.0.1", port };
-      }
       // A container that never came up is not evidence to keep: its log tail is
       // already in the error, and leaving it behind strands its name, its host
-      // port and its disk until someone prunes the host by hand.
+      // port and its disk until someone prunes the host by hand. Everything
+      // after `docker run` sits inside this guard, because an entrypoint that
+      // dies in milliseconds fails while we are still asking for its port.
       try {
-        await waitAppReady(name(d), endpoint, applyOpts?.readyWindowMs ?? opts.readyWindowMs ?? APP_READY_WINDOW_MS);
+        // Containerised core shares the deploy network, so it reaches the app
+        // at its container name; the published host port is for humans only.
+        const endpoint = opts.coreContainer
+          ? { host: name(d), port: APP_PORT }
+          : { host: "127.0.0.1", port: await requirePublishedPort(name(d)) };
+        if (applyOpts?.waitForReady !== false) {
+          await waitAppReady(name(d), endpoint, applyOpts?.readyWindowMs ?? opts.readyWindowMs ?? APP_READY_WINDOW_MS);
+        }
+        return endpoint;
       } catch (e) {
         await dexec(["rm", "-f", name(d)]);
         throw e;
       }
-      return endpoint;
     },
 
     async destroy(d: Deployment): Promise<void> {
