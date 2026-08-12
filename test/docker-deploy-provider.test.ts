@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
+import { createServer as netCreateServer, type AddressInfo, type Socket } from "node:net";
 import { mkdtempSync, writeFileSync, readFileSync, chmodSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,10 +17,21 @@ const listeningApp = async (): Promise<{ port: number; close: () => Promise<void
   };
 };
 
-const freePort = async (): Promise<number> => {
-  const app = await listeningApp();
-  await app.close();
-  return app.port;
+// Accepts the connection and then says nothing. A port with no listener at all
+// would be racy: freeing an ephemeral port hands it back to the kernel, and a
+// parallel test that grabs it makes the readiness probe succeed.
+const blackholeApp = async (): Promise<{ port: number; close: () => Promise<void> }> => {
+  const held: Socket[] = [];
+  const server = netCreateServer((socket) => held.push(socket));
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return {
+    port: (server.address() as AddressInfo).port,
+    close: () =>
+      new Promise<void>((resolve) => {
+        for (const socket of held) socket.destroy();
+        server.close(() => resolve());
+      }),
+  };
 };
 
 // A stand-in for the `docker` binary rather than a mocked module: the provider
@@ -183,15 +194,21 @@ test("an entrypoint that exits fails the deploy with its output", async (t) => {
     delete process.env.FAKE_LOGS;
     delete process.env.FAKE_HOST_PORT;
   });
+  const app = await blackholeApp();
+  t.after(() => app.close());
   process.env.FAKE_RUNNING = "false";
   process.env.FAKE_EXIT_CODE = "127";
   process.env.FAKE_LOGS = "sh: server.js: not found";
-  process.env.FAKE_HOST_PORT = String(await freePort());
+  process.env.FAKE_HOST_PORT = String(app.port);
 
   const p = createDockerDeployProvider({ docker: docker.bin });
   await assert.rejects(
     () => p.apply(deployment(), { version: 1, createdAt: 0, entrypoint: "server.js", snapshotDir: "/data/x" }),
     /exited \(status 127\)[\s\S]*server\.js: not found/,
+  );
+  assert.ok(
+    docker.calls().some((c) => c[0] === "rm" && c.includes("agent-deploy-c7574bd2282f")),
+    "the container that failed readiness should be removed, not left on the host",
   );
 });
 
@@ -202,13 +219,77 @@ test("a deploy that never binds the port is not reported as running", async (t) 
     delete process.env.FAKE_LOGS;
     delete process.env.FAKE_HOST_PORT;
   });
+  const app = await blackholeApp();
+  t.after(() => app.close());
   process.env.FAKE_RUNNING = "true";
   process.env.FAKE_LOGS = "";
-  process.env.FAKE_HOST_PORT = String(await freePort());
+  process.env.FAKE_HOST_PORT = String(app.port);
 
   const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 300 });
   await assert.rejects(
     () => p.apply(deployment(), { version: 1, createdAt: 0, entrypoint: "node server.js", snapshotDir: "/data/x" }),
     /never listened on port 8080/,
   );
+});
+
+test("a host-side core resolves to nothing when docker publishes no port", async (t) => {
+  // The only coverage of the publishedPort==null branch. A regression in the
+  // parse would hand core a wrong loopback port and proxy signed-in user
+  // traffic to whatever unrelated service happens to be listening there.
+  const docker = fakeDocker();
+  t.after(() => delete process.env.FAKE_RUNNING);
+  process.env.FAKE_RUNNING = "true";
+
+  const p = createDockerDeployProvider({ docker: docker.bin });
+  assert.equal(await p.resolveEndpoint!(deployment(), {} as never), null);
+});
+
+test("a docker that cannot be reached is not reported as a clean exit", async (t) => {
+  // `docker inspect` failing means we do not know what happened. Calling that
+  // "exited (status 0)" blames the app for a daemon outage and, on a redeploy,
+  // does so after its predecessor has already been removed.
+  const docker = fakeDocker();
+  const app = await blackholeApp();
+  t.after(async () => {
+    delete process.env.FAKE_HOST_PORT;
+    delete process.env.FAKE_LOGS;
+    await app.close();
+  });
+  process.env.FAKE_HOST_PORT = String(app.port);
+  process.env.FAKE_LOGS = "Cannot connect to the Docker daemon";
+
+  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 300 });
+  await assert.rejects(
+    () => p.apply(deployment(), { version: 1, createdAt: 0, entrypoint: "node server.js", snapshotDir: "/data/x" }),
+    (e: Error) => {
+      assert.match(e.message, /never listened on port 8080/);
+      assert.doesNotMatch(e.message, /exited/);
+      return true;
+    },
+  );
+});
+
+test("a per-apply ready window overrides the provider default", async (t) => {
+  const docker = fakeDocker();
+  const app = await blackholeApp();
+  t.after(async () => {
+    delete process.env.FAKE_RUNNING;
+    delete process.env.FAKE_HOST_PORT;
+    await app.close();
+  });
+  process.env.FAKE_RUNNING = "true";
+  process.env.FAKE_HOST_PORT = String(app.port);
+
+  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 60_000 });
+  const started = Date.now();
+  await assert.rejects(
+    () =>
+      p.apply(
+        deployment(),
+        { version: 1, createdAt: 0, entrypoint: "node server.js", snapshotDir: "/data/x" },
+        { readyWindowMs: 300 },
+      ),
+    /never listened on port 8080 within 0s/,
+  );
+  assert.ok(Date.now() - started < 20_000, "the per-apply window should not fall back to the 60s default");
 });

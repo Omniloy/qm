@@ -15,7 +15,7 @@ import {
   type DeployEndpoint,
   type DeploymentVersion,
 } from "./deploy-store.ts";
-import type { DeployProfile, DeployProvider } from "./deploy-provider.ts";
+import type { DeployApplyOptions, DeployProfile, DeployProvider } from "./deploy-provider.ts";
 import { createNoopLeaderLease, type LeaderLease } from "../persistence/leader-lease.ts";
 import { createNoopAdvisoryLock, type AdvisoryLock } from "../persistence/advisory-lock.ts";
 import { createKeyedQueue } from "../util/async.ts";
@@ -110,6 +110,8 @@ export interface DeployServiceDeps {
   managesArtifactHome?: (homeScopeId: ScopeId, createdBy: string, principalId: string) => Promise<boolean>;
 }
 
+const REACH_REPAIR_READY_WINDOW_MS = 10_000;
+
 const NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -140,6 +142,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
     id: string,
     version: DeploymentVersion,
     fromVersion?: number,
+    applyOpts?: DeployApplyOptions,
   ): Promise<DeployEndpoint> => {
     const d = (await deps.deployStore.get(id))!;
     let endpoint: DeployEndpoint;
@@ -154,7 +157,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         allPaths,
       });
     } else {
-      endpoint = await deps.provider.apply(d, version);
+      endpoint = await deps.provider.apply(d, version, applyOpts);
     }
     if (endpoint.image && endpoint.image !== version.image) {
       await deps.deployStore.setVersionImage(id, version.version, endpoint.image);
@@ -168,6 +171,39 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
     await deps.deployStore.setAppliedVersion(id, version);
   };
 
+  // A version that will not start must not leave the store claiming the app is
+  // running: reachDeployment would keep routing to an address nothing answers.
+  // Put the last version that did start back in charge, and if there is none —
+  // or it will not start either — say the app is stopped so reach 404s instead
+  // of handing out a link that 502s.
+  const applyOrRevert = async (
+    id: string,
+    version: DeploymentVersion,
+    fromVersion?: number,
+  ): Promise<DeployEndpoint> => {
+    try {
+      return await applyVersion(id, version, fromVersion);
+    } catch (e) {
+      // currentVersion stays on the candidate — it records what was asked for,
+      // and the hosted git ref and a later retry both read it. What must go
+      // back is appliedVersion: the version actually serving traffic.
+      const previous = fromVersion === undefined ? undefined : await deps.deployStore.versionOf(id, fromVersion);
+      if (previous && previous.version !== version.version) {
+        try {
+          const restored = await applyVersion(id, previous, fromVersion);
+          await markVersionRunning(id, previous.version, restored);
+          throw e;
+        } catch (restoreFailed) {
+          if (restoreFailed === e) throw e;
+          console.error(`[deploy] ${id}: reverting to v${previous.version} failed:`, errMessage(restoreFailed));
+        }
+      }
+      await deps.deployStore.setStatus(id, "stopped");
+      await deps.deployStore.setEndpoint(id, null);
+      throw e;
+    }
+  };
+
   const liveEndpoint = async (d: Deployment): Promise<DeployEndpoint> => {
     if (!deps.provider.resolveEndpoint || d.endpoint == null) return d.endpoint!;
     const version = d.versions.find((v) => v.version === d.currentVersion);
@@ -179,15 +215,32 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
     }
     return withDeployLock(d.id, async () => {
       const cur = (await deps.deployStore.get(d.id)) ?? d;
-      const v = cur.versions.find((x) => x.version === cur.currentVersion) ?? version;
+      // Relaunch what was last serving, not what was last asked for: after a
+      // failed deploy those differ, and repairing a vanished container is no
+      // place to retry a version already known not to start.
+      const want = cur.appliedVersion ?? cur.currentVersion;
+      const v = cur.versions.find((x) => x.version === want) ?? version;
       const again = await deps.provider.resolveEndpoint!(cur, v);
       if (again) {
         if (!endpointsEqual(again, cur.endpoint)) await deps.deployStore.setEndpoint(cur.id, again);
         return again;
       }
-      const fresh = await applyVersion(cur.id, v, cur.appliedVersion ?? cur.currentVersion);
-      await markVersionRunning(cur.id, v.version, fresh);
-      return fresh;
+      // This repair runs inside a proxied request, so it waits far less than a
+      // publish would: a viewer should not hold the deployment lock for a
+      // minute while a container that will not start is given every chance.
+      // Failing marks the app stopped, so the requests behind this one 404
+      // immediately instead of each relaunching it and waiting again.
+      try {
+        const fresh = await applyVersion(cur.id, v, cur.appliedVersion ?? cur.currentVersion, {
+          readyWindowMs: REACH_REPAIR_READY_WINDOW_MS,
+        });
+        await markVersionRunning(cur.id, v.version, fresh);
+        return fresh;
+      } catch (e) {
+        await deps.deployStore.setStatus(cur.id, "stopped");
+        await deps.deployStore.setEndpoint(cur.id, null);
+        throw e;
+      }
     });
   };
 
@@ -333,7 +386,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         ...(input.createdInScope !== undefined ? { createdInScope: input.createdInScope } : {}),
         ...(input.env ? { env: input.env } : {}),
       });
-      const endpoint = await applyVersion(d.id, d.versions[0]!);
+      const endpoint = await applyOrRevert(d.id, d.versions[0]!);
       await markVersionRunning(d.id, d.versions[0]!.version, endpoint);
       deps.auditLog.record({
         at: Date.now(),
@@ -359,7 +412,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         });
         const d = await deps.deployStore.get(id);
         if (!d) throw new Error(`unknown deployment: ${id}`);
-        const endpoint = await applyVersion(id, v, before?.appliedVersion ?? before?.currentVersion);
+        const endpoint = await applyOrRevert(id, v, before?.appliedVersion ?? before?.currentVersion);
         await markVersionRunning(id, v.version, endpoint);
         deps.auditLog.record({
           at: Date.now(),
@@ -387,7 +440,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         const v = await deps.deployStore.versionOf(id, version);
         const d = await deps.deployStore.get(id);
         if (!d || !v) return;
-        const endpoint = await applyVersion(id, v, before?.appliedVersion ?? before?.currentVersion);
+        const endpoint = await applyOrRevert(id, v, before?.appliedVersion ?? before?.currentVersion);
         await markVersionRunning(id, v.version, endpoint);
         deps.auditLog.record({
           at: Date.now(),
@@ -506,7 +559,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
           if (!pushed) return result;
           const v = await deps.deployStore.addVersionFromCommit(id, pushed);
           if (!v) return result;
-          const endpoint = await applyVersion(id, v, before.appliedVersion ?? before.currentVersion);
+          const endpoint = await applyOrRevert(id, v, before.appliedVersion ?? before.currentVersion);
           await markVersionRunning(id, v.version, endpoint);
           deps.auditLog.record({
             at: Date.now(),
@@ -524,6 +577,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
             resource: id,
             scopeLabel: ownerScopeId,
             status: "error",
+            detail: errMessage(e),
           });
         }
         return result;

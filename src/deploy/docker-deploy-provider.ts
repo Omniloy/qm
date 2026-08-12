@@ -1,5 +1,5 @@
 import type { Deployment, DeploymentVersion } from "./deploy-store.ts";
-import type { DeployEndpoint, DeployProvider } from "./deploy-provider.ts";
+import type { DeployApplyOptions, DeployEndpoint, DeployProvider } from "./deploy-provider.ts";
 import { spawnDockerExec } from "../sandbox/docker-exec.ts";
 import { sleep } from "../util/async.ts";
 
@@ -49,10 +49,15 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
 
   const name = (d: Deployment) => `agent-deploy-${d.id.slice(0, 12)}`;
 
-  const containerState = async (n: string): Promise<{ running: boolean; exitCode: number }> => {
+  // null means docker could not be asked, which is not the same as "the app
+  // died": reporting a daemon hiccup as a clean exit would blame the app for
+  // an exit code it never produced.
+  const containerState = async (n: string): Promise<{ running: boolean; exitCode: number | null } | null> => {
     const r = await dexec(["inspect", "-f", "{{.State.Running}} {{.State.ExitCode}}", n]);
+    if (r.code !== 0) return null;
     const [running, exitCode] = r.stdout.trim().split(/\s+/);
-    return { running: r.code === 0 && running === "true", exitCode: Number(exitCode) || 0 };
+    const parsed = Number(exitCode);
+    return { running: running === "true", exitCode: Number.isInteger(parsed) ? parsed : null };
   };
 
   const listening = async (endpoint: DeployEndpoint): Promise<boolean> => {
@@ -73,16 +78,17 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
     return new Error(`${why}${tail}`);
   };
 
-  const waitAppReady = async (n: string, endpoint: DeployEndpoint): Promise<void> => {
-    const window = opts.readyWindowMs ?? APP_READY_WINDOW_MS;
+  const waitAppReady = async (n: string, endpoint: DeployEndpoint, window: number): Promise<void> => {
     const deadline = Date.now() + window;
     for (;;) {
       if (await listening(endpoint)) return;
       const state = await containerState(n);
-      if (!state.running)
-        throw await notReady(n, `the entrypoint exited (status ${state.exitCode}) without binding port ${APP_PORT}`);
+      if (state && !state.running) {
+        const status = state.exitCode === null ? "" : ` (status ${state.exitCode})`;
+        throw await notReady(n, `the entrypoint exited${status} without binding port ${APP_PORT}`);
+      }
       if (Date.now() >= deadline)
-        throw await notReady(n, `the app never listened on port ${APP_PORT} within ${window / 1000}s`);
+        throw await notReady(n, `the app never listened on port ${APP_PORT} within ${Math.round(window / 1000)}s`);
       await sleep(APP_READY_POLL_MS);
     }
   };
@@ -105,13 +111,13 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
       // deploy network whenever its own container is recreated, so rejoining
       // here is what keeps published apps reachable across a redeploy.
       await ensureCoreOnNetwork();
-      if (!(await containerState(name(d))).running) return null;
+      if (!(await containerState(name(d)))?.running) return null;
       if (opts.coreContainer) return { host: name(d), port: APP_PORT };
       const port = await publishedPort(name(d));
       return port === null ? null : { host: "127.0.0.1", port };
     },
 
-    async apply(d: Deployment, version: DeploymentVersion): Promise<DeployEndpoint> {
+    async apply(d: Deployment, version: DeploymentVersion, applyOpts?: DeployApplyOptions): Promise<DeployEndpoint> {
       await ensureCoreOnNetwork();
       await dexec(["rm", "-f", name(d)]);
       const envArgs = Object.entries(version.env ?? {}).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
@@ -156,7 +162,15 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
         if (port === null) throw new Error(`deploy run failed: ${name(d)} published no host port for ${APP_PORT}`);
         endpoint = { host: "127.0.0.1", port };
       }
-      await waitAppReady(name(d), endpoint);
+      // A container that never came up is not evidence to keep: its log tail is
+      // already in the error, and leaving it behind strands its name, its host
+      // port and its disk until someone prunes the host by hand.
+      try {
+        await waitAppReady(name(d), endpoint, applyOpts?.readyWindowMs ?? opts.readyWindowMs ?? APP_READY_WINDOW_MS);
+      } catch (e) {
+        await dexec(["rm", "-f", name(d)]);
+        throw e;
+      }
       return endpoint;
     },
 

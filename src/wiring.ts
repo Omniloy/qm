@@ -943,6 +943,7 @@ export function buildApp(
         })
       : createDockerDeployProvider({
           ...(config.coreContainer ? { coreContainer: config.coreContainer } : {}),
+          readyWindowMs: config.deployReadyWindowMs,
         });
   if (config.deployProvider === "aws" && !config.awsDeploy.dataBucket && !config.awsSandbox.s3Bucket) {
     console.warn(
