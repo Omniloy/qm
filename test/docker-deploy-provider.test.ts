@@ -6,8 +6,6 @@ import { join } from "node:path";
 import { createDockerDeployProvider } from "../src/deploy/docker-deploy-provider.ts";
 import type { Deployment } from "../src/deploy/deploy-store.ts";
 
-// A stand-in for the `docker` binary rather than a mocked module: the provider
-// builds its own exec, and what matters here is the exact argv it produces.
 const fakeDocker = (): { bin: string; calls: () => string[][] } => {
   const dir = mkdtempSync(join(tmpdir(), "qm-docker-"));
   const bin = join(dir, "docker");
@@ -58,10 +56,6 @@ const clearFakes = (): void => {
 };
 
 test("resolving an endpoint puts core back on the deploy network", async (t) => {
-  // Core joins the network in apply(), but its membership lives on the
-  // container, not the image — recreating core (any redeploy) silently drops
-  // it, and every published app then times out. Resolving is the one thing
-  // that runs before each proxied request, so it is where the repair belongs.
   const docker = fakeDocker();
   t.after(clearFakes);
   process.env.FAKE_RUNNING = "true";
@@ -75,9 +69,6 @@ test("resolving an endpoint puts core back on the deploy network", async (t) => 
 });
 
 test("an already-connected core is not an error", async (t) => {
-  // The steady state: on all but the first request after a restart, the
-  // connect fails because it already happened. Treating that as fatal would
-  // take down every app it was meant to keep reachable.
   const docker = fakeDocker();
   t.after(clearFakes);
   process.env.FAKE_RUNNING = "true";
@@ -109,8 +100,6 @@ test("a stopped app resolves to nothing rather than an unreachable address", asy
 });
 
 test("a host-side core resolves through the published loopback port", async (t) => {
-  // The upstream arrangement, which must keep working: no coreContainer means
-  // core is on the host, so the container name would not resolve for it.
   const docker = fakeDocker();
   t.after(clearFakes);
   process.env.FAKE_RUNNING = "true";
@@ -125,9 +114,6 @@ test("a host-side core resolves through the published loopback port", async (t) 
 });
 
 test("a running app whose port mapping cannot be read is not rebuilt", async (t) => {
-  // Returning null here would tell the service the container is gone, and it
-  // would tear down a perfectly healthy app to replace it. Say we could not
-  // read it and let the next request ask again.
   const docker = fakeDocker();
   t.after(clearFakes);
   process.env.FAKE_RUNNING = "true";
@@ -137,9 +123,6 @@ test("a running app whose port mapping cannot be read is not rebuilt", async (t)
 });
 
 test("the host port comes from docker, not from a counter this process keeps", async (t) => {
-  // A restart used to reset the allocator to 9200 while surviving app
-  // containers still held those ports, so the next publish died on
-  // "port is already allocated" before the app ever ran.
   const docker = fakeDocker();
   t.after(clearFakes);
   process.env.FAKE_RUNNING = "true";
@@ -154,9 +137,6 @@ test("the host port comes from docker, not from a counter this process keeps", a
 });
 
 test("an entrypoint that exits fails the deploy with its output", async (t) => {
-  // The bug this exists for: `entrypoint: "server.js"` (no `node`) exits 127
-  // the instant it starts. Reporting that as a healthy deploy left the app's
-  // link answering 502 forever.
   const docker = fakeDocker();
   t.after(clearFakes);
   process.env.FAKE_RUNNING = "false";
@@ -177,9 +157,6 @@ test("an entrypoint that exits fails the deploy with its output", async (t) => {
 });
 
 test("an app that is merely slow to bind is left alone", async (t) => {
-  // Only a container that exits is a failure. Probing the port to decide
-  // "ready" mistook a WebSocket-only server, a slow first boot and docker's
-  // own userland proxy for signal, in both directions.
   const docker = fakeDocker();
   t.after(clearFakes);
   process.env.FAKE_RUNNING = "true";
@@ -194,8 +171,6 @@ test("an app that is merely slow to bind is left alone", async (t) => {
 });
 
 test("a docker that cannot be reached is not reported as a clean exit", async (t) => {
-  // `docker inspect` failing means we do not know what happened. Calling that
-  // "exited (status 0)" would blame the app for a daemon outage.
   const docker = fakeDocker();
   t.after(clearFakes);
   process.env.FAKE_HOST_PORT = "32901";
@@ -204,7 +179,7 @@ test("a docker that cannot be reached is not reported as a clean exit", async (t
   assert.deepEqual(await p.apply(deployment(), version), { host: "127.0.0.1", port: 32901 });
 });
 
-test("a startup grace of zero skips the crash watch entirely", async (t) => {
+test("a container that is already dead is caught without waiting out the grace", async (t) => {
   const docker = fakeDocker();
   t.after(clearFakes);
   process.env.FAKE_RUNNING = "false";
@@ -212,5 +187,17 @@ test("a startup grace of zero skips the crash watch entirely", async (t) => {
   process.env.FAKE_HOST_PORT = "32901";
 
   const p = createDockerDeployProvider({ docker: docker.bin, startupGraceMs: 0 });
-  assert.deepEqual(await p.apply(deployment(), version), { host: "127.0.0.1", port: 32901 });
+  await assert.rejects(() => p.apply(deployment(), version), /exited \(status 127\)/);
+});
+
+test("destroying a deployment does not delete its durable data", async (t) => {
+  const docker = fakeDocker();
+  t.after(clearFakes);
+
+  const p = createDockerDeployProvider({ docker: docker.bin });
+  await p.destroy(deployment());
+  assert.ok(
+    !docker.calls().some((c) => c[0] === "volume"),
+    "no volume should be removed when a deployment is stopped or archived",
+  );
 });

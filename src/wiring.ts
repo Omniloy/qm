@@ -943,7 +943,6 @@ export function buildApp(
         })
       : createDockerDeployProvider({
           ...(config.coreContainer ? { coreContainer: config.coreContainer } : {}),
-          startupGraceMs: config.deployStartupGraceMs,
         });
   if (config.deployProvider === "aws" && !config.awsDeploy.dataBucket && !config.awsSandbox.s3Bucket) {
     console.warn(

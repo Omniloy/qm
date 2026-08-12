@@ -168,13 +168,6 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
     await deps.deployStore.setAppliedVersion(id, version);
   };
 
-  // Launching a new version replaces the running container, so a version that
-  // dies on startup leaves the app down. Put back whatever was actually
-  // serving beforehand and rethrow, so the caller still learns it failed.
-  //
-  // Deliberately not a state change of its own: "stopped" is where the idle
-  // reaper parks apps and nothing but a fresh deploy leaves it, so writing it
-  // here would turn a docker hiccup into a permanent 404.
   const applyOrRevert = async (
     id: string,
     version: DeploymentVersion,
@@ -184,10 +177,6 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
     try {
       return await applyVersion(id, version, fromVersion);
     } catch (e) {
-      // appliedVersion, not fromVersion: callers pass `appliedVersion ??
-      // currentVersion`, and that fallback would "revert" to a version which
-      // has never started. Only revert an app that was actually up — one the
-      // reaper deliberately stopped must stay stopped.
       const restoreTo = before?.status === "running" ? before.appliedVersion : undefined;
       if (restoreTo === undefined || restoreTo === version.version) throw e;
       const previous = await deps.deployStore.versionOf(id, restoreTo);
@@ -202,39 +191,42 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
     }
   };
 
-  // null means "cannot reach it right now", which reachDeployment turns into a
-  // 404. Never a stale endpoint: docker hands out ephemeral host ports, so an
-  // address this deployment used to own may already belong to a different
-  // one, and proxying a signed-in viewer into another scope's app is a worse
-  // answer than saying the app is unavailable.
   const liveEndpoint = async (d: Deployment): Promise<DeployEndpoint | null> => {
     if (!deps.provider.resolveEndpoint || d.endpoint == null) return d.endpoint ?? null;
     const version = d.versions.find((v) => v.version === d.currentVersion);
     if (!version) return d.endpoint;
-    const resolved = await deps.provider.resolveEndpoint(d, version).catch(() => null);
+    let unreadable = false;
+    const resolve = async (dep: Deployment, v: DeploymentVersion): Promise<DeployEndpoint | null> => {
+      try {
+        return await deps.provider.resolveEndpoint!(dep, v);
+      } catch (e) {
+        unreadable = true;
+        console.error(`[deploy] ${dep.id}: could not resolve its endpoint:`, errMessage(e));
+        return null;
+      }
+    };
+    const resolved = await resolve(d, version);
     if (resolved) {
       if (!endpointsEqual(resolved, d.endpoint)) await deps.deployStore.setEndpoint(d.id, resolved);
       return resolved;
     }
+    if (unreadable) return null;
     return withDeployLock(d.id, async () => {
       const cur = (await deps.deployStore.get(d.id)) ?? d;
-      // Relaunch what was last serving, not what was last asked for: after a
-      // failed deploy those differ, and repairing a vanished container is no
-      // place to retry a version already known not to start.
+      if (cur.status !== "running") return null;
       const want = cur.appliedVersion ?? cur.currentVersion;
       const v = cur.versions.find((x) => x.version === want) ?? version;
-      const again = await deps.provider.resolveEndpoint!(cur, v).catch(() => null);
+      const again = await resolve(cur, v);
       if (again) {
         if (!endpointsEqual(again, cur.endpoint)) await deps.deployStore.setEndpoint(cur.id, again);
         return again;
       }
+      if (unreadable) return null;
       try {
         const fresh = await applyVersion(cur.id, v, want);
         await markVersionRunning(cur.id, v.version, fresh);
         return fresh;
       } catch (e) {
-        // Route handlers call reachDeployment without a try/catch, so throwing
-        // here would turn a docker hiccup into a 500 on a page load.
         console.error(`[deploy] ${cur.id}: relaunching v${v.version} failed:`, errMessage(e));
         return null;
       }
@@ -465,15 +457,27 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         if (!d) throw new Error(`unknown deployment: ${id}`);
         if (d.status === "running") return d;
         if (d.status !== "archived") throw new Error(`deployment is not archived: ${id}`);
-        // The version that was last serving, not the one last asked for: a
-        // failed deploy leaves currentVersion on a candidate that never
-        // started, and restoring is no place to discover that again.
-        const want = d.appliedVersion ?? d.currentVersion;
-        const version = d.versions.find((v) => v.version === want);
-        if (!version) throw new Error(`no such version ${want}`);
+        const wanted = d.versions.find((v) => v.version === d.currentVersion);
+        if (!wanted) throw new Error(`no such version ${d.currentVersion}`);
+        const lastServing =
+          d.appliedVersion === undefined || d.appliedVersion === d.currentVersion
+            ? undefined
+            : d.versions.find((v) => v.version === d.appliedVersion);
+        let restored = wanted;
         try {
-          const endpoint = await applyVersion(id, version, d.appliedVersion);
-          await markVersionRunning(id, version.version, endpoint);
+          try {
+            const endpoint = await applyVersion(id, wanted, d.appliedVersion);
+            await markVersionRunning(id, wanted.version, endpoint);
+          } catch (wantedFailed) {
+            if (!lastServing) throw wantedFailed;
+            console.error(
+              `[deploy] ${id}: restoring v${wanted.version} failed, falling back to v${lastServing.version}:`,
+              errMessage(wantedFailed),
+            );
+            const endpoint = await applyVersion(id, lastServing, d.appliedVersion);
+            await markVersionRunning(id, lastServing.version, endpoint);
+            restored = lastServing;
+          }
         } catch (error) {
           await deps.provider
             .destroy(d)
@@ -490,7 +494,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
           at: Date.now(),
           principalId: actorId ?? d.createdBy,
           action: "deploy_restore",
-          resource: `${id}@v${version.version}`,
+          resource: `${id}@v${restored.version}`,
           scopeLabel: d.ownerScopeId,
         });
         return (await deps.deployStore.get(id))!;

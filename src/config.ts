@@ -109,7 +109,6 @@ export interface Config {
   deployIdleTtlMs?: number;
   deployGitDir: string;
   deployDialTimeoutMs: number;
-  deployStartupGraceMs: number;
   deployAppsSessionSecret?: string;
   deployAppsLoginUrl?: string;
   deepIdleMachineMs: number;
@@ -404,7 +403,6 @@ export const CONFIG_DEFAULTS = {
   monitorPollMs: 10_000,
   skillSyncPollMs: 0,
   deployDialTimeoutMs: 20_000,
-  deployStartupGraceMs: 5_000,
   deepIdleMachineMs: 3 * 24 * 60 * 60_000,
   devIdleMachineMs: 2 * 60 * 60_000,
   cronFireConcurrency: 4,
@@ -855,8 +853,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     deployGitDir: env.DEPLOY_GIT_DIR ? resolve(env.DEPLOY_GIT_DIR) : join(dataDir, "deploy-git"),
     deployDialTimeoutMs:
       numEnvStrict("DEPLOY_DIAL_TIMEOUT_MS", env.DEPLOY_DIAL_TIMEOUT_MS) ?? CONFIG_DEFAULTS.deployDialTimeoutMs,
-    deployStartupGraceMs:
-      numEnvStrict("DEPLOY_STARTUP_GRACE_MS", env.DEPLOY_STARTUP_GRACE_MS) ?? CONFIG_DEFAULTS.deployStartupGraceMs,
     ...deployAppsEnv(env),
     deepIdleMachineMs:
       numEnvStrict("DEEP_IDLE_MACHINE_MS", env.DEEP_IDLE_MACHINE_MS) ?? CONFIG_DEFAULTS.deepIdleMachineMs,

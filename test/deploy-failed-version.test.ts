@@ -50,11 +50,6 @@ function harness() {
 const files = [{ path: "server.js", data: "x" }];
 
 test("a redeploy that will not start leaves the previous version serving", async () => {
-  // Without this, apply() removed the working container, threw before
-  // markVersionRunning, and left the store saying "running" at an address
-  // nothing answered — so the link 502'd forever with no way back. The
-  // provider now proves the candidate before it swaps, so a failure is a
-  // failed deploy and nothing more.
   const h = harness();
   const d = await h.deploy.deploy({
     ownerScopeId: OWNER,
@@ -77,9 +72,6 @@ test("a redeploy that will not start leaves the previous version serving", async
 });
 
 test("a first publish that will not start is stopped, not left claiming to run", async () => {
-  // There is no previous version to fall back to, so the honest answer is that
-  // the app is not running: reach must 404 rather than hand out a link to a
-  // port with nothing behind it.
   const h = harness();
   h.refuseEntrypoint("server.js");
 
@@ -113,9 +105,6 @@ test("a rollback to a version that will not start does not strand the app", asyn
 });
 
 test("a failed redeploy does not resurrect an app the reaper stopped", async () => {
-  // An earlier attempt at this relaunched "whatever was serving before" on
-  // failure, which woke apps the idle reaper had deliberately shut down. A
-  // failed deploy must leave a stopped app stopped.
   const h = harness();
   const d = await h.deploy.deploy({
     ownerScopeId: OWNER,
@@ -135,12 +124,6 @@ test("a failed redeploy does not resurrect an app the reaper stopped", async () 
 });
 
 test("a transient failure while repairing leaves the app recoverable", async () => {
-  // Three ways to get this wrong, all tried: marking the deployment stopped is
-  // a one-way door (the reaper owns that state and only a fresh deploy leaves
-  // it); letting the error escape turns a docker blip into a 500 from route
-  // handlers that never expect reachDeployment to reject; and handing back the
-  // last known address can proxy a viewer into whichever deployment docker has
-  // since given that ephemeral port to.
   const h = harness();
   const d = await h.deploy.deploy({
     ownerScopeId: OWNER,
@@ -157,4 +140,48 @@ test("a transient failure while repairing leaves the app recoverable", async () 
   h.refuseEntrypoint(null);
   const again = await h.deploy.reachDeployment(d.id, "u1", { bypassAcl: true });
   assert.equal(again.status, "ok", "once docker recovers, the next request should repair the app");
+});
+
+test("a running app whose endpoint cannot be read is not torn down and rebuilt", async () => {
+  const started: string[] = [];
+  let unreadable = false;
+  const deploy = createDeployService({
+    deployStore: createDeployStore(),
+    provider: {
+      profile: { managedScaleToZero: false },
+      apply: async (_d, v) => {
+        started.push(v.entrypoint);
+        return { host: "127.0.0.1", port: 20600 + v.version };
+      },
+      destroy: async () => {},
+      resolveEndpoint: async (d) => {
+        if (unreadable) throw new Error("could not read the published port of agent-deploy-x");
+        return d.endpoint ?? null;
+      },
+    },
+    auditLog: { record() {}, events: async () => [], tail: async () => [] },
+    acl: createAclStore(),
+    deployDir: mkdtempSync(join(tmpdir(), "deploy-unreadable-")),
+  });
+
+  const d = await deploy.deploy({ ownerScopeId: OWNER, createdBy: "u1", entrypoint: "node server.js", files });
+  unreadable = true;
+  const reach = await deploy.reachDeployment(d.id, "u1", { bypassAcl: true });
+
+  assert.equal(reach.status, "not_found", "a docker read failure is unreachable, not a reason to rebuild");
+  assert.deepEqual(started, ["node server.js"], "the healthy container must not be replaced");
+});
+
+test("a reap that lands while a request waits for the lock is not undone", async () => {
+  const h = harness();
+  const d = await h.deploy.deploy({ ownerScopeId: OWNER, createdBy: "u1", entrypoint: "node server.js", files });
+  const startsBefore = h.started().length;
+
+  h.vanishContainer();
+  await h.deploy.reapIdleDeployments(-1);
+
+  const reach = await h.deploy.reachDeployment(d.id, "u1", { bypassAcl: true });
+  assert.equal(reach.status, "not_found");
+  assert.equal((await h.deploy.getDeployment(d.id))?.status, "stopped", "the reaper's decision should stand");
+  assert.equal(h.started().length, startsBefore, "nothing should have been relaunched");
 });
