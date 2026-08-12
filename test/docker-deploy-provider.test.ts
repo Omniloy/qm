@@ -39,6 +39,7 @@ const fakeDocker = (): { bin: string; calls: () => string[][]; reset: () => void
       '  "network connect") [ -n "$FAKE_CONNECT_ERR" ] && { echo "$FAKE_CONNECT_ERR" >&2; exit 1; }; exit 0 ;;',
       '  "logs --tail") printf "%s\\n" "$FAKE_LOGS"; exit 0 ;;',
       "esac",
+      'if [ "$1" = "port" ]; then [ -n "$FAKE_HOST_PORT" ] || exit 1; echo "127.0.0.1:$FAKE_HOST_PORT"; exit 0; fi',
       'if [ "$1" = "inspect" ]; then echo "$FAKE_RUNNING $FAKE_EXIT_CODE"; [ -n "$FAKE_RUNNING" ] || exit 1; fi',
       "exit 0",
     ].join("\n"),
@@ -132,13 +133,14 @@ test("a host-side core still resolves through the published loopback port", asyn
   const app = await listeningApp();
   t.after(async () => {
     delete process.env.FAKE_RUNNING;
+    delete process.env.FAKE_HOST_PORT;
     await app.close();
   });
   process.env.FAKE_RUNNING = "true";
+  process.env.FAKE_HOST_PORT = String(app.port);
 
-  const p = createDockerDeployProvider({ docker: docker.bin, basePort: app.port });
+  const p = createDockerDeployProvider({ docker: docker.bin });
   const d = deployment();
-  assert.equal(await p.resolveEndpoint!(d, {} as never), null, "no port is allocated until apply runs");
 
   await p.apply(d, { version: 1, createdAt: 0, entrypoint: "node server.js", snapshotDir: "/data/x" });
   assert.deepEqual(await p.resolveEndpoint!(d, {} as never), { host: "127.0.0.1", port: app.port });
@@ -146,6 +148,28 @@ test("a host-side core still resolves through the published loopback port", asyn
     !docker.calls().some((c) => c[0] === "network" && c[1] === "connect"),
     "nothing should be connected to the deploy network when core is not a container",
   );
+});
+
+test("the host port comes from docker, not from a counter this process keeps", async (t) => {
+  // A restart used to reset the allocator to 9200 while surviving app
+  // containers still held those ports, so the next publish died on
+  // "port is already allocated" before the app ever ran.
+  const docker = fakeDocker();
+  const app = await listeningApp();
+  t.after(async () => {
+    delete process.env.FAKE_RUNNING;
+    delete process.env.FAKE_HOST_PORT;
+    await app.close();
+  });
+  process.env.FAKE_RUNNING = "true";
+  process.env.FAKE_HOST_PORT = String(app.port);
+
+  const p = createDockerDeployProvider({ docker: docker.bin });
+  await p.apply(deployment(), { version: 1, createdAt: 0, entrypoint: "node server.js", snapshotDir: "/data/x" });
+
+  const run = docker.calls().find((c) => c[0] === "run");
+  assert.ok(run, "expected a docker run");
+  assert.ok(run.includes(`127.0.0.1::8080`), `expected docker to choose the host port, got: ${run.join(" ")}`);
 });
 
 test("an entrypoint that exits fails the deploy with its output", async (t) => {
@@ -157,12 +181,14 @@ test("an entrypoint that exits fails the deploy with its output", async (t) => {
     delete process.env.FAKE_RUNNING;
     delete process.env.FAKE_EXIT_CODE;
     delete process.env.FAKE_LOGS;
+    delete process.env.FAKE_HOST_PORT;
   });
   process.env.FAKE_RUNNING = "false";
   process.env.FAKE_EXIT_CODE = "127";
   process.env.FAKE_LOGS = "sh: server.js: not found";
+  process.env.FAKE_HOST_PORT = String(await freePort());
 
-  const p = createDockerDeployProvider({ docker: docker.bin, basePort: await freePort() });
+  const p = createDockerDeployProvider({ docker: docker.bin });
   await assert.rejects(
     () => p.apply(deployment(), { version: 1, createdAt: 0, entrypoint: "server.js", snapshotDir: "/data/x" }),
     /exited \(status 127\)[\s\S]*server\.js: not found/,
@@ -174,11 +200,13 @@ test("a deploy that never binds the port is not reported as running", async (t) 
   t.after(() => {
     delete process.env.FAKE_RUNNING;
     delete process.env.FAKE_LOGS;
+    delete process.env.FAKE_HOST_PORT;
   });
   process.env.FAKE_RUNNING = "true";
   process.env.FAKE_LOGS = "";
+  process.env.FAKE_HOST_PORT = String(await freePort());
 
-  const p = createDockerDeployProvider({ docker: docker.bin, basePort: await freePort(), readyWindowMs: 300 });
+  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 300 });
   await assert.rejects(
     () => p.apply(deployment(), { version: 1, createdAt: 0, entrypoint: "node server.js", snapshotDir: "/data/x" }),
     /never listened on port 8080/,

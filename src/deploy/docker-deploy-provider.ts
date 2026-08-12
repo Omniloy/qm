@@ -19,7 +19,6 @@ const dataVolume = (id: string) => `agent-deploy-data-${id.slice(0, 12)}`;
 export interface DockerDeployProviderOptions {
   image?: string;
   docker?: string;
-  basePort?: number;
   /**
    * Container name or id core itself runs as, when core is containerised.
    *
@@ -34,25 +33,19 @@ export interface DockerDeployProviderOptions {
 export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {}): DeployProvider {
   const docker = opts.docker ?? "docker";
   const image = opts.image ?? "node:24-alpine";
-  let nextPort = opts.basePort ?? 9200;
-  const ports = new Map<string, number>();
-  const freed: number[] = [];
-  const allocPort = (n: string): number => {
-    const existing = ports.get(n);
-    if (existing !== undefined) return existing;
-    const port = freed.pop() ?? nextPort++;
-    ports.set(n, port);
-    return port;
-  };
-  const freePort = (n: string): void => {
-    const p = ports.get(n);
-    if (p !== undefined) {
-      freed.push(p);
-      ports.delete(n);
-    }
-  };
 
   const dexec = spawnDockerExec(docker);
+
+  // Docker picks the host port and is asked for it again on every read: an
+  // allocator held in this process would hand out ports that surviving app
+  // containers still hold the moment core restarts.
+  const publishedPort = async (n: string): Promise<number | null> => {
+    const r = await dexec(["port", n, `${APP_PORT}/tcp`]);
+    if (r.code !== 0) return null;
+    const first = r.stdout.trim().split("\n")[0] ?? "";
+    const port = Number(first.slice(first.lastIndexOf(":") + 1));
+    return Number.isInteger(port) && port > 0 ? port : null;
+  };
 
   const name = (d: Deployment) => `agent-deploy-${d.id.slice(0, 12)}`;
 
@@ -114,14 +107,13 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
       await ensureCoreOnNetwork();
       if (!(await containerState(name(d))).running) return null;
       if (opts.coreContainer) return { host: name(d), port: APP_PORT };
-      const port = ports.get(name(d));
-      return port === undefined ? null : { host: "127.0.0.1", port };
+      const port = await publishedPort(name(d));
+      return port === null ? null : { host: "127.0.0.1", port };
     },
 
     async apply(d: Deployment, version: DeploymentVersion): Promise<DeployEndpoint> {
       await ensureCoreOnNetwork();
       await dexec(["rm", "-f", name(d)]);
-      const hostPort = allocPort(name(d));
       const envArgs = Object.entries(version.env ?? {}).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
       const r = await dexec([
         "run",
@@ -137,7 +129,7 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
         "--pids-limit",
         "256",
         "-p",
-        `127.0.0.1:${hostPort}:${APP_PORT}`,
+        `127.0.0.1::${APP_PORT}`,
         "-v",
         `${version.snapshotDir}:/app:ro`,
         "-v",
@@ -154,13 +146,16 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
         "-c",
         version.entrypoint,
       ]);
-      if (r.code !== 0) {
-        freePort(name(d));
-        throw new Error(`deploy run failed: ${r.stderr.trim()}`);
-      }
+      if (r.code !== 0) throw new Error(`deploy run failed: ${r.stderr.trim()}`);
       // Containerised core shares the deploy network, so it reaches the app at
       // its container name; the published host port is for humans only.
-      const endpoint = opts.coreContainer ? { host: name(d), port: APP_PORT } : { host: "127.0.0.1", port: hostPort };
+      let endpoint: DeployEndpoint;
+      if (opts.coreContainer) endpoint = { host: name(d), port: APP_PORT };
+      else {
+        const port = await publishedPort(name(d));
+        if (port === null) throw new Error(`deploy run failed: ${name(d)} published no host port for ${APP_PORT}`);
+        endpoint = { host: "127.0.0.1", port };
+      }
       await waitAppReady(name(d), endpoint);
       return endpoint;
     },
@@ -168,7 +163,6 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
     async destroy(d: Deployment): Promise<void> {
       await dexec(["rm", "-f", name(d)]);
       await dexec(["volume", "rm", dataVolume(d.id)]);
-      freePort(name(d));
     },
   };
 }
