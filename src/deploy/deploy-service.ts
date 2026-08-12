@@ -168,11 +168,50 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
     await deps.deployStore.setAppliedVersion(id, version);
   };
 
-  const liveEndpoint = async (d: Deployment): Promise<DeployEndpoint> => {
-    if (!deps.provider.resolveEndpoint || d.endpoint == null) return d.endpoint!;
+  // Launching a new version replaces the running container, so a version that
+  // dies on startup leaves the app down. Put back whatever was actually
+  // serving beforehand and rethrow, so the caller still learns it failed.
+  //
+  // Deliberately not a state change of its own: "stopped" is where the idle
+  // reaper parks apps and nothing but a fresh deploy leaves it, so writing it
+  // here would turn a docker hiccup into a permanent 404.
+  const applyOrRevert = async (
+    id: string,
+    version: DeploymentVersion,
+    fromVersion?: number,
+  ): Promise<DeployEndpoint> => {
+    const before = await deps.deployStore.get(id);
+    try {
+      return await applyVersion(id, version, fromVersion);
+    } catch (e) {
+      // appliedVersion, not fromVersion: callers pass `appliedVersion ??
+      // currentVersion`, and that fallback would "revert" to a version which
+      // has never started. Only revert an app that was actually up — one the
+      // reaper deliberately stopped must stay stopped.
+      const restoreTo = before?.status === "running" ? before.appliedVersion : undefined;
+      if (restoreTo === undefined || restoreTo === version.version) throw e;
+      const previous = await deps.deployStore.versionOf(id, restoreTo);
+      if (!previous) throw e;
+      try {
+        const restored = await applyVersion(id, previous, fromVersion);
+        await markVersionRunning(id, previous.version, restored);
+      } catch (restoreFailed) {
+        console.error(`[deploy] ${id}: reverting to v${previous.version} failed:`, errMessage(restoreFailed));
+      }
+      throw e;
+    }
+  };
+
+  // null means "cannot reach it right now", which reachDeployment turns into a
+  // 404. Never a stale endpoint: docker hands out ephemeral host ports, so an
+  // address this deployment used to own may already belong to a different
+  // one, and proxying a signed-in viewer into another scope's app is a worse
+  // answer than saying the app is unavailable.
+  const liveEndpoint = async (d: Deployment): Promise<DeployEndpoint | null> => {
+    if (!deps.provider.resolveEndpoint || d.endpoint == null) return d.endpoint ?? null;
     const version = d.versions.find((v) => v.version === d.currentVersion);
     if (!version) return d.endpoint;
-    const resolved = await deps.provider.resolveEndpoint(d, version);
+    const resolved = await deps.provider.resolveEndpoint(d, version).catch(() => null);
     if (resolved) {
       if (!endpointsEqual(resolved, d.endpoint)) await deps.deployStore.setEndpoint(d.id, resolved);
       return resolved;
@@ -184,29 +223,20 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
       // place to retry a version already known not to start.
       const want = cur.appliedVersion ?? cur.currentVersion;
       const v = cur.versions.find((x) => x.version === want) ?? version;
-      const again = await deps.provider.resolveEndpoint!(cur, v);
+      const again = await deps.provider.resolveEndpoint!(cur, v).catch(() => null);
       if (again) {
         if (!endpointsEqual(again, cur.endpoint)) await deps.deployStore.setEndpoint(cur.id, again);
         return again;
       }
-      // This relaunch happens inside a proxied request, and the version being
-      // relaunched already ran once. Waiting for a readiness verdict here would
-      // hold the deployment lock — and every request queued behind it — while a
-      // slow-booting app is judged, and failing that judgement would delete a
-      // container that was about to serve. Launch it and let the proxy report
-      // the truth: a 502 that clears itself in a second, not a hard failure.
-      // Relaunching a container that vanished happens inside a proxied
-      // request. If it will not come up, the honest answer to this viewer is
-      // the last address we knew — the proxy turns that into a 502 that clears
-      // itself once the app is back. Throwing instead would surface a 500 from
-      // route handlers that never expect reachDeployment to reject.
       try {
         const fresh = await applyVersion(cur.id, v, want);
         await markVersionRunning(cur.id, v.version, fresh);
         return fresh;
       } catch (e) {
+        // Route handlers call reachDeployment without a try/catch, so throwing
+        // here would turn a docker hiccup into a 500 on a page load.
         console.error(`[deploy] ${cur.id}: relaunching v${v.version} failed:`, errMessage(e));
-        return cur.endpoint ?? d.endpoint!;
+        return null;
       }
     });
   };
@@ -353,7 +383,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         ...(input.createdInScope !== undefined ? { createdInScope: input.createdInScope } : {}),
         ...(input.env ? { env: input.env } : {}),
       });
-      const endpoint = await applyVersion(d.id, d.versions[0]!);
+      const endpoint = await applyOrRevert(d.id, d.versions[0]!);
       await markVersionRunning(d.id, d.versions[0]!.version, endpoint);
       deps.auditLog.record({
         at: Date.now(),
@@ -379,7 +409,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         });
         const d = await deps.deployStore.get(id);
         if (!d) throw new Error(`unknown deployment: ${id}`);
-        const endpoint = await applyVersion(id, v, before?.appliedVersion ?? before?.currentVersion);
+        const endpoint = await applyOrRevert(id, v, before?.appliedVersion ?? before?.currentVersion);
         await markVersionRunning(id, v.version, endpoint);
         deps.auditLog.record({
           at: Date.now(),
@@ -407,7 +437,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         const v = await deps.deployStore.versionOf(id, version);
         const d = await deps.deployStore.get(id);
         if (!d || !v) return;
-        const endpoint = await applyVersion(id, v, before?.appliedVersion ?? before?.currentVersion);
+        const endpoint = await applyOrRevert(id, v, before?.appliedVersion ?? before?.currentVersion);
         await markVersionRunning(id, v.version, endpoint);
         deps.auditLog.record({
           at: Date.now(),
@@ -508,6 +538,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
       if (!d || d.status !== "running" || d.endpoint == null) return { status: "not_found" };
       if (!opts.bypassAcl && !(await reachAllowed(d, principalId))) return { status: "denied" };
       const endpoint = await liveEndpoint(d);
+      if (!endpoint) return { status: "not_found" };
       await deps.deployStore.touch(d.id, Date.now());
       return { status: "ok", endpoint };
     },
@@ -530,7 +561,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
           if (!pushed) return result;
           const v = await deps.deployStore.addVersionFromCommit(id, pushed);
           if (!v) return result;
-          const endpoint = await applyVersion(id, v, before.appliedVersion ?? before.currentVersion);
+          const endpoint = await applyOrRevert(id, v, before.appliedVersion ?? before.currentVersion);
           await markVersionRunning(id, v.version, endpoint);
           deps.auditLog.record({
             at: Date.now(),

@@ -1,14 +1,12 @@
 import type { Deployment, DeploymentVersion } from "./deploy-store.ts";
 import type { DeployEndpoint, DeployProvider } from "./deploy-provider.ts";
-import { connect } from "node:net";
 import { spawnDockerExec } from "../sandbox/docker-exec.ts";
 import { sleep } from "../util/async.ts";
 
 const NETWORK = "agent-deploynet";
 const APP_PORT = 8080;
-const APP_READY_WINDOW_MS = 60_000;
-const APP_READY_POLL_MS = 250;
-const APP_READY_PROBE_TIMEOUT_MS = 2_000;
+const STARTUP_GRACE_MS = 5_000;
+const STARTUP_POLL_MS = 250;
 const FAILURE_LOG_LINES = "40";
 const FAILURE_LOG_BYTES = 2_000;
 // The snapshot is mounted read-only, so an app has nowhere to keep state unless
@@ -28,15 +26,13 @@ export interface DockerDeployProviderOptions {
    * container name. See CORE_CONTAINER.
    */
   coreContainer?: string;
-  /** Zero or less disables the readiness gate. */
-  readyWindowMs?: number;
-  appPort?: number;
+  /** How long to watch a freshly launched app for a crash. Zero disables it. */
+  startupGraceMs?: number;
 }
 
 export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {}): DeployProvider {
   const docker = opts.docker ?? "docker";
   const image = opts.image ?? "node:24-alpine";
-  const appPort = opts.appPort ?? APP_PORT;
 
   const dexec = spawnDockerExec(docker);
 
@@ -44,7 +40,7 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
   // allocator held in this process would hand out ports that surviving app
   // containers still hold the moment core restarts.
   const publishedPort = async (n: string): Promise<number | null> => {
-    const r = await dexec(["port", n, `${appPort}/tcp`]);
+    const r = await dexec(["port", n, `${APP_PORT}/tcp`]);
     if (r.code !== 0) return null;
     const first = r.stdout.trim().split("\n")[0] ?? "";
     const port = Number(first.slice(first.lastIndexOf(":") + 1));
@@ -52,8 +48,6 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
   };
 
   const name = (d: Deployment) => `agent-deploy-${d.id.slice(0, 12)}`;
-  const candidateName = (d: Deployment) => `${name(d)}-next`;
-  const supersededName = (d: Deployment) => `${name(d)}-old`;
 
   // null means docker could not be asked, which is not the same as "the app
   // died": reporting a daemon hiccup as a clean exit would blame the app for
@@ -66,54 +60,35 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
     return { running: running === "true", exitCode: Number.isInteger(parsed) ? parsed : null };
   };
 
-  // Readiness is probed at the container's own address, never at the published
-  // host port: with docker's userland proxy in front of it, that port accepts
-  // connections from the moment the container starts, so an app that never
-  // binds would pass. Verified against dockerd — the proxy answers, the app
-  // does not.
-  const containerIp = async (n: string): Promise<string | null> => {
-    const r = await dexec(["inspect", "-f", `{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}`, n]);
-    if (r.code !== 0) return null;
-    const ip = r.stdout.trim();
-    return ip && ip !== "<no value>" ? ip : null;
-  };
-
-  // "Something accepted a connection on the port", not "something answered
-  // GET / with HTTP". A WebSocket-only server, or one whose index does slow
-  // work on a cold start, is up — asking it for a prompt HTTP response would
-  // call a healthy app dead.
-  const listening = (host: string): Promise<boolean> =>
-    new Promise((resolve) => {
-      const socket = connect({ host, port: appPort });
-      const done = (ok: boolean): void => {
-        socket.destroy();
-        resolve(ok);
-      };
-      socket.setTimeout(APP_READY_PROBE_TIMEOUT_MS, () => done(false));
-      socket.once("connect", () => done(true));
-      socket.once("error", () => done(false));
-    });
-
-  const notReady = async (n: string, why: string): Promise<Error> => {
-    const logs = await dexec(["logs", "--tail", FAILURE_LOG_LINES, n]);
-    const out = `${logs.stdout}${logs.stderr}`.trim().slice(-FAILURE_LOG_BYTES);
-    const tail = out ? `; last output from the entrypoint:\n${out}` : "; the entrypoint produced no output";
-    return new Error(`${why}${tail}`);
-  };
-
-  const waitAppReady = async (n: string, window: number): Promise<void> => {
-    const deadline = Date.now() + window;
+  /**
+   * Fail a deploy only when the app is certainly dead — the container exited
+   * on its own — and never on a guess about whether it is "ready".
+   *
+   * Earlier attempts probed the port. Every version of that was wrong for some
+   * legitimate app: through docker's userland proxy the published port answers
+   * before anything inside binds, so the check passed everything; at the
+   * container's own address it is unroutable from a host-side core on Docker
+   * Desktop, so it passed nothing; and either way a WebSocket-only server or a
+   * slow first boot looks identical to a crash. An exit is unambiguous, and an
+   * exit is what a bad entrypoint produces.
+   */
+  const assertStayedUp = async (n: string): Promise<void> => {
+    const grace = opts.startupGraceMs ?? STARTUP_GRACE_MS;
+    if (grace <= 0) return;
+    const deadline = Date.now() + grace;
     for (;;) {
-      const ip = await containerIp(n);
-      if (ip && (await listening(ip))) return;
       const state = await containerState(n);
       if (state && !state.running) {
+        const logs = await dexec(["logs", "--tail", FAILURE_LOG_LINES, n]);
+        const out = `${logs.stdout}${logs.stderr}`.trim().slice(-FAILURE_LOG_BYTES);
         const status = state.exitCode === null ? "" : ` (status ${state.exitCode})`;
-        throw await notReady(n, `the entrypoint exited${status} without binding port ${appPort}`);
+        throw new Error(
+          `the entrypoint exited${status} instead of serving on port ${APP_PORT}` +
+            (out ? `; last output from the entrypoint:\n${out}` : "; the entrypoint produced no output"),
+        );
       }
-      if (Date.now() >= deadline)
-        throw await notReady(n, `the app never listened on port ${appPort} within ${Math.round(window / 1000)}s`);
-      await sleep(APP_READY_POLL_MS);
+      if (Date.now() >= deadline) return;
+      await sleep(STARTUP_POLL_MS);
     }
   };
 
@@ -127,37 +102,6 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
     }
   };
 
-  const endpointOf = async (d: Deployment): Promise<DeployEndpoint> => {
-    // Containerised core shares the deploy network, so it reaches the app at
-    // its container name; the published host port is for humans only.
-    if (opts.coreContainer) return { host: name(d), port: appPort };
-    const port = await publishedPort(name(d));
-    if (port === null) throw new Error(`${name(d)} published no host port for ${appPort}`);
-    return { host: "127.0.0.1", port };
-  };
-
-  /**
-   * Put the candidate in front only once it answers. The version already
-   * serving is never touched until then, so a version that will not start
-   * fails the deploy without taking the app down — which is what let a bad
-   * entrypoint turn into a permanent 502 before.
-   */
-  const promote = async (d: Deployment): Promise<void> => {
-    const [live, candidate, superseded] = [name(d), candidateName(d), supersededName(d)];
-    await dexec(["rm", "-f", superseded]);
-    const hadLive = (await containerState(live)) !== null;
-    if (hadLive) {
-      const parked = await dexec(["rename", live, superseded]);
-      if (parked.code !== 0) throw new Error(`deploy swap failed: ${parked.stderr.trim()}`);
-    }
-    const renamed = await dexec(["rename", candidate, live]);
-    if (renamed.code !== 0) {
-      if (hadLive) await dexec(["rename", superseded, live]);
-      throw new Error(`deploy swap failed: ${renamed.stderr.trim()}`);
-    }
-    await dexec(["rm", "-f", superseded]);
-  };
-
   return {
     profile: { managedScaleToZero: false },
 
@@ -166,20 +110,29 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
       // deploy network whenever its own container is recreated, so rejoining
       // here is what keeps published apps reachable across a redeploy.
       await ensureCoreOnNetwork();
-      if (!(await containerState(name(d)))?.running) return null;
-      return endpointOf(d).catch(() => null);
+      const state = await containerState(name(d));
+      if (!state) return null;
+      if (!state.running) return null;
+      // Containerised core shares the deploy network, so it reaches the app at
+      // its container name; the published host port is for humans only.
+      if (opts.coreContainer) return { host: name(d), port: APP_PORT };
+      const port = await publishedPort(name(d));
+      // A running container whose port mapping we could not read is not a
+      // reason to tear it down and build another: say we cannot reach it and
+      // let the next request ask again.
+      if (port === null) throw new Error(`could not read the published port of ${name(d)}`);
+      return { host: "127.0.0.1", port };
     },
 
     async apply(d: Deployment, version: DeploymentVersion): Promise<DeployEndpoint> {
       await ensureCoreOnNetwork();
-      const candidate = candidateName(d);
-      await dexec(["rm", "-f", candidate]);
+      await dexec(["rm", "-f", name(d)]);
       const envArgs = Object.entries(version.env ?? {}).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
       const r = await dexec([
         "run",
         "-d",
         "--name",
-        candidate,
+        name(d),
         "--network",
         NETWORK,
         "--memory",
@@ -189,7 +142,7 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
         "--pids-limit",
         "256",
         "-p",
-        `127.0.0.1::${appPort}`,
+        `127.0.0.1::${APP_PORT}`,
         "-v",
         `${version.snapshotDir}:/app:ro`,
         "-v",
@@ -197,7 +150,7 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
         "-w",
         "/app",
         "-e",
-        `PORT=${appPort}`,
+        `PORT=${APP_PORT}`,
         "-e",
         `DATA_DIR=${APP_DATA_DIR}`,
         ...envArgs,
@@ -207,22 +160,23 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
         version.entrypoint,
       ]);
       if (r.code !== 0) throw new Error(`deploy run failed: ${r.stderr.trim()}`);
+      const endpoint: DeployEndpoint = opts.coreContainer
+        ? { host: name(d), port: APP_PORT }
+        : { host: "127.0.0.1", port: (await publishedPort(name(d))) ?? 0 };
       try {
-        const window = opts.readyWindowMs ?? APP_READY_WINDOW_MS;
-        if (window > 0) await waitAppReady(candidate, window);
-        await promote(d);
+        await assertStayedUp(name(d));
       } catch (e) {
-        // The candidate's log tail is already in the error; leaving it behind
-        // would strand a name, a host port and a disk until someone prunes the
-        // host by hand.
-        await dexec(["rm", "-f", candidate]);
+        // Its log tail is already in the error; leaving the corpse behind would
+        // strand a name, a host port and a disk until someone prunes by hand.
+        await dexec(["rm", "-f", name(d)]);
         throw e;
       }
-      return endpointOf(d);
+      if (!endpoint.port) throw new Error(`${name(d)} published no host port for ${APP_PORT}`);
+      return endpoint;
     },
 
     async destroy(d: Deployment): Promise<void> {
-      for (const n of [name(d), candidateName(d), supersededName(d)]) await dexec(["rm", "-f", n]);
+      await dexec(["rm", "-f", name(d)]);
       await dexec(["volume", "rm", dataVolume(d.id)]);
     },
   };

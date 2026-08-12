@@ -1,30 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
 import { mkdtempSync, writeFileSync, readFileSync, chmodSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDockerDeployProvider } from "../src/deploy/docker-deploy-provider.ts";
 import type { Deployment } from "../src/deploy/deploy-store.ts";
 
-const listeningApp = async (): Promise<{ port: number; close: () => Promise<void> }> => {
-  const server = createServer((_req, res) => res.end("ok"));
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return {
-    port: (server.address() as AddressInfo).port,
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
-  };
-};
-
-// Readiness is a TCP connect, so "not listening" needs a port nothing can be
-// listening on. A released ephemeral port is racy — a parallel test can claim
-// it — but port 1 is privileged, so an unprivileged test run cannot bind it.
-const CLOSED_PORT = 1;
-
 // A stand-in for the `docker` binary rather than a mocked module: the provider
 // builds its own exec, and what matters here is the exact argv it produces.
-const fakeDocker = (): { bin: string; calls: () => string[][]; reset: () => void } => {
+const fakeDocker = (): { bin: string; calls: () => string[][] } => {
   const dir = mkdtempSync(join(tmpdir(), "qm-docker-"));
   const bin = join(dir, "docker");
   const log = join(dir, "calls.log");
@@ -39,13 +23,7 @@ const fakeDocker = (): { bin: string; calls: () => string[][]; reset: () => void
       '  "logs --tail") printf "%s\\n" "$FAKE_LOGS"; exit 0 ;;',
       "esac",
       'if [ "$1" = "port" ]; then [ -n "$FAKE_HOST_PORT" ] || exit 1; echo "127.0.0.1:$FAKE_HOST_PORT"; exit 0; fi',
-      'if [ "$1" = "inspect" ]; then',
-      '  case "$3" in',
-      '    *IPAddress*) echo "$FAKE_IP"; [ -n "$FAKE_IP" ] || exit 1 ;;',
-      '    *) echo "$FAKE_RUNNING $FAKE_EXIT_CODE"; [ -n "$FAKE_RUNNING" ] || exit 1 ;;',
-      "  esac",
-      "  exit 0",
-      "fi",
+      'if [ "$1" = "inspect" ]; then echo "$FAKE_RUNNING $FAKE_EXIT_CODE"; [ -n "$FAKE_RUNNING" ] || exit 1; fi',
       "exit 0",
     ].join("\n"),
     { mode: 0o755 },
@@ -60,13 +38,11 @@ const fakeDocker = (): { bin: string; calls: () => string[][]; reset: () => void
             .filter(Boolean)
             .map((l) => l.split(" "))
         : [],
-    reset: () => writeFileSync(log, ""),
   };
 };
 
 const deployment = (): Deployment => ({ id: "c7574bd2282f4a1b9d0e", ownerScopeId: "s1" }) as unknown as Deployment;
 const LIVE = "agent-deploy-c7574bd2282f";
-const CANDIDATE = `${LIVE}-next`;
 const version = { version: 1, createdAt: 0, entrypoint: "node server.js", snapshotDir: "/data/x" };
 
 const clearFakes = (): void => {
@@ -75,7 +51,6 @@ const clearFakes = (): void => {
     "FAKE_EXIT_CODE",
     "FAKE_LOGS",
     "FAKE_HOST_PORT",
-    "FAKE_IP",
     "FAKE_CONNECT_ERR",
     "FAKE_NET_EXISTS",
   ])
@@ -149,16 +124,16 @@ test("a host-side core resolves through the published loopback port", async (t) 
   );
 });
 
-test("a host-side core resolves to nothing when docker publishes no port", async (t) => {
-  // The only coverage of that branch. A regression in the parse would hand
-  // core a wrong loopback port and proxy signed-in user traffic to whatever
-  // unrelated service happens to be listening there.
+test("a running app whose port mapping cannot be read is not rebuilt", async (t) => {
+  // Returning null here would tell the service the container is gone, and it
+  // would tear down a perfectly healthy app to replace it. Say we could not
+  // read it and let the next request ask again.
   const docker = fakeDocker();
   t.after(clearFakes);
   process.env.FAKE_RUNNING = "true";
 
   const p = createDockerDeployProvider({ docker: docker.bin });
-  assert.equal(await p.resolveEndpoint!(deployment(), {} as never), null);
+  await assert.rejects(() => p.resolveEndpoint!(deployment(), {} as never), /could not read the published port/);
 });
 
 test("the host port comes from docker, not from a counter this process keeps", async (t) => {
@@ -166,117 +141,76 @@ test("the host port comes from docker, not from a counter this process keeps", a
   // containers still held those ports, so the next publish died on
   // "port is already allocated" before the app ever ran.
   const docker = fakeDocker();
-  const app = await listeningApp();
-  t.after(async () => {
-    clearFakes();
-    await app.close();
-  });
+  t.after(clearFakes);
   process.env.FAKE_RUNNING = "true";
-  process.env.FAKE_IP = "127.0.0.1";
-  process.env.FAKE_HOST_PORT = String(app.port);
+  process.env.FAKE_HOST_PORT = "32901";
 
-  const p = createDockerDeployProvider({ docker: docker.bin, appPort: app.port });
-  await p.apply(deployment(), version);
+  const p = createDockerDeployProvider({ docker: docker.bin, startupGraceMs: 0 });
+  assert.deepEqual(await p.apply(deployment(), version), { host: "127.0.0.1", port: 32901 });
 
   const run = docker.calls().find((c) => c[0] === "run");
   assert.ok(run, "expected a docker run");
-  assert.ok(run.includes(`127.0.0.1::${app.port}`), `expected docker to choose the host port: ${run.join(" ")}`);
+  assert.ok(run.includes("127.0.0.1::8080"), `expected docker to choose the host port: ${run.join(" ")}`);
 });
 
-test("readiness is probed at the container, not at the published host port", async (t) => {
-  // docker's userland proxy accepts connections on the published port from the
-  // moment the container starts, whether or not anything inside ever binds —
-  // verified against dockerd. Probing there would pass every broken app.
-  const docker = fakeDocker();
-  const app = await listeningApp();
-  t.after(async () => {
-    clearFakes();
-    await app.close();
-  });
-  process.env.FAKE_RUNNING = "true";
-  process.env.FAKE_IP = "127.0.0.1";
-  process.env.FAKE_HOST_PORT = String(app.port);
-  process.env.FAKE_LOGS = "";
-
-  // The container's own address refuses; only the "published" port answers.
-  const p = createDockerDeployProvider({ docker: docker.bin, appPort: CLOSED_PORT, readyWindowMs: 700 });
-  await assert.rejects(() => p.apply(deployment(), version), /never listened on port 1/);
-});
-
-test("the candidate is promoted only after it answers", async (t) => {
-  const docker = fakeDocker();
-  const app = await listeningApp();
-  t.after(async () => {
-    clearFakes();
-    await app.close();
-  });
-  process.env.FAKE_RUNNING = "true";
-  process.env.FAKE_IP = "127.0.0.1";
-  process.env.FAKE_HOST_PORT = String(app.port);
-
-  const p = createDockerDeployProvider({ docker: docker.bin, appPort: app.port });
-  await p.apply(deployment(), version);
-
-  const calls = docker.calls().map((c) => c.join(" "));
-  assert.ok(
-    calls.some((c) => c.startsWith(`run -d --name ${CANDIDATE} `)),
-    "the new version should start under the candidate name",
-  );
-  const promotedAt = calls.indexOf(`rename ${CANDIDATE} ${LIVE}`);
-  const parkedAt = calls.indexOf(`rename ${LIVE} ${LIVE}-old`);
-  assert.ok(promotedAt >= 0, "the candidate should be promoted by rename");
-  assert.ok(parkedAt >= 0 && parkedAt < promotedAt, "the live container is parked, not deleted, before the swap");
-});
-
-test("a candidate that will not start never touches the live container", async (t) => {
-  // The whole point: a bad entrypoint used to remove the serving container
-  // first and then fail, leaving the app permanently 502 with no way back.
+test("an entrypoint that exits fails the deploy with its output", async (t) => {
+  // The bug this exists for: `entrypoint: "server.js"` (no `node`) exits 127
+  // the instant it starts. Reporting that as a healthy deploy left the app's
+  // link answering 502 forever.
   const docker = fakeDocker();
   t.after(clearFakes);
   process.env.FAKE_RUNNING = "false";
   process.env.FAKE_EXIT_CODE = "127";
   process.env.FAKE_LOGS = "sh: server.js: not found";
-  process.env.FAKE_IP = "127.0.0.1";
+  process.env.FAKE_HOST_PORT = "32901";
 
-  const p = createDockerDeployProvider({ docker: docker.bin, appPort: CLOSED_PORT });
+  const p = createDockerDeployProvider({ docker: docker.bin });
   await assert.rejects(
     () => p.apply(deployment(), { ...version, entrypoint: "server.js" }),
     /exited \(status 127\)[\s\S]*server\.js: not found/,
   );
-
-  const calls = docker.calls().map((c) => c.join(" "));
-  assert.ok(calls.includes(`rm -f ${CANDIDATE}`), "the dead candidate should be removed");
-  assert.ok(!calls.includes(`rm -f ${LIVE}`), "the serving container must not be touched");
-  assert.ok(!calls.some((c) => c.startsWith("rename ")), "nothing should have been promoted");
-});
-
-test("a docker that cannot be reached is not reported as a clean exit", async (t) => {
-  // `docker inspect` failing means we do not know what happened. Calling that
-  // "exited (status 0)" blames the app for a daemon outage.
-  const docker = fakeDocker();
-  t.after(clearFakes);
-  process.env.FAKE_LOGS = "Cannot connect to the Docker daemon";
-
-  const p = createDockerDeployProvider({ docker: docker.bin, appPort: CLOSED_PORT, readyWindowMs: 700 });
-  await assert.rejects(
-    () => p.apply(deployment(), version),
-    (e: Error) => {
-      assert.match(e.message, /never listened on port 1/);
-      assert.doesNotMatch(e.message, /exited/);
-      return true;
-    },
+  assert.equal(
+    docker.calls().filter((c) => c[0] === "rm").length,
+    2,
+    "the corpse should be removed as well as the container this replaced",
   );
 });
 
-test("a ready window of zero disables the gate rather than failing everything", async (t) => {
-  // An operator reaching for DEPLOY_READY_WINDOW_MS=0 is turning the gate off.
-  // Treating it as a zero-length deadline would fail every deploy on the host
-  // and delete each healthy container on the way out.
+test("an app that is merely slow to bind is left alone", async (t) => {
+  // Only a container that exits is a failure. Probing the port to decide
+  // "ready" mistook a WebSocket-only server, a slow first boot and docker's
+  // own userland proxy for signal, in both directions.
   const docker = fakeDocker();
   t.after(clearFakes);
   process.env.FAKE_RUNNING = "true";
   process.env.FAKE_HOST_PORT = "32901";
 
-  const p = createDockerDeployProvider({ docker: docker.bin, appPort: CLOSED_PORT, readyWindowMs: 0 });
+  const p = createDockerDeployProvider({ docker: docker.bin, startupGraceMs: 400 });
+  assert.deepEqual(await p.apply(deployment(), version), { host: "127.0.0.1", port: 32901 });
+  assert.ok(
+    !docker.calls().some((c) => c[0] === "rm" && c.join(" ").includes("-f") && docker.calls().indexOf(c) > 1),
+    "a running app must not be torn down for being slow",
+  );
+});
+
+test("a docker that cannot be reached is not reported as a clean exit", async (t) => {
+  // `docker inspect` failing means we do not know what happened. Calling that
+  // "exited (status 0)" would blame the app for a daemon outage.
+  const docker = fakeDocker();
+  t.after(clearFakes);
+  process.env.FAKE_HOST_PORT = "32901";
+
+  const p = createDockerDeployProvider({ docker: docker.bin, startupGraceMs: 400 });
+  assert.deepEqual(await p.apply(deployment(), version), { host: "127.0.0.1", port: 32901 });
+});
+
+test("a startup grace of zero skips the crash watch entirely", async (t) => {
+  const docker = fakeDocker();
+  t.after(clearFakes);
+  process.env.FAKE_RUNNING = "false";
+  process.env.FAKE_EXIT_CODE = "127";
+  process.env.FAKE_HOST_PORT = "32901";
+
+  const p = createDockerDeployProvider({ docker: docker.bin, startupGraceMs: 0 });
   assert.deepEqual(await p.apply(deployment(), version), { host: "127.0.0.1", port: 32901 });
 });

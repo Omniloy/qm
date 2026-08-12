@@ -70,7 +70,7 @@ test("a redeploy that will not start leaves the previous version serving", async
   assert.equal(after?.status, "running", "the app should still be up on its last good version");
   assert.equal(after?.currentVersion, 2, "the candidate stays recorded as what was asked for");
   assert.equal(after?.appliedVersion, 1, "but v1 is what is actually serving");
-  assert.deepEqual(h.started(), ["node server.js"], "the serving container is never touched");
+  assert.deepEqual(h.started(), ["node server.js", "node server.js"], "v1 should have been put back");
 
   const reach = await h.deploy.reachDeployment(d.id, "u1", { bypassAcl: true });
   assert.equal(reach.status, "ok");
@@ -135,10 +135,12 @@ test("a failed redeploy does not resurrect an app the reaper stopped", async () 
 });
 
 test("a transient failure while repairing leaves the app recoverable", async () => {
-  // Two ways to get this wrong, both tried: marking the deployment stopped is
+  // Three ways to get this wrong, all tried: marking the deployment stopped is
   // a one-way door (the reaper owns that state and only a fresh deploy leaves
-  // it), and letting the error escape turns a docker blip into a 500 from
-  // route handlers that never expect reachDeployment to reject.
+  // it); letting the error escape turns a docker blip into a 500 from route
+  // handlers that never expect reachDeployment to reject; and handing back the
+  // last known address can proxy a viewer into whichever deployment docker has
+  // since given that ephemeral port to.
   const h = harness();
   const d = await h.deploy.deploy({
     ownerScopeId: OWNER,
@@ -150,7 +152,7 @@ test("a transient failure while repairing leaves the app recoverable", async () 
   h.vanishContainer();
   h.refuseEntrypoint("node server.js");
   const during = await h.deploy.reachDeployment(d.id, "u1", { bypassAcl: true });
-  assert.equal(during.status, "ok", "a relaunch failure must not reject out of reachDeployment");
+  assert.equal(during.status, "not_found", "unreachable is a 404, not a rejection and not a stale address");
 
   h.refuseEntrypoint(null);
   const again = await h.deploy.reachDeployment(d.id, "u1", { bypassAcl: true });
