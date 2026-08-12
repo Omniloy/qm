@@ -424,12 +424,7 @@ export function createAwsDeployProvider(opts: AwsDeployProviderOptions): DeployP
     for (const f of files) await writeAbs(id, endpoint, posixJoin(root, normalizeRelPath(f.path)), bytes(f.data));
   }
 
-  async function startApp(
-    id: string,
-    endpoint: string,
-    version: DeploymentVersion,
-    waitForReady = true,
-  ): Promise<void> {
+  async function startApp(id: string, endpoint: string, version: DeploymentVersion): Promise<void> {
     const envExports = Object.entries(version.env ?? {})
       .filter(([k]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k))
       .map(([k, v]) => `export ${k}=${shq(v)}`)
@@ -456,7 +451,7 @@ export function createAwsDeployProvider(opts: AwsDeployProviderOptions): DeployP
       );
     }
     if (r.code !== 0) throw new Error(`aws deploy app start failed: ${r.stderr.slice(0, 300)}`);
-    if (waitForReady) await waitAppReady(id, endpoint);
+    await waitAppReady(id, endpoint);
   }
 
   async function waitAppReady(id: string, endpoint: string): Promise<void> {
@@ -485,7 +480,7 @@ export function createAwsDeployProvider(opts: AwsDeployProviderOptions): DeployP
     endpoint: string,
     fresh: boolean,
     version: DeploymentVersion,
-    input?: Partial<DeployReconcileInput>,
+    input?: DeployReconcileInput,
   ): Promise<void> {
     if (input?.gitBundle && version.commit) {
       await checkoutBundle(id, endpoint, input.gitBundle, version.commit);
@@ -529,7 +524,7 @@ export function createAwsDeployProvider(opts: AwsDeployProviderOptions): DeployP
         if (cur) await store.put(d.id, { ...cur, dataCredsAtMs: Date.now() });
       });
     }
-    await startApp(id, endpoint, version, input?.waitForReady !== false);
+    await startApp(id, endpoint, version);
   }
 
   async function endpointFor(d: Deployment, microvmId: string, endpoint: string): Promise<DeployEndpoint> {
@@ -612,7 +607,7 @@ export function createAwsDeployProvider(opts: AwsDeployProviderOptions): DeployP
   const place = async (
     d: Deployment,
     version: DeploymentVersion,
-    input?: Partial<DeployReconcileInput>,
+    input?: DeployReconcileInput,
   ): Promise<DeployEndpoint> => {
     ensureConfigured();
     if (litestream && Date.now() < binariesMissingUntilMs)
@@ -628,7 +623,7 @@ export function createAwsDeployProvider(opts: AwsDeployProviderOptions): DeployP
   return {
     profile: { managedScaleToZero: true, inPlaceReconcile: true, ...(s3 ? { dataDir: DATA_DIR } : {}) },
 
-    apply: (d, version, opts) => place(d, version, opts),
+    apply: (d, version) => place(d, version),
 
     reconcile: (d, version, input) => place(d, version, input),
 

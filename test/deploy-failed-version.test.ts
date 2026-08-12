@@ -33,7 +33,7 @@ function harness() {
     },
     auditLog: { record() {}, events: async () => [], tail: async () => [] },
     acl: createAclStore(),
-    deployDir: mkdtempSync(join(tmpdir(), "deploy-revert-")),
+    deployDir: mkdtempSync(join(tmpdir(), "deploy-failed-version-")),
   });
   return {
     deploy,
@@ -52,7 +52,9 @@ const files = [{ path: "server.js", data: "x" }];
 test("a redeploy that will not start leaves the previous version serving", async () => {
   // Without this, apply() removed the working container, threw before
   // markVersionRunning, and left the store saying "running" at an address
-  // nothing answered — so the link 502'd forever with no way back.
+  // nothing answered — so the link 502'd forever with no way back. The
+  // provider now proves the candidate before it swaps, so a failure is a
+  // failed deploy and nothing more.
   const h = harness();
   const d = await h.deploy.deploy({
     ownerScopeId: OWNER,
@@ -68,7 +70,7 @@ test("a redeploy that will not start leaves the previous version serving", async
   assert.equal(after?.status, "running", "the app should still be up on its last good version");
   assert.equal(after?.currentVersion, 2, "the candidate stays recorded as what was asked for");
   assert.equal(after?.appliedVersion, 1, "but v1 is what is actually serving");
-  assert.deepEqual(h.started(), ["node server.js", "node server.js"], "v1 should have been put back");
+  assert.deepEqual(h.started(), ["node server.js"], "the serving container is never touched");
 
   const reach = await h.deploy.reachDeployment(d.id, "u1", { bypassAcl: true });
   assert.equal(reach.status, "ok");
@@ -111,10 +113,9 @@ test("a rollback to a version that will not start does not strand the app", asyn
 });
 
 test("a failed redeploy does not resurrect an app the reaper stopped", async () => {
-  // The revert path relaunches whatever was serving before the attempt — but a
-  // deployment the idle reaper deliberately shut down was serving nothing, and
-  // bringing it back would reset its idle clock and burn its memory budget on
-  // stale code every time a broken push lands.
+  // An earlier attempt at this relaunched "whatever was serving before" on
+  // failure, which woke apps the idle reaper had deliberately shut down. A
+  // failed deploy must leave a stopped app stopped.
   const h = harness();
   const d = await h.deploy.deploy({
     ownerScopeId: OWNER,
@@ -134,9 +135,10 @@ test("a failed redeploy does not resurrect an app the reaper stopped", async () 
 });
 
 test("a transient failure while repairing leaves the app recoverable", async () => {
-  // Marking the deployment stopped here would be a one-way door: the reaper
-  // owns that state and only a fresh deploy leaves it, so a docker blip would
-  // 404 a healthy app forever.
+  // Two ways to get this wrong, both tried: marking the deployment stopped is
+  // a one-way door (the reaper owns that state and only a fresh deploy leaves
+  // it), and letting the error escape turns a docker blip into a 500 from
+  // route handlers that never expect reachDeployment to reject.
   const h = harness();
   const d = await h.deploy.deploy({
     ownerScopeId: OWNER,
@@ -147,7 +149,8 @@ test("a transient failure while repairing leaves the app recoverable", async () 
 
   h.vanishContainer();
   h.refuseEntrypoint("node server.js");
-  await assert.rejects(() => h.deploy.reachDeployment(d.id, "u1", { bypassAcl: true }), /exited \(status 127\)/);
+  const during = await h.deploy.reachDeployment(d.id, "u1", { bypassAcl: true });
+  assert.equal(during.status, "ok", "a relaunch failure must not reject out of reachDeployment");
 
   h.refuseEntrypoint(null);
   const again = await h.deploy.reachDeployment(d.id, "u1", { bypassAcl: true });

@@ -15,7 +15,7 @@ import {
   type DeployEndpoint,
   type DeploymentVersion,
 } from "./deploy-store.ts";
-import type { DeployApplyOptions, DeployProfile, DeployProvider } from "./deploy-provider.ts";
+import type { DeployProfile, DeployProvider } from "./deploy-provider.ts";
 import { createNoopLeaderLease, type LeaderLease } from "../persistence/leader-lease.ts";
 import { createNoopAdvisoryLock, type AdvisoryLock } from "../persistence/advisory-lock.ts";
 import { createKeyedQueue } from "../util/async.ts";
@@ -140,7 +140,6 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
     id: string,
     version: DeploymentVersion,
     fromVersion?: number,
-    applyOpts?: DeployApplyOptions,
   ): Promise<DeployEndpoint> => {
     const d = (await deps.deployStore.get(id))!;
     let endpoint: DeployEndpoint;
@@ -149,14 +148,13 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
       const allPaths = ((await deps.deployStore.treeOf(id, version.version)) ?? []).map((f) => f.path);
       const gitBundle = await deps.deployStore.bundleOf(id, version.version);
       endpoint = await deps.provider.reconcile(d, version, {
-        ...applyOpts,
         ...(gitBundle ? { gitBundle } : {}),
         changedPaths: diff ? [...diff.added, ...diff.modified].map((f) => f.path) : allPaths,
         deletedPaths: diff?.deleted.map((f) => f.path) ?? [],
         allPaths,
       });
     } else {
-      endpoint = await deps.provider.apply(d, version, applyOpts);
+      endpoint = await deps.provider.apply(d, version);
     }
     if (endpoint.image && endpoint.image !== version.image) {
       await deps.deployStore.setVersionImage(id, version.version, endpoint.image);
@@ -168,45 +166,6 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
     await deps.deployStore.setEndpoint(id, endpoint);
     await deps.deployStore.setStatus(id, "running");
     await deps.deployStore.setAppliedVersion(id, version);
-  };
-
-  // A version that will not start must not take the app down with it. Put back
-  // whatever was actually serving before the attempt and rethrow, so the caller
-  // still learns the deploy failed.
-  //
-  // Deliberately not a state change of its own: "stopped" is where the idle
-  // reaper parks apps and nothing but a fresh deploy leaves it, so writing it
-  // here would turn a docker hiccup into a permanent 404. A deployment that was
-  // never running stays not-running (its created state), and one that was stays
-  // as it was, free to be repaired on the next request.
-  const applyOrRevert = async (
-    id: string,
-    version: DeploymentVersion,
-    fromVersion?: number,
-  ): Promise<DeployEndpoint> => {
-    const before = await deps.deployStore.get(id);
-    try {
-      return await applyVersion(id, version, fromVersion);
-    } catch (e) {
-      // currentVersion stays on the candidate — it records what was asked for,
-      // and the hosted git ref and a later retry both read it. What goes back
-      // is appliedVersion: the version that was actually serving traffic.
-      //
-      // appliedVersion, not fromVersion: callers pass `appliedVersion ??
-      // currentVersion`, and that fallback would "revert" to a version which
-      // has never started, buying a second failure and a second ready window.
-      const restoreTo = before?.status === "running" ? before.appliedVersion : undefined;
-      if (restoreTo === undefined || restoreTo === version.version) throw e;
-      const previous = await deps.deployStore.versionOf(id, restoreTo);
-      if (!previous) throw e;
-      try {
-        const restored = await applyVersion(id, previous, fromVersion);
-        await markVersionRunning(id, previous.version, restored);
-      } catch (restoreFailed) {
-        console.error(`[deploy] ${id}: reverting to v${previous.version} failed:`, errMessage(restoreFailed));
-      }
-      throw e;
-    }
   };
 
   const liveEndpoint = async (d: Deployment): Promise<DeployEndpoint> => {
@@ -236,9 +195,19 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
       // slow-booting app is judged, and failing that judgement would delete a
       // container that was about to serve. Launch it and let the proxy report
       // the truth: a 502 that clears itself in a second, not a hard failure.
-      const fresh = await applyVersion(cur.id, v, want, { waitForReady: false });
-      await markVersionRunning(cur.id, v.version, fresh);
-      return fresh;
+      // Relaunching a container that vanished happens inside a proxied
+      // request. If it will not come up, the honest answer to this viewer is
+      // the last address we knew — the proxy turns that into a 502 that clears
+      // itself once the app is back. Throwing instead would surface a 500 from
+      // route handlers that never expect reachDeployment to reject.
+      try {
+        const fresh = await applyVersion(cur.id, v, want);
+        await markVersionRunning(cur.id, v.version, fresh);
+        return fresh;
+      } catch (e) {
+        console.error(`[deploy] ${cur.id}: relaunching v${v.version} failed:`, errMessage(e));
+        return cur.endpoint ?? d.endpoint!;
+      }
     });
   };
 
@@ -384,7 +353,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         ...(input.createdInScope !== undefined ? { createdInScope: input.createdInScope } : {}),
         ...(input.env ? { env: input.env } : {}),
       });
-      const endpoint = await applyOrRevert(d.id, d.versions[0]!);
+      const endpoint = await applyVersion(d.id, d.versions[0]!);
       await markVersionRunning(d.id, d.versions[0]!.version, endpoint);
       deps.auditLog.record({
         at: Date.now(),
@@ -410,7 +379,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         });
         const d = await deps.deployStore.get(id);
         if (!d) throw new Error(`unknown deployment: ${id}`);
-        const endpoint = await applyOrRevert(id, v, before?.appliedVersion ?? before?.currentVersion);
+        const endpoint = await applyVersion(id, v, before?.appliedVersion ?? before?.currentVersion);
         await markVersionRunning(id, v.version, endpoint);
         deps.auditLog.record({
           at: Date.now(),
@@ -438,7 +407,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         const v = await deps.deployStore.versionOf(id, version);
         const d = await deps.deployStore.get(id);
         if (!d || !v) return;
-        const endpoint = await applyOrRevert(id, v, before?.appliedVersion ?? before?.currentVersion);
+        const endpoint = await applyVersion(id, v, before?.appliedVersion ?? before?.currentVersion);
         await markVersionRunning(id, v.version, endpoint);
         deps.auditLog.record({
           at: Date.now(),
@@ -466,8 +435,12 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         if (!d) throw new Error(`unknown deployment: ${id}`);
         if (d.status === "running") return d;
         if (d.status !== "archived") throw new Error(`deployment is not archived: ${id}`);
-        const version = d.versions.find((v) => v.version === d.currentVersion);
-        if (!version) throw new Error(`no such version ${d.currentVersion}`);
+        // The version that was last serving, not the one last asked for: a
+        // failed deploy leaves currentVersion on a candidate that never
+        // started, and restoring is no place to discover that again.
+        const want = d.appliedVersion ?? d.currentVersion;
+        const version = d.versions.find((v) => v.version === want);
+        if (!version) throw new Error(`no such version ${want}`);
         try {
           const endpoint = await applyVersion(id, version, d.appliedVersion);
           await markVersionRunning(id, version.version, endpoint);
@@ -557,7 +530,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
           if (!pushed) return result;
           const v = await deps.deployStore.addVersionFromCommit(id, pushed);
           if (!v) return result;
-          const endpoint = await applyOrRevert(id, v, before.appliedVersion ?? before.currentVersion);
+          const endpoint = await applyVersion(id, v, before.appliedVersion ?? before.currentVersion);
           await markVersionRunning(id, v.version, endpoint);
           deps.auditLog.record({
             at: Date.now(),
