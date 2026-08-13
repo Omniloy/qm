@@ -737,7 +737,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
         return {
           id: d.id,
           ...(d.name ? { name: d.name } : {}),
-          version: d.currentVersion,
+          version: d.appliedVersion ?? d.currentVersion,
           url,
           audience,
           ...(dataDir ? { dataDir } : {}),

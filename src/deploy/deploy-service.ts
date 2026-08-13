@@ -15,7 +15,7 @@ import {
   type DeployEndpoint,
   type DeploymentVersion,
 } from "./deploy-store.ts";
-import type { DeployProfile, DeployProvider } from "./deploy-provider.ts";
+import type { DeployApplyOptions, DeployProfile, DeployProvider } from "./deploy-provider.ts";
 import { createNoopLeaderLease, type LeaderLease } from "../persistence/leader-lease.ts";
 import { createNoopAdvisoryLock, type AdvisoryLock } from "../persistence/advisory-lock.ts";
 import { createKeyedQueue } from "../util/async.ts";
@@ -140,6 +140,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
     id: string,
     version: DeploymentVersion,
     fromVersion?: number,
+    applyOpts?: DeployApplyOptions,
   ): Promise<DeployEndpoint> => {
     const d = (await deps.deployStore.get(id))!;
     let endpoint: DeployEndpoint;
@@ -154,7 +155,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         allPaths,
       });
     } else {
-      endpoint = await deps.provider.apply(d, version);
+      endpoint = await deps.provider.apply(d, version, applyOpts);
     }
     if (endpoint.image && endpoint.image !== version.image) {
       await deps.deployStore.setVersionImage(id, version.version, endpoint.image);
@@ -200,11 +201,20 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
       }
       if (unreadable) return null;
       try {
-        const fresh = await applyVersion(cur.id, v, want);
+        const fresh = await applyVersion(cur.id, v, want, { gateStartup: false });
         await markVersionRunning(cur.id, v.version, fresh);
         return fresh;
       } catch (e) {
         console.error(`[deploy] ${cur.id}: relaunching v${v.version} failed:`, errMessage(e));
+        deps.auditLog.record({
+          at: Date.now(),
+          principalId: "system",
+          action: "deploy_relaunch_failed",
+          resource: `${cur.id}@v${v.version}`,
+          scopeLabel: cur.ownerScopeId,
+          status: "error",
+          detail: errMessage(e),
+        });
         return null;
       }
     });
@@ -352,7 +362,13 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         ...(input.createdInScope !== undefined ? { createdInScope: input.createdInScope } : {}),
         ...(input.env ? { env: input.env } : {}),
       });
-      const endpoint = await applyVersion(d.id, d.versions[0]!);
+      let endpoint: DeployEndpoint;
+      try {
+        endpoint = await applyVersion(d.id, d.versions[0]!);
+      } catch (e) {
+        await deps.provider.destroy(d).catch((cleanup) => swallow("deploy first-publish cleanup", cleanup));
+        throw e;
+      }
       await markVersionRunning(d.id, d.versions[0]!.version, endpoint);
       deps.auditLog.record({
         at: Date.now(),
