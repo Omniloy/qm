@@ -22,7 +22,10 @@ const PROBE_TIMEOUT_MS = 25_000;
  * rule in `claudeChildEnv` together, which is the combination that actually
  * decides whether the next agent run works.
  */
-export async function probeClaudeSubscription(token: string): Promise<SubscriptionProbeResult> {
+export async function probeClaudeSubscription(
+  token: string,
+  source: NodeJS.ProcessEnv = {},
+): Promise<SubscriptionProbeResult> {
   const jail = mkdtempSync(join(tmpdir(), "qm-claude-probe-"));
   const identity = claudeProcessIdentity();
   const controller = new AbortController();
@@ -33,7 +36,7 @@ export async function probeClaudeSubscription(token: string): Promise<Subscripti
       options: {
         abortController: controller,
         cwd: jail,
-        env: claudeChildEnv({ ...process.env, CLAUDE_CODE_OAUTH_TOKEN: token }, jail),
+        env: claudeChildEnv({ ...source, CLAUDE_CODE_OAUTH_TOKEN: token }, jail),
         tools: [],
         skills: [],
         settingSources: [],

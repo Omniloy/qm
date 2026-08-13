@@ -148,12 +148,12 @@ instead, since changing the variable will no longer have any effect.
 
 ### Sign-in
 
-| Key                         | Value                                             |
-| --------------------------- | ------------------------------------------------- |
+| Key                         | Value                                                   |
+| --------------------------- | ------------------------------------------------------- |
 | `AUTH_EMAIL_FROM`           | verified sender, e.g. `MiniOmni <no-reply@example.com>` |
-| `AUTH_ALLOWED_EMAIL_DOMAIN` | domain allowed to sign in                         |
-| `AUTH_BRAND_NAME`           | name shown on the sign-in page                    |
-| `RESEND_API_KEY`            | Resend key that can send as `AUTH_EMAIL_FROM`     |
+| `AUTH_ALLOWED_EMAIL_DOMAIN` | domain allowed to sign in                               |
+| `AUTH_BRAND_NAME`           | name shown on the sign-in page                          |
+| `RESEND_API_KEY`            | Resend key that can send as `AUTH_EMAIL_FROM`           |
 
 The broker sends one-time sign-in links through Resend. The sender domain must be
 verified in Resend, or delivery is limited to the Resend account's own address.
@@ -348,7 +348,7 @@ before the first deploy or it fails in ways that look like something else.
 
 **You do not create a domain.** The portal and the relay are routed by Traefik labels in
 `docker-compose.yml` keyed on `${PUBLIC_HOST}` and `${RELAY_HOST}`, with
-`certresolver=letsencrypt`. `domain.create` is for Dokploy *applications*, not compose
+`certresolver=letsencrypt`. `domain.create` is for Dokploy _applications_, not compose
 services, and calling it here adds a record that routes nothing.
 
 Note also that two MiniOmni stacks on one host collide in two places: the Traefik

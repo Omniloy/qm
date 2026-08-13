@@ -32,10 +32,16 @@ const TRUNCATION_NOTE: Record<NonNullable<Listing["truncatedReason"]>, string> =
   "incomplete-search": "Drive returned partial results",
 };
 
+function listedAge(ageMin: number): string {
+  if (ageMin === 0) return "just now";
+  if (ageMin === 1) return "1 minute ago";
+  return `${ageMin} minutes ago`;
+}
+
 function renderMount(m: MountListing, nowMs: number): string {
   const { mount, listing } = m;
   const ageMin = Math.max(0, Math.round((nowMs - m.listedAt) / 60_000));
-  const age = ageMin === 0 ? "just now" : ageMin === 1 ? "1 minute ago" : `${ageMin} minutes ago`;
+  const age = listedAge(ageMin);
 
   const head = `### ${mount.name}${mount.mode === "ro" ? " (read-only)" : ""}`;
   const meta = [

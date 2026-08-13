@@ -229,90 +229,90 @@ function drawFiles(loading = false): void {
 
 function deliveredTpl(visible: FileRow[], filtered: boolean, dropLabel: string, uploadTarget: string | null) {
   return html`
-      <button
-        class="file-drop ${filesDragActive ? "dragging" : ""}"
-        type="button"
-        ?disabled=${filesUploading}
-        @click=${pickFiles}
-        @dragenter=${onFileDrag}
-        @dragover=${onFileDrag}
-        @dragleave=${onFileDragLeave}
-        @drop=${onFileDrop}
-      >
-        ${icon(Upload, 18)}<span>${dropLabel}</span>${uploadTarget ? scopeChip(uploadTarget) : nothing}
-      </button>
-      ${
-        uploadTarget
-          ? driveBandTpl(
-              Date.now(),
-              () => drawFiles(),
-              () => openDrivePicker(() => drawFiles()),
-            )
-          : nothing
-      }
-      <div class="list-toolbar">
-        <label class="list-search"
-          ><span class="sr-only">Search files</span
-          ><input
-            type="search"
-            aria-label="Search files"
-            placeholder="Search file names and types…"
-            .value=${filesQuery}
-            @input=${(e: Event) => {
-              filesQuery = (e.currentTarget as HTMLInputElement).value;
-              drawFiles();
-              void loadAllFiles();
-            }}
-        /></label>
-        ${selectControl(
-          "Ownership",
-          filesOwnership,
-          [
-            ["all", "All files"],
-            ["owned", "Yours"],
-            ["shared", "Shared"],
-          ],
-          (v) => {
-            filesOwnership = v as typeof filesOwnership;
+    <button
+      class="file-drop ${filesDragActive ? "dragging" : ""}"
+      type="button"
+      ?disabled=${filesUploading}
+      @click=${pickFiles}
+      @dragenter=${onFileDrag}
+      @dragover=${onFileDrag}
+      @dragleave=${onFileDragLeave}
+      @drop=${onFileDrop}
+    >
+      ${icon(Upload, 18)}<span>${dropLabel}</span>${uploadTarget ? scopeChip(uploadTarget) : nothing}
+    </button>
+    ${
+      uploadTarget
+        ? driveBandTpl(
+            Date.now(),
+            () => drawFiles(),
+            () => openDrivePicker(() => drawFiles()),
+          )
+        : nothing
+    }
+    <div class="list-toolbar">
+      <label class="list-search"
+        ><span class="sr-only">Search files</span
+        ><input
+          type="search"
+          aria-label="Search files"
+          placeholder="Search file names and types…"
+          .value=${filesQuery}
+          @input=${(e: Event) => {
+            filesQuery = (e.currentTarget as HTMLInputElement).value;
             drawFiles();
             void loadAllFiles();
-          },
-        )}
-        ${selectControl(
-          "Type",
-          filesType,
-          [
-            ["all", "All types"],
-            ["image", "Images"],
-            ["document", "Documents"],
-            ["other", "Other"],
-          ],
-          (v) => {
-            filesType = v as typeof filesType;
-            drawFiles();
-            void loadAllFiles();
-          },
-        )}
-        ${selectControl(
-          "Sort",
-          filesSort,
-          [
-            ["newest", "Newest"],
-            ["oldest", "Oldest"],
-            ["name", "Name"],
-          ],
-          (v) => {
-            filesSort = v as typeof filesSort;
-            drawFiles();
-            void loadAllFiles();
-          },
-        )}
-      </div>
-      ${visible.length ? html`<div class="list-rows file-list">${visible.map(fileRow)}</div>` : html`<div class="empty compact">${filtered ? "No files match these filters." : "No files yet. Upload one here or ask the agent to create one."}</div>`}
-      ${filesNextCursor ? html`<div class="list-footer"><button class="btn" type="button" ?disabled=${filesLoadingMore} @click=${() => void loadMoreFiles()}>${filesLoadingMore ? "Loading…" : "Load more"}</button></div>` : nothing}
-      ${drivePickerTpl(uploadTarget ?? "", () => drawFiles())} ${contextPickerTpl(() => drawFiles())}
-      ${deleteFileConfirmTpl()}
-    `;
+          }}
+      /></label>
+      ${selectControl(
+        "Ownership",
+        filesOwnership,
+        [
+          ["all", "All files"],
+          ["owned", "Yours"],
+          ["shared", "Shared"],
+        ],
+        (v) => {
+          filesOwnership = v as typeof filesOwnership;
+          drawFiles();
+          void loadAllFiles();
+        },
+      )}
+      ${selectControl(
+        "Type",
+        filesType,
+        [
+          ["all", "All types"],
+          ["image", "Images"],
+          ["document", "Documents"],
+          ["other", "Other"],
+        ],
+        (v) => {
+          filesType = v as typeof filesType;
+          drawFiles();
+          void loadAllFiles();
+        },
+      )}
+      ${selectControl(
+        "Sort",
+        filesSort,
+        [
+          ["newest", "Newest"],
+          ["oldest", "Oldest"],
+          ["name", "Name"],
+        ],
+        (v) => {
+          filesSort = v as typeof filesSort;
+          drawFiles();
+          void loadAllFiles();
+        },
+      )}
+    </div>
+    ${visible.length ? html`<div class="list-rows file-list">${visible.map(fileRow)}</div>` : html`<div class="empty compact">${filtered ? "No files match these filters." : "No files yet. Upload one here or ask the agent to create one."}</div>`}
+    ${filesNextCursor ? html`<div class="list-footer"><button class="btn" type="button" ?disabled=${filesLoadingMore} @click=${() => void loadMoreFiles()}>${filesLoadingMore ? "Loading…" : "Load more"}</button></div>` : nothing}
+    ${drivePickerTpl(uploadTarget ?? "", () => drawFiles())} ${contextPickerTpl(() => drawFiles())}
+    ${deleteFileConfirmTpl()}
+  `;
 }
 
 async function moveFile(f: FileRow, scopeId: string): Promise<void> {
@@ -364,11 +364,7 @@ function onFileAction(id: string, f: FileRow): void {
 
 function workspaceRow(e: TreeEntry) {
   if (e.kind === "dir") {
-    return html`<button
-      class="list-row file-row workspace-row"
-      type="button"
-      @click=${() => setWsDir(e.path)}
-    >
+    return html`<button class="list-row file-row workspace-row" type="button" @click=${() => setWsDir(e.path)}>
       <span class="file-row-icon">${icon(Folder, 17)}</span>
       <span class="list-row-title"><span>${e.name}</span></span>
       <span class="list-row-meta"
@@ -376,15 +372,11 @@ function workspaceRow(e: TreeEntry) {
       >
     </button>`;
   }
-  const url = withBase(
-    `/api/workspace/file?scope=${encodeURIComponent(wsScope())}&path=${encodeURIComponent(e.path)}`,
-  );
+  const url = withBase(`/api/workspace/file?scope=${encodeURIComponent(wsScope())}&path=${encodeURIComponent(e.path)}`);
   return html`<article class="list-row file-row workspace-row">
     <span class="file-row-icon">${icon(File, 17)}</span>
     <span class="list-row-title"><span>${e.name}</span></span>
-    <span class="list-row-meta"
-      ><a class="btn compact" href=${url} target="_blank" rel="noreferrer">Open</a></span
-    >
+    <span class="list-row-meta"><a class="btn compact" href=${url} target="_blank" rel="noreferrer">Open</a></span>
   </article>`;
 }
 
@@ -419,12 +411,7 @@ function workspaceTpl(): ReturnType<typeof html> {
         ${crumbs.map((c, i) =>
           i === crumbs.length - 1
             ? html`<span class="workspace-crumb current">${c.label}</span>`
-            : html`<button
-                  class="workspace-crumb"
-                  type="button"
-                  @click=${() => setWsDir(c.path)}
-                >
-                  ${c.label}</button
+            : html`<button class="workspace-crumb" type="button" @click=${() => setWsDir(c.path)}>${c.label}</button
                 ><span class="workspace-crumb-sep">/</span>`,
         )}
       </nav>
@@ -432,21 +419,27 @@ function workspaceTpl(): ReturnType<typeof html> {
         ${wsLoading ? "Refreshing…" : "Refresh"}
       </button>
     </div>
-    ${ws.truncated
-      ? html`<div class="status" aria-live="polite">
-          This workspace has more files than the listing carries. Showing the first
-          ${ws.paths.length.toLocaleString()}; ask the agent about the rest.
-        </div>`
-      : nothing}
-    ${level.length
-      ? html`<div class="list-rows file-list">${level.map(workspaceRow)}</div>`
-      : html`<div class="empty compact">This folder is empty.</div>`}
-    ${ws.hiddenDirs.length
-      ? html`<div class="pane-subtitle workspace-hint">
-          Not shown: ${ws.hiddenDirs.join(", ")} — shared org and team folders mounted into this workspace, plus
-          installed skills.
-        </div>`
-      : nothing}
+    ${
+      ws.truncated
+        ? html`<div class="status" aria-live="polite">
+            This workspace has more files than the listing carries. Showing the first
+            ${ws.paths.length.toLocaleString()}; ask the agent about the rest.
+          </div>`
+        : nothing
+    }
+    ${
+      level.length
+        ? html`<div class="list-rows file-list">${level.map(workspaceRow)}</div>`
+        : html`<div class="empty compact">This folder is empty.</div>`
+    }
+    ${
+      ws.hiddenDirs.length
+        ? html`<div class="pane-subtitle workspace-hint">
+            Not shown: ${ws.hiddenDirs.join(", ")} — shared org and team folders mounted into this workspace, plus
+            installed skills.
+          </div>`
+        : nothing
+    }
     <div class="pane-subtitle workspace-hint">Ask the agent to move, rename or share anything here.</div>
   `;
 }

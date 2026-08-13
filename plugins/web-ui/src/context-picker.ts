@@ -52,8 +52,16 @@ export function movableContexts(): Array<{ scopeId: string; title: string }> {
       // everything the sidebar calls a Project — there is no separate kind.
       .filter((c) => c.scopeId === personal || c.kind === "channel" || c.kind === "group")
       .map((c) => ({ scopeId: c.scopeId, title: scopeTitle(c.scopeId, c.name) }))
-      .sort((a, b) => (a.scopeId === personal ? -1 : b.scopeId === personal ? 1 : a.title.localeCompare(b.title)))
+      .sort((a, b) => {
+        if (a.scopeId === personal) return -1;
+        if (b.scopeId === personal) return 1;
+        return a.title.localeCompare(b.title);
+      })
   );
+}
+
+function moveLabel(kind: "folder" | "file"): string {
+  return kind === "folder" ? "Move folder" : "Move file";
 }
 
 export function contextPickerTpl(rerender: () => void): TemplateResult | typeof nothing {
@@ -137,7 +145,7 @@ export function contextPickerTpl(rerender: () => void): TemplateResult | typeof 
             }
           }}
         >
-          ${busy ? "Moving…" : t.kind === "folder" ? "Move folder" : "Move file"}
+          ${busy ? "Moving…" : moveLabel(t.kind)}
         </button>
       </footer>
     </section>

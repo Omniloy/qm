@@ -5,11 +5,7 @@ import { fileArtifactId } from "../files/file-artifact-store.ts";
 import { transcriptEntries, windowedTranscript } from "../sessions/session-store.ts";
 import { supportsProcessSessions, type Sandbox, type SandboxHandle } from "../sandbox/sandbox.ts";
 import { resolveEnvironmentId } from "../environments/environment-store.ts";
-import {
-  hiddenWorkspaceReason,
-  isHiddenWorkspacePath,
-  normalizeWorkspacePath,
-} from "../workspace/workspace-layout.ts";
+import { hiddenWorkspaceReason, isHiddenWorkspacePath, normalizeWorkspacePath } from "../workspace/workspace-layout.ts";
 import { shq } from "../util/shell.ts";
 import { swallowAs } from "../util/errors.ts";
 import { processIsGone } from "../sandbox/process-poll.ts";

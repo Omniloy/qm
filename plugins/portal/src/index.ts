@@ -80,10 +80,10 @@ function playgroundIntEnv(name: string, fallback: number): number {
 }
 const PLAYGROUND_MINTS_PER_IP = playgroundIntEnv("PORTAL_PLAYGROUND_MINTS_PER_IP", 30);
 const PLAYGROUND_MINT_WINDOW_S = playgroundIntEnv("PORTAL_PLAYGROUND_MINT_WINDOW_S", 3600);
-const NEUTRAL_ACCENT = BRAND.accent;
-let brandAccent = NEUTRAL_ACCENT;
-let brandProductName = BRAND.productName;
-let brandLogoSvg = BRAND.logoSvg;
+const NEUTRAL_ACCENT: string = BRAND.accent;
+let brandAccent: string = NEUTRAL_ACCENT;
+let brandProductName: string = BRAND.productName;
+let brandLogoSvg: string = BRAND.logoSvg;
 let modelProviderConfigured: boolean | undefined;
 let surfaceConfigNextAt = 0;
 let surfaceConfigInflight: Promise<void> | null = null;
@@ -109,8 +109,7 @@ async function fetchSurfaceConfig(): Promise<void> {
         modelProviderConfigured?: unknown;
       };
       brandAccent = typeof body.branding?.accent === "string" ? body.branding.accent : NEUTRAL_ACCENT;
-      brandProductName =
-        typeof body.branding?.productName === "string" ? body.branding.productName : BRAND.productName;
+      brandProductName = typeof body.branding?.productName === "string" ? body.branding.productName : BRAND.productName;
       brandLogoSvg = typeof body.branding?.logoSvg === "string" ? body.branding.logoSvg : BRAND.logoSvg;
       modelProviderConfigured =
         typeof body.modelProviderConfigured === "boolean" ? body.modelProviderConfigured : undefined;

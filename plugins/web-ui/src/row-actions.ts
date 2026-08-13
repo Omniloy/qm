@@ -78,10 +78,10 @@ export function rowMenuTpl(
                   ?disabled=${a.disabled}
                   title=${a.reason ?? ""}
                   @click=${() => {
-                  openKey = null;
-                  onSelect(a.id);
-                  rerender();
-                }}
+                    openKey = null;
+                    onSelect(a.id);
+                    rerender();
+                  }}
                 >
                   <span>${a.label}</span>
                 </button>`,
