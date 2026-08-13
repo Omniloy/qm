@@ -168,26 +168,68 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
     await deps.deployStore.setAppliedVersion(id, version);
   };
 
-  const liveEndpoint = async (d: Deployment): Promise<DeployEndpoint> => {
-    if (!deps.provider.resolveEndpoint || d.endpoint == null) return d.endpoint!;
+  const applyOrRevert = async (
+    id: string,
+    version: DeploymentVersion,
+    fromVersion?: number,
+  ): Promise<DeployEndpoint> => {
+    const before = await deps.deployStore.get(id);
+    try {
+      return await applyVersion(id, version, fromVersion);
+    } catch (e) {
+      const restoreTo = before?.status === "running" ? before.appliedVersion : undefined;
+      if (restoreTo === undefined || restoreTo === version.version) throw e;
+      const previous = await deps.deployStore.versionOf(id, restoreTo);
+      if (!previous) throw e;
+      try {
+        const restored = await applyVersion(id, previous, fromVersion);
+        await markVersionRunning(id, previous.version, restored);
+      } catch (restoreFailed) {
+        console.error(`[deploy] ${id}: reverting to v${previous.version} failed:`, errMessage(restoreFailed));
+      }
+      throw e;
+    }
+  };
+
+  const liveEndpoint = async (d: Deployment): Promise<DeployEndpoint | null> => {
+    if (!deps.provider.resolveEndpoint || d.endpoint == null) return d.endpoint ?? null;
     const version = d.versions.find((v) => v.version === d.currentVersion);
     if (!version) return d.endpoint;
-    const resolved = await deps.provider.resolveEndpoint(d, version);
+    let unreadable = false;
+    const resolve = async (dep: Deployment, v: DeploymentVersion): Promise<DeployEndpoint | null> => {
+      try {
+        return await deps.provider.resolveEndpoint!(dep, v);
+      } catch (e) {
+        unreadable = true;
+        console.error(`[deploy] ${dep.id}: could not resolve its endpoint:`, errMessage(e));
+        return null;
+      }
+    };
+    const resolved = await resolve(d, version);
     if (resolved) {
       if (!endpointsEqual(resolved, d.endpoint)) await deps.deployStore.setEndpoint(d.id, resolved);
       return resolved;
     }
+    if (unreadable) return null;
     return withDeployLock(d.id, async () => {
       const cur = (await deps.deployStore.get(d.id)) ?? d;
-      const v = cur.versions.find((x) => x.version === cur.currentVersion) ?? version;
-      const again = await deps.provider.resolveEndpoint!(cur, v);
+      if (cur.status !== "running") return null;
+      const want = cur.appliedVersion ?? cur.currentVersion;
+      const v = cur.versions.find((x) => x.version === want) ?? version;
+      const again = await resolve(cur, v);
       if (again) {
         if (!endpointsEqual(again, cur.endpoint)) await deps.deployStore.setEndpoint(cur.id, again);
         return again;
       }
-      const fresh = await applyVersion(cur.id, v, cur.appliedVersion ?? cur.currentVersion);
-      await markVersionRunning(cur.id, v.version, fresh);
-      return fresh;
+      if (unreadable) return null;
+      try {
+        const fresh = await applyVersion(cur.id, v, want);
+        await markVersionRunning(cur.id, v.version, fresh);
+        return fresh;
+      } catch (e) {
+        console.error(`[deploy] ${cur.id}: relaunching v${v.version} failed:`, errMessage(e));
+        return null;
+      }
     });
   };
 
@@ -333,7 +375,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         ...(input.createdInScope !== undefined ? { createdInScope: input.createdInScope } : {}),
         ...(input.env ? { env: input.env } : {}),
       });
-      const endpoint = await applyVersion(d.id, d.versions[0]!);
+      const endpoint = await applyOrRevert(d.id, d.versions[0]!);
       await markVersionRunning(d.id, d.versions[0]!.version, endpoint);
       deps.auditLog.record({
         at: Date.now(),
@@ -359,7 +401,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         });
         const d = await deps.deployStore.get(id);
         if (!d) throw new Error(`unknown deployment: ${id}`);
-        const endpoint = await applyVersion(id, v, before?.appliedVersion ?? before?.currentVersion);
+        const endpoint = await applyOrRevert(id, v, before?.appliedVersion ?? before?.currentVersion);
         await markVersionRunning(id, v.version, endpoint);
         deps.auditLog.record({
           at: Date.now(),
@@ -387,7 +429,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         const v = await deps.deployStore.versionOf(id, version);
         const d = await deps.deployStore.get(id);
         if (!d || !v) return;
-        const endpoint = await applyVersion(id, v, before?.appliedVersion ?? before?.currentVersion);
+        const endpoint = await applyOrRevert(id, v, before?.appliedVersion ?? before?.currentVersion);
         await markVersionRunning(id, v.version, endpoint);
         deps.auditLog.record({
           at: Date.now(),
@@ -415,11 +457,27 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         if (!d) throw new Error(`unknown deployment: ${id}`);
         if (d.status === "running") return d;
         if (d.status !== "archived") throw new Error(`deployment is not archived: ${id}`);
-        const version = d.versions.find((v) => v.version === d.currentVersion);
-        if (!version) throw new Error(`no such version ${d.currentVersion}`);
+        const wanted = d.versions.find((v) => v.version === d.currentVersion);
+        if (!wanted) throw new Error(`no such version ${d.currentVersion}`);
+        const lastServing =
+          d.appliedVersion === undefined || d.appliedVersion === d.currentVersion
+            ? undefined
+            : d.versions.find((v) => v.version === d.appliedVersion);
+        let restored = wanted;
         try {
-          const endpoint = await applyVersion(id, version, d.appliedVersion);
-          await markVersionRunning(id, version.version, endpoint);
+          try {
+            const endpoint = await applyVersion(id, wanted, d.appliedVersion);
+            await markVersionRunning(id, wanted.version, endpoint);
+          } catch (wantedFailed) {
+            if (!lastServing) throw wantedFailed;
+            console.error(
+              `[deploy] ${id}: restoring v${wanted.version} failed, falling back to v${lastServing.version}:`,
+              errMessage(wantedFailed),
+            );
+            const endpoint = await applyVersion(id, lastServing, d.appliedVersion);
+            await markVersionRunning(id, lastServing.version, endpoint);
+            restored = lastServing;
+          }
         } catch (error) {
           await deps.provider
             .destroy(d)
@@ -436,7 +494,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
           at: Date.now(),
           principalId: actorId ?? d.createdBy,
           action: "deploy_restore",
-          resource: `${id}@v${version.version}`,
+          resource: `${id}@v${restored.version}`,
           scopeLabel: d.ownerScopeId,
         });
         return (await deps.deployStore.get(id))!;
@@ -484,6 +542,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
       if (!d || d.status !== "running" || d.endpoint == null) return { status: "not_found" };
       if (!opts.bypassAcl && !(await reachAllowed(d, principalId))) return { status: "denied" };
       const endpoint = await liveEndpoint(d);
+      if (!endpoint) return { status: "not_found" };
       await deps.deployStore.touch(d.id, Date.now());
       return { status: "ok", endpoint };
     },
@@ -506,7 +565,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
           if (!pushed) return result;
           const v = await deps.deployStore.addVersionFromCommit(id, pushed);
           if (!v) return result;
-          const endpoint = await applyVersion(id, v, before.appliedVersion ?? before.currentVersion);
+          const endpoint = await applyOrRevert(id, v, before.appliedVersion ?? before.currentVersion);
           await markVersionRunning(id, v.version, endpoint);
           deps.auditLog.record({
             at: Date.now(),
@@ -524,6 +583,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
             resource: id,
             scopeLabel: ownerScopeId,
             status: "error",
+            detail: errMessage(e),
           });
         }
         return result;

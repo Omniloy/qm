@@ -772,6 +772,9 @@ export function createPiTools(ref: ToolContextRef, opts?: PiToolsOptions): ToolD
       "(it keeps running after the turn ends and gets a stable link). The app must listen on " +
       "the PORT env var. By default only the owner's scope can reach it; `share` grants others " +
       "access (read = reach, write = manage). Use `name` for a friendly, stable link /d/<name>/; " +
+      "the app is served under that path prefix, so every URL it emits — fetch paths, form " +
+      "actions, script/style/image src — must be relative (`api/count`, not `/api/count`), or the " +
+      "browser will request it from the portal root and get a 404; " +
       "`renameFrom` to rename; `rollbackTo` to flip back to an earlier version. Egress is open, " +
       "so bake data in or have the app fetch it. When the runtime sets $DATA_DIR, state the app " +
       "writes there survives restarts and redeploys; keep durable state there. For a database use " +
