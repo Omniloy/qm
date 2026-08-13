@@ -56,12 +56,15 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
   const assertStayedUp = async (n: string): Promise<void> => {
     const grace = opts.startupGraceMs ?? STARTUP_GRACE_MS;
     const deadline = Date.now() + grace;
+    let sawRunning = false;
     for (;;) {
       const state = await containerState(n);
       if (state && !state.running) throw await exitedWithOutput(n, state.exitCode);
-      if (Date.now() >= deadline) return;
+      if (state?.running) sawRunning = true;
+      if (Date.now() >= deadline) break;
       await sleep(STARTUP_POLL_MS);
     }
+    if (!sawRunning) throw new Error(`could not confirm ${n} started: docker inspect did not answer`);
   };
 
   const ensureCoreOnNetwork = async (): Promise<void> => {
@@ -128,11 +131,11 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
       if (r.code !== 0) throw new Error(`deploy run failed: ${r.stderr.trim()}`);
       try {
         await assertStayedUp(name(d));
-        return await endpointOf(d);
       } catch (e) {
         await dexec(["rm", "-f", name(d)]);
         throw e;
       }
+      return endpointOf(d);
     },
 
     async destroy(d: Deployment): Promise<void> {

@@ -170,13 +170,34 @@ test("an app that is merely slow to bind is left alone", async (t) => {
   );
 });
 
-test("a docker that cannot be reached is not reported as a clean exit", async (t) => {
+test("a docker that cannot be reached is neither a clean exit nor a successful deploy", async (t) => {
   const docker = fakeDocker();
   t.after(clearFakes);
   process.env.FAKE_HOST_PORT = "32901";
 
   const p = createDockerDeployProvider({ docker: docker.bin, startupGraceMs: 400 });
-  assert.deepEqual(await p.apply(deployment(), version), { host: "127.0.0.1", port: 32901 });
+  await assert.rejects(
+    () => p.apply(deployment(), version),
+    (e: Error) => {
+      assert.match(e.message, /could not confirm/);
+      assert.doesNotMatch(e.message, /exited/);
+      return true;
+    },
+  );
+});
+
+test("a port read that fails after the app is up does not tear the app down", async (t) => {
+  const docker = fakeDocker();
+  t.after(clearFakes);
+  process.env.FAKE_RUNNING = "true";
+
+  const p = createDockerDeployProvider({ docker: docker.bin, startupGraceMs: 0 });
+  await assert.rejects(() => p.apply(deployment(), version), /could not read the published port/);
+  assert.equal(
+    docker.calls().filter((c) => c[0] === "rm").length,
+    1,
+    "only the pre-run cleanup should remove a container",
+  );
 });
 
 test("a container that is already dead is caught without waiting out the grace", async (t) => {
