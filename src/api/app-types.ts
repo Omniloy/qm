@@ -598,14 +598,14 @@ export const MAX_WORKSPACE_PATHS = 10_000;
 
 export const MAX_WORKSPACE_FILE_BYTES = 25 * 1024 * 1024;
 
-export interface WorkspaceListing {
+interface WorkspaceListing {
   scopeId: ScopeId;
   paths: string[];
   truncated: boolean;
   hiddenDirs: string[];
 }
 
-export interface OpenedWorkspaceFile {
+interface OpenedWorkspaceFile {
   name: string;
   mimetype: string;
   bytes: Uint8Array;

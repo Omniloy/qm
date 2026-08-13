@@ -9,7 +9,7 @@ import type { RowActionSpec } from "./drive-mount";
  * So the choosing lives here, with tests, and the template only renders.
  */
 
-export type ControlMode = "agent" | "human_control";
+type ControlMode = "agent" | "human_control";
 
 /**
  * Where the picture comes from.
@@ -19,7 +19,7 @@ export type ControlMode = "agent" | "human_control";
  * URL to embed — the pane asks MiniOmni for frames instead, and there is
  * correspondingly no bearer material anywhere in the pane.
  */
-export type ViewerKind = "iframe" | "stream";
+type ViewerKind = "iframe" | "stream";
 
 export interface LiveSession {
   provider: string;

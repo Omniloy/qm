@@ -9,7 +9,7 @@ import type { Listing } from "./drive-listing.ts";
  * they have no access to.
  */
 
-export interface CachedListing {
+interface CachedListing {
   listing: Listing;
   /** When the listing was made, in ms. Rendered into the prompt block verbatim. */
   listedAt: number;
@@ -88,7 +88,7 @@ export function createListingCache(opts: ListingCacheOptions = {}): ListingCache
 
     invalidateMount(mountId) {
       const suffix = `\u0000${mountId}`;
-      for (const key of [...entries.keys()]) {
+      for (const key of entries.keys()) {
         if (key.endsWith(suffix)) entries.delete(key);
       }
     },

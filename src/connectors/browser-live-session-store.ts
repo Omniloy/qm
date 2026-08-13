@@ -29,7 +29,7 @@ export type ControlMode = "agent" | "human_control";
  * A discriminator rather than a nullable URL, so a record cannot be half of
  * each — and so core still never has to branch on which provider it is.
  */
-export type ViewerKind = "iframe" | "stream";
+type ViewerKind = "iframe" | "stream";
 
 export interface LiveBrowserSession {
   principalId: string;

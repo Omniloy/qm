@@ -8,8 +8,8 @@ import { createRelayHub, relaySocket, type RelayHub, type RelaySide } from "./re
 /** The audience a pairing token carries, so it cannot stand in for anything else. */
 export const BROWSER_RELAY_AUD = "browser-relay";
 
-export const RELAY_EXTENSION_PATH = "/v1/browser-relay/extension";
-export const RELAY_CDP_PATH = "/v1/browser-relay/cdp";
+const RELAY_EXTENSION_PATH = "/v1/browser-relay/extension";
+const RELAY_CDP_PATH = "/v1/browser-relay/cdp";
 
 export interface BrowserRelayOptions {
   hub?: RelayHub;

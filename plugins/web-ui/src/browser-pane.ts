@@ -195,10 +195,6 @@ export function stopBrowserPanePolling(): void {
   currentInterval = 0;
 }
 
-export function browserPaneSession(): LiveSession | null {
-  return session;
-}
-
 interface LiveResponse {
   session?: LiveSession | null;
 }
@@ -210,7 +206,7 @@ interface LiveResponse {
  * because the agent just made one, so there is no reason to poll a quiet
  * conversation.
  */
-export async function refreshBrowserPane(rerender: () => void): Promise<void> {
+async function refreshBrowserPane(rerender: () => void): Promise<void> {
   if (inFlight) return;
   inFlight = true;
   try {

@@ -6,3 +6,5 @@ data/
 .ci-instance/
 test/live-slack/out/
 deploy/stacks/.generated/
+plugins/admin/public/index.html
+cli/templates/slack-sso-manifest.json

@@ -574,7 +574,7 @@ async function doAttach(scopeId: string, rerender: () => void): Promise<void> {
   }
 }
 
-export function askDetach(m: MountRow, rerender: () => void): void {
+function askDetach(m: MountRow, rerender: () => void): void {
   detaching = m;
   rerender();
 }

@@ -19,10 +19,6 @@ import type { RowActionSpec } from "./drive-mount";
 /** Which menu is open, as `${kind}:${id}`. At most one across the page. */
 let openKey: string | null = null;
 
-export function rowMenuIsOpen(key: string): boolean {
-  return openKey === key;
-}
-
 /**
  * Close the open menu unless the event landed inside one.
  *

@@ -44,7 +44,7 @@ export function resetContextPicker(): void {
 }
 
 /** Contexts this person could move something into, current one included. */
-export function movableContexts(): Array<{ scopeId: string; title: string }> {
+function movableContexts(): Array<{ scopeId: string; title: string }> {
   const personal = personalScopeId();
   return (
     contextsState.list
