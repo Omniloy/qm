@@ -15,9 +15,13 @@ export interface DeployReconcileInput {
   allPaths: string[];
 }
 
+export interface DeployApplyOptions {
+  gateStartup?: boolean;
+}
+
 export interface DeployProvider {
   readonly profile: DeployProfile;
-  apply(d: Deployment, version: DeploymentVersion): Promise<DeployEndpoint>;
+  apply(d: Deployment, version: DeploymentVersion, opts?: DeployApplyOptions): Promise<DeployEndpoint>;
   reconcile?(d: Deployment, version: DeploymentVersion, input: DeployReconcileInput): Promise<DeployEndpoint>;
   destroy(d: Deployment): Promise<void>;
   resolveEndpoint?(d: Deployment, version: DeploymentVersion): Promise<DeployEndpoint | null>;

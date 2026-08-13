@@ -20,6 +20,7 @@ function harness() {
       profile: { managedScaleToZero: false },
       apply: async (_d, version) => {
         if (refuse !== null && version.entrypoint === refuse) {
+          gone = true;
           throw new Error(`the entrypoint exited (status 127) without binding port 8080`);
         }
         started.push(version.entrypoint);
@@ -49,7 +50,7 @@ function harness() {
 
 const files = [{ path: "server.js", data: "x" }];
 
-test("a redeploy that will not start leaves the previous version serving", async () => {
+test("a redeploy that will not start is repaired back onto the version that worked", async () => {
   const h = harness();
   const d = await h.deploy.deploy({
     ownerScopeId: OWNER,
@@ -62,13 +63,12 @@ test("a redeploy that will not start leaves the previous version serving", async
   await assert.rejects(() => h.deploy.redeploy(d.id, { entrypoint: "server.js", files }), /exited \(status 127\)/);
 
   const after = await h.deploy.getDeployment(d.id);
-  assert.equal(after?.status, "running", "the app should still be up on its last good version");
   assert.equal(after?.currentVersion, 2, "the candidate stays recorded as what was asked for");
-  assert.equal(after?.appliedVersion, 1, "but v1 is what is actually serving");
-  assert.deepEqual(h.started(), ["node server.js", "node server.js"], "v1 should have been put back");
+  assert.equal(after?.appliedVersion, 1, "but v1 is still the version that ran");
 
   const reach = await h.deploy.reachDeployment(d.id, "u1", { bypassAcl: true });
-  assert.equal(reach.status, "ok");
+  assert.equal(reach.status, "ok", "the next request should bring the app back");
+  assert.deepEqual(h.started(), ["node server.js", "node server.js"], "on v1, not the version that crashed");
 });
 
 test("a first publish that will not start is stopped, not left claiming to run", async () => {

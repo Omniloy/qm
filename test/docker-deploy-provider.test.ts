@@ -21,6 +21,13 @@ const fakeDocker = (): { bin: string; calls: () => string[][] } => {
       '  "logs --tail") printf "%s\\n" "$FAKE_LOGS"; exit 0 ;;',
       "esac",
       'if [ "$1" = "port" ]; then [ -n "$FAKE_HOST_PORT" ] || exit 1; echo "127.0.0.1:$FAKE_HOST_PORT"; exit 0; fi',
+      'if [ "$1" = "exec" ]; then',
+      '  case "$FAKE_LISTENING" in',
+      "    yes) exit 0 ;;",
+      "    unknown) exit 126 ;;",
+      "    *) exit 1 ;;",
+      "  esac",
+      "fi",
       'if [ "$1" = "inspect" ]; then echo "$FAKE_RUNNING $FAKE_EXIT_CODE"; [ -n "$FAKE_RUNNING" ] || exit 1; fi',
       "exit 0",
     ].join("\n"),
@@ -49,6 +56,7 @@ const clearFakes = (): void => {
     "FAKE_EXIT_CODE",
     "FAKE_LOGS",
     "FAKE_HOST_PORT",
+    "FAKE_LISTENING",
     "FAKE_CONNECT_ERR",
     "FAKE_NET_EXISTS",
   ])
@@ -127,8 +135,9 @@ test("the host port comes from docker, not from a counter this process keeps", a
   t.after(clearFakes);
   process.env.FAKE_RUNNING = "true";
   process.env.FAKE_HOST_PORT = "32901";
+  process.env.FAKE_LISTENING = "yes";
 
-  const p = createDockerDeployProvider({ docker: docker.bin, startupGraceMs: 0 });
+  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 0 });
   assert.deepEqual(await p.apply(deployment(), version), { host: "127.0.0.1", port: 32901 });
 
   const run = docker.calls().find((c) => c[0] === "run");
@@ -144,7 +153,7 @@ test("an entrypoint that exits fails the deploy with its output", async (t) => {
   process.env.FAKE_LOGS = "sh: server.js: not found";
   process.env.FAKE_HOST_PORT = "32901";
 
-  const p = createDockerDeployProvider({ docker: docker.bin });
+  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 500 });
   await assert.rejects(
     () => p.apply(deployment(), { ...version, entrypoint: "server.js" }),
     /exited \(status 127\)[\s\S]*server\.js: not found/,
@@ -156,27 +165,77 @@ test("an entrypoint that exits fails the deploy with its output", async (t) => {
   );
 });
 
-test("an app that is merely slow to bind is left alone", async (t) => {
+test("an app that binds the port is accepted", async (t) => {
   const docker = fakeDocker();
   t.after(clearFakes);
   process.env.FAKE_RUNNING = "true";
   process.env.FAKE_HOST_PORT = "32901";
+  process.env.FAKE_LISTENING = "yes";
 
-  const p = createDockerDeployProvider({ docker: docker.bin, startupGraceMs: 400 });
+  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 5_000 });
   assert.deepEqual(await p.apply(deployment(), version), { host: "127.0.0.1", port: 32901 });
+});
+
+test("an app that stays up but never listens fails the deploy", async (t) => {
+  const docker = fakeDocker();
+  t.after(clearFakes);
+  process.env.FAKE_RUNNING = "true";
+  process.env.FAKE_HOST_PORT = "32901";
+  process.env.FAKE_LISTENING = "no";
+  process.env.FAKE_LOGS = "listening on 127.0.0.1:3000";
+
+  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 500 });
+  await assert.rejects(() => p.apply(deployment(), version), /nothing is listening on port 8080/);
   assert.ok(
-    !docker.calls().some((c) => c[0] === "rm" && c.join(" ").includes("-f") && docker.calls().indexOf(c) > 1),
-    "a running app must not be torn down for being slow",
+    docker.calls().some((c) => c.join(" ") === `rm -f ${LIVE}`),
+    "the container that never served should be removed",
   );
 });
 
-test("a docker that cannot be reached is not reported as a clean exit", async (t) => {
+test("an image the probe cannot run in does not block the deploy", async (t) => {
+  const docker = fakeDocker();
+  t.after(clearFakes);
+  process.env.FAKE_RUNNING = "true";
+  process.env.FAKE_HOST_PORT = "32901";
+  process.env.FAKE_LISTENING = "unknown";
+
+  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 400 });
+  assert.deepEqual(await p.apply(deployment(), version), { host: "127.0.0.1", port: 32901 });
+});
+
+test("a docker that cannot be reached is neither a clean exit nor a successful deploy", async (t) => {
   const docker = fakeDocker();
   t.after(clearFakes);
   process.env.FAKE_HOST_PORT = "32901";
 
-  const p = createDockerDeployProvider({ docker: docker.bin, startupGraceMs: 400 });
-  assert.deepEqual(await p.apply(deployment(), version), { host: "127.0.0.1", port: 32901 });
+  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 400 });
+  await assert.rejects(
+    () => p.apply(deployment(), version),
+    (e: Error) => {
+      assert.match(e.message, /could not confirm/);
+      assert.doesNotMatch(e.message, /exited/);
+      return true;
+    },
+  );
+});
+
+test("a port read that keeps failing removes the container rather than orphaning it", async (t) => {
+  const docker = fakeDocker();
+  t.after(clearFakes);
+  process.env.FAKE_RUNNING = "true";
+  process.env.FAKE_LISTENING = "yes";
+
+  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 0 });
+  await assert.rejects(() => p.apply(deployment(), version), /could not read the published port/);
+  assert.ok(
+    docker.calls().filter((c) => c[0] === "port").length > 1,
+    "a transient read should be retried before giving up",
+  );
+  assert.equal(
+    docker.calls().filter((c) => c[0] === "rm").length,
+    2,
+    "the unreachable container should not be left running",
+  );
 });
 
 test("a container that is already dead is caught without waiting out the grace", async (t) => {
@@ -186,7 +245,7 @@ test("a container that is already dead is caught without waiting out the grace",
   process.env.FAKE_EXIT_CODE = "127";
   process.env.FAKE_HOST_PORT = "32901";
 
-  const p = createDockerDeployProvider({ docker: docker.bin, startupGraceMs: 0 });
+  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 0 });
   await assert.rejects(() => p.apply(deployment(), version), /exited \(status 127\)/);
 });
 
