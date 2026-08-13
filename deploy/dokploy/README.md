@@ -158,6 +158,95 @@ instead, since changing the variable will no longer have any effect.
 The broker sends one-time sign-in links through Resend. The sender domain must be
 verified in Resend, or delivery is limited to the Resend account's own address.
 
+That last sentence is the whole trap, and it does not look like a configuration
+problem when you hit it. Resend's shared sandbox sender `onboarding@resend.dev` works,
+so mail to whoever owns the API key arrives normally and the setup reads as working;
+every other recipient is rejected with `HTTP 403 You can only send testing emails to
+your own email address`. The symptom is that the operator can sign in and nobody else
+can. The auth log names it outright:
+
+```
+[auth] sign-in link to <someone>@example.com could not be delivered:
+  Resend rejected the message: HTTP 403 You can only send testing emails to
+  your own email address (<key-owner>@example.com)
+```
+
+#### Verifying a sending domain
+
+Use a **subdomain** — `send.<domain>` — not the apex. The apex usually carries the
+organization's real mail (a Google Workspace `MX` and an SPF `include:_spf.google.com`),
+and adding Resend's SPF there risks breaking it. A subdomain keeps the two independent
+and needs no change to any existing record.
+
+Register the domain, which is what generates the record values:
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $RESEND_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"send.<domain>","region":"eu-west-1"}' \
+  https://api.resend.com/domains
+```
+
+Pick the region deliberately — it is fixed at creation and decides where mail egresses.
+`eu-west-1` keeps sending in the EU alongside a Hetzner host.
+
+The response carries three records to create in DNS, all under the subdomain:
+
+| Type | Name                     | Value                                          |
+| ---- | ------------------------ | ---------------------------------------------- |
+| TXT  | `resend._domainkey.send` | the DKIM public key (`p=…`)                    |
+| MX   | `send.send`              | `feedback-smtp.<region>.amazonses.com` prio 10 |
+| TXT  | `send.send`              | `v=spf1 include:amazonses.com ~all`            |
+
+On Cloudflare these must be **DNS-only** (grey cloud, not proxied) or verification
+never completes. Then trigger the check and confirm:
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $RESEND_API_KEY" \
+  https://api.resend.com/domains/<domainId>/verify
+curl -s -H "Authorization: Bearer $RESEND_API_KEY" \
+  https://api.resend.com/domains/<domainId>
+```
+
+Only once that reports `"status":"verified"` set `AUTH_EMAIL_FROM` to an address at the
+verified domain, e.g. `MiniOmni <noreply@send.<domain>>`.
+
+#### Changing it on a running stack
+
+`AUTH_EMAIL_FROM` reaches the auth service as `${AUTH_EMAIL_FROM}` in
+`docker-compose.yml`, so its value lives in the Dokploy application env and changing it
+needs no repository change — read the env with `compose.one`, replace the one line,
+`compose.update`, then `compose.deploy`. Send the `compose.update` response to
+`/dev/null`: it returns the app's entire env in plaintext, every secret included.
+
+A 200 from `compose.update` is not evidence the container received anything. Confirm
+from inside the container, and confirm delivery through the real sign-in path rather
+than by calling Resend directly — calling Resend proves only that Resend works, not
+that the auth service is configured:
+
+```bash
+docker exec qm-omniloy-auth-1 printenv | grep AUTH_EMAIL_FROM
+docker logs --since 5m qm-omniloy-auth-1 | grep 'sign-in link'
+curl -s -H "Authorization: Bearer $RESEND_API_KEY" \
+  https://api.resend.com/emails/<resend-message-id>
+```
+
+The log line carries the Resend message id to look up, and a delivered message reports
+`"last_event":"delivered"`:
+
+```
+[auth] sign-in link sent to <someone>@example.com (<resend-message-id>)
+```
+
+The sign-in form posts to `/idp/authorize` with the sealed `request` token from the
+page's hidden input, and enforces an origin check — a bare `curl` without
+`Origin: ${PUBLIC_URL}` gets `403 cross-origin request refused`, which is CSRF
+protection working, not a broken deploy.
+
+As configured for Omniloy on 2026-08-13: sending domain `send.omniloy.com`
+(Resend region `eu-west-1`), `AUTH_EMAIL_FROM=MiniOmni <noreply@send.omniloy.com>`,
+DNS on Cloudflare, and `omniloy.com` itself left untouched on Google Workspace.
+
 ### Secrets
 
 `POSTGRES_PASSWORD` and every key below must be distinct. Mint each with
@@ -383,6 +472,7 @@ In order, because each step depends on the last:
    No container plus `exec daemon never became reachable` means `CORE_CONTAINER` is unset
    or does not match `container_name`. A container that starts and dies usually means the
    sandbox image was never built.
+
 5. Ask the agent to write and publish a small app, then open it under `/d/<id>` — this is
    the only step that exercises `DATA_HOST_DIR` and `PORTAL_DEPLOYMENTS_ENABLED`.
    `MODULE_NOT_FOUND` means `DATA_DIR` is a named volume or a mismatched bind path.
