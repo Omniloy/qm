@@ -57,7 +57,9 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
 
   const listeningInside = async (n: string): Promise<"yes" | "no" | "unknown"> => {
     const script =
-      `const s=require("net").connect({host:"127.0.0.1",port:${APP_PORT}});` +
+      `const n=require("os").networkInterfaces();` +
+      `const a=Object.values(n).flat().filter(i=>i&&i.family==="IPv4"&&!i.internal).map(i=>i.address);` +
+      `const s=require("net").connect({host:a[0]||"127.0.0.1",port:${APP_PORT}});` +
       `s.on("connect",()=>process.exit(0));s.on("error",()=>process.exit(1));` +
       `setTimeout(()=>process.exit(1),${PROBE_TIMEOUT_MS});`;
     const r = await dexec(["exec", n, "node", "-e", script]);
@@ -83,7 +85,11 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
     }
     if (!sawRunning) throw new Error(`could not confirm ${n} started: docker inspect did not answer`);
     if (couldNotProbe) return;
-    throw await exitedWithOutput(n, null, `nothing is listening on port ${APP_PORT} inside ${n}`);
+    throw await exitedWithOutput(
+      n,
+      null,
+      `nothing is serving port ${APP_PORT} on ${n}'s network address — bind 0.0.0.0, not 127.0.0.1`,
+    );
   };
 
   const ensureCoreOnNetwork = async (): Promise<void> => {

@@ -176,7 +176,7 @@ test("an app that binds the port is accepted", async (t) => {
   assert.deepEqual(await p.apply(deployment(), version), { host: "127.0.0.1", port: 32901 });
 });
 
-test("an app that stays up but never listens fails the deploy", async (t) => {
+test("an app that binds only loopback, or nothing at all, fails the deploy", async (t) => {
   const docker = fakeDocker();
   t.after(clearFakes);
   process.env.FAKE_RUNNING = "true";
@@ -185,7 +185,7 @@ test("an app that stays up but never listens fails the deploy", async (t) => {
   process.env.FAKE_LOGS = "listening on 127.0.0.1:3000";
 
   const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 500 });
-  await assert.rejects(() => p.apply(deployment(), version), /nothing is listening on port 8080/);
+  await assert.rejects(() => p.apply(deployment(), version), /nothing is serving port 8080/);
   assert.ok(
     docker.calls().some((c) => c.join(" ") === `rm -f ${LIVE}`),
     "the container that never served should be removed",
