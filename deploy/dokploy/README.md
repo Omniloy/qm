@@ -306,6 +306,58 @@ is the invoice.
 The token expires quietly a year after it was minted and takes Claude-harness
 turns with it. The admin card counts that year down; the env var cannot.
 
+### Running GPT models on a ChatGPT subscription
+
+There is no equivalent of `claude setup-token` for OpenAI. Signing in with
+ChatGPT produces an OAuth bundle that expires and is refreshed as it is used, and
+it authenticates the Codex backend rather than the Platform API — OpenAI's own
+guidance is that "for general OpenAI API calls, continue to use Platform API
+keys". So a subscription cannot simply be pasted into a field the way Claude's
+can.
+
+The `codex-proxy` service closes that gap. It signs in with ChatGPT, holds the
+credential, refreshes it, and serves an OpenAI-compatible endpoint on the private
+network. Core never handles the token: `pi` reaches GPT models by way of a custom
+model provider pointed at the proxy, which is the same path a vendor endpoint or
+a LiteLLM gateway already takes.
+
+| Key                          | Value                                                                          |
+| ---------------------------- | ------------------------------------------------------------------------------ |
+| `CODEX_PROXY_API_KEY`        | what core presents to the proxy; also the key you enter on the custom provider |
+| `CODEX_PROXY_MANAGEMENT_KEY` | guards the proxy's management API, which is what signs in                      |
+
+Mint both with `openssl rand -hex 32`. Neither is an OpenAI credential — they
+only gate the proxy.
+
+Sign in once the stack is up, from the host:
+
+```bash
+MGMT=<CODEX_PROXY_MANAGEMENT_KEY>
+docker compose exec core sh -lc "wget -qO- --header='X-Management-Key: $MGMT' \
+  http://codex-proxy:8317/v0/management/codex-auth-url"
+# -> {"status":"ok","url":"https://auth.openai.com/...","state":"codex-..."}
+```
+
+Open that URL in your own browser and sign in. It redirects to
+`localhost:1455`, which will fail to connect — that is expected, because the
+proxy is on the server and not on your machine. Copy the `code` out of the failed
+URL and post it back:
+
+```bash
+docker compose exec core sh -lc "wget -qO- --post-data='{\"provider\":\"codex\",\"state\":\"<STATE>\",\"code\":\"<CODE>\"}' \
+  --header='Content-Type: application/json' --header='X-Management-Key: $MGMT' \
+  http://codex-proxy:8317/v0/management/oauth-callback"
+```
+
+Then register it at **Admin → Governance → Custom providers**: an
+OpenAI-compatible endpoint at `http://codex-proxy:8317/v1`, the key
+`CODEX_PROXY_API_KEY`, and the model ids the proxy reports at `/v1/models`. The
+models join the picker for every harness that routes through pi-ai.
+
+The proxy publishes no ports and stays off `dokploy-network` on purpose. Its
+management API can sign in as your ChatGPT account, so it must not be reachable
+from the Internet; nothing outside the compose network can address it.
+
 ## The browser-extension relay (optional)
 
 Lets a person's own Chrome drive a browse session, via the MiniOmni Browser Bridge extension, so
