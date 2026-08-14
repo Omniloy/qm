@@ -181,8 +181,10 @@ export async function completeCodexAuth(ctx: ApiCtx): Promise<void> {
 export async function deleteCodexAuth(ctx: ApiCtx): Promise<void> {
   const authorized = await actor(ctx);
   if (!authorized) return;
-  const name = (ctx.body as { name?: unknown })?.name;
-  if (typeof name !== "string" || !name) {
+  // A query parameter rather than a body: the admin plugin forwards DELETE
+  // without one, so a body here would arrive empty.
+  const name = ctx.url.searchParams.get("name");
+  if (!name) {
     return sendJson(ctx.res, 400, { error: "bad_request", message: "Which account to sign out is required." });
   }
   let call: ProxyCall | null;

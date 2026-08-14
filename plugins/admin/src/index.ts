@@ -277,6 +277,7 @@ const WRITES = new Map<string, string[]>([
   ["model-providers", ["PUT", "DELETE"]],
   ["harness-auth", ["PUT", "DELETE"]],
   ["custom-providers", ["PUT", "DELETE"]],
+  ["codex-auth", ["POST", "DELETE"]],
 ]);
 
 const READS = [
@@ -303,6 +304,7 @@ const READS = [
   "model-providers",
   "harness-auth",
   "custom-providers",
+  "codex-auth",
 ];
 
 const server = createServer((req, res) => {

@@ -7372,7 +7372,7 @@
         const name = $("codex-auth-delete").dataset.name;
         if (!name) return;
         if (!confirm("Sign this ChatGPT account out? GPT models stop working until one is signed in again.")) return;
-        const res = await api("DELETE", "/api/codex-auth", { name });
+        const res = await api("DELETE", "/api/codex-auth?name=" + encodeURIComponent(name));
         await loadCodexAuth();
         setStatus(
           "st-codex-auth",
