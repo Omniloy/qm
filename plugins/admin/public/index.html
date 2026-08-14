@@ -3937,6 +3937,40 @@
             </section>
             <section class="card">
               <div class="head">
+                <h2>ChatGPT subscription</h2>
+                <p>
+                  Optional. Runs GPT models on a ChatGPT subscription instead of an OpenAI API key. Sign in below and
+                  the proxy holds the account and keeps it refreshed — no token is stored here and none is pasted. The
+                  sign-in ends at a <code>localhost</code> address that will not load, because the proxy is on the
+                  server and not on your machine; copy that address back into the box. A link is good for five minutes.
+                </p>
+              </div>
+              <div class="body setup-form">
+                <p class="muted" id="codex-auth-state">Checking…</p>
+                <div id="codex-auth-step" hidden>
+                  <p>
+                    <a id="codex-auth-link" target="_blank" rel="noopener noreferrer">Open the ChatGPT sign-in</a>
+                    <span class="muted" id="codex-auth-countdown"></span>
+                  </p>
+                  <label
+                    >Address the sign-in ended on
+                    <input
+                      type="text"
+                      id="codex-auth-callback"
+                      autocomplete="off"
+                      placeholder="http://localhost:1455/auth/callback?code=…&amp;state=…"
+                  /></label>
+                </div>
+              </div>
+              <div class="foot">
+                <button class="primary" id="codex-auth-start">Sign in with ChatGPT</button
+                ><button class="primary" id="codex-auth-complete" hidden>Finish sign-in</button
+                ><button class="danger" id="codex-auth-delete">Sign out</button
+                ><span class="status" id="st-codex-auth"></span>
+              </div>
+            </section>
+            <section class="card">
+              <div class="head">
                 <h2>Custom providers</h2>
                 <p>
                   Point MiniOmni at any OpenAI- or Anthropic-compatible endpoint — a vendor like DeepSeek, or a gateway like
@@ -7081,6 +7115,7 @@
           api("GET", "/api/scopes/" + encodeURIComponent(orgScope())),
         ]);
         void loadHarnessAuth();
+        void loadCodexAuth();
         if (!models.ok || !slack.ok || !catalog.ok || !config.ok) {
           setStatus("st-onboarding-model", "Setup status could not be loaded. Try again.", "err", true);
           renderOnboardingProviderOptions();
@@ -7242,6 +7277,106 @@
         setStatus(
           "st-harness-claude",
           res.ok ? "Subscription disabled." : "That could not be disabled.",
+          res.ok ? "ok" : "err",
+          !res.ok,
+        );
+      };
+      let codexAuthPending = null;
+      let codexAuthTimer = null;
+      function renderCodexCountdown() {
+        const el = $("codex-auth-countdown");
+        if (!codexAuthPending) {
+          el.textContent = "";
+          return;
+        }
+        const left = Math.max(0, codexAuthPending.expiresAt - Date.now());
+        if (left === 0) {
+          // Say it plainly rather than leaving a link that answers 404 on use.
+          clearInterval(codexAuthTimer);
+          codexAuthTimer = null;
+          codexAuthPending = null;
+          $("codex-auth-step").hidden = true;
+          $("codex-auth-complete").hidden = true;
+          $("codex-auth-start").hidden = false;
+          el.textContent = "";
+          setStatus("st-codex-auth", "That link expired. Start again.", "err", true);
+          return;
+        }
+        const secs = Math.ceil(left / 1000);
+        el.textContent = `expires in ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+      }
+      async function loadCodexAuth() {
+        const res = await api("GET", "/api/codex-auth");
+        const state = $("codex-auth-state");
+        if (res.status === 503) {
+          state.textContent = "No ChatGPT proxy is configured on this instance.";
+          $("codex-auth-start").disabled = true;
+          $("codex-auth-delete").disabled = true;
+          return;
+        }
+        if (!res.ok) {
+          state.textContent = "The proxy could not be reached.";
+          $("codex-auth-delete").disabled = true;
+          return;
+        }
+        const accounts = res.data?.accounts || [];
+        const live = accounts.filter((a) => !a.disabled);
+        state.textContent = live.length
+          ? live.map((a) => `Signed in as ${a.email || a.name} (${a.status}).`).join(" ")
+          : "No ChatGPT account connected.";
+        $("codex-auth-delete").disabled = live.length === 0;
+        $("codex-auth-delete").dataset.name = live[0]?.name || "";
+      }
+      $("codex-auth-start").onclick = async () => {
+        setStatus("st-codex-auth", "Starting…", "", false);
+        const res = await api("POST", "/api/codex-auth/start");
+        if (!res.ok) {
+          setStatus("st-codex-auth", res.data?.message || "The sign-in could not be started.", "err", true);
+          return;
+        }
+        codexAuthPending = { expiresAt: res.data.expiresAt };
+        const link = $("codex-auth-link");
+        link.href = res.data.url;
+        $("codex-auth-step").hidden = false;
+        $("codex-auth-start").hidden = true;
+        $("codex-auth-complete").hidden = false;
+        $("codex-auth-callback").value = "";
+        clearInterval(codexAuthTimer);
+        codexAuthTimer = setInterval(renderCodexCountdown, 1000);
+        renderCodexCountdown();
+        setStatus("st-codex-auth", "Open the link, then paste where it lands.", "ok");
+      };
+      $("codex-auth-complete").onclick = async () => {
+        const callback = $("codex-auth-callback").value.trim();
+        if (!callback) {
+          setStatus("st-codex-auth", "Paste the address the sign-in ended on.", "err", true);
+          return;
+        }
+        $("codex-auth-complete").disabled = true;
+        const res = await api("POST", "/api/codex-auth/complete", { callback });
+        $("codex-auth-complete").disabled = false;
+        if (!res.ok) {
+          setStatus("st-codex-auth", res.data?.message || "That sign-in could not be finished.", "err", true);
+          return;
+        }
+        clearInterval(codexAuthTimer);
+        codexAuthTimer = null;
+        codexAuthPending = null;
+        $("codex-auth-step").hidden = true;
+        $("codex-auth-complete").hidden = true;
+        $("codex-auth-start").hidden = false;
+        await loadCodexAuth();
+        setStatus("st-codex-auth", "Signed in. GPT models now bill the subscription.", "ok");
+      };
+      $("codex-auth-delete").onclick = async () => {
+        const name = $("codex-auth-delete").dataset.name;
+        if (!name) return;
+        if (!confirm("Sign this ChatGPT account out? GPT models stop working until one is signed in again.")) return;
+        const res = await api("DELETE", "/api/codex-auth", { name });
+        await loadCodexAuth();
+        setStatus(
+          "st-codex-auth",
+          res.ok ? "Signed out." : "That could not be signed out.",
           res.ok ? "ok" : "err",
           !res.ok,
         );

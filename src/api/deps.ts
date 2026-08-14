@@ -95,6 +95,8 @@ export interface ServerDeps {
   browserRelay?: RelayHub;
   /** Public wss origin the extension dials, e.g. https://relay.qm.example.com. */
   relayPublicUrl?: string;
+  /** Where the ChatGPT proxy lives and the key that lets core drive its sign-in. */
+  codexProxy?: { url: string; managementKey: string };
   /** Wired at the entry point, which owns process.env; injected in tests so saving a token needs no live model call. */
   harnessAuthProbe?: (token: string) => Promise<{ ok: boolean; detail?: string }>;
   modelCredentialFetch?: typeof fetch;

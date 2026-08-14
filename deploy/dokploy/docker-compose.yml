@@ -56,6 +56,10 @@ services:
       # is the caller; the ChatGPT credential never leaves the proxy.
       OPENAI_BASE_URL: ${OPENAI_BASE_URL}
       OPENAI_API_KEY: ${CODEX_PROXY_API_KEY}
+      # Lets the admin panel run the ChatGPT sign-in. Core drives the proxy's
+      # management API with this; it never holds the resulting credential.
+      CODEX_PROXY_URL: ${CODEX_PROXY_URL}
+      CODEX_PROXY_MANAGEMENT_KEY: ${CODEX_PROXY_MANAGEMENT_KEY}
       SESSION_STORE: postgres
       RUN_STORE: postgres
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@pg:5432/qm
