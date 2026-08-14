@@ -63,7 +63,7 @@ const ALLOWED_ATTRIBUTES = new Set([
   "preserveaspectratio",
 ]);
 
-export const MAX_LOGO_SVG_BYTES = 64 * 1024;
+const MAX_LOGO_SVG_BYTES = 64 * 1024;
 
 export class InvalidLogoSvgError extends Error {}
 

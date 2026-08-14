@@ -1,6 +1,5 @@
 import { isHarnessId, type HarnessId } from "../../../model/pi-models.ts";
 import { claudeSubscriptionTokenProblem } from "../../../credentials/harness-auth-store.ts";
-import { probeClaudeSubscription } from "../../../credentials/claude-subscription-probe.ts";
 import { sendJson } from "../../http.ts";
 import type { ApiCtx } from "../route.ts";
 import { audit, authorizeAdmin, orgScope } from "../shared.ts";
@@ -46,7 +45,14 @@ export async function putHarnessAuth(ctx: ApiCtx): Promise<void> {
   if (problem) return sendJson(ctx.res, 400, { error: "invalid_token", message: problem });
   // Prove the credential before storing it: a token that only fails on the
   // next agent run reads as a broken agent, not as a bad paste.
-  const probe = await (ctx.deps.harnessAuthProbe ?? probeClaudeSubscription)(token.trim());
+  const runProbe = ctx.deps.harnessAuthProbe;
+  if (!runProbe) {
+    return sendJson(ctx.res, 503, {
+      error: "unavailable",
+      message: "This instance cannot verify a subscription token.",
+    });
+  }
+  const probe = await runProbe(token.trim());
   if (!probe.ok) {
     return sendJson(ctx.res, 400, {
       error: "invalid_token",

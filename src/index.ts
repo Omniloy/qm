@@ -8,6 +8,7 @@ import { attachBrowserRelay } from "./browser-relay/server.ts";
 import { errMessage } from "./util/errors.ts";
 import { defaultModelForHarness, modelProviderAvailabilityFor } from "./model/pi-models.ts";
 import { effectiveEgressEnforcement } from "./sandbox/sandbox.ts";
+import { probeClaudeSubscription } from "./credentials/claude-subscription-probe.ts";
 import { slackPluginConfigFromEnv, startSlackPlugin } from "./slack/index.ts";
 import { createSlackRuntimeReconciler } from "./surfaces/slack-runtime.ts";
 
@@ -112,6 +113,7 @@ const server = createServer(built.app, {
   ...(built.browserSessionStore ? { browserSessionStore: built.browserSessionStore } : {}),
   ...(built.liveBrowserSessions ? { liveBrowserSessions: built.liveBrowserSessions } : {}),
   maxLiveBrowsers: Number(process.env.MAX_LIVE_BROWSERS ?? "1") || 1,
+  harnessAuthProbe: (token: string) => probeClaudeSubscription(token, process.env),
   directory: built.directory,
   ...(built.ambientJudgments ? { ambientJudgments: built.ambientJudgments } : {}),
   ...(built.ackEmojiPicks ? { ackEmojiPicks: built.ackEmojiPicks } : {}),

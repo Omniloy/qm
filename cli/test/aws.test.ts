@@ -1426,7 +1426,10 @@ console.log("");`,
     await withAwsLease(config.aws!, async () => {
       await new Promise((resolve) => setTimeout(resolve, 40));
     });
-    assert.match(warnings.join("\n"), /"deploy" lease in acme-qm-deploy-locks was taken over by another MiniOmni operation/);
+    assert.match(
+      warnings.join("\n"),
+      /"deploy" lease in acme-qm-deploy-locks was taken over by another MiniOmni operation/,
+    );
     assert.equal(
       readFileSync(fake.log, "utf8").match(/dynamodb update-item/g)?.length,
       1,

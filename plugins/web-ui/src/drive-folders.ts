@@ -209,7 +209,7 @@ async function setMountEnabled(m: MountRow, enabled: boolean, rerender: () => vo
 function mountRowTpl(m: MountRow, state: BandState, now: number, rerender: () => void): TemplateResult {
   const inert = rowIsInert(m, state);
   const off = m.enabled === false;
-  const status = rowStatus(m, state, now);
+  const status = rowStatus(m, state);
   const link = requestAccessUrl(m);
   const count = m.itemCount === undefined ? "" : ` · ${m.itemCount} file${m.itemCount === 1 ? "" : "s"}`;
   return html`<div class="drive-mount-row ${inert ? "inert" : ""} ${off ? "off" : ""}" title=${rowTitle(m, now)}>
@@ -302,13 +302,15 @@ interface BrowseResponse {
 
 const ROOT: PickerFolder = { id: "root", name: "My Drive" };
 
+function browseQuery(mode: { id?: string; q?: string; parent?: string }): string {
+  if (mode.id) return `id=${encodeURIComponent(mode.id)}`;
+  if (mode.q) return `q=${encodeURIComponent(mode.q)}`;
+  return `parent=${encodeURIComponent(mode.parent ?? "root")}`;
+}
+
 /** Fetch whichever view the picker is in: a pasted id, a search, or a folder's children. */
 async function fetchFolders(mode: { id?: string; q?: string; parent?: string }): Promise<PickerFolder[]> {
-  const qs = mode.id
-    ? `id=${encodeURIComponent(mode.id)}`
-    : mode.q
-      ? `q=${encodeURIComponent(mode.q)}`
-      : `parent=${encodeURIComponent(mode.parent ?? "root")}`;
+  const qs = browseQuery(mode);
   const r = await api<BrowseResponse>(`/api/mounts/browse?${qs}`);
   return r.folders ?? [];
 }
@@ -386,6 +388,24 @@ function beginAttach(f: PickerFolder, rerender: () => void): void {
   rerender();
 }
 
+function driveResults(p: NonNullable<typeof picker>, rerender: () => void): TemplateResult | TemplateResult[] {
+  if (p.loading) return html`<p class="drive-note">Loading…</p>`;
+  if (!p.folders.length) return html`<p class="drive-note">No subfolders here.</p>`;
+  return p.folders.map(
+    (f) =>
+      html`<div class="drive-result-row">
+        ${icon(FolderOpen, 16)}
+        <span class="drive-result-name">${f.name}</span>
+        ${
+          p.searching
+            ? ""
+            : html`<button class="btn" type="button" @click=${() => void browseInto(f, rerender, true)}>Open</button>`
+        }
+        <button class="primary" type="button" @click=${() => beginAttach(f, rerender)}>Attach</button>
+      </div>`,
+  );
+}
+
 export function drivePickerTpl(scopeId: string, rerender: () => void): TemplateResult | typeof nothing {
   if (pending) return scrim(rerender, attachConfirmTpl(scopeId, rerender));
   if (detaching) return scrim(rerender, detachConfirmTpl(rerender));
@@ -448,29 +468,7 @@ export function drivePickerTpl(scopeId: string, rerender: () => void): TemplateR
       }
       ${p.error ? html`<p class="drive-note warning">${p.error}</p>` : ""}
 
-      <div class="drive-results">
-        ${
-          p.loading
-            ? html`<p class="drive-note">Loading…</p>`
-            : p.folders.length
-              ? p.folders.map(
-                  (f) =>
-                    html`<div class="drive-result-row">
-                      ${icon(FolderOpen, 16)}
-                      <span class="drive-result-name">${f.name}</span>
-                      ${
-                        p.searching
-                          ? ""
-                          : html`<button class="btn" type="button" @click=${() => void browseInto(f, rerender, true)}>
-                              Open
-                            </button>`
-                      }
-                      <button class="primary" type="button" @click=${() => beginAttach(f, rerender)}>Attach</button>
-                    </div>`,
-                )
-              : html`<p class="drive-note">No subfolders here.</p>`
-        }
-      </div>
+      <div class="drive-results">${driveResults(p, rerender)}</div>
 
       ${
         p.searching || p.trail.length < 2
@@ -576,7 +574,7 @@ async function doAttach(scopeId: string, rerender: () => void): Promise<void> {
   }
 }
 
-export function askDetach(m: MountRow, rerender: () => void): void {
+function askDetach(m: MountRow, rerender: () => void): void {
   detaching = m;
   rerender();
 }

@@ -24,10 +24,9 @@ export function normalizeWorkspacePath(path: string): string | null {
   return out.length ? out.join("/") : null;
 }
 
-export function isMountedLayerDir(segment: string): boolean {
+function isMountedLayerDir(segment: string): boolean {
   return (
-    segment === ORG_MOUNT_PATH ||
-    (segment.startsWith(TEAM_MOUNT_PREFIX) && segment.length > TEAM_MOUNT_PREFIX.length)
+    segment === ORG_MOUNT_PATH || (segment.startsWith(TEAM_MOUNT_PREFIX) && segment.length > TEAM_MOUNT_PREFIX.length)
   );
 }
 

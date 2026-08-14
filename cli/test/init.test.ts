@@ -559,11 +559,7 @@ test("the scaffold is an npm-backed deployment repository with no CI coupling an
     assert.match(manifest, /^display_information:/m);
     assert.match(manifest, new RegExp(`^ {2}name: ${BRAND.slackAppName}$`, "m"));
     assert.match(manifest, /^ {6}- chat:write$/m);
-    assert.match(
-      manifest,
-      new RegExp(`background_color: "${BRAND.accent}"`),
-      "values YAML would misread are quoted",
-    );
+    assert.match(manifest, new RegExp(`background_color: "${BRAND.accent}"`), "values YAML would misread are quoted");
     assert.deepEqual(
       slackManifestBotScopes(manifest),
       requiredSlackScopes(dir),

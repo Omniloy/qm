@@ -65,7 +65,7 @@ const escapeAttr = (v: string): string =>
 
 const escapeText = (v: string): string => v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-export const BRAND_TITLE_TOKEN = "__BRAND__";
+const BRAND_TITLE_TOKEN = "__BRAND__";
 
 export function logoCssUrl(logoSvg: string): string {
   return `url("data:image/svg+xml;charset=utf-8,${encodeURIComponent(logoSvg).replace(/'/g, "%27")}")`;

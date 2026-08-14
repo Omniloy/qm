@@ -181,9 +181,11 @@ const FAMILIES: AgentApiFamily[] = [
     ],
   },
   {
-    match: (m, p) => m === "GET" && (p === "/v1/files" || /^\/v1\/files\/[^/]+\/content$/.test(p)),
+    match: (m, p) =>
+      (m === "GET" && (p === "/v1/files" || /^\/v1\/files\/[^/]+\/content$/.test(p))) ||
+      ((m === "DELETE" || m === "PATCH") && /^\/v1\/files\/[^/]+$/.test(p)),
     guidance:
-      "These show the ASKING PERSON's file library across every context they can reach. A file outside their visibility returns 404 without revealing whether it exists.",
+      "These show the ASKING PERSON's file library across every context they can reach. A file outside their visibility returns 404 without revealing whether it exists. Deleting or moving one is theirs to decide, so confirm before either.",
     routes: [
       {
         method: "GET",
@@ -196,6 +198,117 @@ const FAMILIES: AgentApiFamily[] = [
         path: "/v1/files/:id/content",
         summary: "download the bytes of a file from the asking person's file library",
       },
+      {
+        method: "DELETE",
+        path: "/v1/files/:id",
+        summary: "delete one of the asking person's files — irreversible, so confirm first",
+      },
+      {
+        method: "PATCH",
+        path: "/v1/files/:id",
+        summary:
+          "move a file to another context with {scopeId} — everyone in the destination can then open it, so confirm before widening the audience",
+      },
+    ],
+  },
+  {
+    match: (m, p) =>
+      (p === "/v1/mounts" && (m === "GET" || m === "POST")) ||
+      (/^\/v1\/mounts\/[^/]+$/.test(p) && (m === "PATCH" || m === "DELETE")) ||
+      (/^\/v1\/mounts\/[^/]+\/(refresh|move)$/.test(p) && m === "POST"),
+    guidance:
+      "Drive folders the asking person attached, so their own Google account is what reads them — attaching a folder to a shared context does not lend anyone that access, and each person there sees only what they could already open. Attaching, moving and detaching are theirs to decide; confirm before changing what a context can reach.",
+    routes: [
+      {
+        method: "GET",
+        path: "/v1/mounts",
+        summary: "list the Drive folders attached to a scope — ?scope= is required",
+      },
+      {
+        method: "POST",
+        path: "/v1/mounts",
+        summary:
+          'attach a Drive folder with {scopeId,externalId,name,mode} — mode is required and is "ro" or "rw"; prefer "ro" unless the person asked for write access',
+      },
+      {
+        method: "POST",
+        path: "/v1/mounts/:id/refresh",
+        summary: "re-list one folder's contents for the asking person, leaving other people's cached listings alone",
+      },
+      { method: "PATCH", path: "/v1/mounts/:id", summary: "turn a folder on or off with {enabled}" },
+      {
+        method: "POST",
+        path: "/v1/mounts/:id/move",
+        summary: "move a folder to another scope with {scopeId} — it leaves the scope it was in",
+      },
+      { method: "DELETE", path: "/v1/mounts/:id", summary: "detach a folder; the folder itself is untouched in Drive" },
+    ],
+  },
+  {
+    match: (m, p) => m === "GET" && (p === "/v1/workspace/tree" || p === "/v1/workspace/file"),
+    guidance:
+      "A read-only view of the workspace behind a scope, for showing someone what is there. ?scope= is required and a scope the asking person cannot act in returns 403; an instance with no agent computer wired answers 501.",
+    routes: [
+      {
+        method: "GET",
+        path: "/v1/workspace/tree",
+        summary:
+          "list the workspace tree for a scope (?scope=, plus ?wake=true to start a sleeping computer rather than report it idle)",
+      },
+      {
+        method: "GET",
+        path: "/v1/workspace/file",
+        summary:
+          "read one file out of that workspace (?scope= and ?path=, both required; a file too large to inline answers 413)",
+      },
+    ],
+  },
+  {
+    match: (m, p) =>
+      (p === "/v1/browser-sessions" && m === "POST") ||
+      (p === "/v1/browser-sessions/current" && m === "GET") ||
+      (/^\/v1\/browser-sessions\/[^/]+$/.test(p) && m === "DELETE") ||
+      (/^\/v1\/browser-sessions\/[^/]+\/(state|frame)$/.test(p) && m === "GET") ||
+      (/^\/v1\/browser-sessions\/[^/]+\/(handoff|input)$/.test(p) && m === "POST"),
+    guidance:
+      "The browser a person has open. It is logged into their real accounts, so it is addressable only by its owner and never by naming someone else. Registering and reading are yours; handing control over is the person's decision, and a trigger-fired turn may not change anything here at all.",
+    routes: [
+      {
+        method: "POST",
+        path: "/v1/browser-sessions",
+        summary:
+          "record a browser you just opened with {provider,sessionId,expiresAt} and either viewer:'iframe' with a liveViewUrl or viewer:'stream' with none — never the CDP URL, which carries the provider key",
+      },
+      { method: "GET", path: "/v1/browser-sessions/current", summary: "the asking person's open browser, if any" },
+      { method: "GET", path: "/v1/browser-sessions/:id/state", summary: "who is driving, and until when" },
+      {
+        method: "POST",
+        path: "/v1/browser-sessions/:id/handoff",
+        summary: "hand the wheel to the person, or take it back once they give it up",
+      },
+      { method: "GET", path: "/v1/browser-sessions/:id/frame", summary: "the latest frame of a streamed browser" },
+      {
+        method: "POST",
+        path: "/v1/browser-sessions/:id/input",
+        summary: "drive a streamed browser with {kind:'click'|'type'|'key'|'scroll'} and that kind's fields",
+      },
+      { method: "DELETE", path: "/v1/browser-sessions/:id", summary: "end the session" },
+    ],
+  },
+  {
+    match: (m, p) =>
+      (p === "/v1/browser-relay/pairing" && m === "POST") || (p === "/v1/browser-relay/status" && m === "GET"),
+    when: (v) => v.claims.triggered !== true,
+    guidance:
+      "Pairing lets someone point their own Chrome at this instance through the extension. The token it returns drives a browser signed into everything they are, and lasts thirty days, so mint one only when the person asked to pair and hand it to them directly — never into a channel.",
+    routes: [
+      {
+        method: "POST",
+        path: "/v1/browser-relay/pairing",
+        summary:
+          "mint the asking person's pairing token and the address their extension dials; always for the caller, never for anyone they name",
+      },
+      { method: "GET", path: "/v1/browser-relay/status", summary: "whether their extension is connected right now" },
     ],
   },
   {
@@ -325,6 +438,7 @@ const FAMILIES: AgentApiFamily[] = [
       (p === "/v1/keychain/asks" && (m === "POST" || m === "GET")) ||
       (m === "POST" && p.startsWith("/v1/keychain/asks/") && p.endsWith("/decline")) ||
       (m === "POST" && p === "/v1/keychain/drops") ||
+      (m === "POST" && p === "/v1/keychain/browser") ||
       (m === "POST" && p === "/v1/keychain/use"),
     guidance: "The keychain ask→approve→use protocol is documented in your keychain manifest when one renders.",
     routes: [
@@ -358,6 +472,12 @@ const FAMILIES: AgentApiFamily[] = [
         path: "/v1/keychain/drops",
         summary:
           'mint a single-use, expiring link for someone to drop a credential into the keychain via a browser (no secret in chat; hand the returned url over VERBATIM — it carries a link-bound token, so a reconstructed url will not work; declare the form inputs with fields[], e.g. [{key:"X_EMAIL",label:"Email",secret:false},{key:"X_PASSWORD",label:"Password"}] for a login, or omit for a single token; refused on trigger-fired turns)',
+      },
+      {
+        method: "POST",
+        path: "/v1/keychain/browser",
+        summary:
+          "choose which browser provider this person's turns use with {provider}; refused for a provider whose key they have not registered",
       },
       {
         method: "POST",

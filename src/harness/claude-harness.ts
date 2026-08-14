@@ -462,7 +462,7 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
       options: {
         abortController: controller,
         cwd: jail,
-        env: claudeChildEnv({ ...(opts.env ?? {}), ...envOverlay }, jail),
+        env: claudeChildEnv({ ...opts.env, ...envOverlay }, jail),
         tools: allowSubagents ? ["Agent"] : [],
         skills: [],
         settingSources: [],

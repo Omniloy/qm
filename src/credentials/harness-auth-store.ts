@@ -21,7 +21,7 @@ export interface StoredHarnessAuth {
   updatedBy: string;
 }
 
-export interface HarnessAuthStatus {
+interface HarnessAuthStatus {
   harnessId: HarnessId;
   configured: boolean;
   updatedAt?: number;

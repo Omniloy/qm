@@ -941,9 +941,7 @@ export function buildApp(
           advisoryLock,
           store: artifactMap<StoredDeployBody>("aws_deploy_bodies"),
         })
-      : createDockerDeployProvider({
-          ...(config.coreContainer ? { coreContainer: config.coreContainer } : {}),
-        });
+      : createDockerDeployProvider(config.coreContainer ? { coreContainer: config.coreContainer } : {});
   if (config.deployProvider === "aws" && !config.awsDeploy.dataBucket && !config.awsSandbox.s3Bucket) {
     console.warn(
       "[wiring] aws deploy: no data bucket resolved (AWS_DEPLOY_DATA_BUCKET unset, sandbox is not aws) — deployed apps have NO durable /data",

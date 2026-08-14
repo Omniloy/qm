@@ -47,7 +47,7 @@ function install(opts: {
   activeTab?: number;
   gated?: boolean;
 }): Harness {
-  const store: Record<string, unknown> = { ...(opts.store ?? {}) };
+  const store: Record<string, unknown> = { ...opts.store };
   const tabs = opts.tabs ?? {};
   const attached: Array<{ tabId: number }> = [];
   const detached: Array<{ tabId: number }> = [];
@@ -146,7 +146,8 @@ function install(opts: {
 
 let bust = 0;
 async function bootWorker(): Promise<void> {
-  await import(`../extension/background.js?case=${++bust}`);
+  bust += 1;
+  await import(`../extension/background.js?case=${bust}`);
 }
 
 async function until(cond: () => boolean, ms = 2000): Promise<boolean> {

@@ -17,7 +17,7 @@ function callerOf(ctx: ApiCtx): string | null {
   return ctx.capability?.actorId ?? ctx.actor?.p ?? null;
 }
 
-export async function mintRelayPairing(ctx: ApiCtx): Promise<void> {
+async function mintRelayPairing(ctx: ApiCtx): Promise<void> {
   const { res, deps } = ctx;
   const secret = deps.capabilitySecret;
   if (!secret) return sendJson(res, 503, { error: "unavailable", message: "the relay is not configured" });
@@ -51,7 +51,7 @@ export async function mintRelayPairing(ctx: ApiCtx): Promise<void> {
   });
 }
 
-export async function relayStatus(ctx: ApiCtx): Promise<void> {
+async function relayStatus(ctx: ApiCtx): Promise<void> {
   const { res, deps } = ctx;
   const principalId = callerOf(ctx);
   if (!principalId) return sendJson(res, 403, { error: "forbidden", message: "an identified caller is required" });
@@ -63,7 +63,7 @@ export async function relayStatus(ctx: ApiCtx): Promise<void> {
     connected: state.extension,
     sharing: state.sharing,
     inUse: state.cdp,
-    ...(hub.describe(principalId) ?? {}),
+    ...hub.describe(principalId),
   });
 }
 

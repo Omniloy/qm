@@ -27,7 +27,7 @@ export function botIdentityFromEnv(env: Record<string, string | undefined>): Bot
   return {
     ...(username ? { username } : {}),
     ...(icon_emoji ? { icon_emoji } : {}),
-    ...(icon_url && /^https:\/\//.test(icon_url) ? { icon_url } : {}),
+    ...(icon_url?.startsWith("https://") ? { icon_url } : {}),
   };
 }
 

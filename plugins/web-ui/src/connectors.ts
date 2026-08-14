@@ -1,5 +1,5 @@
 import { html, render, type TemplateResult } from "lit";
-import { Activity, Globe, KeyRound, Link, LockKeyhole, Plug, Plus, RefreshCw, ShieldCheck } from "lucide";
+import { Activity, Globe, KeyRound, LockKeyhole, Plug, Plus, RefreshCw, ShieldCheck } from "lucide";
 import { api } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
 import { icon, productName } from "./ui";
@@ -18,6 +18,7 @@ import {
   initialBrowserTab,
   BUILT_IN_BROWSER_ID,
   isExtensionTab,
+  type BrowserAction,
   type BrowserProvider,
 } from "./browser-picker-state";
 
@@ -455,6 +456,28 @@ function extensionPanel(provider: BrowserProvider): TemplateResult {
   `;
 }
 
+function browserActionTpl(action: BrowserAction, tabId: string, provider: BrowserProvider): TemplateResult {
+  if (action.kind === "in-use") return html`<span class="kc-state ok">In use</span>`;
+  if (action.kind === "use") {
+    return html`<button
+      class="btn"
+      type="button"
+      ?disabled=${keychainOperations.mutationInFlight}
+      @click=${() => void chooseBrowser(tabId)}
+    >
+      ${action.label}
+    </button>`;
+  }
+  return html`<button
+    class="btn"
+    type="button"
+    ?disabled=${keychainOperations.dropInFlight}
+    @click=${() => void connectBrowser(provider)}
+  >
+    ${keychainOperations.dropInFlight ? "Preparing…" : action.label}
+  </button>`;
+}
+
 function browserCard(): TemplateResult {
   const tabs = browserTabs(browserProviders, activeBrowser);
   const shownId = browserTab ?? initialBrowserTab(browserProviders, activeBrowser);
@@ -538,27 +561,7 @@ function browserCard(): TemplateResult {
       }
       ${isExtensionTab(shown.id) ? extensionPanel(provider) : ""}
       <div class="kc-resource-actions">
-        ${
-          action.kind === "in-use"
-            ? html`<span class="kc-state ok">In use</span>`
-            : action.kind === "use"
-              ? html`<button
-                  class="btn"
-                  type="button"
-                  ?disabled=${keychainOperations.mutationInFlight}
-                  @click=${() => void chooseBrowser(shown.id)}
-                >
-                  ${action.label}
-                </button>`
-              : html`<button
-                  class="btn"
-                  type="button"
-                  ?disabled=${keychainOperations.dropInFlight}
-                  @click=${() => void connectBrowser(provider)}
-                >
-                  ${keychainOperations.dropInFlight ? "Preparing…" : action.label}
-                </button>`
-        }
+        ${browserActionTpl(action, shown.id, provider)}
         ${
           provider.signupUrl
             ? html`<a class="kc-text-action" href=${provider.signupUrl} target="_blank" rel="noopener noreferrer"
