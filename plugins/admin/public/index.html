@@ -7326,6 +7326,19 @@
           : "No ChatGPT account connected.";
         $("codex-auth-delete").disabled = live.length === 0;
         $("codex-auth-delete").dataset.name = live[0]?.name || "";
+        return live.length > 0;
+      }
+      /**
+       * The proxy answers the exchange before it has written the credential, so
+       * reading once reports no account and looks like a failed sign-in. Give
+       * the file a moment to land.
+       */
+      async function waitForCodexAccount() {
+        for (let attempt = 0; attempt < 8; attempt++) {
+          if (await loadCodexAuth()) return true;
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        }
+        return false;
       }
       $("codex-auth-start").onclick = async () => {
         setStatus("st-codex-auth", "Starting…", "", false);
@@ -7365,8 +7378,15 @@
         $("codex-auth-step").hidden = true;
         $("codex-auth-complete").hidden = true;
         $("codex-auth-start").hidden = false;
-        await loadCodexAuth();
-        setStatus("st-codex-auth", "Signed in. GPT models now bill the subscription.", "ok");
+        const connected = await waitForCodexAccount();
+        setStatus(
+          "st-codex-auth",
+          connected
+            ? "Signed in. GPT models now bill the subscription."
+            : "The sign-in was accepted but no account has appeared yet. Reload in a moment.",
+          connected ? "ok" : "err",
+          !connected,
+        );
       };
       $("codex-auth-delete").onclick = async () => {
         const name = $("codex-auth-delete").dataset.name;
