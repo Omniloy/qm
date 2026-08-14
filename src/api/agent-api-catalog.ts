@@ -219,18 +219,23 @@ const FAMILIES: AgentApiFamily[] = [
     guidance:
       "Drive folders the asking person attached, so their own Google account is what reads them — attaching a folder to a shared context does not lend anyone that access, and each person there sees only what they could already open. Attaching, moving and detaching are theirs to decide; confirm before changing what a context can reach.",
     routes: [
-      { method: "GET", path: "/v1/mounts", summary: "list the Drive folders attached to a scope" },
+      {
+        method: "GET",
+        path: "/v1/mounts",
+        summary: "list the Drive folders attached to a scope — ?scope= is required",
+      },
       {
         method: "POST",
         path: "/v1/mounts",
-        summary: "attach a Drive folder to a scope, read-only unless write access is asked for",
+        summary:
+          'attach a Drive folder with {scopeId,externalId,name,mode} — mode is required and is "ro" or "rw"; prefer "ro" unless the person asked for write access',
       },
       {
         method: "POST",
         path: "/v1/mounts/:id/refresh",
         summary: "re-list one folder's contents for the asking person, leaving other people's cached listings alone",
       },
-      { method: "PATCH", path: "/v1/mounts/:id", summary: "turn a folder on or off, or rename it" },
+      { method: "PATCH", path: "/v1/mounts/:id", summary: "turn a folder on or off with {enabled}" },
       {
         method: "POST",
         path: "/v1/mounts/:id/move",
@@ -242,7 +247,7 @@ const FAMILIES: AgentApiFamily[] = [
   {
     match: (m, p) => m === "GET" && (p === "/v1/workspace/tree" || p === "/v1/workspace/file"),
     guidance:
-      "A read-only view of the workspace behind a scope, for showing someone what is there. Pass ?scope=; a scope the asking person cannot reach returns 404.",
+      "A read-only view of the workspace behind a scope, for showing someone what is there. ?scope= is required and a scope the asking person cannot act in returns 403; an instance with no agent computer wired answers 501.",
     routes: [
       {
         method: "GET",
@@ -250,7 +255,12 @@ const FAMILIES: AgentApiFamily[] = [
         summary:
           "list the workspace tree for a scope (?scope=, plus ?wake=true to start a sleeping computer rather than report it idle)",
       },
-      { method: "GET", path: "/v1/workspace/file", summary: "read one file out of that workspace" },
+      {
+        method: "GET",
+        path: "/v1/workspace/file",
+        summary:
+          "read one file out of that workspace (?scope= and ?path=, both required; a file too large to inline answers 413)",
+      },
     ],
   },
   {
@@ -288,6 +298,7 @@ const FAMILIES: AgentApiFamily[] = [
   {
     match: (m, p) =>
       (p === "/v1/browser-relay/pairing" && m === "POST") || (p === "/v1/browser-relay/status" && m === "GET"),
+    when: (v) => v.claims.triggered !== true,
     guidance:
       "Pairing lets someone point their own Chrome at this instance through the extension. The token it returns drives a browser signed into everything they are, and lasts thirty days, so mint one only when the person asked to pair and hand it to them directly — never into a channel.",
     routes: [

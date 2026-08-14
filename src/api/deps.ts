@@ -95,7 +95,7 @@ export interface ServerDeps {
   browserRelay?: RelayHub;
   /** Public wss origin the extension dials, e.g. https://relay.qm.example.com. */
   relayPublicUrl?: string;
-  /** Injected in tests so saving a token needs no live model call. */
+  /** Wired at the entry point, which owns process.env; injected in tests so saving a token needs no live model call. */
   harnessAuthProbe?: (token: string) => Promise<{ ok: boolean; detail?: string }>;
   modelCredentialFetch?: typeof fetch;
   customProviders?: CustomProviderStore;

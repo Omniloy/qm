@@ -24,7 +24,7 @@ const PROBE_TIMEOUT_MS = 25_000;
  */
 export async function probeClaudeSubscription(
   token: string,
-  source: NodeJS.ProcessEnv = {},
+  source: NodeJS.ProcessEnv,
 ): Promise<SubscriptionProbeResult> {
   const jail = mkdtempSync(join(tmpdir(), "qm-claude-probe-"));
   const identity = claudeProcessIdentity();
