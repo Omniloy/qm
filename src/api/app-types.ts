@@ -512,6 +512,8 @@ export interface AppDeps {
   relayPublicUrl?: string;
   /** Injected in tests so saving a token needs no live model call. */
   harnessAuthProbe?: (token: string) => Promise<{ ok: boolean; detail?: string }>;
+  /** Where the ChatGPT proxy lives and the key that lets core drive its sign-in. */
+  codexProxy?: { url: string; managementKey: string };
   modelCredentialFetch?: typeof fetch;
   customProviders?: CustomProviderStore;
   refreshCustomProviders?: () => Promise<void>;

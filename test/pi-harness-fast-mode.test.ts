@@ -2,13 +2,15 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   applyFastSpeed,
+  fastModeChannel,
+  fastModeIsActive,
   modelSupportsFastMode,
   wantsFastMode,
   TURN_PROVIDER_EFFORT_ALIASES,
 } from "../src/harness/pi-harness.ts";
 import { defaultInteractiveThinkingLevel } from "../src/model/pi-models.ts";
 
-test("modelSupportsFastMode allows only the documented direct Opus ids", () => {
+test("modelSupportsFastMode allows only the documented fast-capable ids", () => {
   for (const id of ["claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6"]) {
     assert.equal(modelSupportsFastMode(id), true, `${id} should support fast mode`);
   }
@@ -39,6 +41,48 @@ test("applyFastSpeed never throws on non-object payloads", () => {
   assert.doesNotThrow(() => applyFastSpeed(undefined, true));
   assert.doesNotThrow(() => applyFastSpeed(null, true));
   assert.doesNotThrow(() => applyFastSpeed("raw", true));
+});
+
+test("fast mode reaches OpenAI as service_tier and Anthropic as speed", () => {
+  const openai = {} as Record<string, unknown>;
+  applyFastSpeed(openai, true, { provider: "openai" });
+  assert.equal(openai.service_tier, "fast", "OpenAI takes fast mode as service_tier");
+  assert.equal("speed" in openai, false, "Anthropic's field must not ride along — it is not a parameter there");
+
+  const anthropic = {} as Record<string, unknown>;
+  applyFastSpeed(anthropic, true, { provider: "anthropic" });
+  assert.equal(anthropic.speed, "fast");
+  assert.equal("service_tier" in anthropic, false);
+
+  // Callers that know nothing about the model keep the shape they always got.
+  const unknown = {} as Record<string, unknown>;
+  applyFastSpeed(unknown, true);
+  assert.equal(unknown.speed, "fast");
+});
+
+test("fastModeChannel sends only OpenAI down the per-request path", () => {
+  assert.equal(fastModeChannel("openai"), "payload");
+  assert.equal(fastModeChannel("anthropic"), "header");
+  assert.equal(fastModeChannel(undefined), "header", "an unknown provider keeps the prior behaviour");
+});
+
+test("fastModeIsActive trusts the header for Anthropic and intent for OpenAI", () => {
+  const withBeta = { provider: "anthropic", headers: { "anthropic-beta": "fast-mode-2026-02-01" } };
+  const withoutBeta = { provider: "anthropic", headers: {} };
+  assert.equal(fastModeIsActive(withBeta, true), true);
+  // The switch did not take, so the turn is not fast however it was asked for.
+  assert.equal(fastModeIsActive(withoutBeta, true), false);
+
+  // OpenAI writes nothing on the model, so a missing header proves nothing.
+  assert.equal(fastModeIsActive({ provider: "openai", headers: {} }, true), true);
+  assert.equal(fastModeIsActive({ provider: "openai", headers: {} }, false), false);
+});
+
+test("only the GPT model OpenAI documents for fast mode is marked fast-capable", () => {
+  assert.equal(modelSupportsFastMode("gpt-5.6-sol"), true);
+  for (const id of ["gpt-5.6-terra", "gpt-5.6-luna"]) {
+    assert.equal(modelSupportsFastMode(id), false, `${id} is not documented for fast mode`);
+  }
 });
 
 test("TURN_PROVIDER_EFFORT_ALIASES maps web-ui aliases to Anthropic effort values", () => {
