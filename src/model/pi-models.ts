@@ -63,10 +63,13 @@ export const MODEL_REGISTRY: readonly ModelEntry[] = [
   { id: "claude-opus-4-8", name: "Claude Opus 4.8", fastMode: true, webui: true, base: true },
   { id: "claude-sonnet-5", name: "Claude Sonnet 5", fastMode: false, webui: true, base: true },
   { id: "claude-haiku-4-5", name: "Claude Haiku 4.5", fastMode: false, webui: true, base: true, auxiliary: true },
+  // Sol is the only GPT model OpenAI documents for fast mode; the guide says
+  // support "isn't guaranteed for every model", so Terra and Luna stay off
+  // until a turn on each is seen to come back on the fast tier.
   {
     id: "gpt-5.6-sol",
     name: "GPT-5.6 Sol",
-    fastMode: false,
+    fastMode: true,
     webui: true,
     base: true,
     clone: { ...GPT_56_CLONE, input: 5, output: 30 },

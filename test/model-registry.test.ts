@@ -100,7 +100,10 @@ test("web-turn gate refuses a keyless model cleanly, accepts it once the provide
 
 test("fast-mode support is registry-driven", () => {
   assert.equal(modelSupportsFastMode("claude-opus-4-8"), true);
-  assert.equal(modelSupportsFastMode("gpt-5.6-sol"), false);
+  // Sol is the one GPT model OpenAI documents for fast mode; its siblings are
+  // not, and the flag is per model rather than per provider for that reason.
+  assert.equal(modelSupportsFastMode("gpt-5.6-sol"), true);
+  assert.equal(modelSupportsFastMode("gpt-5.6-luna"), false);
   assert.equal(modelSupportsFastMode(undefined), false);
   assert.equal(modelSupportsFastMode("nonexistent-model"), false);
 });
