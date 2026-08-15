@@ -4,8 +4,20 @@ import { api, type CoreContext } from "./core-bridge";
 import type { SkillItem } from "./composer";
 import { errMessage } from "../../chassis/src/errors";
 import { fieldSelect, icon } from "./ui";
-import { appState } from "./shell";
+import { appState, can } from "./shell";
 import { skillActions } from "./skill-actions";
+import {
+  shareConfirmLabel,
+  shareImpact,
+  shareRequest,
+  shareSuccessNotice,
+  shareTargets,
+  shareTitle,
+  skillShareActions,
+  type ShareScopeOption,
+  type SkillShareMode,
+} from "./skill-share";
+import { resetRowMenus, rowMenuTpl } from "./row-actions";
 import {
   createReviewMatches,
   isSharedSkillScope,
@@ -63,6 +75,11 @@ let createError = "";
 
 let deleting: string | null = null;
 let archiveConfirmation: SkillItem | null = null;
+let shareScopes: ShareScopeOption[] = [];
+let sharing: { skill: SkillItem; mode: SkillShareMode; toScope: string; permission: "read" | "write" } | null = null;
+let shareBusy = false;
+let shareError = "";
+let shareFocusTarget: HTMLElement | null = null;
 let editRequestSeq = 0;
 const skillsRefreshes = new SkillsRefreshSequence();
 const skillMutations = new SkillsMutationSequence();
@@ -177,9 +194,12 @@ function skillVariant(s: SkillItem, hasScopeVariants: boolean): TemplateResult {
   let state = "Active";
   if (archived) state = "Archived";
   else if (hasScopeVariants) state = "Scope variant";
-  let archiveLabel = "Archive";
-  if (deleting === s.id) archiveLabel = "Working…";
-  else if (archived) archiveLabel = "Restore";
+  const busy = deleting === s.id || (shareBusy && sharing?.skill.id === s.id);
+  // Core owns every one of these refusals; the menu only declines to offer what
+  // it already knows will be refused.
+  const menu = skillShareActions(s, { isAdmin: can("admin"), archived }).map((a) =>
+    busy ? { ...a, disabled: true, reason: "Working…" } : a,
+  );
   return html`
     <div class="skill-variant ${archived ? "archived" : ""}">
       <span class="skill-variant-icon">${icon(Box, 16)}</span>
@@ -205,18 +225,18 @@ function skillVariant(s: SkillItem, hasScopeVariants: boolean): TemplateResult {
       </div>
       <div class="skill-variant-state">
         <span class="badge ${archived ? "" : "skill-active"}">${state}</span>
-        ${actions.edit && !archived ? html`<button class="btn skill-edit-trigger" data-skill-id=${s.id ?? ""} type="button" ?disabled=${deleting === s.id} @click=${() => void startEdit(s)}>Edit</button>` : nothing}
+        ${actions.edit && !archived ? html`<button class="btn skill-edit-trigger" data-skill-id=${s.id ?? ""} type="button" ?disabled=${busy} @click=${() => void startEdit(s)}>Edit</button>` : nothing}
         ${
-          actions.delete
-            ? html`<button
-                class="btn skill-archive-trigger"
-                data-skill-id=${s.id ?? ""}
-                type="button"
-                ?disabled=${deleting === s.id}
-                @click=${(event: Event) => void deleteSkill(s, event.currentTarget as HTMLElement)}
-              >
-                ${archiveLabel}
-              </button>`
+          menu.length
+            ? html`<span class="skill-row-menu" data-skill-id=${s.id ?? ""}
+                >${rowMenuTpl(
+                  `skill:${s.id ?? ""}`,
+                  `/${s.name}`,
+                  menu,
+                  (id) => void onSkillMenu(s, id),
+                  () => drawSkills(),
+                )}</span
+              >`
             : nothing
         }
       </div>
@@ -585,7 +605,7 @@ function drawSkills(loading = false): void {
         ${skillsNotice ? html`<div class="status">${skillsNotice}</div>` : nothing}`,
       rows,
       empty,
-    })}${archiveConfirmation ? archiveDialog(archiveConfirmation) : nothing}`,
+    })}${archiveConfirmation ? archiveDialog(archiveConfirmation) : nothing}${sharing ? shareDialog() : nothing}`,
     skillsPageHost,
   );
 }
@@ -740,6 +760,186 @@ async function saveCreate(): Promise<void> {
   }
 }
 
+/** The row's overflow button, which survives a redraw and so can take focus back. */
+function menuButtonFor(id: string | undefined): HTMLElement | null {
+  if (!id) return null;
+  return (
+    [...(skillsPageHost?.querySelectorAll<HTMLElement>(".skill-row-menu") ?? [])]
+      .find((element) => element.dataset.skillId === id)
+      ?.querySelector<HTMLElement>(".session-menu-btn") ?? null
+  );
+}
+
+function onSkillMenu(s: SkillItem, action: string): void {
+  if (action === "archive" || action === "restore") {
+    void deleteSkill(s, menuButtonFor(s.id) ?? undefined);
+    return;
+  }
+  if (action === "share" || action === "move" || action === "promote") startShare(s, action);
+}
+
+function startShare(s: SkillItem, mode: SkillShareMode): void {
+  if (!s.id || sharing) return;
+  shareFocusTarget = menuButtonFor(s.id);
+  const targets = shareTargets(shareScopes, s, mode);
+  sharing = { skill: s, mode, toScope: targets[0]?.scopeId ?? "", permission: "read" };
+  shareError = "";
+  shareBusy = false;
+  drawSkills();
+  setSkillsBackgroundInert(true);
+  queueMicrotask(() => {
+    if (!sharing || appState.currentView !== "skills") return;
+    if (skillsPageHost) focusDialogCancel(skillsPageHost);
+  });
+}
+
+function closeShareDialog(): void {
+  if (shareBusy) return;
+  const target = shareFocusTarget;
+  const skillId = sharing?.skill.id;
+  sharing = null;
+  shareError = "";
+  shareFocusTarget = null;
+  drawSkills();
+  setSkillsBackgroundInert(false);
+  queueMicrotask(() => {
+    if (sharing || appState.currentView !== "skills") return;
+    restoreDialogFocus(target, () => menuButtonFor(skillId));
+  });
+}
+
+function shareDialog(): TemplateResult {
+  const sh = sharing!;
+  const targets = shareTargets(shareScopes, sh.skill, sh.mode);
+  const chosen = targets.find((t) => t.scopeId === sh.toScope);
+  const targetLabel = sh.mode === "promote" ? "everyone in the organization" : (chosen?.name ?? "the context you pick");
+  // Promotion has a fixed destination, so it is the one mode that can go ahead
+  // without a chosen scope.
+  const ready = sh.mode === "promote" || Boolean(sh.toScope);
+  return html`<div
+    class="project-dialog-backdrop"
+    @click=${(event: MouseEvent) => event.target === event.currentTarget && closeShareDialog()}
+  >
+    <div
+      class="project-dialog skill-share-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="skill-share-title"
+      aria-describedby="skill-share-impact"
+      @keydown=${(event: KeyboardEvent) => trapDialogFocus(event, closeShareDialog)}
+    >
+      <div class="project-dialog-head">
+        <div><h2 id="skill-share-title">${shareTitle(sh.mode, sh.skill.name)}</h2></div>
+      </div>
+      ${
+        sh.mode === "promote"
+          ? nothing
+          : html`<label class="skill-field">
+              <span>${sh.mode === "move" ? "Move to" : "Share with"}</span>
+              ${
+                targets.length
+                  ? fieldSelect({
+                      className: "skill-share-scope",
+                      value: sh.toScope,
+                      disabled: shareBusy,
+                      onChange: (value) => {
+                        sh.toScope = value;
+                        drawSkills();
+                      },
+                      options: targets.map((t) => html`<option value=${t.scopeId}>${t.name}</option>`),
+                    })
+                  : html`<small class="card-meta"
+                      >You are not in another context to ${sh.mode === "move" ? "move" : "share"} this to yet.</small
+                    >`
+              }
+            </label>`
+      }
+      ${
+        sh.mode === "share"
+          ? html`<fieldset class="skill-share-permission">
+              <legend>Access</legend>
+              ${(
+                [
+                  ["read", "Use it", "They can invoke the skill."],
+                  ["write", "Use and edit it", "They can also change the instructions."],
+                ] as const
+              ).map(
+                ([value, label, hint]) =>
+                  html`<label class="skill-share-choice">
+                    <input
+                      type="radio"
+                      name="skill-share-permission"
+                      value=${value}
+                      .checked=${sh.permission === value}
+                      ?disabled=${shareBusy}
+                      @change=${() => {
+                        sh.permission = value;
+                        drawSkills();
+                      }}
+                    /><span><strong>${label}</strong><small class="card-meta">${hint}</small></span>
+                  </label>`,
+              )}
+            </fieldset>`
+          : nothing
+      }
+      <p id="skill-share-impact">${shareImpact(sh.mode, sh.skill, targetLabel)}</p>
+      ${shareError ? html`<div class="form-error" role="alert">${shareError}</div>` : nothing}
+      <div class="project-dialog-actions actions">
+        <button class="btn" type="button" data-dialog-cancel ?disabled=${shareBusy} @click=${closeShareDialog}>
+          Cancel</button
+        ><button
+          class="btn ${sh.mode === "share" ? "primary" : "danger"} skill-share-confirm"
+          type="button"
+          ?disabled=${shareBusy || !ready}
+          @click=${() => void performShare()}
+        >
+          ${shareConfirmLabel(sh.mode, shareBusy)}
+        </button>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function performShare(): Promise<void> {
+  const sh = sharing;
+  if (!sh?.skill.id || shareBusy) return;
+  const targetLabel =
+    sh.mode === "promote"
+      ? "everyone in the organization"
+      : (shareTargets(shareScopes, sh.skill, sh.mode).find((t) => t.scopeId === sh.toScope)?.name ?? sh.toScope);
+  shareBusy = true;
+  shareError = "";
+  drawSkills();
+  try {
+    await api(`/api/skills/${encodeURIComponent(sh.skill.id)}/share`, {
+      method: "POST",
+      body: JSON.stringify(shareRequest(sh.mode, sh.toScope, sh.permission)),
+    });
+    const opener = shareFocusTarget;
+    const skillId = sh.skill.id;
+    sharing = null;
+    shareBusy = false;
+    shareFocusTarget = null;
+    setSkillsBackgroundInert(false);
+    // renderSkills clears the notice on entry, so the confirmation is set after
+    // it settles rather than before.
+    await renderSkills();
+    skillsNotice = shareSuccessNotice(sh.mode, sh.skill.name, targetLabel);
+    drawSkills();
+    // A move re-homes the row, so its old menu button is gone — fall back to
+    // the page's own controls rather than leaving focus on the body.
+    restoreDialogFocus(
+      opener,
+      () => menuButtonFor(skillId) ?? skillsPageHost?.querySelector<HTMLElement>(".list-search input") ?? null,
+    );
+  } catch (e) {
+    if (!sharing) return;
+    shareError = errMessage(e, "Failed to share skill.");
+    shareBusy = false;
+    drawSkills();
+  }
+}
+
 async function deleteSkill(s: SkillItem, trigger?: HTMLElement): Promise<void> {
   if (!s.id || deleting) return;
   if (s.status === "archived") {
@@ -806,6 +1006,11 @@ export async function renderSkills(): Promise<void> {
   if (!skillsPageHost || skillsPageHost.parentElement !== appState.mainEl) {
     archiveConfirmation = null;
     archiveFocusTarget = null;
+    sharing = null;
+    shareBusy = false;
+    shareError = "";
+    shareFocusTarget = null;
+    resetRowMenus();
     setSkillsBackgroundInert(false);
   }
   const seq = appState.viewRenderSeq;
@@ -830,6 +1035,19 @@ export async function renderSkills(): Promise<void> {
             (context.kind === "group" || (context.kind === "channel" && context.isPrivate)),
         )
         .map((context) => ({ scopeId: context.scopeId, name: context.name || context.scopeId })),
+    ].filter((scope) => scope.scopeId);
+    // Sharing reaches further than creating does: a public channel is a fine
+    // place to lend a skill to, even though core refuses to let one be born
+    // there. Personal is kept so a skill can be taken back out of a project.
+    shareScopes = [
+      { scopeId: personal, name: "Personal — only you", kind: "personal" as const },
+      ...(contexts.contexts ?? [])
+        .filter((context) => context.scopeId !== personal && context.kind !== "personal")
+        .map((context) => ({
+          scopeId: context.scopeId,
+          name: context.name || context.scopeId,
+          kind: context.kind as "channel" | "group",
+        })),
     ].filter((scope) => scope.scopeId);
   } catch (e) {
     if (!skillsRefreshes.isCurrent(request) || seq !== appState.viewRenderSeq || appState.currentView !== "skills")

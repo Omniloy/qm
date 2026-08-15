@@ -588,8 +588,24 @@ async function sessionCapability(ctx: ApiCtx): Promise<void> {
   if (!actor) return sendJson(res, 401, { error: "unauthorized", message: "portal identity required" });
   const secret = deps.capabilitySecret ?? ctx.secret;
   if (!secret) return sendJson(res, 503, { error: "not_configured", message: "capability secret not set" });
+  // `liveActor` because this route refuses without a portal identity: the only
+  // way to hold one is to be a signed-in person clicking in a browser. That is
+  // the same reading the artifact routes already take, where an absent
+  // capability (a bare portal request) counts as live. Without it, actions core
+  // deliberately reserves for a person — promoting a skill org-wide, moving one
+  // in or out of a shared scope — are unreachable from the web UI even though a
+  // person is the only thing that can reach this route.
+  //
+  // It grants nothing on the admin plane: this token carries no `aud`, and
+  // `capabilityAdminDenied` turns away anything but the control-plane audience
+  // before it ever looks at `liveActor`.
   const token = await mintCapabilityToken(
-    { actorId: actor.p, scopeId: makeScopeId("personal", actor.p), exp: Date.now() + CAPABILITY_TTL_MS },
+    {
+      actorId: actor.p,
+      scopeId: makeScopeId("personal", actor.p),
+      liveActor: true,
+      exp: Date.now() + CAPABILITY_TTL_MS,
+    },
     secret,
   );
   return sendJson(res, 200, { token });

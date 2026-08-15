@@ -1048,6 +1048,31 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
       return relay(res, r);
     }
 
+    // Sharing, moving and org-wide promotion are all one core route, which
+    // dispatches on the target scope. It takes a capability rather than portal
+    // identity, so this mints a session one — the same trick the keychain and
+    // browser-relay routes below already use.
+    if (method === "POST" && path.startsWith("/api/skills/") && path.endsWith("/share")) {
+      const id = decodeURIComponent(path.slice("/api/skills/".length, -"/share".length));
+      const share: { toScope?: string; permission?: "read" | "write"; move?: true } = {};
+      try {
+        const p = JSON.parse((await readBody(req)) || "{}") as {
+          toScope?: unknown;
+          permission?: unknown;
+          move?: unknown;
+        };
+        if (typeof p.toScope === "string") share.toScope = p.toScope;
+        if (p.permission === "read" || p.permission === "write") share.permission = p.permission;
+        if (p.move === true) share.move = true;
+      } catch (e) {
+        if (e instanceof PayloadTooLargeError) throw e;
+        return json(res, 400, { error: "bad_request" });
+      }
+      if (!share.toScope) return json(res, 400, { error: "bad_request", message: "toScope required" });
+      const r = await coreFetchCap("POST", "/v1/share", JSON.stringify({ type: "skill", id, ...share }));
+      return relay(res, r);
+    }
+
     if (method === "POST" && path.startsWith("/api/skills/") && path.endsWith("/restore")) {
       const id = decodeURIComponent(path.slice("/api/skills/".length, -"/restore".length));
       const r = await coreFetch(
@@ -1401,6 +1426,33 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
 
     if (method === "GET" && path === "/api/keychain/overview") {
       const r = await coreFetchCap("GET", "/v1/keychain/overview");
+      return relay(res, r);
+    }
+
+    // The other half of the revoke below. Core takes the audience from the
+    // capability unless the caller names one, and only a portal session
+    // capability — which is what coreFetchCap mints — is allowed to name one.
+    if (method === "POST" && path === "/api/keychain/grants") {
+      const grant: { credential?: string; audienceScopeId?: string; mode?: "once" | "standing"; purpose?: string } = {};
+      try {
+        const p = JSON.parse((await readBody(req)) || "{}") as {
+          credential?: unknown;
+          audienceScopeId?: unknown;
+          mode?: unknown;
+          purpose?: unknown;
+        };
+        if (typeof p.credential === "string") grant.credential = p.credential;
+        if (typeof p.audienceScopeId === "string") grant.audienceScopeId = p.audienceScopeId;
+        if (p.mode === "once" || p.mode === "standing") grant.mode = p.mode;
+        if (typeof p.purpose === "string") grant.purpose = p.purpose;
+      } catch (e) {
+        if (e instanceof PayloadTooLargeError) throw e;
+        return json(res, 400, { error: "bad_request" });
+      }
+      if (!grant.credential || !grant.audienceScopeId || !grant.mode) {
+        return json(res, 400, { error: "bad_request", message: "credential, audienceScopeId and mode required" });
+      }
+      const r = await coreFetchCap("POST", "/v1/keychain/grants", JSON.stringify(grant));
       return relay(res, r);
     }
 

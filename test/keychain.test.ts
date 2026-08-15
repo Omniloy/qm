@@ -19,7 +19,12 @@ import {
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import { envKey } from "../src/credentials/connector-token.ts";
 import { deriveConnectorKey } from "../src/connectors/connector-client-store.ts";
-import { mintCapabilityToken, CAPABILITY_TTL_MS, type CapabilityClaims } from "../src/auth/capability-token.ts";
+import {
+  mintCapabilityToken,
+  CAPABILITY_TTL_MS,
+  CONTROL_PLANE_AUD,
+  type CapabilityClaims,
+} from "../src/auth/capability-token.ts";
 import { scopeId, type TurnRequest } from "../src/types.ts";
 import { fakeSprites } from "./support/auto-fake-sprites.ts";
 import { testConfig } from "./support/test-config.ts";
@@ -1324,6 +1329,80 @@ describe("/v1/keychain routes (capability-authed)", () => {
     const script = await used.text();
     assert.match(script, /export GLAB_CONFIG_DIR="\$__kc_dir\/.config\/glab-cli"/);
     assert.ok(!script.includes("glpat_own"), "raw file contents stay base64-encoded in the sourceable script");
+  });
+
+  describe("naming the audience instead of inheriting it", () => {
+    const credentialFor = async (owner: string) =>
+      (
+        (await (
+          await post(
+            "/v1/keychain/credentials",
+            { service: `svc-${owner}`, secret: "s3cret", envKey: "SVC_TOKEN" },
+            await capFor(owner),
+          )
+        ).json()) as any
+      ).credential.id as string;
+
+    it("an agent cannot lend a credential into a conversation it is not in", async () => {
+      const id = await credentialFor("U_AUD_AGENT");
+      // A turn's capability is stamped with the control-plane audience. That is
+      // the whole gate: whatever it puts in the body, it stays where it is.
+      const res = await post(
+        "/v1/keychain/grants",
+        { credential: id, mode: "standing", purpose: "x", audienceScopeId: "channel:C_ELSEWHERE" },
+        await capFor("U_AUD_AGENT", scopeId("personal", "U_AUD_AGENT"), { aud: CONTROL_PLANE_AUD }),
+      );
+      assert.equal(res.status, 403);
+      assert.match(((await res.json()) as any).message, /only grant a credential into the conversation it is in/);
+    });
+
+    it("an agent naming the scope it is already in is not a widening, so it is allowed", async () => {
+      const id = await credentialFor("U_AUD_SAME");
+      const here = scopeId("channel", "C_AUD_SAME");
+      const res = await post(
+        "/v1/keychain/grants",
+        { credential: id, mode: "standing", purpose: "x", audienceScopeId: here },
+        await capFor("U_AUD_SAME", here, { aud: CONTROL_PLANE_AUD }),
+      );
+      assert.equal(res.status, 200);
+      assert.equal(((await res.json()) as any).grant.audienceScopeId, here);
+    });
+
+    it("the portal is held to membership, not to its own scope", async () => {
+      const id = await credentialFor("U_AUD_PORTAL");
+      // No `aud` — this is the session capability the keychain page mints, so
+      // naming an audience is allowed. Membership is what limits it, and this
+      // person is in no channel.
+      const res = await post(
+        "/v1/keychain/grants",
+        { credential: id, mode: "standing", purpose: "x", audienceScopeId: "channel:C_NOT_MINE" },
+        await capFor("U_AUD_PORTAL"),
+      );
+      assert.equal(res.status, 403);
+      assert.match(((await res.json()) as any).message, /context you belong to/);
+    });
+
+    it("a malformed scope is refused before any membership lookup", async () => {
+      const id = await credentialFor("U_AUD_JUNK");
+      const res = await post(
+        "/v1/keychain/grants",
+        { credential: id, mode: "standing", purpose: "x", audienceScopeId: "not-a-scope" },
+        await capFor("U_AUD_JUNK"),
+      );
+      assert.equal(res.status, 400);
+    });
+
+    it("omitting the audience keeps the old behaviour exactly", async () => {
+      const id = await credentialFor("U_AUD_OMIT");
+      const here = scopeId("channel", "C_AUD_OMIT");
+      const res = await post(
+        "/v1/keychain/grants",
+        { credential: id, mode: "standing", purpose: "x" },
+        await capFor("U_AUD_OMIT", here),
+      );
+      assert.equal(res.status, 200);
+      assert.equal(((await res.json()) as any).grant.audienceScopeId, here);
+    });
   });
 });
 
