@@ -1429,6 +1429,33 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
       return relay(res, r);
     }
 
+    // The other half of the revoke below. Core takes the audience from the
+    // capability unless the caller names one, and only a portal session
+    // capability — which is what coreFetchCap mints — is allowed to name one.
+    if (method === "POST" && path === "/api/keychain/grants") {
+      const grant: { credential?: string; audienceScopeId?: string; mode?: "once" | "standing"; purpose?: string } = {};
+      try {
+        const p = JSON.parse((await readBody(req)) || "{}") as {
+          credential?: unknown;
+          audienceScopeId?: unknown;
+          mode?: unknown;
+          purpose?: unknown;
+        };
+        if (typeof p.credential === "string") grant.credential = p.credential;
+        if (typeof p.audienceScopeId === "string") grant.audienceScopeId = p.audienceScopeId;
+        if (p.mode === "once" || p.mode === "standing") grant.mode = p.mode;
+        if (typeof p.purpose === "string") grant.purpose = p.purpose;
+      } catch (e) {
+        if (e instanceof PayloadTooLargeError) throw e;
+        return json(res, 400, { error: "bad_request" });
+      }
+      if (!grant.credential || !grant.audienceScopeId || !grant.mode) {
+        return json(res, 400, { error: "bad_request", message: "credential, audienceScopeId and mode required" });
+      }
+      const r = await coreFetchCap("POST", "/v1/keychain/grants", JSON.stringify(grant));
+      return relay(res, r);
+    }
+
     if (method === "POST" && path.startsWith("/api/keychain/grants/") && path.endsWith("/revoke")) {
       const id = decodeURIComponent(path.slice("/api/keychain/grants/".length, -"/revoke".length));
       const r = await coreFetchCap("POST", `/v1/keychain/grants/${encodeURIComponent(id)}/revoke`, "{}");

@@ -873,9 +873,9 @@ function shareDialog(): TemplateResult {
                       .checked=${sh.permission === value}
                       ?disabled=${shareBusy}
                       @change=${() => {
-                      sh.permission = value;
-                      drawSkills();
-                    }}
+                        sh.permission = value;
+                        drawSkills();
+                      }}
                     /><span><strong>${label}</strong><small class="card-meta">${hint}</small></span>
                   </label>`,
               )}

@@ -3752,6 +3752,86 @@ a.chat-row-open {
 .kc-confirm h2 {
   margin-top: 6px;
 }
+/* Giving access is not destructive, so it borrows the confirm dialog's shape
+   without its warning border or its red eyebrow. */
+.kc-grant {
+  width: min(460px, 100%);
+  border-color: var(--border);
+}
+.kc-grant .kc-eyebrow {
+  color: var(--muted-foreground);
+}
+/* Scoped to the credential row on purpose: the connector and browser cards
+   already use .kc-resource-actions with their own layout, and a base rule here
+   would move both of them. */
+.kc-credential .kc-resource-main > .kc-resource-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-left: auto;
+}
+.kc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 16px;
+  font-size: 12px;
+  font-weight: 550;
+}
+.kc-field > span small {
+  font-weight: 400;
+  color: var(--muted-foreground);
+}
+.kc-field input[type="text"] {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 13px;
+}
+.kc-grant-mode {
+  margin: 16px 0 0;
+  padding: 0;
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.kc-grant-mode legend {
+  padding: 0;
+  font-size: 12px;
+  font-weight: 550;
+}
+/* The hint wraps under its label rather than under the radio, so a two-line
+   option still reads as one choice. */
+.kc-grant-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 13px;
+  font-weight: 400;
+  cursor: pointer;
+}
+.kc-grant-choice input {
+  margin-top: 3px;
+  flex: none;
+}
+.kc-grant-choice span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.kc-grant-choice small {
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+.kc-form-error {
+  margin: 12px 0 0;
+  color: var(--destructive, #c00);
+  font-size: 12.5px;
+}
 .kc-confirm p {
   margin: 10px 0 0;
   color: var(--muted-foreground);
