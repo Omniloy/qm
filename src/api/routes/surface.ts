@@ -22,6 +22,7 @@ import { renderAgentApis } from "../agent-api-catalog.ts";
 import { mintCapabilityToken, CAPABILITY_TTL_MS } from "../../auth/capability-token.ts";
 import { pipeToResponse, sendJson } from "../http.ts";
 import { audit, isObj, orgScope } from "./shared.ts";
+import { AdminError } from "../../admin/admin-service.ts";
 import { type ApiCtx, type Route } from "./route.ts";
 import {
   ARTIFACT_TYPES,
@@ -885,6 +886,70 @@ async function deleteSkill(ctx: ApiCtx): Promise<void> {
   return sendJson(res, 200, { ok: true });
 }
 
+/**
+ * Who the skill was lent to, and taking one of those loans back.
+ *
+ * `POST /v1/grants/revoke` already revokes, but it is a `source` route that
+ * authorizes nothing — it takes `revokedBy` on trust because the surfaces that
+ * call it have already decided. These two carry the check themselves, because
+ * the web UI is not in a position to make it: the same check that decides who
+ * may share a skill decides who may stop.
+ */
+async function skillActor(ctx: ApiCtx): Promise<{ id: string; live: boolean } | null> {
+  const b = (ctx.body ?? {}) as { principalId?: unknown };
+  if (ctx.capability) return { id: ctx.capability.actorId, live: livePersonCapability(ctx.capability) };
+  const fromQuery = ctx.url?.searchParams.get("principalId");
+  const id = typeof b.principalId === "string" && b.principalId ? b.principalId : (fromQuery ?? "");
+  // A bare portal request is a signed-in person by definition.
+  return id ? { id, live: true } : null;
+}
+
+export async function listSkillSharing(ctx: ApiCtx): Promise<void> {
+  const { res, app } = ctx;
+  const id = ctx.params.id!;
+  const actor = await skillActor(ctx);
+  if (!actor) return sendJson(res, 400, { error: "bad_request", message: "principalId required" });
+  const home = await app.getArtifactHome("skill", id);
+  if (!home) return sendJson(res, 404, { error: "not_found", message: "no such skill" });
+  if (!(await app.canManageArtifactHome(home.ownerScopeId, home.createdBy, actor.id)))
+    return sendJson(res, 403, { error: "forbidden", message: "that skill isn't yours to share or unshare" });
+  return sendJson(res, 200, { grants: await app.listSkillGrants(id) });
+}
+
+export async function unshareSkill(ctx: ApiCtx): Promise<void> {
+  const { res, app, body } = ctx;
+  const id = ctx.params.id!;
+  const b = (body ?? {}) as { scope?: unknown };
+  if (typeof b.scope !== "string" || !b.scope.trim())
+    return sendJson(res, 400, { error: "bad_request", message: "scope required" });
+  const actor = await skillActor(ctx);
+  if (!actor) return sendJson(res, 400, { error: "bad_request", message: "principalId required" });
+  const home = await app.getArtifactHome("skill", id);
+  if (!home) return sendJson(res, 404, { error: "not_found", message: "no such skill" });
+  if (!(await app.canManageArtifactHome(home.ownerScopeId, home.createdBy, actor.id)))
+    return sendJson(res, 403, { error: "forbidden", message: "that skill isn't yours to share or unshare" });
+  try {
+    await app.revokeGrant(home.ownerScopeId, home.grantRef, b.scope, actor.id);
+    return sendJson(res, 200, { ok: true });
+  } catch (e) {
+    return sendJson(res, 400, { error: "revoke_failed", message: errMessage(e) });
+  }
+}
+
+export async function demoteSkill(ctx: ApiCtx): Promise<void> {
+  const { res, app } = ctx;
+  const id = ctx.params.id!;
+  const actor = await skillActor(ctx);
+  if (!actor) return sendJson(res, 400, { error: "bad_request", message: "principalId required" });
+  try {
+    await app.demoteSkill(id, actor.id, actor.live);
+    return sendJson(res, 200, { ok: true });
+  } catch (e) {
+    if (e instanceof AdminError) return sendJson(res, e.status, { error: "forbidden", message: errMessage(e) });
+    return sendJson(res, 400, { error: "demote_failed", message: errMessage(e) });
+  }
+}
+
 async function createSkill(ctx: ApiCtx): Promise<void> {
   const { res, app, body, capability } = ctx;
   const b = (body ?? {}) as {
@@ -1424,6 +1489,9 @@ export const surfaceRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "PUT", path: "/v1/skills/:id", auth: "either", handle: updateSkill },
   { method: "DELETE", path: "/v1/skills/:id", auth: "either", handle: deleteSkill },
   { method: "POST", path: "/v1/skills/:id/restore", auth: "either", handle: restoreSkill },
+  { method: "GET", path: "/v1/skills/:id/grants", auth: "either", handle: listSkillSharing },
+  { method: "POST", path: "/v1/skills/:id/unshare", auth: "either", handle: unshareSkill },
+  { method: "POST", path: "/v1/skills/:id/demote", auth: "either", handle: demoteSkill },
   { method: "POST", path: "/v1/grants", auth: "source", handle: createGrant },
   { method: "POST", path: "/v1/grants/revoke", auth: "source", handle: revokeGrant },
   { method: "POST", path: "/v1/share", auth: "either", handle: shareArtifact },

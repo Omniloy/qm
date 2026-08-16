@@ -7,6 +7,8 @@ import { fieldSelect, icon } from "./ui";
 import { appState, can } from "./shell";
 import { skillActions } from "./skill-actions";
 import {
+  demoteImpact,
+  demoteSuccessNotice,
   shareConfirmLabel,
   shareImpact,
   shareRequest,
@@ -14,7 +16,10 @@ import {
   shareTargets,
   shareTitle,
   skillShareActions,
+  unshareEmptyState,
+  unshareSuccessNotice,
   type ShareScopeOption,
+  type SkillGrantRow,
   type SkillShareMode,
 } from "./skill-share";
 import { resetRowMenus, rowMenuTpl } from "./row-actions";
@@ -80,6 +85,16 @@ let sharing: { skill: SkillItem; mode: SkillShareMode; toScope: string; permissi
 let shareBusy = false;
 let shareError = "";
 let shareFocusTarget: HTMLElement | null = null;
+let unsharing: {
+  skill: SkillItem;
+  /** null while the list is still loading — an empty list means something else. */
+  grants: SkillGrantRow[] | null;
+  error: string;
+  revoking: string | null;
+} | null = null;
+let unshareFocusTarget: HTMLElement | null = null;
+let demoting: { skill: SkillItem; busy: boolean; error: string } | null = null;
+let demoteFocusTarget: HTMLElement | null = null;
 let editRequestSeq = 0;
 const skillsRefreshes = new SkillsRefreshSequence();
 const skillMutations = new SkillsMutationSequence();
@@ -605,7 +620,7 @@ function drawSkills(loading = false): void {
         ${skillsNotice ? html`<div class="status">${skillsNotice}</div>` : nothing}`,
       rows,
       empty,
-    })}${archiveConfirmation ? archiveDialog(archiveConfirmation) : nothing}${sharing ? shareDialog() : nothing}`,
+    })}${archiveConfirmation ? archiveDialog(archiveConfirmation) : nothing}${sharing ? shareDialog() : nothing}${unsharing ? unshareDialog() : nothing}${demoting ? demoteDialog() : nothing}`,
     skillsPageHost,
   );
 }
@@ -776,6 +791,201 @@ function onSkillMenu(s: SkillItem, action: string): void {
     return;
   }
   if (action === "share" || action === "move" || action === "promote") startShare(s, action);
+  if (action === "unshare") void startUnshare(s);
+  if (action === "demote") startDemote(s);
+}
+
+function startUnshare(s: SkillItem): Promise<void> {
+  if (!s.id || unsharing) return Promise.resolve();
+  unshareFocusTarget = menuButtonFor(s.id);
+  unsharing = { skill: s, grants: null, error: "", revoking: null };
+  drawSkills();
+  setSkillsBackgroundInert(true);
+  queueMicrotask(() => {
+    if (unsharing && skillsPageHost) focusDialogCancel(skillsPageHost);
+  });
+  return loadSkillGrants(s);
+}
+
+async function loadSkillGrants(s: SkillItem): Promise<void> {
+  try {
+    const r = await api<{ grants?: SkillGrantRow[] }>(`/api/skills/${encodeURIComponent(s.id!)}/grants`);
+    if (unsharing?.skill.id !== s.id) return;
+    unsharing.grants = r.grants ?? [];
+  } catch (e) {
+    if (unsharing?.skill.id !== s.id) return;
+    unsharing.error = errMessage(e, "Failed to load who this is shared with.");
+    unsharing.grants = [];
+  }
+  drawSkills();
+}
+
+function closeUnshare(): void {
+  if (unsharing?.revoking) return;
+  const target = unshareFocusTarget;
+  const skillId = unsharing?.skill.id;
+  unsharing = null;
+  unshareFocusTarget = null;
+  drawSkills();
+  setSkillsBackgroundInert(false);
+  queueMicrotask(() => restoreDialogFocus(target, () => menuButtonFor(skillId)));
+}
+
+/** Loading, the list, or the empty state — three states, kept out of the markup. */
+function unshareBody(u: NonNullable<typeof unsharing>): TemplateResult {
+  if (u.grants === null) return html`<p class="card-meta">Loading…</p>`;
+  if (!u.grants.length) return html`<p id="skill-unshare-empty">${unshareEmptyState(u.skill.name)}</p>`;
+  return html`<div class="skill-unshare-list">
+    ${u.grants.map(
+      (g) =>
+        html`<div class="skill-unshare-row">
+          <div>
+            <strong>${scopeTitle(g.granteeScopeId)}</strong>
+            <div class="card-meta">${g.permission === "write" ? "Can use and edit it" : "Can use it"}</div>
+          </div>
+          <button
+            class="btn skill-unshare-revoke"
+            type="button"
+            data-scope=${g.granteeScopeId}
+            ?disabled=${u.revoking !== null}
+            @click=${() => void performUnshare(g.granteeScopeId)}
+          >
+            ${u.revoking === g.granteeScopeId ? "Removing…" : "Stop sharing"}
+          </button>
+        </div>`,
+    )}
+  </div>`;
+}
+
+function unshareDialog(): TemplateResult {
+  const u = unsharing!;
+  return html`<div
+    class="project-dialog-backdrop"
+    @click=${(event: MouseEvent) => event.target === event.currentTarget && closeUnshare()}
+  >
+    <div
+      class="project-dialog skill-unshare-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="skill-unshare-title"
+      @keydown=${(event: KeyboardEvent) => trapDialogFocus(event, closeUnshare)}
+    >
+      <div class="project-dialog-head">
+        <div><h2 id="skill-unshare-title">Who can use /${u.skill.name}</h2></div>
+      </div>
+      ${unshareBody(u)} ${u.error ? html`<div class="form-error" role="alert">${u.error}</div>` : nothing}
+      <div class="project-dialog-actions actions">
+        <button class="btn" type="button" data-dialog-cancel ?disabled=${u.revoking !== null} @click=${closeUnshare}>
+          Done
+        </button>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function performUnshare(scope: string): Promise<void> {
+  const u = unsharing;
+  if (!u?.skill.id || u.revoking) return;
+  const label = scopeTitle(scope);
+  u.revoking = scope;
+  u.error = "";
+  drawSkills();
+  try {
+    await api(`/api/skills/${encodeURIComponent(u.skill.id)}/unshare`, {
+      method: "POST",
+      body: JSON.stringify({ scope }),
+    });
+    if (unsharing?.skill.id !== u.skill.id) return;
+    unsharing.revoking = null;
+    unsharing.grants = (unsharing.grants ?? []).filter((g) => g.granteeScopeId !== scope);
+    skillsNotice = unshareSuccessNotice(u.skill.name, label);
+    drawSkills();
+  } catch (e) {
+    if (unsharing?.skill.id !== u.skill.id) return;
+    unsharing.revoking = null;
+    unsharing.error = errMessage(e, "Failed to stop sharing.");
+    drawSkills();
+  }
+}
+
+function startDemote(s: SkillItem): void {
+  if (!s.id || demoting) return;
+  demoteFocusTarget = menuButtonFor(s.id);
+  demoting = { skill: s, busy: false, error: "" };
+  drawSkills();
+  setSkillsBackgroundInert(true);
+  queueMicrotask(() => {
+    if (demoting && skillsPageHost) focusDialogCancel(skillsPageHost);
+  });
+}
+
+function closeDemote(): void {
+  if (demoting?.busy) return;
+  const target = demoteFocusTarget;
+  const skillId = demoting?.skill.id;
+  demoting = null;
+  demoteFocusTarget = null;
+  drawSkills();
+  setSkillsBackgroundInert(false);
+  queueMicrotask(() => restoreDialogFocus(target, () => menuButtonFor(skillId)));
+}
+
+function demoteDialog(): TemplateResult {
+  const d = demoting!;
+  return html`<div
+    class="project-dialog-backdrop"
+    @click=${(event: MouseEvent) => event.target === event.currentTarget && closeDemote()}
+  >
+    <div
+      class="project-dialog skill-demote-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="skill-demote-title"
+      aria-describedby="skill-demote-impact"
+      @keydown=${(event: KeyboardEvent) => trapDialogFocus(event, closeDemote)}
+    >
+      <div class="project-dialog-head">
+        <div><h2 id="skill-demote-title">Take /${d.skill.name} back from everyone?</h2></div>
+      </div>
+      <p id="skill-demote-impact">${demoteImpact(d.skill.name)}</p>
+      ${d.error ? html`<div class="form-error" role="alert">${d.error}</div>` : nothing}
+      <div class="project-dialog-actions actions">
+        <button class="btn" type="button" data-dialog-cancel ?disabled=${d.busy} @click=${closeDemote}>Cancel</button
+        ><button
+          class="btn danger skill-demote-confirm"
+          type="button"
+          ?disabled=${d.busy}
+          @click=${() => void performDemote()}
+        >
+          ${d.busy ? "Working…" : "Take it back"}
+        </button>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function performDemote(): Promise<void> {
+  const d = demoting;
+  if (!d?.skill.id || d.busy) return;
+  d.busy = true;
+  d.error = "";
+  drawSkills();
+  try {
+    await api(`/api/skills/${encodeURIComponent(d.skill.id)}/demote`, { method: "POST", body: "{}" });
+    const opener = demoteFocusTarget;
+    demoting = null;
+    demoteFocusTarget = null;
+    setSkillsBackgroundInert(false);
+    await renderSkills();
+    skillsNotice = demoteSuccessNotice(d.skill.name);
+    drawSkills();
+    restoreDialogFocus(opener, () => skillsPageHost?.querySelector<HTMLElement>(".list-search input") ?? null);
+  } catch (e) {
+    if (!demoting) return;
+    demoting.busy = false;
+    demoting.error = errMessage(e, "Failed to take the skill back.");
+    drawSkills();
+  }
 }
 
 function startShare(s: SkillItem, mode: SkillShareMode): void {
@@ -1010,6 +1220,10 @@ export async function renderSkills(): Promise<void> {
     shareBusy = false;
     shareError = "";
     shareFocusTarget = null;
+    unsharing = null;
+    unshareFocusTarget = null;
+    demoting = null;
+    demoteFocusTarget = null;
     resetRowMenus();
     setSkillsBackgroundInert(false);
   }

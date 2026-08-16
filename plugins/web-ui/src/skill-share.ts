@@ -41,6 +41,15 @@ export const NOT_ADMIN_REASON = "Only an org admin can give a skill to the whole
  * that offers nothing is worse than a row with no menu.
  */
 export function skillShareActions(row: SkillShareRow, opts: { isAdmin: boolean; archived: boolean }): RowActionSpec[] {
+  // An org-wide skill belongs to the org rather than to whoever promoted it, so
+  // core reports it as nobody's to edit — including the promoter's. Taking it
+  // back is an admin action on the org's own copy, which makes it the one thing
+  // a row can offer without being editable.
+  if (isOrgScoped(row)) {
+    if (opts.archived || !row.id || !opts.isAdmin) return [];
+    return [{ id: "demote", label: "Take back from everyone…", danger: true }];
+  }
+
   if (row.editable !== true || !row.id) return [];
 
   // An archived skill is out of circulation; sharing one would quietly put it
@@ -49,6 +58,7 @@ export function skillShareActions(row: SkillShareRow, opts: { isAdmin: boolean; 
 
   return [
     { id: "share", label: "Share with a context…" },
+    { id: "unshare", label: "Stop sharing…" },
     {
       id: "promote",
       label: "Share with everyone…",
@@ -58,6 +68,10 @@ export function skillShareActions(row: SkillShareRow, opts: { isAdmin: boolean; 
     { id: "move", label: "Move to another context…" },
     { id: "archive", label: "Archive…", danger: true },
   ];
+}
+
+export function isOrgScoped(row: SkillShareRow): boolean {
+  return row.scope === "org" || row.scopeId?.startsWith("org:") === true;
 }
 
 /**
@@ -128,6 +142,43 @@ export function shareRequest(
   if (mode === "promote") return { toScope: "org" };
   if (mode === "move") return { toScope, move: true };
   return { toScope, permission };
+}
+
+/**
+ * Undoing a share.
+ *
+ * Separated from the three giving verbs because it answers a different
+ * question: not "where should this go" but "who has it, and should they still".
+ */
+export interface SkillGrantRow {
+  granteeScopeId: string;
+  permission: "read" | "write";
+}
+
+export function unshareEmptyState(name: string): string {
+  return `/${name} isn't shared with any context. Sharing it with one puts it in that context's chain without taking it out of yours.`;
+}
+
+export function unshareImpact(name: string, targetLabel: string): string {
+  return (
+    `${targetLabel} stops being able to invoke /${name}. ` +
+    `You keep the skill, and you can share it with them again later.`
+  );
+}
+
+export function unshareSuccessNotice(name: string, targetLabel: string): string {
+  return `${targetLabel} can no longer use /${name}.`;
+}
+
+export function demoteImpact(name: string): string {
+  return (
+    `/${name} stops being available to everyone in the organization, in every conversation. ` +
+    `Anyone who kept their own copy still has it, and its history is preserved.`
+  );
+}
+
+export function demoteSuccessNotice(name: string): string {
+  return `/${name} is no longer available to the organization.`;
 }
 
 export function shareSuccessNotice(mode: SkillShareMode, name: string, targetLabel: string): string {
