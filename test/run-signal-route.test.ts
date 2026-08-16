@@ -428,3 +428,40 @@ test("aborting a web run stays silent — whoever stopped it is watching it stop
   assert.equal((await coreSignal(webRun.run.id, { kind: "abort" })).status, 200);
   assert.equal((await stopNotices()).length, before);
 });
+
+// --- watching a run that belongs to another surface --------------------------
+// The web proxy used to refuse any threadRef that did not start with "web:",
+// which made a Slack run undiscoverable from the web app even to the person who
+// started it. The instance-local index is a fast path for runs this instance
+// submitted; core's viewer gate is the permission boundary.
+
+test("web proxy: a Slack thread's run is discoverable by its owner and hidden from everyone else", async () => {
+  const threadRef = "dm:DSLACK1";
+  const slackActor: Principal = { id: "alice", type: "internal" };
+  const { run } = await built.runs.enqueue({
+    sessionId: threadRef,
+    request: {
+      actor: slackActor,
+      conversation: { kind: "dm", threadRef, audience: [slackActor] },
+      origin: { kind: "direct" },
+      text: "long slack task",
+      surface: "slack",
+      deliveryTarget: "slack:DSLACK1",
+    } as OrchestratorInput,
+  });
+
+  const owner = (await (
+    await fetch(`${webBase}/api/runs/active?threadRef=${encodeURIComponent(threadRef)}`, asUser("alice"))
+  ).json()) as { runId?: string | null };
+  assert.equal(owner.runId, run.id, "the person whose DM it is can see the run without an instance-local index");
+
+  const stranger = (await (
+    await fetch(`${webBase}/api/runs/active?threadRef=${encodeURIComponent(threadRef)}`, asUser("bob"))
+  ).json()) as { runId?: string | null };
+  assert.equal(stranger.runId, null, "core's viewer gate still hides someone else's DM run");
+});
+
+test("web proxy: /api/runs/active refuses a missing threadRef rather than guessing", async () => {
+  const r = await fetch(`${webBase}/api/runs/active`, asUser("alice"));
+  assert.equal(r.status, 400);
+});
