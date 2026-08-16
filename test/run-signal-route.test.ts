@@ -465,3 +465,58 @@ test("web proxy: /api/runs/active refuses a missing threadRef rather than guessi
   const r = await fetch(`${webBase}/api/runs/active`, asUser("alice"));
   assert.equal(r.status, 400);
 });
+
+// --- a stop has to actually stop ---------------------------------------------
+// Interrupting the harness is a request. A turn wedged in a long tool call can
+// ignore it, and the worker keeps heartbeating a run that never returns — which
+// holds the conversation's claim lock, because a run is only claimable when no
+// other run on the same session is 'running'. Every later message then queues
+// behind it forever.
+
+test("stopping a queued run ends it rather than leaving it to start later", async () => {
+  const threadRef = "t-stop-queued";
+  const { run } = await built.runs.enqueue({ sessionId: threadRef, request: request("queued work", threadRef) });
+  assert.equal(run.status, "pending");
+
+  const r = await coreSignal(run.id, { kind: "abort" });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.accepted, true);
+
+  const after = await built.runs.get(run.id);
+  assert.equal(after?.status, "failed", "a stopped queue entry must never be claimed and run");
+  assert.equal(await built.runs.activeForThread(threadRef), null, "and it stops holding the thread");
+});
+
+test("forceTerminal parks a running run instead of requeueing it", async () => {
+  const threadRef = "t-force-park";
+  const { run } = await built.runs.enqueue({ sessionId: threadRef, request: request("wedged", threadRef) });
+  const claimed = await built.runs.claimById(run.id, "worker-wedged", 60_000);
+  assert.ok(claimed, "claimed, so it holds the session lock");
+
+  assert.equal(await built.runs.forceTerminal(run.id, "stopped by a person"), true);
+  const after = await built.runs.get(run.id);
+  assert.equal(after?.status, "failed");
+  // Requeueing would re-run work someone deliberately stopped.
+  assert.notEqual(after?.status, "pending");
+  assert.equal(after?.result?.reason, "stopped by a person");
+});
+
+test("a wedged run stops blocking its conversation once it is forced terminal", async () => {
+  const threadRef = "t-unblock";
+  const first = await built.runs.enqueue({ sessionId: threadRef, request: request("wedges", threadRef) });
+  assert.ok(await built.runs.claimById(first.run.id, "worker-a", 60_000));
+  const second = await built.runs.enqueue({ sessionId: threadRef, request: request("queued behind", threadRef) });
+
+  assert.equal(await built.runs.claimById(second.run.id, "worker-b", 60_000), null, "serialised per conversation");
+
+  await built.runs.forceTerminal(first.run.id, "stopped by a person");
+  assert.ok(await built.runs.claimById(second.run.id, "worker-b", 60_000), "the next message can run once it is gone");
+});
+
+test("forceTerminal is a no-op on a run that already finished", async () => {
+  const { run } = await built.runs.enqueue({ sessionId: "t-already", request: request("hi", "t-already") });
+  const claimed = await built.runs.claimById(run.id, "worker-done", 5_000);
+  await built.runs.complete(run.id, claimed!.leaseToken!, { status: "ok", reply: "done" });
+  assert.equal(await built.runs.forceTerminal(run.id, "stopped by a person"), false);
+  assert.equal((await built.runs.get(run.id))?.result?.status, "ok", "the real result is not overwritten");
+});
