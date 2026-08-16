@@ -32,6 +32,7 @@ import {
   type IconNode,
 } from "lucide";
 import {
+  abortRunById,
   activeRunForThread,
   api,
   createRunSlot,
@@ -205,10 +206,22 @@ export function createChatSurface(
   }
 
   let readOnlyView: { id: string; threadRef: string; session: CoreSession; anchorSeq: number | null } | null = null;
+  /**
+   * A run this conversation has going elsewhere.
+   *
+   * Replying to a Slack thread from here is refused because a reply has to be
+   * authored by you, in Slack. Stopping is not authored — it is a control
+   * signal, and core already decides who may send it — so the one control that
+   * does belong on a read-only view is Stop.
+   */
+  let readOnlyRun: { threadRef: string; runId: string } | null = null;
+  let readOnlyRunPoll: ReturnType<typeof setInterval> | null = null;
+  let stoppingReadOnlyRun = false;
 
   function teardownActiveChat(): void {
     forkOriginController.invalidateRefresh();
     readOnlyView = null;
+    stopWatchingReadOnlyRun();
     preserveOutgoingWorkingDot(null);
     detachActiveAgent();
     chatState.agent = null;
@@ -277,6 +290,57 @@ export function createChatSurface(
     });
     if (!live || live === nextThreadRef) return;
     sessionsState.list = markWorking(sessionsState.list, live);
+  }
+
+  const READ_ONLY_RUN_POLL_MS = 4_000;
+
+  function stopWatchingReadOnlyRun(): void {
+    if (readOnlyRunPoll !== null) clearInterval(readOnlyRunPoll);
+    readOnlyRunPoll = null;
+    readOnlyRun = null;
+    stoppingReadOnlyRun = false;
+  }
+
+  /** Poll for a run this thread has going, so the banner can offer to stop it. */
+  function watchReadOnlyRun(threadRef: string): void {
+    stopWatchingReadOnlyRun();
+    const check = async (): Promise<void> => {
+      if (readOnlyView?.threadRef !== threadRef) return stopWatchingReadOnlyRun();
+      let active: Awaited<ReturnType<typeof activeRunForThread>>;
+      try {
+        active = await activeRunForThread(threadRef);
+      } catch {
+        // A poll that failed says nothing about the run — leave the banner as
+        // it was and try again on the next tick.
+        return;
+      }
+      if (readOnlyView?.threadRef !== threadRef) return stopWatchingReadOnlyRun();
+      const next = active ? { threadRef, runId: active.runId } : null;
+      if (next?.runId === readOnlyRun?.runId) return;
+      readOnlyRun = next;
+      // A run that ended clears the in-flight flag with it, so a stopped run
+      // cannot leave the button stuck on "Stopping…".
+      if (!next) stoppingReadOnlyRun = false;
+      readonlyRedraw?.();
+    };
+    void check();
+    readOnlyRunPoll = setInterval(() => void check(), READ_ONLY_RUN_POLL_MS);
+  }
+
+  async function stopReadOnlyRun(): Promise<void> {
+    const run = readOnlyRun;
+    if (!run || stoppingReadOnlyRun) return;
+    stoppingReadOnlyRun = true;
+    readonlyRedraw?.();
+    try {
+      await abortRunById(run.runId);
+    } catch {
+      // Most likely it finished between the poll and the click, which the next
+      // poll will show. Nothing here is worth an error banner.
+    }
+    if (readOnlyRun?.runId === run.runId) readOnlyRun = null;
+    stoppingReadOnlyRun = false;
+    readonlyRedraw?.();
   }
 
   function detachActiveAgent(): void {
@@ -740,6 +804,23 @@ export function createChatSurface(
     container.replaceChildren(host);
   }
 
+  /** Shown only while this conversation actually has something running. */
+  function readOnlyStopTpl(): TemplateResult | typeof nothing {
+    if (!readOnlyRun) return nothing;
+    return html`<span class="readonly-run">
+      <span class="readonly-run-dot" aria-hidden="true"></span>
+      <span>Working…</span>
+      <button
+        class="btn readonly-stop"
+        type="button"
+        ?disabled=${stoppingReadOnlyRun}
+        @click=${() => void stopReadOnlyRun()}
+      >
+        ${stoppingReadOnlyRun ? "Stopping…" : "Stop"}
+      </button>
+    </span>`;
+  }
+
   function mountReadOnly(
     s: CoreSession,
     messages: ReturnType<typeof entriesToMessages>,
@@ -795,6 +876,7 @@ export function createChatSurface(
                     }`
                   : "This conversation is read-only here."
               }
+              ${readOnlyStopTpl()}
             </div>
             ${backgroundActivityStrip()}
             <section class="chat-scroll readonly-scroll">
@@ -865,6 +947,7 @@ export function createChatSurface(
     draw();
     container.replaceChildren(host);
     readOnlyView = { id: s.id, threadRef: s.threadRef, session: s, anchorSeq };
+    watchReadOnlyRun(s.threadRef);
     ctx.ensureDeliveryStream();
     consumeBackgroundPanelRequest();
   }

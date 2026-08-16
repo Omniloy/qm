@@ -4,7 +4,7 @@ import { scopeId } from "../types.ts";
 import { isHalt, routeWake, type Wake } from "../wake/wake.ts";
 import type { OrchestratorInput } from "../core/orchestrator.ts";
 import { resolveTurnOrigin } from "../core/turn-origin.ts";
-import { isTerminal, leaseLapsed } from "../runs/run-store.ts";
+import { isTerminal, leaseLapsed, type Run } from "../runs/run-store.ts";
 import { turnModelOptions, validateWebTurnModelOptions, webTurnRuntimeModelRefusal } from "../core/turn-options.ts";
 import { isProjectGroupRef, projectIdFromGroupRef } from "../projects/project-store.ts";
 import {
@@ -52,6 +52,33 @@ export function createTurnMethods(
     replayOrphanedRunSignals,
   } = h;
   const { shouldRouteToSpine, markTriggerHandled, addressedWakeText } = ambient;
+
+  /**
+   * Tell a conversation it was stopped, when the stop came from somewhere else.
+   *
+   * A run started in Slack can now be stopped from the web app, and without
+   * this the thread just goes quiet — indistinguishable from the agent still
+   * thinking. Skipped for the web app itself, where whoever stopped it is
+   * already watching it stop.
+   */
+  async function noteAbortOnItsSurface(run: Run): Promise<void> {
+    const target = run.request.deliveryTarget;
+    const surface = run.request.surface;
+    if (!target || !surface || surface === "web") return;
+    try {
+      await deps.deliveries.enqueue({
+        destination: { type: surface, target },
+        text: "⏹️ Stopped from the web app.",
+        // Keyed off the run, so a second click cannot post it twice.
+        idempotencyKey: `run-stopped:${run.id}`,
+      });
+    } catch (e) {
+      // A missing notice is a worse turn, not a failed stop. The abort itself
+      // has already been sent by the time this runs.
+      console.warn(`[signal] could not post the stop notice for run ${run.id}: ${errMessage(e)}`);
+    }
+  }
+
   return {
     async turn(req: TurnRequest): Promise<TurnResult> {
       await deps.identity.refresh();
@@ -499,6 +526,7 @@ export function createTurnMethods(
         return { accepted: false, reason: "text_required" };
       }
       await deps.signals.send(runId, signal);
+      if (signal.kind === "abort") await noteAbortOnItsSurface(run);
       const after = await deps.runs.get(runId);
       if (!after || isTerminal(after.status)) {
         await replayOrphanedRunSignals(runId);

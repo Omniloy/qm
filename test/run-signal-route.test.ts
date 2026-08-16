@@ -377,3 +377,54 @@ test("web proxy: /api/runs/active tracks queued runs — the live one first, the
   ).json()) as { runId?: string | null };
   assert.equal(active2.runId, second, "once the live run finishes, the queued one becomes active");
 });
+
+// --- telling the other surface it was stopped --------------------------------
+// A run started in Slack can be stopped from the web app. Without a notice the
+// thread just goes quiet, which reads exactly like the agent still thinking.
+
+function slackRequest(threadRef: string): OrchestratorInput {
+  return {
+    ...request("do a long thing", threadRef),
+    surface: "slack",
+    deliveryTarget: `slack:C123:${threadRef}`,
+  } as OrchestratorInput;
+}
+
+async function stopNotices(): Promise<string[]> {
+  const pending = await built.app.pendingDeliveries("slack", 0);
+  return pending.filter((d) => d.idempotencyKey.startsWith("run-stopped:")).map((d) => d.text);
+}
+
+test("aborting a Slack run posts a stop notice back to its thread", async () => {
+  const { run } = await built.runs.enqueue({ sessionId: "t-slack-stop", request: slackRequest("t-slack-stop") });
+  const before = (await stopNotices()).length;
+  assert.equal((await coreSignal(run.id, { kind: "abort" })).status, 200);
+  const after = await stopNotices();
+  assert.equal(after.length, before + 1);
+  assert.match(after.at(-1)!, /Stopped from the web app/);
+});
+
+test("steering a Slack run says nothing — the steer speaks for itself", async () => {
+  const { run } = await built.runs.enqueue({ sessionId: "t-slack-steer", request: slackRequest("t-slack-steer") });
+  const before = (await stopNotices()).length;
+  assert.equal((await coreSignal(run.id, { kind: "steer", text: "go left" })).status, 200);
+  assert.equal((await stopNotices()).length, before);
+});
+
+test("a second abort cannot post the notice twice", async () => {
+  const { run } = await built.runs.enqueue({ sessionId: "t-slack-twice", request: slackRequest("t-slack-twice") });
+  const before = (await stopNotices()).length;
+  await coreSignal(run.id, { kind: "abort" });
+  await coreSignal(run.id, { kind: "abort" });
+  assert.equal((await stopNotices()).length, before + 1, "the run-keyed idempotency key collapses the repeat");
+});
+
+test("aborting a web run stays silent — whoever stopped it is watching it stop", async () => {
+  const webRun = await built.runs.enqueue({
+    sessionId: "t-web-stop",
+    request: { ...request("hi", "t-web-stop"), surface: "web", deliveryTarget: "web:U1" } as OrchestratorInput,
+  });
+  const before = (await stopNotices()).length;
+  assert.equal((await coreSignal(webRun.run.id, { kind: "abort" })).status, 200);
+  assert.equal((await stopNotices()).length, before);
+});
