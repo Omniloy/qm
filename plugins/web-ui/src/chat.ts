@@ -214,7 +214,7 @@ export function createChatSurface(
    * signal, and core already decides who may send it — so the one control that
    * does belong on a read-only view is Stop.
    */
-  let readOnlyRun: { threadRef: string; runId: string } | null = null;
+  let readOnlyRun: { threadRef: string; runId: string; status?: string } | null = null;
   let readOnlyRunPoll: ReturnType<typeof setInterval> | null = null;
   let stoppingReadOnlyRun = false;
 
@@ -292,13 +292,21 @@ export function createChatSurface(
     sessionsState.list = markWorking(sessionsState.list, live);
   }
 
-  const READ_ONLY_RUN_POLL_MS = 4_000;
+  // The reply lands in the transcript before the run is finished with it — the
+  // last of the tool work, attachments and bookkeeping all happen after the text
+  // exists. So a slow poll leaves "Working…" under an answer that already looks
+  // complete, which reads as a bug even though the run really is still going.
+  const READ_ONLY_RUN_POLL_MS = 2_000;
 
   function stopWatchingReadOnlyRun(): void {
     if (readOnlyRunPoll !== null) clearInterval(readOnlyRunPoll);
     readOnlyRunPoll = null;
+    const wasShowing = readOnlyRun !== null;
     readOnlyRun = null;
     stoppingReadOnlyRun = false;
+    // Whatever the reason for stopping, the control must not be left on screen
+    // describing a run nobody is watching any more.
+    if (wasShowing) readonlyRedraw?.();
   }
 
   /** Poll for a run this thread has going, so the banner can offer to stop it. */
@@ -315,8 +323,8 @@ export function createChatSurface(
         return;
       }
       if (readOnlyView?.threadRef !== threadRef) return stopWatchingReadOnlyRun();
-      const next = active ? { threadRef, runId: active.runId } : null;
-      if (next?.runId === readOnlyRun?.runId) return;
+      const next = active ? { threadRef, runId: active.runId, status: active.run?.status } : null;
+      if (next?.runId === readOnlyRun?.runId && next?.status === readOnlyRun?.status) return;
       readOnlyRun = next;
       // A run that ended clears the in-flight flag with it, so a stopped run
       // cannot leave the button stuck on "Stopping…".
@@ -807,9 +815,12 @@ export function createChatSurface(
   /** Shown only while this conversation actually has something running. */
   function readOnlyStopTpl(): TemplateResult | typeof nothing {
     if (!readOnlyRun) return nothing;
+    // "Queued" and "Working" are different enough to be worth distinguishing:
+    // one is waiting for a worker, the other is burning tokens right now.
+    const label = readOnlyRun.status === "pending" ? "Queued…" : "Working…";
     return html`<span class="readonly-run">
       <span class="readonly-run-dot" aria-hidden="true"></span>
-      <span>Working…</span>
+      <span>${label}</span>
       <button
         class="btn readonly-stop"
         type="button"
