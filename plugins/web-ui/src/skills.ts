@@ -807,15 +807,22 @@ function startUnshare(s: SkillItem): Promise<void> {
   return loadSkillGrants(s);
 }
 
+/** The dialog this response still belongs to, or null if it moved on under us. */
+function currentUnshare(skillId: string | undefined): NonNullable<typeof unsharing> | null {
+  return unsharing && unsharing.skill.id === skillId ? unsharing : null;
+}
+
 async function loadSkillGrants(s: SkillItem): Promise<void> {
   try {
     const r = await api<{ grants?: SkillGrantRow[] }>(`/api/skills/${encodeURIComponent(s.id!)}/grants`);
-    if (unsharing?.skill.id !== s.id) return;
-    unsharing.grants = r.grants ?? [];
+    const u = currentUnshare(s.id);
+    if (!u) return;
+    u.grants = r.grants ?? [];
   } catch (e) {
-    if (unsharing?.skill.id !== s.id) return;
-    unsharing.error = errMessage(e, "Failed to load who this is shared with.");
-    unsharing.grants = [];
+    const u = currentUnshare(s.id);
+    if (!u) return;
+    u.error = errMessage(e, "Failed to load who this is shared with.");
+    u.grants = [];
   }
   drawSkills();
 }
@@ -895,15 +902,17 @@ async function performUnshare(scope: string): Promise<void> {
       method: "POST",
       body: JSON.stringify({ scope }),
     });
-    if (unsharing?.skill.id !== u.skill.id) return;
-    unsharing.revoking = null;
-    unsharing.grants = (unsharing.grants ?? []).filter((g) => g.granteeScopeId !== scope);
+    const still = currentUnshare(u.skill.id);
+    if (!still) return;
+    still.revoking = null;
+    still.grants = (still.grants ?? []).filter((g) => g.granteeScopeId !== scope);
     skillsNotice = unshareSuccessNotice(u.skill.name, label);
     drawSkills();
   } catch (e) {
-    if (unsharing?.skill.id !== u.skill.id) return;
-    unsharing.revoking = null;
-    unsharing.error = errMessage(e, "Failed to stop sharing.");
+    const still = currentUnshare(u.skill.id);
+    if (!still) return;
+    still.revoking = null;
+    still.error = errMessage(e, "Failed to stop sharing.");
     drawSkills();
   }
 }

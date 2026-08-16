@@ -542,7 +542,7 @@ const FAMILIES: AgentApiFamily[] = [
       (m === "POST" && p === "/v1/skills") ||
       (m === "GET" && p.startsWith("/v1/skills/")) ||
       ((m === "PUT" || m === "DELETE") && p.startsWith("/v1/skills/")) ||
-      (m === "POST" && /^\/v1\/skills\/[^/]+\/restore$/.test(p)),
+      (m === "POST" && /^\/v1\/skills\/[^/]+\/(restore|unshare|demote)$/.test(p)),
     guidance:
       "Save a skill when you've worked out a repeatable procedure worth keeping (a checklist, a multi-step flow, a house style) — it auto-loads (skills/<name>/SKILL.md) on every future turn. The skill homes in THIS conversation's scope: in a 1:1 DM it's yours alone; in a private channel or group DM it's owned by that room and every member can edit or delete it (the audit trail records who changed what); a public channel stays owner-only. Write the `body` as a plain-step recipe addressed to your future self; edit or delete it as it goes stale.",
     routes: [
@@ -572,6 +572,24 @@ const FAMILIES: AgentApiFamily[] = [
         method: "POST",
         path: "/v1/skills/:id/restore",
         summary: "restore an archived skill you manage by re-reviewing and publishing its preserved version",
+      },
+      {
+        method: "GET",
+        path: "/v1/skills/:id/grants",
+        summary:
+          "which scopes a skill you manage has been shared with — the counterpart to /v1/share. 403 if it isn't yours to share",
+      },
+      {
+        method: "POST",
+        path: "/v1/skills/:id/unshare",
+        summary:
+          "take a share back — {scope}. Undoes one /v1/share grant; the skill stays where it lives and everyone else keeps their access",
+      },
+      {
+        method: "POST",
+        path: "/v1/skills/:id/demote",
+        summary:
+          "take an org-wide skill back out of circulation (org admins only, and only on a turn the admin sent themselves). Anyone who kept their own copy still has it",
       },
     ],
   },
