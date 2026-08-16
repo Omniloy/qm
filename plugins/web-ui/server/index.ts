@@ -992,6 +992,17 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
       return relay(res, r);
     }
 
+    // Ahead of the bare /api/skills/:id read below, which would otherwise treat
+    // "<id>/grants" as an id and never reach this.
+    if (method === "GET" && path.startsWith("/api/skills/") && path.endsWith("/grants")) {
+      const id = decodeURIComponent(path.slice("/api/skills/".length, -"/grants".length));
+      const r = await coreFetch(
+        "GET",
+        `/v1/skills/${encodeURIComponent(id)}/grants?principalId=${encodeURIComponent(user)}`,
+      );
+      return relay(res, r);
+    }
+
     if (method === "GET" && path.startsWith("/api/skills/")) {
       const id = decodeURIComponent(path.slice("/api/skills/".length));
       const r = await coreFetch("GET", `/v1/skills/${encodeURIComponent(id)}?principalId=${encodeURIComponent(user)}`);
@@ -1070,6 +1081,38 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
       }
       if (!share.toScope) return json(res, 400, { error: "bad_request", message: "toScope required" });
       const r = await coreFetchCap("POST", "/v1/share", JSON.stringify({ type: "skill", id, ...share }));
+      return relay(res, r);
+    }
+
+    // Undoing a share. These carry core's own authorization, so unlike
+    // /v1/share they take the portal identity directly — the signed-in person
+    // is the actor, never a value the page gets to choose.
+    if (method === "POST" && path.startsWith("/api/skills/") && path.endsWith("/unshare")) {
+      const id = decodeURIComponent(path.slice("/api/skills/".length, -"/unshare".length));
+      let scope = "";
+      try {
+        const p = JSON.parse((await readBody(req)) || "{}") as { scope?: unknown };
+        if (typeof p.scope === "string") scope = p.scope;
+      } catch (e) {
+        if (e instanceof PayloadTooLargeError) throw e;
+        return json(res, 400, { error: "bad_request" });
+      }
+      if (!scope) return json(res, 400, { error: "bad_request", message: "scope required" });
+      const r = await coreFetch(
+        "POST",
+        `/v1/skills/${encodeURIComponent(id)}/unshare`,
+        JSON.stringify({ principalId: user, scope }),
+      );
+      return relay(res, r);
+    }
+
+    if (method === "POST" && path.startsWith("/api/skills/") && path.endsWith("/demote")) {
+      const id = decodeURIComponent(path.slice("/api/skills/".length, -"/demote".length));
+      const r = await coreFetch(
+        "POST",
+        `/v1/skills/${encodeURIComponent(id)}/demote`,
+        JSON.stringify({ principalId: user }),
+      );
       return relay(res, r);
     }
 

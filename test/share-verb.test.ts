@@ -8,7 +8,7 @@ import type { Grant, ScopeId } from "../src/types.ts";
 import { parseScopeId, scopeId } from "../src/types.ts";
 import type { ArtifactHome, ArtifactType } from "../src/api/artifact-share.ts";
 import type { RecipientResolution } from "../src/directory/directory-store.ts";
-import { shareArtifact as shareRoute } from "../src/api/routes/surface.ts";
+import { shareArtifact as shareRoute, demoteSkill, listSkillSharing, unshareSkill } from "../src/api/routes/surface.ts";
 import type { ApiCtx } from "../src/api/routes/route.ts";
 import { createSkillStore } from "../src/skills/skill-store.ts";
 import { splitToScope } from "../src/api/artifact-share.ts";
@@ -22,6 +22,7 @@ interface FakeState {
   scopesByPrincipal: Record<string, ScopeId[]>;
   moves: Array<{ type: ArtifactType; id: string; toScope: ScopeId; movedBy: string }>;
   promotes: Array<{ id: string; targetScopeId: ScopeId; actorId: string }>;
+  demotes: Array<{ id: string; actorId: string }>;
   admins: Set<string>;
   recipients: Record<string, RecipientResolution>;
   privateChannels: Set<string>;
@@ -79,6 +80,20 @@ function fakeApp(state: FakeState): App {
       state.promotes.push({ id, targetScopeId, actorId });
       return { id: `org-${id}` } as never;
     },
+    async demoteSkill(id: string, actorId: string, liveActor: boolean) {
+      if (liveActor !== true)
+        throw new AdminError(403, "taking a skill back from the org takes a live person, never an autonomous trigger");
+      if (!state.admins.has(actorId)) throw new AdminError(403, "only an org admin can take a skill back from the org");
+      state.demotes.push({ id, actorId });
+    },
+    async listSkillGrants(id: string) {
+      const home = state.artifacts[`skill:${id}`];
+      if (!home) return [];
+      return (await state.acl.grantsFor(home.ownerScopeId, home.grantRef)).map((g) => ({
+        granteeScopeId: g.granteeScopeId,
+        permission: g.permission,
+      }));
+    },
     async resolveRecipient(query: string) {
       return state.recipients[query.toLowerCase()] ?? { kind: "none" };
     },
@@ -99,6 +114,7 @@ function baseState(over: Partial<FakeState> = {}): FakeState {
     scopesByPrincipal: {},
     moves: [],
     promotes: [],
+    demotes: [],
     admins: new Set(),
     recipients: {},
     privateChannels: new Set(),
@@ -629,4 +645,90 @@ test("SkillStore.promote supersedes an existing same-name org record instead of 
   assert.equal(second.version, first.version + 1);
   const orgRecords = (await store.list()).filter((x) => x.scopeId === scopeId("org", ORG) && x.status === "published");
   assert.equal(orgRecords.length, 1);
+});
+
+// --- taking a share back -----------------------------------------------------
+// POST /v1/grants/revoke authorizes nothing — it is a `source` route that takes
+// `revokedBy` on trust because its callers have already decided. These routes
+// are reachable from the web UI, so the check has to live in them.
+
+function callSkillRoute(
+  handler: (ctx: ApiCtx) => Promise<void>,
+  state: FakeState,
+  capability: CapabilityClaims | null,
+  id: string,
+  body: unknown = {},
+) {
+  const out: { status?: number; body?: any } = {};
+  const res = {
+    writeHead(s: number) {
+      out.status = s;
+    },
+    end(d?: string) {
+      out.body = d ? JSON.parse(d) : undefined;
+    },
+  };
+  const app = fakeApp(state);
+  const ctx = { res, app, deps: {}, body, capability, params: { id } } as unknown as ApiCtx;
+  return handler(ctx).then(() => out);
+}
+
+test("unshare refuses someone who could not have shared it in the first place", async () => {
+  const state = ownerState();
+  await state.acl.grant({
+    ownerScopeId: scopeId("personal", "U1"),
+    ref: "skill:S1",
+    granteeScopeId: scopeId("channel", "C1"),
+    permission: "read",
+    grantedBy: "U1",
+  } as Grant);
+
+  const stranger = await callSkillRoute(unshareSkill, state, cap("U2"), "S1", {
+    scope: scopeId("channel", "C1"),
+  });
+  assert.equal(stranger.status, 403, "U2 does not manage U1's personal skill");
+  assert.equal((await grantsOf(state)).length, 1, "the grant survives a refused revoke");
+
+  const owner = await callSkillRoute(unshareSkill, state, cap("U1"), "S1", { scope: scopeId("channel", "C1") });
+  assert.equal(owner.status, 200);
+  assert.equal((await grantsOf(state)).length, 0);
+});
+
+test("unshare needs a scope, and reports a skill that isn't there as not_found", async () => {
+  const state = ownerState();
+  assert.equal((await callSkillRoute(unshareSkill, state, cap("U1"), "S1", {})).status, 400);
+  assert.equal(
+    (await callSkillRoute(unshareSkill, state, cap("U1"), "NOPE", { scope: scopeId("channel", "C1") })).status,
+    404,
+  );
+});
+
+test("listing who a skill is shared with is gated by the same check as sharing it", async () => {
+  const state = ownerState();
+  await state.acl.grant({
+    ownerScopeId: scopeId("personal", "U1"),
+    ref: "skill:S1",
+    granteeScopeId: scopeId("channel", "C1"),
+    permission: "write",
+    grantedBy: "U1",
+  } as Grant);
+
+  assert.equal((await callSkillRoute(listSkillSharing, state, cap("U2"), "S1")).status, 403);
+});
+
+test("demote carries promote's gates in the other direction — admin, and a live person", async () => {
+  const state = ownerState();
+  state.admins.add("U-admin");
+
+  const trigger = await callSkillRoute(demoteSkill, state, cap("U-admin", undefined, false), "S1");
+  assert.equal(trigger.status, 403);
+  assert.match(trigger.body.message, /live person/);
+
+  const notAdmin = await callSkillRoute(demoteSkill, state, cap("U1"), "S1");
+  assert.equal(notAdmin.status, 403);
+  assert.match(notAdmin.body.message, /org admin/);
+
+  const ok = await callSkillRoute(demoteSkill, state, cap("U-admin"), "S1");
+  assert.equal(ok.status, 200);
+  assert.deepEqual(state.demotes, [{ id: "S1", actorId: "U-admin" }]);
 });

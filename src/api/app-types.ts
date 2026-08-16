@@ -334,6 +334,10 @@ export interface App {
   grant(g: Grant): Promise<void>;
   revokeGrant(ownerScopeId: ScopeId, ref: string, granteeScopeId: ScopeId, revokedBy: string): Promise<void>;
   promoteSkill(id: string, targetScopeId: ScopeId, actorId: string, liveActor: boolean): Promise<Skill>;
+  /** The inverse of promoteSkill: take an org-wide skill back out of circulation. */
+  demoteSkill(id: string, actorId: string, liveActor: boolean): Promise<void>;
+  /** Which scopes hold a grant on a skill — what "shared with" means, listed. */
+  listSkillGrants(id: string): Promise<Array<{ granteeScopeId: ScopeId; permission: Permission }>>;
   belongsToScope(principalId: string, scope: ScopeId): Promise<boolean>;
   canManageArtifactHome(homeScopeId: ScopeId, createdBy: string, principalId: string): Promise<boolean>;
   getArtifactHome(type: ArtifactType, idOrName: string): Promise<ArtifactHome | null>;
