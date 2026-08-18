@@ -36,6 +36,22 @@ import {
   FORWARD_OAUTH_HEADERS,
   FORWARD_BROKER_HEADERS,
 } from "./proxy.ts";
+import {
+  anonymousShareRequest,
+  bestEffortClientIp,
+  isPublicShareCorePath,
+  shareBestEffortAccepted,
+  shareRateLimitArgs,
+  shareRateLimitConfig,
+  shareRateLimitProblems,
+  shareRateLimitTopologyProblem,
+  shareRateLimitUsable,
+  sharePassthroughEnabled,
+  FORWARD_SHARE_HEADERS,
+  SHARE_BEST_EFFORT_ENV,
+  SHARE_RESPONSE_HEADERS,
+  SHARE_RATE_LIMIT_UNKEYED_WARNING,
+} from "./share-passthrough.ts";
 import { signedHeaders, withSourceAuthNonce } from "../../chassis/src/core-client.ts";
 import { coreClaimStore, withinRateLimit } from "../../chassis/src/claims.ts";
 import { mintPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
@@ -734,6 +750,37 @@ function setSession(res: ServerResponse, headers: string[]): void {
 
 const playgroundClaims = PLAYGROUND ? coreClaimStore(CORE, CORE_SIGNING_SECRET, "portal") : null;
 
+// Public share links. Defaults ON at both tiers; PORTAL_PUBLIC_SHARE_LINKS=0 is the kill switch
+// for this hop.
+//
+// The claim store is UNCONDITIONAL. An earlier revision built it only when the client IP was
+// trustworthy, which on this deployment (Traefik/Dokploy, PORTAL_XFF_TRUSTED_HOPS unset) meant
+// never: the anonymous read-and-download surface shipped with no edge bound at all, announced
+// by a console.warn. The limit now always runs; SHARE_RATE_LIMITED only decides whether it keys
+// on a trusted address or a best-effort one, and bootChecks makes production say which.
+const SHARE_LINKS = sharePassthroughEnabled(process.env.PORTAL_PUBLIC_SHARE_LINKS);
+const SHARE_RATE_LIMIT = shareRateLimitConfig(process.env);
+const SHARE_RATE_LIMITED = shareRateLimitUsable({ onFly: ON_FLY, xffTrustedHops: XFF_TRUSTED_HOPS });
+const SHARE_BEST_EFFORT_OK = shareBestEffortAccepted(process.env[SHARE_BEST_EFFORT_ENV]);
+// Vite's module graph (/src, /@vite, /@fs) is only opened to anonymous callers outside
+// production: /@fs in particular serves anything under vite's fs.allow root.
+const SHARE_DEV_ASSETS = !IS_PROD;
+const shareClaims = coreClaimStore(CORE, CORE_SIGNING_SECRET, "portal");
+
+/**
+ * The address the anonymous share limit buckets on.
+ *
+ * `clientIpOf` is the trusted answer and returns the socket address unless the deployment says
+ * how many proxy hops to trust. When it cannot be trusted we still key on the best information
+ * available (the last X-Forwarded-For hop, else the socket) rather than dropping the limit:
+ * a spoofable bucket still gives every honest reader their own and still stops a naive flood.
+ */
+function shareClientIpOf(req: IncomingMessage): string {
+  return SHARE_RATE_LIMITED
+    ? clientIpOf(req)
+    : bestEffortClientIp(req.socket.remoteAddress, req.headers["x-forwarded-for"]);
+}
+
 export function mintBucketOf(ip: string): string {
   if (!ip.includes(":")) return ip;
   const zoneless = ip.split("%")[0] ?? "";
@@ -936,6 +983,72 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return json(res, 400, { error: "bad_request", message: "illegal path" });
   }
 
+  // Public share links — the anonymous surface.
+  //
+  // BELOW the illegal-path guard on purpose: it has already rejected %2f, %5c, %2e%2e,
+  // backslash, NUL, `//` and `/..`, so the anchored patterns match a normalized path.
+  // ABOVE the session gate on purpose: a stranger with a link must not be bounced to
+  // /auth/login. GET-only on purpose: the same-origin CSRF check sits BELOW this branch, so a
+  // non-GET passthrough would have none.
+  //
+  // `session` is the guard that makes the feature work at all. A signed-in visitor does NOT
+  // take this branch — `anonymousShareRequest` returns null — and falls through to
+  // proxyToSurface at the bottom of this function, which mints x-portal-identity from their
+  // portal session. web-ui relays that header to core on /api/public/shares/..., and core
+  // computes member vs outsider from it. If this branch also answered signed-in visitors,
+  // FORWARD_SHARE_HEADERS (no cookie, no identity, no authorization) would make every reader
+  // anonymous and two of the three access states would be dead code in production.
+  // `kind: "asset"` matches are the SPA bundle the relayed shell immediately requests. They are
+  // not share content, but they are unreachable any other way: a script or stylesheet request
+  // fails `wantsHtml(req)`, so the session gate below answers it with 401 {"error":"sign in"}
+  // and the reader gets the page without the app.
+  const share = anonymousShareRequest(SHARE_LINKS, Boolean(session), method, pathname, {
+    devAssets: SHARE_DEV_ASSETS,
+  });
+  if (share) {
+    // Per-client throttling lives here because core never receives a trustworthy client IP on
+    // this path: proxyToUpstream builds headers from scratch and x-qm-client-ip is only
+    // injected on the auth-broker hop. Buckets are split by kind, so a burst of downloads
+    // cannot starve readers out of the transcript, and a cold page load's ~10 subresources
+    // cannot spend the reader's poll budget.
+    //
+    // Dev-mode assets are exempt: vite serves the unbundled module graph, which is hundreds of
+    // requests per page load and would 429 the local share page instantly. SHARE_DEV_ASSETS is
+    // false in production, so the shipped bundle is limited.
+    if (!(share.kind === "asset" && SHARE_DEV_ASSETS)) {
+      const allowed = await withinRateLimit(
+        shareClaims,
+        shareRateLimitArgs(
+          share,
+          mintBucketOf(shareClientIpOf(req)),
+          SHARE_RATE_LIMIT,
+          SESSION_SECRET ?? DEV_SECRET,
+          Date.now(),
+        ),
+      );
+      if (!allowed) {
+        res.setHeader("retry-after", String(SHARE_RATE_LIMIT.windowS));
+        return json(res, 429, {
+          error: "rate_limited",
+          message: "too many requests for shared links — try again shortly",
+        });
+      }
+    }
+    // A floor, not an override: relay() copies the upstream headers into writeHead and
+    // writeHead wins on a collision, so web-ui's own no-store/vary stand. Not applied to the
+    // bundle: those files are content-hashed and immutable, they carry nothing that Unshare
+    // revokes, and no-store on them would make every share page load re-download the app.
+    if (share.kind !== "asset") {
+      for (const [k, v] of Object.entries(SHARE_RESPONSE_HEADERS)) res.setHeader(k, v);
+    }
+    return proxyToUpstream(
+      req,
+      res,
+      { baseUrl: UPSTREAMS[share.upstream]!, path: share.path, search: url.search },
+      FORWARD_SHARE_HEADERS,
+    );
+  }
+
   const consentBounce = (): void => {
     res.writeHead(302, { location: `/auth/login?returnTo=${encodeURIComponent(`${pathname}${url.search}`)}` });
     return void res.end();
@@ -996,7 +1109,14 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     );
   }
 
-  if (pathname.startsWith("/v1/") && hasAgentCapability(req)) {
+  // The share namespace is excluded deliberately. hasAgentCapability only checks that
+  // x-agent-capability is a non-empty string — it never validates it — and core's gate
+  // short-circuits capability verification for a `public` route. Without this guard,
+  // `curl -H 'x-agent-capability: anything' /v1/shares/<id>` would reach the public core route
+  // directly, skipping the rate limit, the GET-only guard and the header allowlist above.
+  // Excluded paths fall through to the /v1/ 404 below: the public surface is
+  // /api/public/shares/... through web-ui, and nothing else.
+  if (pathname.startsWith("/v1/") && !isPublicShareCorePath(pathname) && hasAgentCapability(req)) {
     return proxyToUpstream(req, res, { baseUrl: CORE, path: pathname, search: url.search }, FORWARD_AGENT_API_HEADERS);
   }
 
@@ -1187,6 +1307,18 @@ export function bootChecks(): void {
   if (LOCAL_AUTH_BYPASS_REQUESTED && !isLocalPortalUrl(PUBLIC_URL)) {
     problems.push("PORTAL_LOCAL_AUTH_BYPASS requires a localhost, 127.0.0.1, or ::1 PORTAL_PUBLIC_URL");
   }
+  if (SHARE_LINKS) {
+    problems.push(...shareRateLimitProblems(SHARE_RATE_LIMIT));
+    // Not a warning. On this deployment (Traefik, no trusted-hop count) the previous revision's
+    // console.warn was the only thing standing between an anonymous read-and-download surface
+    // and no edge bound at all, and nobody reads a console.warn.
+    const topology = shareRateLimitTopologyProblem({
+      isProd: IS_PROD,
+      keyed: SHARE_RATE_LIMITED,
+      bestEffortAccepted: SHARE_BEST_EFFORT_OK,
+    });
+    if (topology) problems.push(topology);
+  }
   if (PLAYGROUND) {
     if (!Number.isInteger(PLAYGROUND_MINTS_PER_IP) || PLAYGROUND_MINTS_PER_IP < 1 || PLAYGROUND_MINTS_PER_IP > 64) {
       problems.push(
@@ -1342,6 +1474,11 @@ export function startServer(): void {
       console.warn(
         `[portal] PORTAL_PLAYGROUND=1 -- unauthenticated visitors get anonymous browser-pinned sessions (${PLAYGROUND_MINTS_PER_IP} mints per IP per ${PLAYGROUND_MINT_WINDOW_S}s); admin sign-in stays on /auth/login`,
       );
+    if (SHARE_LINKS)
+      console.warn(
+        `[portal] public share links are ON — /share/<id> and the SPA bundle are served to anonymous visitors (PORTAL_PUBLIC_SHARE_LINKS=0 closes them)`,
+      );
+    if (SHARE_LINKS && !SHARE_RATE_LIMITED) console.warn(SHARE_RATE_LIMIT_UNKEYED_WARNING);
     if (PLAYGROUND && !ON_FLY && XFF_TRUSTED_HOPS === 0)
       console.warn(
         "[portal] playground mint limits key on the socket address — set PORTAL_XFF_TRUSTED_HOPS when behind a reverse proxy, or every visitor shares one bucket",

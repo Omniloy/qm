@@ -7485,3 +7485,273 @@ img.browser-pane-view.drivable:focus-visible {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ==========================================================================================
+   Public chat links
+   ==========================================================================================
+   Three surfaces, in the order a person meets them: the strip every viewer of a shared
+   conversation sees, the dialog the sharer mints from, and the anonymous /share/<id> page. */
+
+/* ---- the persistent strip -----------------------------------------------------------------
+   A flow row, not a floating pill and not a toast: the state it reports is standing, so it takes
+   real space above the transcript for as long as the conversation is public. .custom-chat-shell
+   is a two-row grid; when the strip is present it needs a row of its own, or the transcript's
+   minmax(0, 1fr) would land on the strip and the scroller would lose its height. */
+.custom-chat-shell:has(> .share-strip) {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+.readonly-chat .custom-chat-shell:has(> .share-strip) {
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+}
+/* The context pill is position:absolute at the top of the same shell, so it has to step down out
+   of the strip rather than sit on top of it. */
+.custom-chat-shell:has(> .share-strip) .context-banner {
+  top: 52px;
+}
+.share-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: color-mix(in srgb, var(--primary, #d99a21) 12%, var(--background));
+  color: var(--foreground);
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+.share-strip svg {
+  flex: none;
+  color: var(--primary, #d99a21);
+}
+.share-strip-text {
+  flex: 1;
+  min-width: 0;
+}
+.share-strip-action {
+  flex: none;
+  font: inherit;
+  font-weight: 600;
+  color: var(--foreground);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.share-strip-action:hover {
+  background: color-mix(in srgb, var(--background) 70%, transparent);
+}
+
+/* ---- the Share action on an active chat ---------------------------------------------------
+   The active chat renders no topbar (only the read-only view calls chatHeader), so the button
+   floats in the same band as the context pill rather than growing a header for one control. */
+.chat-float-actions {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  /* The transcript scrolls underneath, so the control carries its own ground the way the context
+     pill does — a transparent icon over a wall of text reads as an artefact, not a button. */
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--background) 86%, var(--secondary));
+  backdrop-filter: blur(6px);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--foreground) 8%, transparent);
+}
+.custom-chat-shell:has(> .share-strip) .chat-float-actions {
+  top: 48px;
+}
+
+/* ---- the dialog ---------------------------------------------------------------------------
+   Built on .project-dialog, which already owns the backdrop, the sizing and the safe-area pads. */
+.share-dialog {
+  width: min(520px, 100%);
+}
+.share-dialog-intro {
+  margin: 10px 0 0;
+  font-size: 14px;
+  color: var(--foreground);
+}
+.share-dialog-bullets {
+  margin: 12px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 7px;
+  font-size: 13px;
+  color: var(--muted-foreground);
+}
+.share-dialog-files {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--secondary);
+}
+.share-dialog-files-head {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--foreground);
+}
+.share-dialog-file-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+  max-height: 148px;
+  overflow-y: auto;
+  font-size: 13px;
+  color: var(--muted-foreground);
+}
+.share-dialog-link {
+  margin-top: 14px;
+}
+.share-dialog-url {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+}
+.share-dialog-status {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+  color: var(--foreground);
+}
+.share-dialog-note {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+}
+.share-dialog-error {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--destructive, #c0392b);
+}
+.share-dialog-actions {
+  margin-top: 18px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* ---- the anonymous page (/share/<id>) -----------------------------------------------------
+   The share page cannot import chat.ts, so it reuses the product's message classes
+   (.message-stack/.message-row/.user-bubble/.assistant-body/.message-files/.file-chip) and adds
+   only the chrome the signed-in shell would otherwise have supplied. .share-access is
+   deliberately not .context-banner: that one is position:fixed-ish and would overlay the
+   transcript a stranger came to read. */
+.share-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: 0 16px 24px;
+  box-sizing: border-box;
+}
+.share-head {
+  width: min(var(--content-w), 100%);
+  margin: 24px auto 10px;
+}
+.share-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.share-sub {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--muted-foreground);
+}
+.share-access-slot {
+  width: 100%;
+}
+.share-access {
+  width: min(var(--content-w), 100%);
+  margin: 0 auto 14px;
+  padding: 9px 13px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--secondary);
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
+.share-access-text {
+  flex: 1;
+  min-width: 0;
+}
+.share-access-action {
+  font: inherit;
+  font-weight: 600;
+  color: var(--foreground);
+  text-decoration: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 12px;
+  background: var(--background);
+}
+.share-access-action:hover {
+  background: var(--secondary);
+}
+.share-scroll {
+  flex: 1;
+  width: 100%;
+  overflow-y: auto;
+}
+.share-prose > :first-child {
+  margin-top: 0;
+}
+.share-prose > :last-child {
+  margin-bottom: 0;
+}
+.share-file-chip small {
+  color: var(--muted-foreground);
+}
+.share-notice {
+  width: min(var(--content-w), 100%);
+  margin: 10px auto 0;
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.share-foot {
+  width: min(var(--content-w), 100%);
+  margin: 18px auto 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted-foreground);
+}
+.share-dead {
+  max-width: 420px;
+  margin: 15vh auto;
+  text-align: center;
+}
+.share-dead-title {
+  margin: 0 0 6px;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.share-dead-body {
+  margin: 0;
+  font-size: 14px;
+  color: var(--muted-foreground);
+}
+/* Set by startShareView on <body>. The share page has no sidebar, no dock and no composer, so it
+   is the whole viewport rather than a pane inside the app shell. */
+body.share-body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+}

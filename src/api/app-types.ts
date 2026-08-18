@@ -14,6 +14,8 @@ import type { Readable } from "node:stream";
 import { type FileArtifact, type FileArtifactStore, type ListOwnedOptions } from "../files/file-artifact-store.ts";
 import type { IdentityService } from "../identity/identity-service.ts";
 import type { SessionStore, TranscriptEntry } from "../sessions/session-store.ts";
+import type { SessionShareStore } from "../sessions/session-share.ts";
+import type { ShareMethods } from "./app-shares.ts";
 import { type Sandbox } from "../sandbox/sandbox.ts";
 import type { ProcessRegistry } from "../processes/process-registry.ts";
 import type { MonitorStore } from "../monitors/monitor-store.ts";
@@ -217,7 +219,12 @@ interface TranscriptWindow {
   beforeSeq?: number;
 }
 
-export interface App {
+/**
+ * `ShareMethods` is mixed in rather than restated: the share module owns the one
+ * sanctioned projection of a conversation to the public, so its signatures live
+ * next to that reasoning and cannot drift from a second copy here.
+ */
+export interface App extends ShareMethods {
   turn(req: TurnRequest): Promise<TurnResult>;
   getApproval(requestId: string, viewer?: string): Promise<(PendingApprovalRecord & { requestId: string }) | null>;
   subscribeSessionStates(cb: (event: SessionStateEvent) => void): () => void;
@@ -533,6 +540,12 @@ export interface AppDeps {
   crons: CronStore;
   deliveries: DeliveryStore;
   directory: DirectoryStore;
+  /**
+   * Public read links over conversations. Absent when PUBLIC_SHARE_LINKS is
+   * explicitly disabled, which is the whole kill switch: with no store every
+   * share method answers "not_configured" and both public routes 404.
+   */
+  sessionShares?: SessionShareStore;
   projects?: ProjectStore;
   deploy: DeployService;
   deploymentLayer?: DeploymentLayerRuntime;

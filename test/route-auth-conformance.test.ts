@@ -5,7 +5,10 @@ import { findRoute, type RouteAuth } from "../src/api/routes/route.ts";
 import { agentApiMatches } from "../src/api/agent-api-catalog.ts";
 import { OAUTH_CONSENT_AUD, CREDENTIAL_BROKER_AUD } from "../src/auth/capability-token.ts";
 
-const PUBLIC_ROUTES = new Set<string>();
+// Deliberate ceremony: every unauthenticated route is pinned here by hand, so
+// adding one puts it in front of a reviewer instead of slipping in with a route
+// table edit. The paths are the synthesized form (`:param` -> `sample`).
+const PUBLIC_ROUTES = new Set<string>(["GET /v1/shares/sample", "GET /v1/shares/sample/files/sample"]);
 const AUD_ROUTES = new Map<string, string>([
   ["POST /v1/connectors/oauth/consent/mint", OAUTH_CONSENT_AUD],
   ["POST /v1/credentials/broker", CREDENTIAL_BROKER_AUD],
@@ -55,6 +58,20 @@ test("for every request the table serves, the matched route's auth matches the p
     }
   }
   assert.ok(probed > apiRoutes.length, `expected to probe more combos than routes, only hit ${probed}`);
+});
+
+test("every pinned public route actually resolves in the table, and nothing else is public", () => {
+  for (const key of PUBLIC_ROUTES) {
+    const [method, pathname] = key.split(" ") as [string, string];
+    const found = findRoute(apiRoutes, method, pathname);
+    assert.ok(found, `${key} is pinned public but no route serves it`);
+    assert.equal(found.route.auth, "public", `${key} is pinned public but the table says otherwise`);
+  }
+  for (const route of apiRoutes) {
+    if (!("path" in route) || route.auth !== "public") continue;
+    const key = `${route.method} ${synthesize(route.path)}`;
+    assert.ok(PUBLIC_ROUTES.has(key), `${key} is public in the table but not pinned in PUBLIC_ROUTES`);
+  }
 });
 
 test("every pinned dedicated-audience route actually resolves in the table", () => {
