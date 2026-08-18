@@ -23,7 +23,7 @@ export interface SessionShareRecord {
   lastViewedAt?: number;
 }
 
-export type ShareLookup = { ok: true; shareId: string; rec: SessionShareRecord } | { ok: false; reason: "not_found" };
+type ShareLookup = { ok: true; shareId: string; rec: SessionShareRecord } | { ok: false; reason: "not_found" };
 
 export interface SessionShareStore {
   mint(rec: Omit<SessionShareRecord, "createdAt" | "viewCount">, now?: number): Promise<{ shareId: string }>;
@@ -43,6 +43,50 @@ export function createSessionShareStore(
   opts: { now?: () => number } = {},
 ): SessionShareStore {
   const clock = opts.now ?? (() => Date.now());
+
+  /**
+   * Change one row without ever writing back a record read earlier.
+   *
+   * Revocation is the entire containment story for this feature — there is no
+   * expiry — so the one outcome that must be impossible is a concurrent write
+   * putting a tombstoned record back. A read-modify-write does exactly that: a
+   * view that read the row before a revoke and wrote after it would carry the
+   * pre-revoke record, `revokedAt` and all, back over the tombstone, and the
+   * link would be live again for good. Against Postgres the gap between the read
+   * and the write is a network round trip, and every reader's poll takes it.
+   *
+   * So: `update` when the backing has it — that is `SELECT ... FOR UPDATE` in the
+   * same transaction as the write (persistence/durable-map.ts), so `step` sees
+   * the row as it is at write time and a revoke that landed first is visible.
+   * `update` is optional in `DurableMap`, and the fallback is deliberately not a
+   * `put`: `merge` patches only the named fields and leaves every other one as
+   * the row has it, so the worst a lost race can cost there is an uncounted
+   * view, never a resurrected link.
+   *
+   * `step` returns the fields to change, or null to leave the row alone — which
+   * is also how both callers express "already revoked".
+   */
+  async function mutate(
+    shareId: string,
+    step: (rec: SessionShareRecord) => Partial<SessionShareRecord> | null,
+  ): Promise<boolean> {
+    if (backing.update) {
+      let changed = false;
+      const applied = await backing.update(shareId, (rec) => {
+        const patch = step(rec);
+        if (!patch) return rec;
+        changed = true;
+        return { ...rec, ...patch };
+      });
+      return applied !== null && changed;
+    }
+    const rec = await backing.get(shareId);
+    if (!rec) return false;
+    const patch = step(rec);
+    if (!patch) return false;
+    return (await backing.merge(shareId, patch)) !== null;
+  }
+
   return {
     async mint(rec, now) {
       // Same generator as secret-drop: two UUIDs of entropy, so the id is the
@@ -61,10 +105,9 @@ export function createSessionShareStore(
     },
 
     async revoke(shareId, by, now) {
-      const rec = await backing.get(shareId);
-      if (!rec || rec.revokedAt !== undefined) return false;
-      await backing.put(shareId, { ...rec, revokedAt: now ?? clock(), revokedBy: by });
-      return true;
+      return mutate(shareId, (rec) =>
+        rec.revokedAt === undefined ? { revokedAt: now ?? clock(), revokedBy: by } : null,
+      );
     },
 
     async forSession(sessionId) {
@@ -76,9 +119,9 @@ export function createSessionShareStore(
     },
 
     async noteView(shareId, now) {
-      const rec = await backing.get(shareId);
-      if (!rec || rec.revokedAt !== undefined) return;
-      await backing.put(shareId, { ...rec, viewCount: rec.viewCount + 1, lastViewedAt: now ?? clock() });
+      await mutate(shareId, (rec) =>
+        rec.revokedAt === undefined ? { viewCount: rec.viewCount + 1, lastViewedAt: now ?? clock() } : null,
+      );
     },
 
     async sweep(graceMs, now) {

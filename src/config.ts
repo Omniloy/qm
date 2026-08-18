@@ -141,6 +141,16 @@ export interface Config {
   reachDeniedNotifyChannel?: string;
   scratchExecEnabled: boolean;
   reachExecEnabled: boolean;
+  /**
+   * Publicly shareable read-only conversation links.
+   *
+   * Defaults to ON: absent env means enabled, and only an explicit falsey value
+   * (`0`, `false`, `off`, `no`, `none`) turns it off. The flag exists so a
+   * deployment that must not publish anything can say so, not because the
+   * feature is experimental — when it is false core builds no share store, every
+   * management route answers 503 `not_configured`, and both public routes 404.
+   */
+  publicShareLinks: boolean;
   sharedOwnerAuthIsolation: boolean;
   surfaceDebugFooter: boolean;
   eagerProvisionEnabled: boolean;
@@ -880,6 +890,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(env.REACH_DENIED_NOTIFY_CHANNEL ? { reachDeniedNotifyChannel: env.REACH_DENIED_NOTIFY_CHANNEL.trim() } : {}),
     scratchExecEnabled: boolEnvStrict("EXECUTE_SCRATCH", env.EXECUTE_SCRATCH) ?? false,
     reachExecEnabled: boolEnvStrict("REACH_EXEC", env.REACH_EXEC) ?? false,
+    publicShareLinks: boolEnvStrict("PUBLIC_SHARE_LINKS", env.PUBLIC_SHARE_LINKS) ?? true,
     sharedOwnerAuthIsolation: boolEnvStrict("SHARED_OWNER_AUTH_ISOLATION", env.SHARED_OWNER_AUTH_ISOLATION) ?? false,
     surfaceDebugFooter: boolEnvStrict("SURFACE_DEBUG_FOOTER", env.SURFACE_DEBUG_FOOTER) ?? false,
     eagerProvisionEnabled: boolEnvStrict("EAGER_PROVISION", env.EAGER_PROVISION) ?? false,

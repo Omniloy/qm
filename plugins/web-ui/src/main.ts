@@ -1,44 +1,37 @@
+/**
+ * The bundle entry, and nothing else.
+ *
+ * This file exists to decide ONE thing before any application code is evaluated: whether this
+ * page is `/share/<id>` — read by a stranger with no account — or the signed-in app. It must do
+ * that with dynamic imports, because a static `import "./app-main"` would be evaluated before
+ * this module's body ever ran, and ./shell's module body installs the sign-in handler while its
+ * boot() replaces #app with an auth gate on a 401. That is the bug this split fixes: a share URL
+ * used to render the signed-in app's sign-in wall and share-view.ts was never loaded at all.
+ *
+ * The stylesheets stay here so both routes are styled and so their order cannot drift: dockview's
+ * sheet must load before shell.css, which overrides parts of it.
+ */
 import "dockview-core/dist/styles/dockview.css";
 import "./shell.css";
-import { bootSafely } from "./shell";
-import { closeFormMenus } from "./ui";
-import { redrawFilesPage } from "./files";
-import { allConversations } from "./conversations";
-import { closeOpenSessionMenu, renderList, sessionsState } from "./sessions";
-import { closeDeployMenu } from "./deploys";
-import { closeRowMenu } from "./row-actions";
 
-function closeComposerMenus(keepOpenWithin: Element | null): boolean {
-  let changed = false;
-  for (const conv of allConversations()) {
-    if (keepOpenWithin && conv.state.host?.contains(keepOpenWithin)) continue;
-    if (!conv.composer.closeMenus()) continue;
-    changed = true;
-    conv.redraw();
-  }
-  return changed;
+/**
+ * Anchored, and deliberately duplicated from share-view.ts's SHARE_PATH_RE rather than imported.
+ * Importing share-view here to reuse the matcher would pull the share page into the entry chunk
+ * for every signed-in load, which is the mirror image of the problem this file solves. The two
+ * are pinned to each other by test/share-view.test.ts.
+ */
+const SHARE_PATH = /^\/share\/[A-Za-z0-9-]{32,80}$/;
+
+const BASE = ((import.meta as unknown as { env?: { BASE_URL?: string } }).env?.BASE_URL ?? "/").replace(/\/$/, "");
+const routePath =
+  BASE && window.location.pathname.startsWith(BASE)
+    ? window.location.pathname.slice(BASE.length)
+    : window.location.pathname;
+
+if (SHARE_PATH.test(routePath)) {
+  void import("./share-view").then((m) => {
+    m.startShareView();
+  });
+} else {
+  void import("./app-main");
 }
-
-document.addEventListener("click", (e) => {
-  const target = e.target as Element | null;
-  const inside = target?.closest(".menu-control, .composer-wrap") ?? null;
-  closeComposerMenus(inside);
-  if (!target?.closest(".form-menu-control")) closeFormMenus();
-  if (sessionsState.openMenuId && !target?.closest(".session-menu")) {
-    sessionsState.openMenuId = null;
-    renderList();
-  }
-  closeDeployMenu(target);
-  if (closeRowMenu(target)) redrawFilesPage();
-});
-
-document.addEventListener("keydown", (e) => {
-  if (e.key !== "Escape") return;
-  closeComposerMenus(null);
-  closeOpenSessionMenu();
-  closeDeployMenu(null, true);
-  if (closeRowMenu(null)) redrawFilesPage();
-  closeFormMenus();
-});
-
-void bootSafely();

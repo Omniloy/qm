@@ -136,6 +136,12 @@ import {
   type DropResolution,
 } from "./triggers/keychain-ask.ts";
 import { createSecretDropStore, type SecretDropStore, type SecretDropRecord } from "./credentials/secret-drop.ts";
+import {
+  createSessionShareStore,
+  SHARE_TOMBSTONE_GRACE_MS,
+  type SessionShareStore,
+  type SessionShareRecord,
+} from "./sessions/session-share.ts";
 import { createLivenessCache, type LivenessCache, type ScopeLivenessRecord } from "./credentials/resident-auth.ts";
 import { createConnectorStatusCache, type ConnectorStatusRecord } from "./credentials/connector-status.ts";
 import {
@@ -759,6 +765,18 @@ export function buildApp(
   };
   const consentLinks: ConsentLinkStore = createConsentLinkStore(artifactMap<ConsentLinkRecord>("consent_links"));
   const secretDrops: SecretDropStore = createSecretDropStore(artifactMap<SecretDropRecord>("secret_drops"));
+  // Public conversation links, on by default. PUBLIC_SHARE_LINKS is the only
+  // switch the feature has, and it is a real one: with the store undefined,
+  // createShareMethods answers "not_configured" to every mint and null to every
+  // resolve, so both public routes 404 without any flag threaded through them.
+  // Absent means ON. Reading this as a plain truthy check made the default
+  // depend on how the config object was built: env-parsed configs carry `?? true`
+  // and enable it, while a config assembled in code omits the field entirely and
+  // silently shipped the feature disabled. Only an explicit false turns it off.
+  const sessionShares: SessionShareStore | undefined =
+    config.publicShareLinks !== false
+      ? createSessionShareStore(artifactMap<SessionShareRecord>("session_shares"))
+      : undefined;
   const modelGateway = createModelGateway();
 
   const requireDbUrl = (kind: string): string => {
@@ -1244,6 +1262,7 @@ export function buildApp(
     crons,
     deliveries,
     directory,
+    ...(sessionShares ? { sessionShares } : {}),
     projects,
     environments,
     deploy: deployService,
@@ -1474,6 +1493,16 @@ export function buildApp(
   const deployIdleTtlMs = deployProvider.profile.managedScaleToZero ? undefined : config.deployIdleTtlMs;
   const BLOB_TTL_MS = 6 * 60 * 60_000;
   const blobSweeper = createSweeper(() => blobTransfer.sweep(BLOB_TTL_MS), 30 * 60_000);
+  // Revoked links leave a tombstone so a killed link keeps answering exactly what
+  // an id that never existed answers. Kept for a month, then dropped, or the
+  // table grows for the life of the deployment. Leader-guarded because the sweep
+  // reads the whole table and one instance doing it is enough.
+  const shareSweeper = sessionShares
+    ? createSweeper(
+        () => leaderLease.hold("session-shares:tombstones", () => sessionShares.sweep(SHARE_TOMBSTONE_GRACE_MS)),
+        6 * 60 * 60_000,
+      )
+    : null;
   const BLOB_TRANSFER_EXPIRY_DAYS = 1;
   void blobTransfer
     .ensureExpiry?.(BLOB_TRANSFER_EXPIRY_DAYS)
@@ -1509,6 +1538,7 @@ export function buildApp(
       monitorPoller?.start(config.monitorPollMs);
       if (config.skillSyncPollMs > 0) skillSyncEngine.start(config.skillSyncPollMs);
       blobSweeper.start();
+      shareSweeper?.start();
       idleSweeper?.start();
       deepIdleSweeper?.start();
       reachDeniedNotifier?.start(config.insightsIntervalMs);
@@ -1528,6 +1558,7 @@ export function buildApp(
       deepIdleSweeper?.stop();
       reachDeniedNotifier?.stop();
       blobSweeper.stop();
+      shareSweeper?.stop();
       wakeSweep.stop();
       orphanedSignalSweeper.stop();
       await Promise.all(workers.map((w) => w.stop(config.shutdownDrainMs))).catch(

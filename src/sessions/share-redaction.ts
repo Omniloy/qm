@@ -17,7 +17,7 @@ import { isOverheardEntry } from "./session-store.ts";
  */
 
 /** A file a reader may download, named by the share rather than by artifact id alone. */
-export interface SharedFile {
+interface SharedFile {
   name: string;
   artifactId: string;
   sizeBytes?: number;
@@ -88,12 +88,19 @@ function userText(payload: Record<string, unknown>): string | null {
   return raw.trim() ? raw : null;
 }
 
+/**
+ * Attachments live under `files` on a chat turn and under `attachments` on a
+ * Slack-origin one. Written as statements rather than a chained ternary so a
+ * third shape can be added without the expression becoming unreadable.
+ */
+function rawFileList(payload: Record<string, unknown>): readonly unknown[] {
+  if (Array.isArray(payload.files)) return payload.files;
+  if (Array.isArray(payload.attachments)) return payload.attachments;
+  return [];
+}
+
 function filesOf(payload: Record<string, unknown>): SharedFile[] {
-  const raw = Array.isArray(payload.files)
-    ? payload.files
-    : Array.isArray(payload.attachments)
-      ? payload.attachments
-      : [];
+  const raw = rawFileList(payload);
   const out: SharedFile[] = [];
   for (const f of raw) {
     if (!f || typeof f !== "object") continue;

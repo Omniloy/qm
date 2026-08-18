@@ -10,6 +10,7 @@ import { brokerGitHttp, GIT_HTTP_BROKER_PREFIX } from "../git-http-broker.ts";
 import { mountRoutes } from "./mounts.ts";
 import { keychainRoutes } from "./keychain.ts";
 import { secretDropRoutes } from "./secret-drop.ts";
+import { shareRoutes } from "./shares.ts";
 import { adminRoutes } from "./admin.ts";
 import { skillPackRoutes } from "./skill-packs.ts";
 import { surfaceRoutes } from "./surface.ts";
@@ -50,6 +51,10 @@ export const apiRoutes: ReadonlyArray<Route<ApiCtx>> = [
   ...keychainRoutes,
   ...mountRoutes,
   ...secretDropRoutes,
+  // apiRoutes, never rawRoutes: raw routes dispatch before gate(), and gate() is
+  // what parses x-portal-identity into ctx.actor even on a public route. Losing
+  // that parse would collapse member and outsider into anonymous.
+  ...shareRoutes,
   ...connectorRoutes,
   ...adminRoutes,
   ...skillPackRoutes,
