@@ -42,6 +42,37 @@ test("tool activity never appears, however it is dressed", () => {
   }
 });
 
+test("an overheard channel message is somebody else's words and is never shared", () => {
+  // Slack messages not addressed to the agent are imported as ordinary user
+  // entries (isOverheardEntry, session-store.ts:400). The person clicking Share
+  // cannot consent on behalf of everyone whose words landed in the log.
+  const out = shareVisibleEntries([
+    entry("user", { text: "the Acme renewal is at risk", overheard: true, display: "the Acme renewal is at risk" }),
+  ]);
+  assert.deepEqual(out, []);
+});
+
+test("an entry nobody consented to share does not contribute its attachments either", () => {
+  // Dropping only the text would still publish the file.
+  for (const marker of [{ hidden: true }, { overheard: true }]) {
+    const out = shareVisibleEntries([
+      entry("user", {
+        text: "here",
+        ...marker,
+        attachments: [{ name: "roster.csv", artifactId: "art-9", sizeBytes: 10 }],
+      }),
+    ]);
+    assert.deepEqual(out, [], JSON.stringify(marker));
+  }
+});
+
+test("a shared file never carries a mimetype — the download route decides that", () => {
+  const out = shareVisibleEntries([
+    entry("delivery", { files: [{ name: "x.js", artifactId: "art-1", mimetype: "text/javascript", sizeBytes: 4 }] }),
+  ]);
+  assert.deepEqual(Object.keys(out[0]!.files![0]!).sort(), ["artifactId", "name", "sizeBytes"]);
+});
+
 test("a hidden user entry is machinery, not a message", () => {
   // Cron and trigger prompts persist as user entries with hidden: true.
   assert.deepEqual(shareVisibleEntries([entry("user", { text: "run the nightly sweep", hidden: true })]), []);
@@ -82,9 +113,7 @@ test("a delivery contributes its files and never its manifest text", () => {
   ]);
   assert.equal(out.length, 1);
   assert.equal(out[0]!.text, "");
-  assert.deepEqual(out[0]!.files, [
-    { name: "report.pdf", artifactId: "art-1", mimetype: "application/pdf", sizeBytes: 12 },
-  ]);
+  assert.deepEqual(out[0]!.files, [{ name: "report.pdf", artifactId: "art-1", sizeBytes: 12 }]);
 });
 
 test("a file without an artifact id is dropped — it cannot be served anyway", () => {

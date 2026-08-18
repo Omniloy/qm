@@ -1,4 +1,5 @@
 import type { EntryType, SessionEntry } from "../types.ts";
+import { isOverheardEntry } from "./session-store.ts";
 
 /**
  * What a public share link is allowed to contain.
@@ -19,7 +20,6 @@ import type { EntryType, SessionEntry } from "../types.ts";
 export interface SharedFile {
   name: string;
   artifactId: string;
-  mimetype?: string;
   sizeBytes?: number;
 }
 
@@ -81,9 +81,6 @@ export function scrubSecrets(text: string): string {
 
 /** Mirrors the product's own user-entry projection (core-bridge userEntryText). */
 function userText(payload: Record<string, unknown>): string | null {
-  // `hidden` marks a cron or trigger prompt: machinery, never something a person
-  // typed, and the product drops it in three places already.
-  if (payload.hidden === true) return null;
   const display = typeof payload.display === "string" && payload.display.trim() ? payload.display : null;
   // `text` on an automation- or Slack-origin turn is a <wake> envelope carrying
   // other people's messages and the channel's standing orders — never it alone.
@@ -103,10 +100,12 @@ function filesOf(payload: Record<string, unknown>): SharedFile[] {
     const a = f as Record<string, unknown>;
     if (typeof a.name !== "string" || !a.name.trim()) continue;
     if (typeof a.artifactId !== "string" || !a.artifactId) continue;
+    // Deliberately no mimetype: the download route always answers
+    // application/octet-stream, and publishing a type here would only invite a
+    // future reader to trust it.
     out.push({
       name: a.name,
       artifactId: a.artifactId,
-      ...(typeof a.mimetype === "string" ? { mimetype: a.mimetype } : {}),
       ...(typeof a.sizeBytes === "number" ? { sizeBytes: a.sizeBytes } : {}),
     });
   }
@@ -127,6 +126,16 @@ export function shareVisibleEntries(entries: readonly SessionEntry[]): SharedEnt
     const type: EntryType = entry.type;
     switch (type) {
       case "user": {
+        // Both of these drop the entry outright rather than just its text: an
+        // entry nobody consented to share must not contribute its attachments
+        // either.
+        //
+        // `hidden` marks a cron or trigger prompt — machinery, never something a
+        // person typed. `overheard` marks a channel message imported from Slack
+        // that was never addressed to the agent: somebody else's words, which
+        // the person clicking Share cannot consent to publishing on their behalf.
+        if (payload.hidden === true) break;
+        if (isOverheardEntry(entry)) break;
         const text = userText(payload);
         const files = filesOf(payload);
         if (!text && !files.length) break;
