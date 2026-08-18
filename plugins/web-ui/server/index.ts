@@ -1861,7 +1861,13 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
 
     if (method === "GET" && path === "/api/runs/active") {
       const threadRef = url.searchParams.get("threadRef") ?? "";
-      if (!threadRef.startsWith("web:")) return json(res, 404, { error: "not_found" });
+      if (!threadRef) return json(res, 400, { error: "bad_request", message: "threadRef required" });
+      // A conversation this browser did not start — a Slack thread being watched
+      // read-only — has no entry in the instance-local index and never will.
+      // Core is asked directly instead, and core's viewer gate is what decides
+      // whether the run is visible at all; the index below is a fast path for
+      // runs this instance submitted, not a permission boundary.
+      const ownThread = threadRef.startsWith("web:");
       const tryRun = async (runId: string, ownedByUser = true): Promise<boolean> => {
         const r = await coreFetch("GET", `/v1/runs/${encodeURIComponent(runId)}`);
         if (r.status < 200 || r.status >= 300) {
@@ -1879,12 +1885,14 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
           forgetRun(runId);
           return false;
         }
-        rememberRun(runId, user, threadRef);
+        if (ownThread) rememberRun(runId, user, threadRef);
         json(res, 200, { runId, run });
         return true;
       };
-      for (const runId of Array.from(activeRunsByThread.get(threadKey(user, threadRef)) ?? [])) {
-        if (await tryRun(runId)) return;
+      if (ownThread) {
+        for (const runId of Array.from(activeRunsByThread.get(threadKey(user, threadRef)) ?? [])) {
+          if (await tryRun(runId)) return;
+        }
       }
       const d = await coreFetch("GET", `/v1/runs?threadRef=${encodeURIComponent(threadRef)}`);
       if (d.status >= 200 && d.status < 300) {

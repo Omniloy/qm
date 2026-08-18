@@ -231,6 +231,27 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
 
     get: getRun,
 
+    async forceTerminal(runId: string, reason: string): Promise<boolean> {
+      const run = await getRun(runId);
+      if (!run || isTerminal(run.status)) return false;
+      if (run.status === "running") {
+        // retry:false parks it, and the lease token comes from the row rather
+        // than from a caller who has none.
+        const r = await retire(run, reason, false);
+        return r.applied;
+      }
+      // A queued run has no lease to take away and no worker to interrupt —
+      // stopping it means it must simply never start.
+      const result: TurnResult = { status: "failed", sessionId: run.sessionId, reason };
+      const { rowCount } = await q(
+        `UPDATE runs SET status='failed', result=$2, lease_token=NULL, lease_expires_at=NULL, worker_id=NULL, finished_at=$3
+         WHERE id=$1 AND status='pending'`,
+        [runId, JSON.stringify(result), Date.now()],
+      );
+      if (rowCount > 0) settle(await getRun(runId));
+      return rowCount > 0;
+    },
+
     async activeForThread(sessionId: string): Promise<Run | null> {
       const { rows } = await q(
         "SELECT * FROM runs WHERE session_id = $1 AND status IN ('pending','running') ORDER BY created_at DESC LIMIT 1",

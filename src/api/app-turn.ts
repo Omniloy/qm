@@ -4,7 +4,7 @@ import { scopeId } from "../types.ts";
 import { isHalt, routeWake, type Wake } from "../wake/wake.ts";
 import type { OrchestratorInput } from "../core/orchestrator.ts";
 import { resolveTurnOrigin } from "../core/turn-origin.ts";
-import { isTerminal, leaseLapsed } from "../runs/run-store.ts";
+import { isTerminal, leaseLapsed, type Run } from "../runs/run-store.ts";
 import { turnModelOptions, validateWebTurnModelOptions, webTurnRuntimeModelRefusal } from "../core/turn-options.ts";
 import { isProjectGroupRef, projectIdFromGroupRef } from "../projects/project-store.ts";
 import {
@@ -52,6 +52,75 @@ export function createTurnMethods(
     replayOrphanedRunSignals,
   } = h;
   const { shouldRouteToSpine, markTriggerHandled, addressedWakeText } = ambient;
+
+  /** What a stopped run records as its reason, wherever it is read back. */
+  const STOPPED_REASON = "stopped by a person";
+
+  /**
+   * See a stop through, then say so.
+   *
+   * Interrupting the harness is a request, not a guarantee — a turn wedged in a
+   * long tool call can ignore it, and the worker will go on heartbeating a run
+   * that never returns. That run holds its conversation's claim lock (a run is
+   * only claimable when no other run on the same session is `running`), so every
+   * later message queues behind it indefinitely.
+   *
+   * So: give the interrupt a grace period to land on its own, and end the run
+   * outright if it doesn't. Only then is it true that the turn stopped, which is
+   * also the only honest moment to tell the conversation so.
+   */
+  const ABORT_GRACE_MS = 20_000;
+  const ABORT_POLL_MS = 1_000;
+
+  async function settleAbort(run: Run): Promise<void> {
+    const deadline = Date.now() + ABORT_GRACE_MS;
+    let settled = false;
+    while (Date.now() < deadline) {
+      const current = await deps.runs.get(run.id).catch(() => null);
+      if (!current || isTerminal(current.status)) {
+        settled = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, ABORT_POLL_MS));
+    }
+    if (!settled) {
+      const forced = await deps.runs.forceTerminal(run.id, STOPPED_REASON).catch((e) => {
+        console.warn(`[signal] could not force run ${run.id} terminal after an abort: ${errMessage(e)}`);
+        return false;
+      });
+      if (forced) {
+        console.warn(`[signal] run ${run.id} ignored its abort for ${ABORT_GRACE_MS}ms and was ended outright`);
+      }
+    }
+    await noteAbortOnItsSurface(run);
+  }
+
+  /**
+   * Tell a conversation it was stopped, when the stop came from somewhere else.
+   *
+   * A run started in Slack can now be stopped from the web app, and without
+   * this the thread just goes quiet — indistinguishable from the agent still
+   * thinking. Skipped for the web app itself, where whoever stopped it is
+   * already watching it stop.
+   */
+  async function noteAbortOnItsSurface(run: Run): Promise<void> {
+    const target = run.request.deliveryTarget;
+    const surface = run.request.surface;
+    if (!target || !surface || surface === "web") return;
+    try {
+      await deps.deliveries.enqueue({
+        destination: { type: surface, target },
+        text: "⏹️ Stopped from the web app.",
+        // Keyed off the run, so a second click cannot post it twice.
+        idempotencyKey: `run-stopped:${run.id}`,
+      });
+    } catch (e) {
+      // A missing notice is a worse turn, not a failed stop. The abort itself
+      // has already been sent by the time this runs.
+      console.warn(`[signal] could not post the stop notice for run ${run.id}: ${errMessage(e)}`);
+    }
+  }
+
   return {
     async turn(req: TurnRequest): Promise<TurnResult> {
       await deps.identity.refresh();
@@ -498,7 +567,17 @@ export function createTurnMethods(
       if (signal.kind === "steer" && !signal.text?.trim()) {
         return { accepted: false, reason: "text_required" };
       }
+      // A queued run has no worker to interrupt. Signalling it would leave the
+      // signal to be picked up whenever it is eventually claimed — meaning the
+      // turn someone just stopped still runs. Ending it outright is what "stop"
+      // means here.
+      if (signal.kind === "abort" && run.status === "pending") {
+        await deps.runs.forceTerminal(runId, STOPPED_REASON);
+        void settleAbort(run);
+        return { accepted: true };
+      }
       await deps.signals.send(runId, signal);
+      if (signal.kind === "abort") void settleAbort(run);
       const after = await deps.runs.get(runId);
       if (!after || isTerminal(after.status)) {
         await replayOrphanedRunSignals(runId);

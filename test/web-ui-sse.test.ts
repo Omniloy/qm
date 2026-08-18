@@ -152,8 +152,16 @@ test("active run lookup returns the latest tracked run for the caller's web thre
   assert.equal(otherUser.status, 200);
   assert.equal(((await otherUser.json()) as { runId?: string | null }).runId, null);
 
+  // A thread this instance did not start is answered from core rather than
+  // refused outright — that is what lets the web app watch (and stop) a run
+  // belonging to Slack. Nothing is revealed by asking: core's viewer gate
+  // decides, and this thread has no run at all.
   const nonWeb = await fetch(`${webBase}/api/runs/active?threadRef=${encodeURIComponent("dm:D1")}`, asUser("alice"));
-  assert.equal(nonWeb.status, 404);
+  assert.equal(nonWeb.status, 200);
+  assert.equal(((await nonWeb.json()) as { runId?: string | null }).runId, null);
+
+  const noThread = await fetch(`${webBase}/api/runs/active`, asUser("alice"));
+  assert.equal(noThread.status, 400, "an absent threadRef is still refused");
 });
 
 test("active run lookup is cleared after the events stream reaches a terminal frame", async () => {

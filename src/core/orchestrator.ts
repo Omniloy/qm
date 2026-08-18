@@ -1689,6 +1689,35 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           fileRegistration,
           provision,
           postProvenance,
+          // Same entry the turn's own outbound attachments produce below, so a
+          // file sent with `post` is recorded in the transcript exactly like one
+          // that rode on the reply — which is what the web UI reads to draw an
+          // attachment block, and what makes them survive a reload.
+          recordDelivery: async (postText, attachments) => {
+            try {
+              emittedEntries.push(
+                await withManagedRosterVersion(() =>
+                  deps.sessions.append(lease, {
+                    type: "delivery",
+                    payload: {
+                      text: postText,
+                      files: attachments.map((a) => ({
+                        name: a.name,
+                        mimetype: a.mimetype,
+                        sizeBytes: a.sizeBytes,
+                        ...(a.artifactId ? { artifactId: a.artifactId } : {}),
+                      })),
+                    },
+                    scopeLabel: scopeId,
+                  }),
+                ),
+              );
+            } catch (err) {
+              // The files are already on their way; losing the transcript note
+              // is not worth failing the post over.
+              swallow("orchestrator: surface post delivery entry", err);
+            }
+          },
           spine,
         });
         if (input.surfaceTools && input.origin.kind === "automation" && input.origin.destination && !surfaceToolDeps)

@@ -575,6 +575,17 @@ export function makeCoreStreamFn(
   return fn as unknown as StreamFn;
 }
 
+/**
+ * Abort a run by id, with no local stream to attach to.
+ *
+ * signalLiveRun needs a RunSlot because it is steering a run this tab is
+ * streaming. Stopping a run that belongs to another surface has no slot — the
+ * run id from activeRunForThread is the whole of what we know about it.
+ */
+export async function abortRunById(runId: string): Promise<void> {
+  await api(runPath(runId, "/signal"), { method: "POST", body: JSON.stringify({ kind: "abort" }) });
+}
+
 export async function activeRunForThread(threadRef: string): Promise<ActiveRun | null> {
   const q = new URLSearchParams({ threadRef });
   const r = await api<{ runId?: string | null; run?: RunPoll | null }>(`/api/runs/active?${q.toString()}`);

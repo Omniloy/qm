@@ -2606,6 +2606,47 @@ a.chat-row-open {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+/* Sits at the end of the banner sentence, separated by a rule rather than a new
+   line: the banner explains why you cannot reply, and this is the one thing you
+   still can do. */
+.readonly-run {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 10px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+  color: var(--foreground);
+}
+.readonly-run-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--foreground);
+  animation: readonly-run-pulse 1.4s ease-in-out infinite;
+}
+@keyframes readonly-run-pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .readonly-run-dot {
+    animation: none;
+    opacity: 0.7;
+  }
+}
+.btn.readonly-stop {
+  margin: 0;
+  padding: 2px 10px;
+  height: auto;
+  font-size: 12px;
+}
 .readonly-scroll {
   padding-top: 20px;
 }
