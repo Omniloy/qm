@@ -287,6 +287,12 @@ services:
       # Without this the portal 404s /d/* itself and core never sees the
       # request, so every app the agent publishes looks like it does not exist.
       PORTAL_DEPLOYMENTS_ENABLED: "1"
+      # Traefik terminates TLS in front of the portal, so the client address is
+      # the last hop of X-Forwarded-For rather than the socket. Public share
+      # links are rate limited per client, and the portal refuses to start
+      # rather than bound an anonymous surface on an address anyone can forge —
+      # so without this the whole portal stays down, not just sharing.
+      PORTAL_XFF_TRUSTED_HOPS: "1"
       PORTAL_SESSION_SECRET: ${PORTAL_SESSION_SECRET}
       PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET}
       CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET}
