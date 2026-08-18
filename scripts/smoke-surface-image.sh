@@ -30,6 +30,7 @@ if [[ "$service" == "portal" ]]; then
     -e OIDC_CLIENT_SECRET=runtime-smoke-client-secret \
     -e OIDC_ALLOWED_EMAIL_DOMAIN=example.com \
     -e PORTAL_PUBLIC_URL=https://portal.example.com \
+    -e PORTAL_XFF_TRUSTED_HOPS=1 \
     "$image" >/dev/null
 elif [[ "$service" == "auth" ]]; then
   signing_jwk="$(node -e "const {generateKeyPairSync}=require('node:crypto');process.stdout.write(JSON.stringify(generateKeyPairSync('ec',{namedCurve:'P-256'}).privateKey.export({format:'jwk'})))")"

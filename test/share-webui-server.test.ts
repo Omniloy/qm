@@ -18,6 +18,7 @@
 
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { PORTAL_IDENTITY_HEADER } from "../plugins/chassis/src/portal-identity.ts";
@@ -197,23 +198,32 @@ test("a traversal in the artifact id never reaches core", async () => {
   assert.equal(hits.length, before, "no core round-trip should have happened");
 });
 
-test("the share page renders anonymously, unindexed, and cannot beacon its readers", async () => {
-  const r = await fetch(`${base}/share/${ID}`);
-  assert.equal(r.status, 200, await r.text());
-  assert.match(r.headers.get("content-type") ?? "", /^text\/html/);
-  assert.match(r.headers.get("cache-control") ?? "", /no-store/);
-  assert.match(r.headers.get("x-robots-tag") ?? "", /noindex/);
+// The page is served out of dist-web/, which only the Web UI plugin job builds.
+// The core shards run this file without it, and a missing build artifact is not
+// a failing assertion about headers — it is a different test that was never run.
+const HTML_BUILT = existsSync(new URL("../plugins/web-ui/dist-web/index.html", import.meta.url));
 
-  // Modelled on the static index.html branch, not serveAppEditHtml.
-  assert.equal(r.headers.get("x-frame-options"), "SAMEORIGIN");
-  const csp = r.headers.get("content-security-policy");
-  assert.equal(cspDirective(csp, "frame-ancestors"), "frame-ancestors 'self'");
+test(
+  "the share page renders anonymously, unindexed, and cannot beacon its readers",
+  { skip: HTML_BUILT ? false : "plugins/web-ui/dist-web is not built here (run npm run build in plugins/web-ui)" },
+  async () => {
+    const r = await fetch(`${base}/share/${ID}`);
+    assert.equal(r.status, 200, await r.text());
+    assert.match(r.headers.get("content-type") ?? "", /^text\/html/);
+    assert.match(r.headers.get("cache-control") ?? "", /no-store/);
+    assert.match(r.headers.get("x-robots-tag") ?? "", /noindex/);
 
-  // Narrowed for untrusted content rendered to strangers.
-  assert.equal(cspDirective(csp, "img-src"), "img-src 'self' data:");
-  assert.equal(cspDirective(csp, "frame-src"), "frame-src 'none'");
-  assert.equal(cspDirective(csp, "connect-src"), "connect-src 'self'");
-});
+    // Modelled on the static index.html branch, not serveAppEditHtml.
+    assert.equal(r.headers.get("x-frame-options"), "SAMEORIGIN");
+    const csp = r.headers.get("content-security-policy");
+    assert.equal(cspDirective(csp, "frame-ancestors"), "frame-ancestors 'self'");
+
+    // Narrowed for untrusted content rendered to strangers.
+    assert.equal(cspDirective(csp, "img-src"), "img-src 'self' data:");
+    assert.equal(cspDirective(csp, "frame-src"), "frame-src 'none'");
+    assert.equal(cspDirective(csp, "connect-src"), "connect-src 'self'");
+  },
+);
 
 test("only GET is anonymous; a write to a share path falls through to the gate", async () => {
   for (const method of ["POST", "PUT", "DELETE", "PATCH"]) {
