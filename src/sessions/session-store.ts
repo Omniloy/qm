@@ -416,6 +416,10 @@ export interface SessionStore {
   get(sessionId: string): Promise<Session | null>;
 
   updateTitle(sessionId: string, title: string): Promise<void>;
+  updateScope(
+    sessionId: string,
+    scope: { scopeId: ScopeId; type: SessionType; channelName: string | null },
+  ): Promise<void>;
   updateForkProvenance(
     sessionId: string,
     provenance: { forkedFrom: { sessionId: string; title?: string | null }; forkBoundarySeq: number },

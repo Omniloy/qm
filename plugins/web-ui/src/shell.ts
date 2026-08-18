@@ -56,6 +56,7 @@ import {
   sessionsState,
   toggleWebOnly,
 } from "./sessions";
+import { resetContextPicker } from "./context-picker";
 import { openCronById, renderCronsPage, resetActiveCron, routeCronsHistory } from "./crons";
 import { renderFiles } from "./files";
 import { clearConnectorNotice, noteConnectorResult, renderConnectors, resetKeychainState } from "./connectors";
@@ -578,6 +579,7 @@ export function switchView(v: View): void {
   appState.viewRenderSeq++;
   sessionsState.openMenuId = null;
   sessionsState.renamingId = null;
+  resetContextPicker();
   if (v !== "chats") {
     mainConversation().teardown();
     mainConversation().composer.resetComposer();

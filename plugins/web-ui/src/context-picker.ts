@@ -12,6 +12,8 @@ import { contextsState, personalScopeId, scopeTitle } from "./contexts";
  * anyone your Google access, and people reasonably assume it does.
  */
 
+type MoveKind = "folder" | "file" | "conversation";
+
 export interface MoveTarget {
   /** Shown in the heading. */
   label: string;
@@ -20,7 +22,7 @@ export interface MoveTarget {
   /** Performs the move. Rejects with a message the dialog will show. */
   move: (scopeId: string) => Promise<void>;
   /** Folders carry the extra warning about whose Google account is used. */
-  kind: "folder" | "file";
+  kind: MoveKind;
 }
 
 let open: MoveTarget | null = null;
@@ -44,24 +46,25 @@ export function resetContextPicker(): void {
 }
 
 /** Contexts this person could move something into, current one included. */
-function movableContexts(): Array<{ scopeId: string; title: string }> {
+function movableContexts(kind: MoveKind): Array<{ scopeId: string; title: string }> {
   const personal = personalScopeId();
-  return (
-    contextsState.list
-      // A Project is a channel or group scope, so those two kinds already cover
-      // everything the sidebar calls a Project — there is no separate kind.
-      .filter((c) => c.scopeId === personal || c.kind === "channel" || c.kind === "group")
-      .map((c) => ({ scopeId: c.scopeId, title: scopeTitle(c.scopeId, c.name) }))
-      .sort((a, b) => {
-        if (a.scopeId === personal) return -1;
-        if (b.scopeId === personal) return 1;
-        return a.title.localeCompare(b.title);
-      })
-  );
+  return contextsState.list
+    .filter((c) =>
+      kind === "conversation"
+        ? c.scopeId === personal || Boolean(c.project)
+        : c.scopeId === personal || c.kind === "channel" || c.kind === "group",
+    )
+    .map((c) => ({ scopeId: c.scopeId, title: scopeTitle(c.scopeId, c.name) }))
+    .sort((a, b) => {
+      if (a.scopeId === personal) return -1;
+      if (b.scopeId === personal) return 1;
+      return a.title.localeCompare(b.title);
+    });
 }
 
-function moveLabel(kind: "folder" | "file"): string {
-  return kind === "folder" ? "Move folder" : "Move file";
+function moveLabel(kind: MoveKind): string {
+  if (kind === "folder") return "Move folder";
+  return kind === "file" ? "Move file" : "Move conversation";
 }
 
 export function contextPickerTpl(rerender: () => void): TemplateResult | typeof nothing {
@@ -73,9 +76,10 @@ export function contextPickerTpl(rerender: () => void): TemplateResult | typeof 
     rerender();
   };
 
-  const options = movableContexts();
+  const options = movableContexts(t.kind);
   const destination = options.find((o) => o.scopeId === choice);
-  const moving = choice !== t.current;
+  const moving = Boolean(destination) && choice !== t.current;
+  const conversation = t.kind === "conversation";
 
   return html`<div
     class="kc-dialog-scrim"
@@ -85,7 +89,9 @@ export function contextPickerTpl(rerender: () => void): TemplateResult | typeof 
   >
     <section class="kc-confirm drive-picker">
       <header class="drive-picker-head"><h2>Change context</h2></header>
-      <p class="drive-note">Which conversations can reach “${t.label}”.</p>
+      <p class="drive-note">
+        ${conversation ? html`Where “${t.label}” lives.` : html`Which conversations can reach “${t.label}”.`}
+      </p>
 
       <div class="context-choices">
         ${options.map(
@@ -119,6 +125,19 @@ export function contextPickerTpl(rerender: () => void): TemplateResult | typeof 
         moving && t.kind === "file" && destination
           ? html`<p class="drive-note">
               Everyone in ${destination.title} will be able to open this file. You stay its owner.
+            </p>`
+          : nothing
+      }
+      ${
+        moving && conversation && destination
+          ? html`<p class="drive-note">
+              ${
+                destination.scopeId === personalScopeId()
+                  ? html`Only you will see this conversation — everyone else in ${scopeTitle(t.current)} loses it.`
+                  : html`Everyone in ${destination.title} will see this conversation and can continue it.`
+              }
+              Its files and memories stay behind in ${scopeTitle(t.current)}’s workspace, and any share link for it
+              stops working.
             </p>`
           : nothing
       }

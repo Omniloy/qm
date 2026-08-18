@@ -289,6 +289,11 @@ export interface App extends ShareMethods {
     principalId: string,
     patch: { title?: string | null; archived?: boolean; pinned?: boolean; color?: string | null },
   ): Promise<Session | null>;
+  moveSessionForViewer(
+    sessionId: string,
+    principalId: string,
+    scopeId: ScopeId,
+  ): Promise<Session | "not_found" | "forbidden">;
   regenerateTitle(sessionId: string, principalId: string): Promise<{ title: string | null } | null>;
   spawnSession(principalId: string, opts: { scopeId: ScopeId; title?: string }): Promise<{ session: Session } | null>;
   forkSession(

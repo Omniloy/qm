@@ -361,6 +361,15 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
       await q("UPDATE sessions SET title = $2 WHERE id = $1", [sessionId, title]);
     },
 
+    async updateScope(sessionId, scope): Promise<void> {
+      await q("UPDATE sessions SET scope_id = $2, type = $3, channel_name = $4 WHERE id = $1", [
+        sessionId,
+        scope.scopeId,
+        scope.type,
+        scope.channelName,
+      ]);
+    },
+
     async updateForkProvenance(sessionId, provenance): Promise<void> {
       await q(
         "UPDATE sessions SET forked_from_session_id = $2, forked_from_title = $3, fork_boundary_seq = $4 WHERE id = $1",

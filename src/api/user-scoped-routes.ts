@@ -31,6 +31,7 @@ const USER_SCOPED: Rule[] = [
   pat("GET", "/v1/sessions/:id/share", { in: "query", name: "principalId" }),
   pat("DELETE", "/v1/sessions/:id/share", { in: "query", name: "principalId" }),
   pat("POST", "/v1/sessions/:id/fork", { in: "body", name: "principalId" }),
+  pat("POST", "/v1/sessions/:id/move", { in: "body", name: "principalId" }),
   pat("GET", "/v1/sessions", { in: "query", name: "principalId" }),
   pat("GET", "/v1/contexts", { in: "query", name: "principalId" }),
   pat("GET", "/v1/projects", { in: "query", name: "principalId" }),

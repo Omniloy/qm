@@ -1255,6 +1255,25 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
       return relay(res, r);
     }
 
+    if (method === "POST" && path.startsWith("/api/sessions/") && path.endsWith("/move")) {
+      const id = decodeURIComponent(path.slice("/api/sessions/".length, -"/move".length));
+      let scopeId = "";
+      try {
+        const p = JSON.parse(await readBody(req)) as { scopeId?: unknown };
+        if (typeof p.scopeId === "string") scopeId = p.scopeId;
+      } catch (e) {
+        if (e instanceof PayloadTooLargeError) throw e;
+        return json(res, 400, { error: "bad_request" });
+      }
+      if (!scopeId) return json(res, 400, { error: "bad_request", message: "scopeId required" });
+      const r = await coreFetch(
+        "POST",
+        `/v1/sessions/${encodeURIComponent(id)}/move`,
+        JSON.stringify({ principalId: user, scopeId }),
+      );
+      return relay(res, r);
+    }
+
     if (method === "GET" && path.startsWith("/api/sessions/") && path.endsWith("/approvals")) {
       const id = decodeURIComponent(path.slice("/api/sessions/".length, -"/approvals".length));
       const r = await coreFetch(

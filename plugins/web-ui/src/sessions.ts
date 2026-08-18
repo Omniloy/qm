@@ -11,6 +11,7 @@ import {
   Cog,
   EllipsisVertical,
   Folder,
+  FolderInput,
   Hash,
   Link,
   Lock,
@@ -32,6 +33,8 @@ import {
   inheritedTranscript,
   isContinuable,
   entriesToMessages,
+  moveSession,
+  ownsWebThread,
   regenerateTitle,
   sharedContextLabel,
   slackThreadUrl,
@@ -70,6 +73,7 @@ import {
   renameProject,
   scopeChip,
 } from "./contexts";
+import { contextPickerTpl, openContextPicker, resetContextPicker } from "./context-picker";
 import { groupDmLabel, groupDmText } from "./group-dm-label";
 import { transcriptModel } from "./model-options";
 import { appState, closeSidebarOnNarrowView, renderSidebarTop, showMainEmpty } from "./shell";
@@ -121,6 +125,7 @@ let chatsPageSurface: "all" | "web" | "slack" = "all";
 let chatsPageHost: HTMLElement | null = null;
 
 export function resetSessionsState(): void {
+  resetContextPicker();
   sessionsState.list = [];
   sessionsState.loaded = false;
   sessionsState.openMenuId = null;
@@ -299,6 +304,7 @@ export function renderList(): void {
             </div>`
           : ""
       }
+      ${contextPickerTpl(renderList)}
     `,
     appState.listEl,
   );
@@ -903,6 +909,13 @@ function sessionMenuPopover(s: CoreSession): TemplateResult {
       <button class="session-menu-option" type="button" role="menuitem" @click=${() => setArchived(s, !archived)}>
         ${archived ? icon(ArchiveRestore, 15) : icon(Archive, 15)}<span>${archived ? "Unarchive" : "Archive"}</span>
       </button>
+      ${
+        isMovable(s)
+          ? html`<button class="session-menu-option" type="button" role="menuitem" @click=${() => startMove(s)}>
+              ${icon(FolderInput, 15)}<span>Move to project…</span>
+            </button>`
+          : nothing
+      }
       ${sessionColorRow(s)}
     </div>
   `;
@@ -1074,6 +1087,45 @@ function setArchived(s: CoreSession, archived: boolean): void {
 function setPinned(s: CoreSession, pinned: boolean): void {
   sessionsState.openMenuId = null;
   void persistSessionPatch(s.id, { pinned });
+}
+
+function isMovable(s: CoreSession): boolean {
+  return Boolean(s.id) && ownsWebThread(s, appState.me?.user ?? "");
+}
+
+function startMove(s: CoreSession): void {
+  sessionsState.openMenuId = null;
+  openContextPicker(
+    {
+      label: sessionTitle(s),
+      current: s.scopeId,
+      kind: "conversation",
+      move: (scopeId) => moveSessionTo(s, scopeId),
+    },
+    renderList,
+  );
+  void ensureContexts().then(() => renderList());
+}
+
+async function moveSessionTo(s: CoreSession, scopeId: string): Promise<void> {
+  const { session } = await moveSession(s.id, scopeId);
+  applyResolvedSession(session);
+  adoptMovedScope(session);
+  sessionsState.collapsedProjectScopes.delete(session.scopeId);
+  renderList();
+  void refreshSessions({ silent: true, refreshContexts: true });
+}
+
+function adoptMovedScope(moved: CoreSession): void {
+  for (const conv of allConversations()) {
+    if (conv.state.sessionId !== moved.id) continue;
+    conv.state.scopeId = moved.scopeId;
+    conv.state.contextName = moved.channelName ?? null;
+    conv.state.rememberedScopeId = moved.scopeId;
+    conv.state.rememberedContextName = moved.channelName ?? null;
+    void conv.composer.refreshRuntimeSelection(moved.scopeId, conv.state.agent ?? undefined);
+    conv.redraw();
+  }
 }
 
 function previewColor(s: CoreSession, color: string): void {

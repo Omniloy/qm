@@ -53,6 +53,24 @@ test("pg session store: fork provenance survives a store restart", { skip }, asy
   assert.equal(loaded?.forkBoundarySeq, 4);
 });
 
+test("pg session store: updateScope rewrites scope, type and channel name together", { skip }, async () => {
+  const s = createPostgresSessionStore(URL!);
+  const session = await s.getOrCreateByThread("scope-move", "dm", scopeId("personal", "U1"), undefined, "web");
+  const project = scopeId("group", "web-project-p1");
+  await s.updateScope(session.id, { scopeId: project, type: "group", channelName: "Launch Cohort" });
+  const inProject = await s.get(session.id);
+  assert.equal(inProject?.scopeId, project);
+  assert.equal(inProject?.type, "group");
+  assert.equal(inProject?.channelName, "Launch Cohort");
+
+  await s.updateScope(session.id, { scopeId: scopeId("personal", "U1"), type: "dm", channelName: null });
+  const back = await s.get(session.id);
+  assert.equal(back?.scopeId, scopeId("personal", "U1"));
+  assert.equal(back?.type, "dm");
+  assert.equal(back?.channelName, undefined);
+  assert.equal(back?.threadRef, "scope-move");
+});
+
 test("pg session store: one-per-thread, TTL/fenced lease, monotonic log, visibility window", { skip }, async () => {
   const s = createPostgresSessionStore(URL!, { leaseTtlMs: 50 });
   const scope = scopeId("personal", "U1");
