@@ -16,7 +16,7 @@ export interface DeployReconcileInput {
 }
 
 export interface DeployApplyOptions {
-  gateStartup?: boolean;
+  readyWindowMs?: number;
 }
 
 export interface DeployProvider {

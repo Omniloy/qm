@@ -10,6 +10,7 @@ const fakeDocker = (): { bin: string; calls: () => string[][] } => {
   const dir = mkdtempSync(join(tmpdir(), "qm-docker-"));
   const bin = join(dir, "docker");
   const log = join(dir, "calls.log");
+  const probes = join(dir, "probes.count");
   writeFileSync(
     bin,
     [
@@ -22,7 +23,10 @@ const fakeDocker = (): { bin: string; calls: () => string[][] } => {
       "esac",
       'if [ "$1" = "port" ]; then [ -n "$FAKE_HOST_PORT" ] || exit 1; echo "127.0.0.1:$FAKE_HOST_PORT"; exit 0; fi',
       'if [ "$1" = "exec" ]; then',
-      '  case "$FAKE_LISTENING" in',
+      `  i=$(cat ${probes} 2>/dev/null || echo 0); i=$((i + 1)); echo $i > ${probes}`,
+      "  set -- $FAKE_LISTENING",
+      '  while [ "$i" -gt 1 ] && [ $# -gt 1 ]; do shift; i=$((i - 1)); done',
+      '  case "$1" in',
       "    yes) exit 0 ;;",
       "    unknown) exit 126 ;;",
       "    *) exit 1 ;;",
@@ -203,6 +207,32 @@ test("an image the probe cannot run in does not block the deploy", async (t) => 
   assert.deepEqual(await p.apply(deployment(), version), { host: "127.0.0.1", port: 32901 });
 });
 
+test("a probe that starts unknowable but then says nothing is listening fails the deploy", async (t) => {
+  const docker = fakeDocker();
+  t.after(clearFakes);
+  process.env.FAKE_RUNNING = "true";
+  process.env.FAKE_HOST_PORT = "32901";
+  process.env.FAKE_LISTENING = "unknown no";
+  process.env.FAKE_LOGS = "listening on 127.0.0.1:3000";
+
+  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 600 });
+  await assert.rejects(() => p.apply(deployment(), version), /nothing is serving port 8080/);
+});
+
+test("a relaunch may ask for a shorter ready window than a first deploy", async (t) => {
+  const docker = fakeDocker();
+  t.after(clearFakes);
+  process.env.FAKE_RUNNING = "true";
+  process.env.FAKE_HOST_PORT = "32901";
+  process.env.FAKE_LISTENING = "no";
+  process.env.FAKE_LOGS = "listening on 127.0.0.1:3000";
+
+  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 10_000 });
+  const started = Date.now();
+  await assert.rejects(() => p.apply(deployment(), version, { readyWindowMs: 200 }), /nothing is serving port 8080/);
+  assert.ok(Date.now() - started < 5_000, "the caller's window should bound the wait, not the provider default");
+});
+
 test("a docker that cannot be reached is neither a clean exit nor a successful deploy", async (t) => {
   const docker = fakeDocker();
   t.after(clearFakes);
@@ -219,7 +249,7 @@ test("a docker that cannot be reached is neither a clean exit nor a successful d
   );
 });
 
-test("a port read that keeps failing removes the container rather than orphaning it", async (t) => {
+test("a port read that keeps failing does not destroy the container the probe just cleared", async (t) => {
   const docker = fakeDocker();
   t.after(clearFakes);
   process.env.FAKE_RUNNING = "true";
@@ -233,8 +263,8 @@ test("a port read that keeps failing removes the container rather than orphaning
   );
   assert.equal(
     docker.calls().filter((c) => c[0] === "rm").length,
-    2,
-    "the unreachable container should not be left running",
+    1,
+    "only the container this replaced should be removed, not the one that is serving",
   );
 });
 

@@ -8,6 +8,7 @@ const APP_PORT = 8080;
 const READY_WINDOW_MS = 30_000;
 const READY_POLL_MS = 250;
 const PROBE_TIMEOUT_MS = 1_500;
+const PROBE_CALL_TIMEOUT_MS = 3_000;
 const PORT_READ_ATTEMPTS = 3;
 const FAILURE_LOG_LINES = "40";
 const FAILURE_LOG_BYTES = 2_000;
@@ -37,8 +38,11 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
 
   const name = (d: Deployment) => `agent-deploy-${d.id.slice(0, 12)}`;
 
-  const containerState = async (n: string): Promise<{ running: boolean; exitCode: number | null } | null> => {
-    const r = await dexec(["inspect", "-f", "{{.State.Running}} {{.State.ExitCode}}", n]);
+  const containerState = async (
+    n: string,
+    timeoutMs?: number,
+  ): Promise<{ running: boolean; exitCode: number | null } | null> => {
+    const r = await dexec(["inspect", "-f", "{{.State.Running}} {{.State.ExitCode}}", n], timeoutMs);
     if (r.code !== 0) return null;
     const [running, exitCode] = r.stdout.trim().split(/\s+/);
     const parsed = Number(exitCode);
@@ -62,23 +66,23 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
       `const s=require("net").connect({host:a[0]||"127.0.0.1",port:${APP_PORT}});` +
       `s.on("connect",()=>process.exit(0));s.on("error",()=>process.exit(1));` +
       `setTimeout(()=>process.exit(1),${PROBE_TIMEOUT_MS});`;
-    const r = await dexec(["exec", n, "node", "-e", script]);
+    const r = await dexec(["exec", n, "node", "-e", script], PROBE_CALL_TIMEOUT_MS);
     if (r.code === 0) return "yes";
     return r.code === 1 ? "no" : "unknown";
   };
 
-  const waitAppReady = async (n: string): Promise<void> => {
-    const deadline = Date.now() + (opts.readyWindowMs ?? READY_WINDOW_MS);
+  const waitAppReady = async (n: string, windowMs: number): Promise<void> => {
+    const deadline = Date.now() + windowMs;
     let sawRunning = false;
     let couldNotProbe = false;
     for (;;) {
-      const state = await containerState(n);
+      const state = await containerState(n, PROBE_CALL_TIMEOUT_MS);
       if (state && !state.running) throw await exitedWithOutput(n, state.exitCode);
       if (state?.running) {
         sawRunning = true;
         const listening = await listeningInside(n);
         if (listening === "yes") return;
-        if (listening === "unknown") couldNotProbe = true;
+        couldNotProbe = listening === "unknown";
       }
       if (Date.now() >= deadline) break;
       await sleep(READY_POLL_MS);
@@ -158,12 +162,12 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
       ]);
       if (r.code !== 0) throw new Error(`deploy run failed: ${r.stderr.trim()}`);
       try {
-        if (applyOpts?.gateStartup !== false) await waitAppReady(name(d));
-        return await endpointOf(d, PORT_READ_ATTEMPTS);
+        await waitAppReady(name(d), applyOpts?.readyWindowMs ?? opts.readyWindowMs ?? READY_WINDOW_MS);
       } catch (e) {
         await dexec(["rm", "-f", name(d)]);
         throw e;
       }
+      return endpointOf(d, PORT_READ_ATTEMPTS);
     },
 
     async destroy(d: Deployment): Promise<void> {

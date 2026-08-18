@@ -110,6 +110,7 @@ export interface DeployServiceDeps {
   managesArtifactHome?: (homeScopeId: ScopeId, createdBy: string, principalId: string) => Promise<boolean>;
 }
 
+const REPAIR_READY_WINDOW_MS = 3_000;
 const NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -201,7 +202,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
       }
       if (unreadable) return null;
       try {
-        const fresh = await applyVersion(cur.id, v, want, { gateStartup: false });
+        const fresh = await applyVersion(cur.id, v, want, { readyWindowMs: REPAIR_READY_WINDOW_MS });
         await markVersionRunning(cur.id, v.version, fresh);
         return fresh;
       } catch (e) {

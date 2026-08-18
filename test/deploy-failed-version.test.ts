@@ -142,6 +142,38 @@ test("a transient failure while repairing leaves the app recoverable", async () 
   assert.equal(again.status, "ok", "once docker recovers, the next request should repair the app");
 });
 
+test("a repair relaunch waits for the app to bind, on a shorter window than a first deploy", async () => {
+  const windows: Array<number | undefined> = [];
+  let gone = false;
+  const deploy = createDeployService({
+    deployStore: createDeployStore(),
+    provider: {
+      profile: { managedScaleToZero: false },
+      apply: async (_d, v, opts) => {
+        windows.push(opts?.readyWindowMs);
+        gone = false;
+        return { host: "127.0.0.1", port: 20700 + v.version };
+      },
+      destroy: async () => {
+        gone = true;
+      },
+      resolveEndpoint: async (d) => (gone ? null : (d.endpoint ?? null)),
+    },
+    auditLog: { record() {}, events: async () => [], tail: async () => [] },
+    acl: createAclStore(),
+    deployDir: mkdtempSync(join(tmpdir(), "deploy-repair-window-")),
+  });
+
+  const d = await deploy.deploy({ ownerScopeId: OWNER, createdBy: "u1", entrypoint: "node server.js", files });
+  gone = true;
+  assert.equal((await deploy.reachDeployment(d.id, "u1", { bypassAcl: true })).status, "ok");
+
+  assert.deepEqual(windows.length, 2, "the app should have been relaunched once");
+  const repair = windows[1];
+  assert.ok(repair && repair > 0, "a repair must gate on readiness rather than hand out an address that 502s");
+  assert.ok(repair! <= 5_000, "but on a window short enough not to stall the request that triggered it");
+});
+
 test("a running app whose endpoint cannot be read is not torn down and rebuilt", async () => {
   const started: string[] = [];
   let unreadable = false;
