@@ -8,8 +8,8 @@ import { createRelayHub, relaySocket, type RelayHub, type RelaySide } from "./re
 /** The audience a pairing token carries, so it cannot stand in for anything else. */
 export const BROWSER_RELAY_AUD = "browser-relay";
 
-export const RELAY_EXTENSION_PATH = "/v1/browser-relay/extension";
-export const RELAY_CDP_PATH = "/v1/browser-relay/cdp";
+const RELAY_EXTENSION_PATH = "/v1/browser-relay/extension";
+const RELAY_CDP_PATH = "/v1/browser-relay/cdp";
 
 export interface BrowserRelayOptions {
   hub?: RelayHub;
@@ -29,6 +29,12 @@ const DEFAULT_IDLE_MS = 10 * 60_000;
  * a token that identified the wrong person would hand one person's signed-in
  * browser to somebody else's agent.
  */
+function relaySideFor(pathname: string): RelaySide | null {
+  if (pathname === RELAY_EXTENSION_PATH) return "extension";
+  if (pathname === RELAY_CDP_PATH) return "cdp";
+  return null;
+}
+
 async function principalFor(url: URL, side: RelaySide, secret: string): Promise<string | null> {
   const token = url.searchParams.get("t");
   if (!token) return null;
@@ -59,8 +65,7 @@ export function attachBrowserRelay(server: Server, opts: BrowserRelayOptions = {
     } catch {
       return refuse(socket, 400, "Bad Request");
     }
-    const side: RelaySide | null =
-      url.pathname === RELAY_EXTENSION_PATH ? "extension" : url.pathname === RELAY_CDP_PATH ? "cdp" : null;
+    const side = relaySideFor(url.pathname);
     // Anything else is not ours; leaving it alone lets other upgrade handlers
     // (or none) deal with it rather than answering for them.
     if (!side) return;

@@ -61,10 +61,7 @@ test("Slack OIDC outputs include the separate SSO app manifest", () => {
     assert.equal(output.slack.sso?.redirectUrl, "https://qm.acme.example/auth/callback");
     assert.equal(output.slack.sso?.manifest, join(dir, "slack-sso-manifest.yml"));
     const sso = new URL(output.slack.sso!.createUrl);
-    assert.match(
-      sso.searchParams.get("manifest_yaml") ?? "",
-      new RegExp(`name: ${BRAND.slackAppName} SSO`),
-    );
+    assert.match(sso.searchParams.get("manifest_yaml") ?? "", new RegExp(`name: ${BRAND.slackAppName} SSO`));
     assert.match(sso.searchParams.get("manifest_yaml") ?? "", /qm\.acme\.example\/auth\/callback/);
   } finally {
     rmSync(dir, { recursive: true, force: true });

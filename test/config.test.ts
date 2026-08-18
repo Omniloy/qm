@@ -409,3 +409,21 @@ test("baseModelProviders constrains the base model only when a provider is decla
     "with no declaration the shipped default stands, so upgrading never moves a deployment's model or its billing",
   );
 });
+
+test("PUBLIC_SHARE_LINKS defaults on, and only an explicit falsey value turns it off", () => {
+  // The owner's instruction is that absent env means enabled. The flag exists
+  // so a deployment that must publish nothing can say so, which is the reverse
+  // of the usual "unset means off" reading — so it is pinned here rather than
+  // left to whoever next reads the `??`.
+  assert.equal(loadConfig({}).publicShareLinks, true, "absent env must ship the feature ON");
+  assert.equal(loadConfig({ PUBLIC_SHARE_LINKS: "" }).publicShareLinks, true, "an empty value is not a decision");
+  for (const on of ["1", "true", "yes", "on"]) {
+    assert.equal(loadConfig({ PUBLIC_SHARE_LINKS: on }).publicShareLinks, true, on);
+  }
+  for (const off of ["0", "false", "no", "off", "none", "FALSE"]) {
+    assert.equal(loadConfig({ PUBLIC_SHARE_LINKS: off }).publicShareLinks, false, off);
+  }
+  // A typo must not silently pick a side of a switch that governs what leaves
+  // the building.
+  assert.throws(() => loadConfig({ PUBLIC_SHARE_LINKS: "maybe" }), /PUBLIC_SHARE_LINKS/);
+});

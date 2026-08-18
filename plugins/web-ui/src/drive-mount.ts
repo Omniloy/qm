@@ -105,7 +105,7 @@ export function requestAccessUrl(row: Pick<MountRow, "webViewLink" | "externalId
  * narrow widths. Silence is the correct output for the common case; the age
  * survives in the row's tooltip (see rowTitle).
  */
-export function rowStatus(row: MountRow, state: BandState, nowMs: number): string | null {
+export function rowStatus(row: MountRow, state: BandState): string | null {
   if (state === "not-connected") return "Not connected";
   if (state === "needs-reconnect") return "Paused";
   // Off outranks no-access: a folder that is off is never listed, so any

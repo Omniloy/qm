@@ -14,6 +14,8 @@ import type { Readable } from "node:stream";
 import { type FileArtifact, type FileArtifactStore, type ListOwnedOptions } from "../files/file-artifact-store.ts";
 import type { IdentityService } from "../identity/identity-service.ts";
 import type { SessionStore, TranscriptEntry } from "../sessions/session-store.ts";
+import type { SessionShareStore } from "../sessions/session-share.ts";
+import type { ShareMethods } from "./app-shares.ts";
 import { type Sandbox } from "../sandbox/sandbox.ts";
 import type { ProcessRegistry } from "../processes/process-registry.ts";
 import type { MonitorStore } from "../monitors/monitor-store.ts";
@@ -217,7 +219,12 @@ interface TranscriptWindow {
   beforeSeq?: number;
 }
 
-export interface App {
+/**
+ * `ShareMethods` is mixed in rather than restated: the share module owns the one
+ * sanctioned projection of a conversation to the public, so its signatures live
+ * next to that reasoning and cannot drift from a second copy here.
+ */
+export interface App extends ShareMethods {
   turn(req: TurnRequest): Promise<TurnResult>;
   getApproval(requestId: string, viewer?: string): Promise<(PendingApprovalRecord & { requestId: string }) | null>;
   subscribeSessionStates(cb: (event: SessionStateEvent) => void): () => void;
@@ -334,6 +341,10 @@ export interface App {
   grant(g: Grant): Promise<void>;
   revokeGrant(ownerScopeId: ScopeId, ref: string, granteeScopeId: ScopeId, revokedBy: string): Promise<void>;
   promoteSkill(id: string, targetScopeId: ScopeId, actorId: string, liveActor: boolean): Promise<Skill>;
+  /** The inverse of promoteSkill: take an org-wide skill back out of circulation. */
+  demoteSkill(id: string, actorId: string, liveActor: boolean): Promise<void>;
+  /** Which scopes hold a grant on a skill — what "shared with" means, listed. */
+  listSkillGrants(id: string): Promise<Array<{ granteeScopeId: ScopeId; permission: Permission }>>;
   belongsToScope(principalId: string, scope: ScopeId): Promise<boolean>;
   canManageArtifactHome(homeScopeId: ScopeId, createdBy: string, principalId: string): Promise<boolean>;
   getArtifactHome(type: ArtifactType, idOrName: string): Promise<ArtifactHome | null>;
@@ -512,6 +523,8 @@ export interface AppDeps {
   relayPublicUrl?: string;
   /** Injected in tests so saving a token needs no live model call. */
   harnessAuthProbe?: (token: string) => Promise<{ ok: boolean; detail?: string }>;
+  /** Where the ChatGPT proxy lives and the key that lets core drive its sign-in. */
+  codexProxy?: { url: string; managementKey: string };
   modelCredentialFetch?: typeof fetch;
   customProviders?: CustomProviderStore;
   refreshCustomProviders?: () => Promise<void>;
@@ -527,6 +540,12 @@ export interface AppDeps {
   crons: CronStore;
   deliveries: DeliveryStore;
   directory: DirectoryStore;
+  /**
+   * Public read links over conversations. Absent when PUBLIC_SHARE_LINKS is
+   * explicitly disabled, which is the whole kill switch: with no store every
+   * share method answers "not_configured" and both public routes 404.
+   */
+  sessionShares?: SessionShareStore;
   projects?: ProjectStore;
   deploy: DeployService;
   deploymentLayer?: DeploymentLayerRuntime;
@@ -598,14 +617,14 @@ export const MAX_WORKSPACE_PATHS = 10_000;
 
 export const MAX_WORKSPACE_FILE_BYTES = 25 * 1024 * 1024;
 
-export interface WorkspaceListing {
+interface WorkspaceListing {
   scopeId: ScopeId;
   paths: string[];
   truncated: boolean;
   hiddenDirs: string[];
 }
 
-export interface OpenedWorkspaceFile {
+interface OpenedWorkspaceFile {
   name: string;
   mimetype: string;
   bytes: Uint8Array;

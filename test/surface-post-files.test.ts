@@ -146,3 +146,69 @@ test("collectOutbound: harvests every outbox file (the turn-result rail for a no
   const r = await collectOutbound(sandbox, handle, transfer);
   assert.deepEqual(r.attachments.map((a) => a.name).sort(), ["cover.png", "leftover.txt"]);
 });
+
+// --- the transcript has to record what was sent ------------------------------
+// Files that ride on the turn's own result get a `delivery` entry from the
+// orchestrator, and that entry is the only thing the web transcript builds an
+// attachment block from. Files sent through the surface tool reached their
+// destination and the file library but never the transcript, so a web
+// conversation showed the message with no attachments — and no way to recover
+// them on reload, because nothing recorded that they were sent.
+
+function postingTools(recorded: Array<{ text: string; names: string[] }>) {
+  return createSurfaceToolDeps({
+    deps: {
+      deliveries: {
+        async enqueue() {
+          return { id: "d1" };
+        },
+      },
+      sandbox: {
+        async readFileBytes() {
+          return bytes("file");
+        },
+      },
+    },
+    input: { surfaceTools: true },
+    defaultDestination: { type: "web", target: "web:u1" },
+    strictReadOnly: false,
+    session: { id: "s1", threadRef: "web:u1:t1" },
+    scopeId: scopeId("personal", "u1"),
+    postProvenance: () => ({}),
+    provision: async () => handle,
+    blobTransfer: {
+      async put() {
+        return { blobId: "blob" };
+      },
+    },
+    fileRegistration: { async onRegistered() {} },
+    recordDelivery: async (text: string, attachments: ReadonlyArray<{ name: string }>) => {
+      recorded.push({ text, names: attachments.map((a) => a.name) });
+    },
+    spine: { surfaceOutboundCount: 0, crossConversationPosts: 0 },
+  } as unknown as SurfaceToolsContext);
+}
+
+test("posting with files records a delivery entry naming each one", async () => {
+  const recorded: Array<{ text: string; names: string[] }> = [];
+  const r = await postingTools(recorded)!.post("here they are", undefined, ["cover.png", "report.pdf"]);
+  assert.equal(r.ok, true);
+  assert.equal(recorded.length, 1, "one entry for the post");
+  assert.equal(recorded[0]!.text, "here they are");
+  assert.deepEqual(recorded[0]!.names.sort(), ["cover.png", "report.pdf"]);
+});
+
+test("posting without files records nothing — there is no attachment block to draw", async () => {
+  const recorded: Array<{ text: string; names: string[] }> = [];
+  const r = await postingTools(recorded)!.post("just words");
+  assert.equal(r.ok, true);
+  assert.deepEqual(recorded, []);
+});
+
+test("a post that never sends records nothing either", async () => {
+  const recorded: Array<{ text: string; names: string[] }> = [];
+  // Traversal is refused before anything is staged, so there is nothing to note.
+  const r = await postingTools(recorded)!.post("sneaky", undefined, ["../.ssh/id_ed25519"]);
+  assert.equal(r.ok, false);
+  assert.deepEqual(recorded, []);
+});

@@ -19,10 +19,6 @@ import type { RowActionSpec } from "./drive-mount";
 /** Which menu is open, as `${kind}:${id}`. At most one across the page. */
 let openKey: string | null = null;
 
-export function rowMenuIsOpen(key: string): boolean {
-  return openKey === key;
-}
-
 /**
  * Close the open menu unless the event landed inside one.
  *
@@ -78,10 +74,10 @@ export function rowMenuTpl(
                   ?disabled=${a.disabled}
                   title=${a.reason ?? ""}
                   @click=${() => {
-                  openKey = null;
-                  onSelect(a.id);
-                  rerender();
-                }}
+                    openKey = null;
+                    onSelect(a.id);
+                    rerender();
+                  }}
                 >
                   <span>${a.label}</span>
                 </button>`,

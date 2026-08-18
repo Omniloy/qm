@@ -119,20 +119,20 @@ test("request access points at Drive, since MiniOmni cannot grant it", () => {
 test("a healthy folder says nothing at all", () => {
   // It used to report "Listed just now" forever. Nobody acts on that, and the
   // column it occupied is what squeezed the row's actions at narrow widths.
-  assert.equal(rowStatus(row(), "populated", NOW), null);
-  assert.equal(rowStatus(row({ listedAt: NOW - 3 * 86_400_000 }), "populated", NOW), null, "age alone is not a status");
+  assert.equal(rowStatus(row(), "populated"), null);
+  assert.equal(rowStatus(row({ listedAt: NOW - 3 * 86_400_000 }), "populated"), null, "age alone is not a status");
 });
 
 test("row status reflects why a row cannot be used", () => {
-  assert.equal(rowStatus(row(), "not-connected", NOW), "Not connected");
-  assert.equal(rowStatus(row(), "needs-reconnect", NOW), "Paused");
-  assert.equal(rowStatus(row({ inaccessible: true }), "populated", NOW), "No access");
-  assert.equal(rowStatus(row({ enabled: false }), "populated", NOW), "Off");
+  assert.equal(rowStatus(row(), "not-connected"), "Not connected");
+  assert.equal(rowStatus(row(), "needs-reconnect"), "Paused");
+  assert.equal(rowStatus(row({ inaccessible: true }), "populated"), "No access");
+  assert.equal(rowStatus(row({ enabled: false }), "populated"), "Off");
 });
 
 test("off outranks no-access, because an off folder is never listed", () => {
   const r = row({ enabled: false, inaccessible: true });
-  assert.equal(rowStatus(r, "populated", NOW), "Off", "a stale access flag would send someone chasing the wrong fix");
+  assert.equal(rowStatus(r, "populated"), "Off", "a stale access flag would send someone chasing the wrong fix");
 });
 
 test("the listing age survives in the tooltip", () => {
@@ -147,7 +147,7 @@ test("a folder with no listing explains what happens next", () => {
   // Regression: this once read "Listed not listed yet" — a prefix glued onto a
   // phrase — and then stated an absence the person could do nothing about.
   // Nothing lists a folder until a conversation needs it.
-  assert.equal(rowStatus(row({ listedAt: undefined }), "populated", NOW), "Opens when the agent needs it");
+  assert.equal(rowStatus(row({ listedAt: undefined }), "populated"), "Opens when the agent needs it");
 });
 
 test("the overflow menu always offers the one action that cannot fail", () => {
@@ -181,7 +181,7 @@ test("removing is marked destructive so it renders apart", () => {
 
 test("inaccessibility beats the listing age in the row status", () => {
   const r = row({ inaccessible: true, listedAt: NOW - 60_000 });
-  assert.equal(rowStatus(r, "populated", NOW), "No access", "a stale age would imply the folder is usable");
+  assert.equal(rowStatus(r, "populated"), "No access", "a stale age would imply the folder is usable");
 });
 
 test("rows are inert unless this person can actually open the folder", () => {

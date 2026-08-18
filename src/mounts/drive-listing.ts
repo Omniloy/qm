@@ -32,7 +32,7 @@ export interface DriveEntry {
   webViewLink?: string;
 }
 
-export interface ListingLimits {
+interface ListingLimits {
   /** Stop descending past this many levels below the mount root. */
   maxDepth: number;
   /** Stop after this many files, whether or not the tree is exhausted. */
@@ -41,7 +41,7 @@ export interface ListingLimits {
   maxCalls: number;
 }
 
-export const DEFAULT_LIMITS: ListingLimits = { maxDepth: 4, maxEntries: 500, maxCalls: 25 };
+const DEFAULT_LIMITS: ListingLimits = { maxDepth: 4, maxEntries: 500, maxCalls: 25 };
 
 export interface Listing {
   entries: DriveEntry[];

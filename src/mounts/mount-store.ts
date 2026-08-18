@@ -26,7 +26,7 @@ export interface DriveMount {
   enabled: boolean;
 }
 
-export interface AttachInput {
+interface AttachInput {
   scopeId: ScopeId;
   externalId: string;
   name: string;
@@ -35,7 +35,7 @@ export interface AttachInput {
   createdBy: string;
 }
 
-export interface MountReadOptions {
+interface MountReadOptions {
   /**
    * Include folders someone has turned off.
    *

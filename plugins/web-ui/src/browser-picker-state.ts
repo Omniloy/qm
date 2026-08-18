@@ -11,7 +11,7 @@
 import { BRAND } from "../../chassis/src/brand.ts";
 
 export const BUILT_IN_BROWSER_ID = "built-in";
-export const EXTENSION_BROWSER_ID = "extension";
+const EXTENSION_BROWSER_ID = "extension";
 
 export interface BrowserProvider {
   id: string;

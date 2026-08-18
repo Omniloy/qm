@@ -7,6 +7,18 @@ import { dirname, extname, join, normalize } from "node:path";
 import { LRUCache } from "lru-cache";
 import { makeZip } from "./zip.ts";
 import {
+  matchSharePath,
+  filenameFromContentDisposition,
+  shareCursorFrom,
+  shareFileCorePath,
+  shareFileHeaders,
+  shareHtmlHeaders,
+  shareJsonHeaders,
+  shareTranscriptCorePath,
+  SHARE_ROBOTS_HEADERS,
+  SHARE_ROBOTS_TXT,
+} from "./share-routes.ts";
+import {
   signedHeaders,
   withSourceAuthNonce,
   CAPABILITY_HEADER,
@@ -665,6 +677,32 @@ async function serveStatic(res: ServerResponse, urlPath: string): Promise<void> 
   createReadStream(filePath).pipe(res);
 }
 
+/**
+ * The share page HTML.
+ *
+ * Modelled on the `serveStatic` index.html branch above, NOT on
+ * `serveAppEditHtml` below: that function exists to DELETE `x-frame-options`
+ * and widen `frame-ancestors`, which is exactly backwards for a page that
+ * renders untrusted content to anonymous strangers and polls on a timer.
+ * `shareHtmlHeaders` narrows the CSP and throws if it is ever handed relaxed
+ * headers, so reaching for the wrong template fails loud.
+ */
+async function serveShareHtml(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  let html: string;
+  if (vite) {
+    const raw = readFileSync(join(ROOT, "index.html"), "utf8").replace("%BASE_URL%favicon.svg", "/favicon.svg");
+    html = await vite.transformIndexHtml(req.url ?? "/", raw);
+  } else {
+    const filePath = join(DIST, "index.html");
+    if (!existsSync(filePath)) {
+      return void json(res, 503, { error: "not_built", message: "run `npm run build` to produce dist-web/" });
+    }
+    html = readFileSync(filePath, "utf8");
+  }
+  res.writeHead(200, shareHtmlHeaders(withSecurityHeaders({})));
+  res.end(await brandIndexHtml(html));
+}
+
 const APPS_FRAME_DOMAIN = (process.env.DEPLOY_APPS_DOMAIN ?? "").toLowerCase();
 
 async function serveAppEditHtml(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
@@ -803,6 +841,69 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
     }
     const q = `view=keychain&connector=${encodeURIComponent(provider)}&status=${ok ? "connected" : "error"}`;
     return sendHtml(res, ok ? 200 : 400, callbackHtml(q));
+  }
+
+  // --- Anonymous share surfaces --------------------------------------------
+  // Exactly three GET paths, each matched by an ANCHORED regex in
+  // ./share-routes.ts, sitting above the identity gate below. Two of them live
+  // under /api/, one typo away from the authenticated relay — a startsWith test
+  // here would be one keystroke from publishing the whole web-ui API.
+  //
+  // Nothing here decides permissions. coreFetch forwards the caller's
+  // x-portal-identity when the portal minted one (signed-in reader) and forwards
+  // nothing when it did not (stranger with a link); core resolves the share,
+  // re-authorizes the sharer on every request, and returns the anonymous /
+  // member / outsider shape itself.
+  if (method === "GET" && path === "/robots.txt") {
+    res.writeHead(200, { ...SHARE_ROBOTS_HEADERS });
+    return void res.end(SHARE_ROBOTS_TXT);
+  }
+
+  const shareSurface = matchSharePath(method, path);
+  if (shareSurface) {
+    if (shareSurface.kind === "page") return await serveShareHtml(req, res);
+
+    if (shareSurface.kind === "transcript") {
+      // shareJsonHeaders(), not relay(): relay hardcodes its header object and
+      // cannot carry cache-control/vary. Without them a shared cache keeps
+      // serving a revoked transcript, and the member-shaped body (the only one
+      // carrying a real sessionId) can be replayed to an anonymous link holder.
+      const r = await coreFetch(
+        "GET",
+        shareTranscriptCorePath(shareSurface.shareId, shareCursorFrom(url.searchParams)),
+      );
+      res.writeHead(r.status, shareJsonHeaders());
+      return void res.end(r.text);
+    }
+
+    // Attachment bytes. Streamed rather than buffered, forced to a download and
+    // forced to application/octet-stream regardless of what core reports, so a
+    // shared file named payload.js can never be loaded back through the SPA's
+    // script-src 'self' as a same-origin <script src>.
+    const corePath = withSourceAuthNonce(
+      shareFileCorePath(shareSurface.shareId, shareSurface.artifactId),
+      CORE_SIGNING_SECRET,
+    );
+    const sharePortalTok = portalTokenStore.getStore();
+    const upstream = await fetch(`${CORE}${corePath}`, {
+      headers: {
+        ...signedHeaders(CORE_SIGNING_SECRET, "GET", corePath, ""),
+        ...(sharePortalTok ? { [PORTAL_IDENTITY_HEADER]: sharePortalTok } : {}),
+      },
+      redirect: "manual",
+    });
+    if (!upstream.ok || !upstream.body) {
+      res.writeHead(upstream.status === 404 ? 404 : 502, shareJsonHeaders());
+      return void res.end(JSON.stringify({ error: upstream.status === 404 ? "not_found" : "upstream_error" }));
+    }
+    res.writeHead(
+      200,
+      shareFileHeaders({
+        filename: filenameFromContentDisposition(upstream.headers.get("content-disposition")),
+        contentLength: upstream.headers.get("content-length"),
+      }),
+    );
+    return void Readable.fromWeb(upstream.body as Parameters<typeof Readable.fromWeb>[0]).pipe(res);
   }
 
   if (path === "/me" || path.startsWith("/api/")) {
@@ -992,6 +1093,17 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
       return relay(res, r);
     }
 
+    // Ahead of the bare /api/skills/:id read below, which would otherwise treat
+    // "<id>/grants" as an id and never reach this.
+    if (method === "GET" && path.startsWith("/api/skills/") && path.endsWith("/grants")) {
+      const id = decodeURIComponent(path.slice("/api/skills/".length, -"/grants".length));
+      const r = await coreFetch(
+        "GET",
+        `/v1/skills/${encodeURIComponent(id)}/grants?principalId=${encodeURIComponent(user)}`,
+      );
+      return relay(res, r);
+    }
+
     if (method === "GET" && path.startsWith("/api/skills/")) {
       const id = decodeURIComponent(path.slice("/api/skills/".length));
       const r = await coreFetch("GET", `/v1/skills/${encodeURIComponent(id)}?principalId=${encodeURIComponent(user)}`);
@@ -1043,6 +1155,63 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const r = await coreFetch(
         "DELETE",
         `/v1/skills/${encodeURIComponent(id)}`,
+        JSON.stringify({ principalId: user }),
+      );
+      return relay(res, r);
+    }
+
+    // Sharing, moving and org-wide promotion are all one core route, which
+    // dispatches on the target scope. It takes a capability rather than portal
+    // identity, so this mints a session one — the same trick the keychain and
+    // browser-relay routes below already use.
+    if (method === "POST" && path.startsWith("/api/skills/") && path.endsWith("/share")) {
+      const id = decodeURIComponent(path.slice("/api/skills/".length, -"/share".length));
+      const share: { toScope?: string; permission?: "read" | "write"; move?: true } = {};
+      try {
+        const p = JSON.parse((await readBody(req)) || "{}") as {
+          toScope?: unknown;
+          permission?: unknown;
+          move?: unknown;
+        };
+        if (typeof p.toScope === "string") share.toScope = p.toScope;
+        if (p.permission === "read" || p.permission === "write") share.permission = p.permission;
+        if (p.move === true) share.move = true;
+      } catch (e) {
+        if (e instanceof PayloadTooLargeError) throw e;
+        return json(res, 400, { error: "bad_request" });
+      }
+      if (!share.toScope) return json(res, 400, { error: "bad_request", message: "toScope required" });
+      const r = await coreFetchCap("POST", "/v1/share", JSON.stringify({ type: "skill", id, ...share }));
+      return relay(res, r);
+    }
+
+    // Undoing a share. These carry core's own authorization, so unlike
+    // /v1/share they take the portal identity directly — the signed-in person
+    // is the actor, never a value the page gets to choose.
+    if (method === "POST" && path.startsWith("/api/skills/") && path.endsWith("/unshare")) {
+      const id = decodeURIComponent(path.slice("/api/skills/".length, -"/unshare".length));
+      let scope = "";
+      try {
+        const p = JSON.parse((await readBody(req)) || "{}") as { scope?: unknown };
+        if (typeof p.scope === "string") scope = p.scope;
+      } catch (e) {
+        if (e instanceof PayloadTooLargeError) throw e;
+        return json(res, 400, { error: "bad_request" });
+      }
+      if (!scope) return json(res, 400, { error: "bad_request", message: "scope required" });
+      const r = await coreFetch(
+        "POST",
+        `/v1/skills/${encodeURIComponent(id)}/unshare`,
+        JSON.stringify({ principalId: user, scope }),
+      );
+      return relay(res, r);
+    }
+
+    if (method === "POST" && path.startsWith("/api/skills/") && path.endsWith("/demote")) {
+      const id = decodeURIComponent(path.slice("/api/skills/".length, -"/demote".length));
+      const r = await coreFetch(
+        "POST",
+        `/v1/skills/${encodeURIComponent(id)}/demote`,
         JSON.stringify({ principalId: user }),
       );
       return relay(res, r);
@@ -1123,6 +1292,42 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
         `/v1/sessions/${encodeURIComponent(id)}/entries/${seq}?viewer=${encodeURIComponent(user)}`,
       );
       return relay(res, r);
+    }
+
+    // Share links for this conversation. Must sit ABOVE the /api/sessions/
+    // prefix relay below, which would otherwise swallow GET /api/sessions/:id/share,
+    // and above the POST /api/sessions/ prefix relay further down, which would
+    // swallow the mint. principalId is always the authenticated user; a
+    // client-supplied one in the body or query is ignored. These responses carry
+    // the share URL — which IS the secret — so they get the same
+    // no-store/vary treatment as the public ones rather than relay()'s bare
+    // content-type.
+    const shareManage = /^\/api\/sessions\/([^/]+)\/share$/.exec(path);
+    if (shareManage && (method === "GET" || method === "POST" || method === "DELETE")) {
+      const sessionId = decodeURIComponent(shareManage[1]!);
+      const base = `/v1/sessions/${encodeURIComponent(sessionId)}/share`;
+      if (method === "POST") {
+        let p: { rotate?: unknown };
+        try {
+          p = JSON.parse((await readBody(req)) || "{}") as typeof p;
+        } catch (e) {
+          if (e instanceof PayloadTooLargeError) throw e;
+          return json(res, 400, { error: "bad_request" });
+        }
+        const minted = await coreFetch(
+          "POST",
+          base,
+          JSON.stringify({ principalId: user, ...(p.rotate === true ? { rotate: true } : {}) }),
+        );
+        res.writeHead(minted.status, shareJsonHeaders());
+        return void res.end(minted.text);
+      }
+      const qs = new URLSearchParams({ principalId: user });
+      const only = url.searchParams.get("shareId");
+      if (method === "DELETE" && only) qs.set("shareId", only);
+      const r = await coreFetch(method, `${base}?${qs.toString()}`);
+      res.writeHead(r.status, shareJsonHeaders());
+      return void res.end(r.text);
     }
 
     if (method === "GET" && path.startsWith("/api/sessions/")) {
@@ -1401,6 +1606,33 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
 
     if (method === "GET" && path === "/api/keychain/overview") {
       const r = await coreFetchCap("GET", "/v1/keychain/overview");
+      return relay(res, r);
+    }
+
+    // The other half of the revoke below. Core takes the audience from the
+    // capability unless the caller names one, and only a portal session
+    // capability — which is what coreFetchCap mints — is allowed to name one.
+    if (method === "POST" && path === "/api/keychain/grants") {
+      const grant: { credential?: string; audienceScopeId?: string; mode?: "once" | "standing"; purpose?: string } = {};
+      try {
+        const p = JSON.parse((await readBody(req)) || "{}") as {
+          credential?: unknown;
+          audienceScopeId?: unknown;
+          mode?: unknown;
+          purpose?: unknown;
+        };
+        if (typeof p.credential === "string") grant.credential = p.credential;
+        if (typeof p.audienceScopeId === "string") grant.audienceScopeId = p.audienceScopeId;
+        if (p.mode === "once" || p.mode === "standing") grant.mode = p.mode;
+        if (typeof p.purpose === "string") grant.purpose = p.purpose;
+      } catch (e) {
+        if (e instanceof PayloadTooLargeError) throw e;
+        return json(res, 400, { error: "bad_request" });
+      }
+      if (!grant.credential || !grant.audienceScopeId || !grant.mode) {
+        return json(res, 400, { error: "bad_request", message: "credential, audienceScopeId and mode required" });
+      }
+      const r = await coreFetchCap("POST", "/v1/keychain/grants", JSON.stringify(grant));
       return relay(res, r);
     }
 
@@ -1766,7 +1998,13 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
 
     if (method === "GET" && path === "/api/runs/active") {
       const threadRef = url.searchParams.get("threadRef") ?? "";
-      if (!threadRef.startsWith("web:")) return json(res, 404, { error: "not_found" });
+      if (!threadRef) return json(res, 400, { error: "bad_request", message: "threadRef required" });
+      // A conversation this browser did not start — a Slack thread being watched
+      // read-only — has no entry in the instance-local index and never will.
+      // Core is asked directly instead, and core's viewer gate is what decides
+      // whether the run is visible at all; the index below is a fast path for
+      // runs this instance submitted, not a permission boundary.
+      const ownThread = threadRef.startsWith("web:");
       const tryRun = async (runId: string, ownedByUser = true): Promise<boolean> => {
         const r = await coreFetch("GET", `/v1/runs/${encodeURIComponent(runId)}`);
         if (r.status < 200 || r.status >= 300) {
@@ -1784,12 +2022,14 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
           forgetRun(runId);
           return false;
         }
-        rememberRun(runId, user, threadRef);
+        if (ownThread) rememberRun(runId, user, threadRef);
         json(res, 200, { runId, run });
         return true;
       };
-      for (const runId of Array.from(activeRunsByThread.get(threadKey(user, threadRef)) ?? [])) {
-        if (await tryRun(runId)) return;
+      if (ownThread) {
+        for (const runId of Array.from(activeRunsByThread.get(threadKey(user, threadRef)) ?? [])) {
+          if (await tryRun(runId)) return;
+        }
       }
       const d = await coreFetch("GET", `/v1/runs?threadRef=${encodeURIComponent(threadRef)}`);
       if (d.status >= 200 && d.status < 300) {

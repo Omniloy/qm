@@ -34,6 +34,7 @@ import {
 import { deleteSlackInstallation, getSlackInstallation, putSlackInstallation } from "./admin/slack-installation.ts";
 import { deleteModelProvider, getModelProviders, putModelProvider } from "./admin/model-providers.ts";
 import { deleteHarnessAuth, getHarnessAuth, putHarnessAuth } from "./admin/harness-auth.ts";
+import { completeCodexAuth, deleteCodexAuth, getCodexAuth, startCodexAuth } from "./admin/codex-auth.ts";
 import { deleteCustomProvider, getCustomProviders, putCustomProvider } from "./admin/custom-providers.ts";
 
 const timed =
@@ -63,6 +64,10 @@ const routes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/admin/harness-auth", auth: "either", handle: getHarnessAuth },
   { method: "PUT", path: "/v1/admin/harness-auth/:harness", auth: "either", handle: putHarnessAuth },
   { method: "DELETE", path: "/v1/admin/harness-auth/:harness", auth: "either", handle: deleteHarnessAuth },
+  { method: "GET", path: "/v1/admin/codex-auth", auth: "either", handle: getCodexAuth },
+  { method: "POST", path: "/v1/admin/codex-auth/start", auth: "either", handle: startCodexAuth },
+  { method: "POST", path: "/v1/admin/codex-auth/complete", auth: "either", handle: completeCodexAuth },
+  { method: "DELETE", path: "/v1/admin/codex-auth", auth: "either", handle: deleteCodexAuth },
   { method: "GET", path: "/v1/admin/custom-providers", auth: "either", handle: getCustomProviders },
   { method: "PUT", path: "/v1/admin/custom-providers/:provider", auth: "either", handle: putCustomProvider },
   { method: "DELETE", path: "/v1/admin/custom-providers/:provider", auth: "either", handle: deleteCustomProvider },

@@ -2,6 +2,17 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 
+/**
+ * What a production deployment must now say out loud.
+ *
+ * Public share links are on by default at this hop, and the anonymous read-and-download surface
+ * refuses to boot in production until the deployment declares how many reverse-proxy hops it
+ * trusts — without that, its per-IP rate limit would key on an address any caller can forge.
+ * These tests are about OIDC and session TTLs, not about shares, so they answer that question the
+ * way a real deployment behind a single proxy does rather than switching the feature off.
+ */
+const PROXY_TOPOLOGY: NodeJS.ProcessEnv = { PORTAL_XFF_TRUSTED_HOPS: "1" };
+
 test("`node src/index.ts` (relative entry, like Docker) binds the port and serves /healthz", async () => {
   const PORT = "18097";
   const child = spawn(process.execPath, ["src/index.ts"], {
@@ -33,6 +44,7 @@ test("production boot requires an explicit OIDC tenant trust boundary", () => {
   const command = "import('./src/index.ts').then(m => m.bootChecks())";
   const baseEnv: NodeJS.ProcessEnv = {
     ...process.env,
+    ...PROXY_TOPOLOGY,
     NODE_ENV: "production",
     PORTAL_PUBLIC_URL: "https://agent.example.com",
     PORTAL_SESSION_SECRET: "portal-session-secret",
@@ -75,6 +87,7 @@ test("production boot requires an explicit JWKS URI for custom issuers", () => {
   const command = "import('./src/index.ts').then(m => m.bootChecks())";
   const baseEnv: NodeJS.ProcessEnv = {
     ...process.env,
+    ...PROXY_TOPOLOGY,
     NODE_ENV: "production",
     PORTAL_PUBLIC_URL: "https://agent.example.com",
     PORTAL_SESSION_SECRET: "portal-session-secret",
@@ -108,6 +121,7 @@ test("a session TTL above the default max ceiling still boots, but a contradicto
   const command = "import('./src/index.ts').then(m => m.bootChecks())";
   const baseEnv: NodeJS.ProcessEnv = {
     ...process.env,
+    ...PROXY_TOPOLOGY,
     NODE_ENV: "production",
     PORTAL_PUBLIC_URL: "https://agent.example.com",
     PORTAL_SESSION_SECRET: "portal-session-secret",
@@ -141,6 +155,7 @@ test("production accepts cleartext OIDC only on private-network hosts, and only 
   const command = "import('./src/index.ts').then(m => m.bootChecks())";
   const brokerEnv: NodeJS.ProcessEnv = {
     ...process.env,
+    ...PROXY_TOPOLOGY,
     NODE_ENV: "production",
     PORTAL_PUBLIC_URL: "https://agent.example.com",
     PORTAL_SESSION_SECRET: "portal-session-secret",

@@ -245,7 +245,6 @@ test("brand guard recognizes legacy variants", () => {
   assert.deepEqual(findLegacyNames("myWCAGConfig"), []);
 });
 
-
 const priorProductName = ["Q", "M"].join("");
 const priorProductNamePattern = new RegExp(`(?<![A-Za-z0-9_])${priorProductName}(?![A-Za-z0-9_])`);
 const brandGuardSelf = "test/qm-brand.test.ts";
@@ -273,7 +272,12 @@ test("no user-facing text still calls the product by its previous name", () => {
 test("the guard would catch the previous name coming back", () => {
   assert.ok(priorProductNamePattern.test(`the ${priorProductName} web app`));
   assert.ok(
-    !priorProductNamePattern.test(`"integrity": "sha512-J+${priorProductName}/4x8ZgA=="`.replace(/(["']integrity["']\s*:\s*["'])[^"'\r\n]*(["'])/gi, "$1$2")),
+    !priorProductNamePattern.test(
+      `"integrity": "sha512-J+${priorProductName}/4x8ZgA=="`.replace(
+        /(["']integrity["']\s*:\s*["'])[^"'\r\n]*(["'])/gi,
+        "$1$2",
+      ),
+    ),
     "base64 integrity hashes are scrubbed before matching, like the older guard does",
   );
   assert.ok(priorProductNamePattern.test(`"${priorProductName}"`));

@@ -377,3 +377,146 @@ test("web proxy: /api/runs/active tracks queued runs — the live one first, the
   ).json()) as { runId?: string | null };
   assert.equal(active2.runId, second, "once the live run finishes, the queued one becomes active");
 });
+
+// --- telling the other surface it was stopped --------------------------------
+// A run started in Slack can be stopped from the web app. Without a notice the
+// thread just goes quiet, which reads exactly like the agent still thinking.
+
+function slackRequest(threadRef: string): OrchestratorInput {
+  return {
+    ...request("do a long thing", threadRef),
+    surface: "slack",
+    deliveryTarget: `slack:C123:${threadRef}`,
+  } as OrchestratorInput;
+}
+
+async function stopNotices(): Promise<string[]> {
+  const pending = await built.app.pendingDeliveries("slack", 0);
+  return pending.filter((d) => d.idempotencyKey.startsWith("run-stopped:")).map((d) => d.text);
+}
+
+test("aborting a Slack run posts a stop notice back to its thread", async () => {
+  const { run } = await built.runs.enqueue({ sessionId: "t-slack-stop", request: slackRequest("t-slack-stop") });
+  const before = (await stopNotices()).length;
+  assert.equal((await coreSignal(run.id, { kind: "abort" })).status, 200);
+  const after = await stopNotices();
+  assert.equal(after.length, before + 1);
+  assert.match(after.at(-1)!, /Stopped from the web app/);
+});
+
+test("steering a Slack run says nothing — the steer speaks for itself", async () => {
+  const { run } = await built.runs.enqueue({ sessionId: "t-slack-steer", request: slackRequest("t-slack-steer") });
+  const before = (await stopNotices()).length;
+  assert.equal((await coreSignal(run.id, { kind: "steer", text: "go left" })).status, 200);
+  assert.equal((await stopNotices()).length, before);
+});
+
+test("a second abort cannot post the notice twice", async () => {
+  const { run } = await built.runs.enqueue({ sessionId: "t-slack-twice", request: slackRequest("t-slack-twice") });
+  const before = (await stopNotices()).length;
+  await coreSignal(run.id, { kind: "abort" });
+  await coreSignal(run.id, { kind: "abort" });
+  assert.equal((await stopNotices()).length, before + 1, "the run-keyed idempotency key collapses the repeat");
+});
+
+test("aborting a web run stays silent — whoever stopped it is watching it stop", async () => {
+  const webRun = await built.runs.enqueue({
+    sessionId: "t-web-stop",
+    request: { ...request("hi", "t-web-stop"), surface: "web", deliveryTarget: "web:U1" } as OrchestratorInput,
+  });
+  const before = (await stopNotices()).length;
+  assert.equal((await coreSignal(webRun.run.id, { kind: "abort" })).status, 200);
+  assert.equal((await stopNotices()).length, before);
+});
+
+// --- watching a run that belongs to another surface --------------------------
+// The web proxy used to refuse any threadRef that did not start with "web:",
+// which made a Slack run undiscoverable from the web app even to the person who
+// started it. The instance-local index is a fast path for runs this instance
+// submitted; core's viewer gate is the permission boundary.
+
+test("web proxy: a Slack thread's run is discoverable by its owner and hidden from everyone else", async () => {
+  const threadRef = "dm:DSLACK1";
+  const slackActor: Principal = { id: "alice", type: "internal" };
+  const { run } = await built.runs.enqueue({
+    sessionId: threadRef,
+    request: {
+      actor: slackActor,
+      conversation: { kind: "dm", threadRef, audience: [slackActor] },
+      origin: { kind: "direct" },
+      text: "long slack task",
+      surface: "slack",
+      deliveryTarget: "slack:DSLACK1",
+    } as OrchestratorInput,
+  });
+
+  const owner = (await (
+    await fetch(`${webBase}/api/runs/active?threadRef=${encodeURIComponent(threadRef)}`, asUser("alice"))
+  ).json()) as { runId?: string | null };
+  assert.equal(owner.runId, run.id, "the person whose DM it is can see the run without an instance-local index");
+
+  const stranger = (await (
+    await fetch(`${webBase}/api/runs/active?threadRef=${encodeURIComponent(threadRef)}`, asUser("bob"))
+  ).json()) as { runId?: string | null };
+  assert.equal(stranger.runId, null, "core's viewer gate still hides someone else's DM run");
+});
+
+test("web proxy: /api/runs/active refuses a missing threadRef rather than guessing", async () => {
+  const r = await fetch(`${webBase}/api/runs/active`, asUser("alice"));
+  assert.equal(r.status, 400);
+});
+
+// --- a stop has to actually stop ---------------------------------------------
+// Interrupting the harness is a request. A turn wedged in a long tool call can
+// ignore it, and the worker keeps heartbeating a run that never returns — which
+// holds the conversation's claim lock, because a run is only claimable when no
+// other run on the same session is 'running'. Every later message then queues
+// behind it forever.
+
+test("stopping a queued run ends it rather than leaving it to start later", async () => {
+  const threadRef = "t-stop-queued";
+  const { run } = await built.runs.enqueue({ sessionId: threadRef, request: request("queued work", threadRef) });
+  assert.equal(run.status, "pending");
+
+  const r = await coreSignal(run.id, { kind: "abort" });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.accepted, true);
+
+  const after = await built.runs.get(run.id);
+  assert.equal(after?.status, "failed", "a stopped queue entry must never be claimed and run");
+  assert.equal(await built.runs.activeForThread(threadRef), null, "and it stops holding the thread");
+});
+
+test("forceTerminal parks a running run instead of requeueing it", async () => {
+  const threadRef = "t-force-park";
+  const { run } = await built.runs.enqueue({ sessionId: threadRef, request: request("wedged", threadRef) });
+  const claimed = await built.runs.claimById(run.id, "worker-wedged", 60_000);
+  assert.ok(claimed, "claimed, so it holds the session lock");
+
+  assert.equal(await built.runs.forceTerminal(run.id, "stopped by a person"), true);
+  const after = await built.runs.get(run.id);
+  assert.equal(after?.status, "failed");
+  // Requeueing would re-run work someone deliberately stopped.
+  assert.notEqual(after?.status, "pending");
+  assert.equal(after?.result?.reason, "stopped by a person");
+});
+
+test("a wedged run stops blocking its conversation once it is forced terminal", async () => {
+  const threadRef = "t-unblock";
+  const first = await built.runs.enqueue({ sessionId: threadRef, request: request("wedges", threadRef) });
+  assert.ok(await built.runs.claimById(first.run.id, "worker-a", 60_000));
+  const second = await built.runs.enqueue({ sessionId: threadRef, request: request("queued behind", threadRef) });
+
+  assert.equal(await built.runs.claimById(second.run.id, "worker-b", 60_000), null, "serialised per conversation");
+
+  await built.runs.forceTerminal(first.run.id, "stopped by a person");
+  assert.ok(await built.runs.claimById(second.run.id, "worker-b", 60_000), "the next message can run once it is gone");
+});
+
+test("forceTerminal is a no-op on a run that already finished", async () => {
+  const { run } = await built.runs.enqueue({ sessionId: "t-already", request: request("hi", "t-already") });
+  const claimed = await built.runs.claimById(run.id, "worker-done", 5_000);
+  await built.runs.complete(run.id, claimed!.leaseToken!, { status: "ok", reply: "done" });
+  assert.equal(await built.runs.forceTerminal(run.id, "stopped by a person"), false);
+  assert.equal((await built.runs.get(run.id))?.result?.status, "ok", "the real result is not overwritten");
+});

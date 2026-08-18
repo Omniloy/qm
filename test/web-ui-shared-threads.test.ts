@@ -117,10 +117,14 @@ test("a channel member can continue a teammate's shared web thread; outsiders an
     (await fetch(`${webBase}/api/runs/active?threadRef=${encodeURIComponent("web:alice:s1")}`, asUser("bob"))).status,
     200,
   );
-  assert.equal(
-    (await fetch(`${webBase}/api/runs/active?threadRef=${encodeURIComponent("dm:D1")}`, asUser("bob"))).status,
-    404,
-  );
+  // A thread bob has nothing to do with tells him nothing. It is a 200 with an
+  // empty answer rather than a 404 since `Let the web app discover a run on a
+  // thread it did not start`: the proxy no longer refuses foreign threadRefs by
+  // prefix — core's viewer gate decides, and to a stranger it answers "no run".
+  // The hidden-run half of that contract is pinned in test/run-signal-route.test.ts.
+  const foreign = await fetch(`${webBase}/api/runs/active?threadRef=${encodeURIComponent("dm:D1")}`, asUser("bob"));
+  assert.equal(foreign.status, 200);
+  assert.deepEqual(await foreign.json(), { runId: null, run: null });
 
   const personalClaim = await fetch(
     `${webBase}/api/turn`,

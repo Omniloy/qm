@@ -1,11 +1,21 @@
 import { html, render, type TemplateResult } from "lit";
-import { Activity, Globe, KeyRound, Link, LockKeyhole, Plug, Plus, RefreshCw, ShieldCheck } from "lucide";
-import { api } from "./core-bridge";
+import { Activity, Globe, KeyRound, LockKeyhole, Plug, Plus, RefreshCw, ShieldCheck } from "lucide";
+import { api, type CoreContext } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
-import { icon, productName } from "./ui";
+import { fieldSelect, icon, productName } from "./ui";
 import { appState, replacePanePreservingFocus } from "./shell";
 import { focusDialogCancel, restoreDialogFocus, trapDialogFocus } from "./dialog-focus";
 import { isActiveGrant, isExpiredCredential, KeychainOperations, keychainSummary } from "./keychain-state";
+import {
+  grantBlockedReason,
+  grantConfirmLabel,
+  grantImpact,
+  grantRequest,
+  grantSuccessNotice,
+  grantTargets,
+  type GrantMode,
+  type GrantScopeOption,
+} from "./keychain-grant";
 import {
   browserAction,
   browserById,
@@ -18,6 +28,7 @@ import {
   initialBrowserTab,
   BUILT_IN_BROWSER_ID,
   isExtensionTab,
+  type BrowserAction,
   type BrowserProvider,
 } from "./browser-picker-state";
 
@@ -161,6 +172,16 @@ let relayChecking = false;
 let browserConnect: { provider: BrowserProvider; path: string; value: string; error: string } | null = null;
 let confirmation: { title: string; body: string; action: string; run: () => Promise<void> } | null = null;
 let confirmationOpener: HTMLElement | null = null;
+let keychainContexts: GrantScopeOption[] = [];
+let granting: {
+  credential: KeychainCredential;
+  audienceScopeId: string;
+  mode: GrantMode;
+  purpose: string;
+} | null = null;
+let grantBusy = false;
+let grantError = "";
+let grantOpener: HTMLElement | null = null;
 const keychainOperations = new KeychainOperations();
 
 export function resetKeychainState(): void {
@@ -203,6 +224,7 @@ function credentialCard(c: KeychainCredential): TemplateResult {
   const grants = keychainGrants.filter((grant) => grant.credentialId === c.id && isActiveGrant(grant, c));
   const asks = keychainAsks.filter((ask) => ask.credentialId === c.id);
   const lastUse = keychainUsage.find((usage) => usage.credentialId === c.id);
+  const grantBlocked = grantBlockedReason(c, grantTargets(keychainContexts, c.id, keychainGrants, personalScopeId()));
   let added = "Encrypted at rest";
   if (c.kind !== "file" && c.expiresAt) added = `Expires ${fmtDate(c.expiresAt)}`;
   else if (c.createdAt) added = `Added ${fmtDate(c.createdAt)}`;
@@ -223,15 +245,27 @@ function credentialCard(c: KeychainCredential): TemplateResult {
             <div class="kc-resource-foot">${added}</div>
           </div>
         </div>
-        <button
-          class="kc-text-action danger"
-          type="button"
-          data-confirm-key=${`delete:${c.id}`}
-          ?disabled=${keychainOperations.mutationInFlight}
-          @click=${() => void deleteCredential(c)}
-        >
-          Delete
-        </button>
+        <div class="kc-resource-actions">
+          <button
+            class="kc-text-action"
+            type="button"
+            data-confirm-key=${`grant:${c.id}`}
+            ?disabled=${keychainOperations.mutationInFlight || Boolean(grantBlocked)}
+            title=${grantBlocked ?? ""}
+            @click=${(event: Event) => startGrant(c, event.currentTarget as HTMLElement)}
+          >
+            Give access…
+          </button>
+          <button
+            class="kc-text-action danger"
+            type="button"
+            data-confirm-key=${`delete:${c.id}`}
+            ?disabled=${keychainOperations.mutationInFlight}
+            @click=${() => void deleteCredential(c)}
+          >
+            Delete
+          </button>
+        </div>
       </div>
       ${
         asks.length
@@ -455,6 +489,28 @@ function extensionPanel(provider: BrowserProvider): TemplateResult {
   `;
 }
 
+function browserActionTpl(action: BrowserAction, tabId: string, provider: BrowserProvider): TemplateResult {
+  if (action.kind === "in-use") return html`<span class="kc-state ok">In use</span>`;
+  if (action.kind === "use") {
+    return html`<button
+      class="btn"
+      type="button"
+      ?disabled=${keychainOperations.mutationInFlight}
+      @click=${() => void chooseBrowser(tabId)}
+    >
+      ${action.label}
+    </button>`;
+  }
+  return html`<button
+    class="btn"
+    type="button"
+    ?disabled=${keychainOperations.dropInFlight}
+    @click=${() => void connectBrowser(provider)}
+  >
+    ${keychainOperations.dropInFlight ? "Preparing…" : action.label}
+  </button>`;
+}
+
 function browserCard(): TemplateResult {
   const tabs = browserTabs(browserProviders, activeBrowser);
   const shownId = browserTab ?? initialBrowserTab(browserProviders, activeBrowser);
@@ -538,27 +594,7 @@ function browserCard(): TemplateResult {
       }
       ${isExtensionTab(shown.id) ? extensionPanel(provider) : ""}
       <div class="kc-resource-actions">
-        ${
-          action.kind === "in-use"
-            ? html`<span class="kc-state ok">In use</span>`
-            : action.kind === "use"
-              ? html`<button
-                  class="btn"
-                  type="button"
-                  ?disabled=${keychainOperations.mutationInFlight}
-                  @click=${() => void chooseBrowser(shown.id)}
-                >
-                  ${action.label}
-                </button>`
-              : html`<button
-                  class="btn"
-                  type="button"
-                  ?disabled=${keychainOperations.dropInFlight}
-                  @click=${() => void connectBrowser(provider)}
-                >
-                  ${keychainOperations.dropInFlight ? "Preparing…" : action.label}
-                </button>`
-        }
+        ${browserActionTpl(action, shown.id, provider)}
         ${
           provider.signupUrl
             ? html`<a class="kc-text-action" href=${provider.signupUrl} target="_blank" rel="noopener noreferrer"
@@ -697,6 +733,156 @@ function confirmationCard(): TemplateResult {
   </div>`;
 }
 
+function personalScopeId(): string {
+  return appState.me ? `personal:${appState.me.user}` : "";
+}
+
+function startGrant(credential: KeychainCredential, opener: HTMLElement): void {
+  if (granting) return;
+  const targets = grantTargets(keychainContexts, credential.id, keychainGrants, personalScopeId());
+  if (grantBlockedReason(credential, targets)) return;
+  grantOpener = opener;
+  granting = { credential, audienceScopeId: targets[0]?.scopeId ?? "", mode: "standing", purpose: "" };
+  grantError = "";
+  grantBusy = false;
+  drawConnectors();
+  queueMicrotask(() => {
+    const host = document.querySelector<HTMLElement>(".keychain-page");
+    if (host && granting) focusDialogCancel(host);
+  });
+}
+
+function closeGrant(): void {
+  if (grantBusy) return;
+  const opener = grantOpener;
+  const key = opener?.dataset.confirmKey;
+  granting = null;
+  grantError = "";
+  grantOpener = null;
+  drawConnectors();
+  restoreDialogFocus(opener, () =>
+    key
+      ? [...document.querySelectorAll<HTMLElement>("[data-confirm-key]")].find((el) => el.dataset.confirmKey === key)
+      : null,
+  );
+}
+
+function grantCard(): TemplateResult {
+  const g = granting!;
+  const targets = grantTargets(keychainContexts, g.credential.id, keychainGrants, personalScopeId());
+  const label = targets.find((t) => t.scopeId === g.audienceScopeId)?.name ?? "the context you pick";
+  return html`<div
+    class="kc-dialog-scrim"
+    @click=${(event: MouseEvent) => event.target === event.currentTarget && closeGrant()}
+  >
+    <article
+      class="kc-confirm kc-grant"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="kc-grant-title"
+      aria-describedby="kc-grant-impact"
+      @keydown=${(event: KeyboardEvent) => trapDialogFocus(event, closeGrant)}
+    >
+      <span class="kc-eyebrow">Give access</span>
+      <h2 id="kc-grant-title">Let a context use ${g.credential.service}</h2>
+      <label class="kc-field">
+        <span>Give it to</span>
+        ${fieldSelect({
+          className: "kc-grant-scope",
+          value: g.audienceScopeId,
+          disabled: grantBusy,
+          onChange: (value) => {
+            g.audienceScopeId = value;
+            drawConnectors();
+          },
+          options: targets.map((t) => html`<option value=${t.scopeId}>${t.name}</option>`),
+        })}
+      </label>
+      <fieldset class="kc-grant-mode">
+        <legend>For how long</legend>
+        ${(
+          [
+            ["standing", "Until I revoke it", "Anyone in that context can use it from now on."],
+            ["once", "Just the next turn", "One use, then it lapses on its own."],
+          ] as const
+        ).map(
+          ([value, title, hint]) =>
+            html`<label class="kc-grant-choice">
+              <input
+                type="radio"
+                name="kc-grant-mode"
+                value=${value}
+                .checked=${g.mode === value}
+                ?disabled=${grantBusy}
+                @change=${() => {
+                  g.mode = value;
+                  drawConnectors();
+                }}
+              /><span><strong>${title}</strong><small>${hint}</small></span>
+            </label>`,
+        )}
+      </fieldset>
+      <label class="kc-field">
+        <span>What it's for <small>(optional)</small></span>
+        <input
+          type="text"
+          class="kc-grant-purpose"
+          placeholder="So the team can file expenses"
+          .value=${g.purpose}
+          ?disabled=${grantBusy}
+          @input=${(event: Event) => {
+            g.purpose = (event.target as HTMLInputElement).value;
+          }}
+        />
+      </label>
+      <p id="kc-grant-impact">${grantImpact(g.mode, g.credential, label)}</p>
+      ${grantError ? html`<p class="kc-form-error" role="alert">${grantError}</p>` : ""}
+      <div class="kc-form-actions">
+        <button class="btn" type="button" data-dialog-cancel ?disabled=${grantBusy} @click=${closeGrant}>Cancel</button
+        ><button
+          class="btn primary kc-grant-confirm"
+          type="button"
+          ?disabled=${grantBusy || !g.audienceScopeId}
+          @click=${() => void performGrant()}
+        >
+          ${grantConfirmLabel(g.mode, grantBusy)}
+        </button>
+      </div>
+    </article>
+  </div>`;
+}
+
+async function performGrant(): Promise<void> {
+  const g = granting;
+  if (!g || grantBusy) return;
+  const label =
+    grantTargets(keychainContexts, g.credential.id, keychainGrants, personalScopeId()).find(
+      (t) => t.scopeId === g.audienceScopeId,
+    )?.name ?? g.audienceScopeId;
+  grantBusy = true;
+  grantError = "";
+  drawConnectors();
+  try {
+    await api("/api/keychain/grants", {
+      method: "POST",
+      body: JSON.stringify(grantRequest(g.credential.id, g.audienceScopeId, g.mode, g.purpose)),
+    });
+    const opener = grantOpener;
+    granting = null;
+    grantBusy = false;
+    grantOpener = null;
+    await renderConnectors();
+    connectorNotice = grantSuccessNotice(g.mode, g.credential.service, label);
+    drawConnectors();
+    restoreDialogFocus(opener, () => null);
+  } catch (e) {
+    if (!granting) return;
+    grantError = errMessage(e, "Failed to give access.");
+    grantBusy = false;
+    drawConnectors();
+  }
+}
+
 function closeConfirmation(): void {
   const opener = confirmationOpener;
   const key = opener?.dataset.confirmKey;
@@ -749,6 +935,16 @@ function drawConnectors(loading = false): void {
       credentials.map((credential) => [credential.credentialId, { id: credential.credentialId, kind: "connector" }]),
     );
     const grants = keychainGrants.filter((grant) => isActiveGrant(grant, credentialsById.get(grant.credentialId)));
+    // A provider can hold several host credentials (Gmail, Calendar, Drive are
+    // one account); lending the account means lending the first, which is the
+    // one every grant on this card already hangs off.
+    const first = credentials.find((credential) => credential.connected && !credential.needsReconnect);
+    const grantable: KeychainCredential | null = first
+      ? { id: first.credentialId, service: meta.name, kind: "connector" }
+      : null;
+    const grantableBlocked = grantable
+      ? grantBlockedReason(grantable, grantTargets(keychainContexts, grantable.id, keychainGrants, personalScopeId()))
+      : "no account";
     let connectionState: TemplateResult | string = html`<span class="kc-state neutral">Not connected</span>`;
     if (needsReconnect) connectionState = html`<span class="kc-state warning">Reconnect needed</span>`;
     else if (connected) connectionState = "";
@@ -793,6 +989,19 @@ function drawConnectors(loading = false): void {
         }
         <div class="kc-resource-actions">
           ${available ? html`<button class="btn" type="button" @click=${() => void startConnector(id)}>${connected || needsReconnect ? "Reconnect" : "Connect account"}</button>` : ""}
+          ${
+            connected && grantable && !grantableBlocked
+              ? html`<button
+                  class="kc-text-action"
+                  type="button"
+                  data-confirm-key=${`grant:${grantable.id}`}
+                  ?disabled=${keychainOperations.mutationInFlight}
+                  @click=${(event: Event) => startGrant(grantable, event.currentTarget as HTMLElement)}
+                >
+                  Give access…
+                </button>`
+              : ""
+          }
           ${connected || needsReconnect ? html`<button class="kc-text-action danger" type="button" data-confirm-key=${`disconnect:${id}`} ?disabled=${keychainOperations.mutationInFlight} @click=${() => void revokeConnector(id)}>Disconnect</button>` : ""}
         </div>
       </article>
@@ -891,7 +1100,7 @@ function drawConnectors(loading = false): void {
           </div>
         </section>
       </div>
-      ${confirmation ? confirmationCard() : ""}
+      ${confirmation ? confirmationCard() : ""}${granting ? grantCard() : ""}
     `,
     host,
   );
@@ -904,7 +1113,7 @@ export async function renderConnectors(): Promise<void> {
   const seq = appState.viewRenderSeq;
   const load = keychainOperations.beginLoad();
   drawConnectors(true);
-  const [conn, keys] = await Promise.allSettled([
+  const [conn, keys, contexts] = await Promise.allSettled([
     api<{ providers?: Record<string, ConnectorProvider> }>("/api/connectors"),
     api<{
       credentials?: KeychainCredential[];
@@ -916,6 +1125,7 @@ export async function renderConnectors(): Promise<void> {
       browserProviders?: BrowserProvider[];
       activeBrowser?: string;
     }>("/api/keychain/overview"),
+    api<{ contexts?: CoreContext[] }>("/api/contexts"),
   ]);
   if (seq !== appState.viewRenderSeq || !keychainOperations.isCurrentLoad(load) || appState.currentView !== "keychain")
     return;
@@ -947,6 +1157,18 @@ export async function renderConnectors(): Promise<void> {
     keychainScopeNames = {};
     notices.push(errMessage(keys.reason, "Failed to load stored keys."));
   }
+  // Only somewhere shared is a destination: lending a credential to your own
+  // chats is what owning it already means.
+  keychainContexts =
+    contexts.status === "fulfilled"
+      ? (contexts.value.contexts ?? [])
+          .filter((context) => context.kind !== "personal" && context.scopeId)
+          .map((context) => ({
+            scopeId: context.scopeId,
+            name: context.name || context.scopeId,
+            kind: context.kind as "channel" | "group",
+          }))
+      : [];
   if (notices.length) connectorNotice = notices.join(" ");
   drawConnectors(false);
 }

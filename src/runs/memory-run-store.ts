@@ -131,6 +131,22 @@ export function createMemoryRunStore(opts?: { maxClaims?: number }): MemoryRunti
       return runs.get(runId) ?? null;
     },
 
+    async forceTerminal(runId, reason) {
+      const run = runs.get(runId);
+      if (!run || isTerminal(run.status)) return false;
+      // retry:false parks it — a run someone stopped must not come back.
+      if (run.status === "running") return retire(run, reason, false).applied;
+      // A queued run has no worker to interrupt; stopping it means it never starts.
+      run.status = "failed";
+      run.leaseToken = null;
+      run.leaseExpiresAt = null;
+      run.workerId = null;
+      run.result = { status: "failed", sessionId: run.sessionId, reason };
+      run.finishedAt = Date.now();
+      settle(run);
+      return true;
+    },
+
     async activeForThread(sessionId) {
       return (
         [...runs.values()]

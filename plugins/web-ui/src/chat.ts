@@ -17,6 +17,7 @@ import {
   FileText,
   Files,
   GitFork,
+  Globe,
   Hash,
   Maximize2,
   Paperclip,
@@ -26,14 +27,17 @@ import {
   RefreshCw,
   Rocket,
   ScrollText,
+  Share2,
   Terminal,
   Users,
   Wrench,
   type IconNode,
 } from "lucide";
 import {
+  abortRunById,
   activeRunForThread,
   api,
+  ApiError,
   createRunSlot,
   hasLiveRun,
   signalLiveRun,
@@ -74,9 +78,30 @@ import { deepLinkPath, UI_BASE } from "./deep-link";
 import type { ChatSurface, ConvCtx } from "./conv-types";
 import { errMessage, swallow } from "../../chassis/src/errors";
 import { showStateError } from "./error-banner";
+import { focusDialogCancel, restoreDialogFocus, trapDialogFocus } from "./dialog-focus";
 import { escapeLoneDollars } from "./markdown-dollars";
 import { splitStreamingMarkdown } from "./streaming-markdown";
 import { installMarkdownSanitizer } from "./markdown-sanitize";
+import {
+  initialShareState,
+  shareDialogView,
+  shareFailureEvent,
+  shareFileLabel,
+  shareReducer,
+  shareStrip,
+  SHARE_BUTTON_LABEL,
+  SHARE_COPIED_LABEL,
+  SHARE_CREATE_FAILED,
+  SHARE_FILES_EMPTY,
+  SHARE_FILES_HEADING,
+  SHARE_FILES_PARTIAL,
+  SHARE_REVOKE_FAILED,
+  SHARE_TITLE,
+  SHARE_UNSURE,
+  type ShareFileView,
+  type ShareLinkView,
+  type ShareState,
+} from "./share-state";
 import {
   transcriptModel,
   defaultEffortForModel,
@@ -162,6 +187,15 @@ export function createChatSurface(
     inheritedMessages: [] as ReturnType<typeof entriesToMessages>,
     inheritedExpanded: false,
     inheritedLoaded: false,
+    /**
+     * Live public links on this conversation, as core reports them.
+     *
+     * Empty means not shared. It is state of the CONVERSATION, not of the person looking at it:
+     * everyone in the room gets the strip, because the link is live and their next message is
+     * published by it too. Read on every mount and re-read on a poll, never cached per tab — the
+     * strip has to go dark for everybody the moment any member revokes.
+     */
+    shares: [] as ShareLinkView[],
   };
   const forkOriginController = createForkOriginController({
     state: chatState,
@@ -205,10 +239,22 @@ export function createChatSurface(
   }
 
   let readOnlyView: { id: string; threadRef: string; session: CoreSession; anchorSeq: number | null } | null = null;
+  /**
+   * A run this conversation has going elsewhere.
+   *
+   * Replying to a Slack thread from here is refused because a reply has to be
+   * authored by you, in Slack. Stopping is not authored — it is a control
+   * signal, and core already decides who may send it — so the one control that
+   * does belong on a read-only view is Stop.
+   */
+  let readOnlyRun: { threadRef: string; runId: string; status?: string } | null = null;
+  let readOnlyRunPoll: ReturnType<typeof setInterval> | null = null;
+  let stoppingReadOnlyRun = false;
 
   function teardownActiveChat(): void {
     forkOriginController.invalidateRefresh();
     readOnlyView = null;
+    stopWatchingReadOnlyRun();
     preserveOutgoingWorkingDot(null);
     detachActiveAgent();
     chatState.agent = null;
@@ -225,6 +271,13 @@ export function createChatSurface(
     chatState.transcriptAnchorSeq = null;
     chatState.earlierCount = 0;
     chatState.loadingEarlier = false;
+    // The strip and the dialog are both about a specific conversation, and there is no longer one.
+    chatState.shares = [];
+    shareLinksFor = null;
+    readOnlyMessages = [];
+    shareDialogFor = null;
+    shareOpener = null;
+    shareUi = initialShareState;
   }
 
   function resetChatState(): void {
@@ -277,6 +330,65 @@ export function createChatSurface(
     });
     if (!live || live === nextThreadRef) return;
     sessionsState.list = markWorking(sessionsState.list, live);
+  }
+
+  // The reply lands in the transcript before the run is finished with it — the
+  // last of the tool work, attachments and bookkeeping all happen after the text
+  // exists. So a slow poll leaves "Working…" under an answer that already looks
+  // complete, which reads as a bug even though the run really is still going.
+  const READ_ONLY_RUN_POLL_MS = 2_000;
+
+  function stopWatchingReadOnlyRun(): void {
+    if (readOnlyRunPoll !== null) clearInterval(readOnlyRunPoll);
+    readOnlyRunPoll = null;
+    const wasShowing = readOnlyRun !== null;
+    readOnlyRun = null;
+    stoppingReadOnlyRun = false;
+    // Whatever the reason for stopping, the control must not be left on screen
+    // describing a run nobody is watching any more.
+    if (wasShowing) readonlyRedraw?.();
+  }
+
+  /** Poll for a run this thread has going, so the banner can offer to stop it. */
+  function watchReadOnlyRun(threadRef: string): void {
+    stopWatchingReadOnlyRun();
+    const check = async (): Promise<void> => {
+      if (readOnlyView?.threadRef !== threadRef) return stopWatchingReadOnlyRun();
+      let active: Awaited<ReturnType<typeof activeRunForThread>>;
+      try {
+        active = await activeRunForThread(threadRef);
+      } catch {
+        // A poll that failed says nothing about the run — leave the banner as
+        // it was and try again on the next tick.
+        return;
+      }
+      if (readOnlyView?.threadRef !== threadRef) return stopWatchingReadOnlyRun();
+      const next = active ? { threadRef, runId: active.runId, status: active.run?.status } : null;
+      if (next?.runId === readOnlyRun?.runId && next?.status === readOnlyRun?.status) return;
+      readOnlyRun = next;
+      // A run that ended clears the in-flight flag with it, so a stopped run
+      // cannot leave the button stuck on "Stopping…".
+      if (!next) stoppingReadOnlyRun = false;
+      readonlyRedraw?.();
+    };
+    void check();
+    readOnlyRunPoll = setInterval(() => void check(), READ_ONLY_RUN_POLL_MS);
+  }
+
+  async function stopReadOnlyRun(): Promise<void> {
+    const run = readOnlyRun;
+    if (!run || stoppingReadOnlyRun) return;
+    stoppingReadOnlyRun = true;
+    readonlyRedraw?.();
+    try {
+      await abortRunById(run.runId);
+    } catch {
+      // Most likely it finished between the poll and the click, which the next
+      // poll will show. Nothing here is worth an error banner.
+    }
+    if (readOnlyRun?.runId === run.runId) readOnlyRun = null;
+    stoppingReadOnlyRun = false;
+    readonlyRedraw?.();
   }
 
   function detachActiveAgent(): void {
@@ -394,6 +506,7 @@ export function createChatSurface(
     ctx.ensureDeliveryStream();
     if (!opening) void resumeTrackedRun(agent, threadRef, normalStreamFn, onWork);
     consumeBackgroundPanelRequest();
+    syncShareLinks();
   }
 
   function startProactiveOpenerIfNew(
@@ -507,8 +620,465 @@ export function createChatSurface(
     if (chatState.agent) drawActiveChat();
   }
 
+  /* ------------------------------------------------------------------ public share links */
+
+  /**
+   * How often a conversation re-reads its own share state.
+   *
+   * The strip exists for the person who was already sitting in the chat when a colleague minted a
+   * link — the messages typed in the minute after minting are exactly the ones published without
+   * their author knowing. A mount-time read alone would leave that person uninformed until their
+   * next full session load, which is the window the strip was written for.
+   */
+  const SHARE_POLL_MS = 30_000;
+
+  /** The session `chatState.shares` was read for, so a strip can never linger over another chat. */
+  let shareLinksFor: string | null = null;
+  /** Set when the deployment answers "not enabled here": stop putting a request on the wire for it. */
+  let shareLinksOff = false;
+  let shareUi: ShareState = initialShareState;
+  /** The session the dialog is about. Null means the dialog is shut. */
+  let shareDialogFor: string | null = null;
+  let shareCopied = false;
+  let shareOpener: HTMLElement | null = null;
+  /** The read-only view has no Agent, so it hands its messages here for the file list. */
+  let readOnlyMessages: AgentMessage[] = [];
+
+  function redrawChat(): void {
+    if (chatState.agent) drawActiveChat();
+    else readonlyRedraw?.();
+  }
+
+  function shareEndpoint(sessionId: string): string {
+    return `/api/sessions/${encodeURIComponent(sessionId)}/share`;
+  }
+
+  type ShareCall<T> = { ok: true; body: T } | { ok: false; status: number; body: unknown };
+
+  /**
+   * One link off the wire, or null.
+   *
+   * The numbers are defaulted rather than trusted: `viewCount` feeds the sentence the sharer
+   * decides with ("Opened 8 times") and `createdAt` decides which link the strip names, so a
+   * missing field would print "Opened undefined times" or sort by NaN rather than fail visibly.
+   */
+  function shareLinkFromWire(raw: unknown): ShareLinkView | null {
+    if (!raw || typeof raw !== "object") return null;
+    const l = raw as Partial<ShareLinkView>;
+    if (typeof l.shareId !== "string" || l.shareId.length === 0) return null;
+    return {
+      shareId: l.shareId,
+      createdAt: typeof l.createdAt === "number" ? l.createdAt : 0,
+      viewCount: typeof l.viewCount === "number" ? l.viewCount : 0,
+      ...(typeof l.lastViewedAt === "number" ? { lastViewedAt: l.lastViewedAt } : {}),
+      mine: l.mine === true,
+      sharerLabel: typeof l.sharerLabel === "string" ? l.sharerLabel : null,
+      ...(typeof l.url === "string" ? { url: l.url } : {}),
+    };
+  }
+
+  /**
+   * `api()` with the throw turned back into a value.
+   *
+   * The dialog's whole design is that every failure is a state, and a state needs the status and
+   * the body core sent — `error` is a code and `message` is the sentence a person should read.
+   */
+  async function shareCall<T>(path: string, init?: RequestInit): Promise<ShareCall<T>> {
+    try {
+      return { ok: true, body: await api<T>(path, init) };
+    } catch (e) {
+      if (e instanceof ApiError) return { ok: false, status: e.status, body: e.body };
+      swallow("web-ui: share request", e);
+      return { ok: false, status: 0, body: null };
+    }
+  }
+
+  function shareBody(call: Extract<ShareCall<unknown>, { ok: false }>): { error?: unknown; message?: unknown } | null {
+    return call.body && typeof call.body === "object" ? (call.body as { error?: unknown; message?: unknown }) : null;
+  }
+
+  /**
+   * Re-read the links on a conversation.
+   *
+   * A failure deliberately leaves whatever is on screen alone rather than clearing the list: a
+   * strip that vanishes because one poll 500'd would tell everyone in the room the conversation is
+   * private again while the link is still live.
+   */
+  async function loadShareLinks(sessionId: string): Promise<ShareLinkView[] | null> {
+    const r = await shareCall<{ shares?: unknown }>(shareEndpoint(sessionId));
+    if (!r.ok) {
+      // 503 is core's "shared links are not enabled here" — a deployment-wide answer, so stop
+      // asking every thirty seconds for a feature that is switched off.
+      if (r.status === 503 || r.status === 501) shareLinksOff = true;
+      return null;
+    }
+    const links = Array.isArray(r.body.shares) ? r.body.shares.map(shareLinkFromWire).filter((l) => l !== null) : [];
+    if (chatState.sessionId === sessionId) {
+      chatState.shares = links;
+      shareLinksFor = sessionId;
+      redrawChat();
+    }
+    return links;
+  }
+
+  /** Called wherever the conversation on screen may have changed. */
+  function syncShareLinks(): void {
+    const sessionId = chatState.sessionId;
+    if (shareLinksFor !== sessionId) {
+      chatState.shares = [];
+      shareLinksFor = null;
+    }
+    if (!sessionId || shareLinksOff) return;
+    void loadShareLinks(sessionId);
+  }
+
+  const sharePoll = setInterval(() => {
+    if (document.hidden || shareLinksOff || !chatState.sessionId) return;
+    void loadShareLinks(chatState.sessionId);
+  }, SHARE_POLL_MS);
+  // A browser timer does not hold anything open; node's does. Several suites load this module
+  // through vite's SSR loader, and an interval nobody unrefs kept those processes alive after
+  // their last assertion passed — a green test run that never ends.
+  (sharePoll as unknown as { unref?: () => void }).unref?.();
+
+  /**
+   * Every attachment this conversation would publish, as far as this tab can see.
+   *
+   * Built from the loaded transcript rather than asked of the server, so it is honest about being
+   * partial (see SHARE_FILES_PARTIAL) instead of pretending to a completeness it does not have.
+   * Only files with an artifact id count — those are the ones a share link can actually serve.
+   */
+  function shareableFiles(): ShareFileView[] {
+    const messages = chatState.agent ? visibleMessages(chatState.agent) : readOnlyMessages;
+    const seen = new Set<string>();
+    const out: ShareFileView[] = [];
+    const add = (name: string | undefined, artifactId: string | undefined, sizeBytes: number | undefined): void => {
+      if (!artifactId || !name || seen.has(artifactId)) return;
+      seen.add(artifactId);
+      out.push(typeof sizeBytes === "number" ? { name, sizeBytes } : { name });
+    };
+    for (const m of messages) {
+      for (const a of ((m as UserMessageWithAttachments).attachments ?? []) as UserAttachmentView[]) {
+        add(a.fileName, a.artifactId, a.size);
+      }
+      for (const f of (m as AssistantWork).deliveredFiles ?? []) add(f.name, f.artifactId, f.sizeBytes);
+    }
+    return out;
+  }
+
+  function closeShareDialog(): void {
+    if (shareDialogFor === null) return;
+    shareDialogFor = null;
+    shareCopied = false;
+    shareUi = shareReducer(shareUi, { kind: "close" });
+    const opener = shareOpener;
+    shareOpener = null;
+    redrawChat();
+    restoreDialogFocus(opener, () => chatState.host?.querySelector<HTMLElement>(".share-open"));
+  }
+
+  function openShareDialog(sessionId: string, opener: HTMLElement | null): void {
+    shareDialogFor = sessionId;
+    shareOpener = opener;
+    shareCopied = false;
+    shareUi = shareReducer({ kind: "closed" }, { kind: "open" });
+    redrawChat();
+    // Focus has to land INSIDE the dialog, not stay on the button that opened it: the Escape and
+    // Tab handling hangs off the dialog element, so without this the trap traps nothing and
+    // Escape does nothing. `document` rather than chatState.host because the read-only draw
+    // renders into its own detached host and leaves chatState.host null.
+    focusDialogCancel(document);
+    void reloadShareDialog(sessionId);
+  }
+
+  /** Ask core what the truth is. Reopening always re-asks: another tab, or a colleague, may have revoked. */
+  async function reloadShareDialog(sessionId: string): Promise<void> {
+    if (shareUi.kind !== "loading") {
+      shareUi = shareReducer(shareUi, { kind: "open" });
+      redrawChat();
+    }
+    const links = await loadShareLinks(sessionId);
+    if (shareDialogFor !== sessionId) return;
+    shareUi =
+      links === null
+        ? shareReducer(shareUi, { kind: "failed", message: SHARE_UNSURE, retryable: true })
+        : shareReducer(shareUi, { kind: "loaded", link: newestShareLink(links) });
+    redrawChat();
+  }
+
+  function newestShareLink(links: readonly ShareLinkView[]): ShareLinkView | null {
+    return [...links].sort((a, b) => b.createdAt - a.createdAt)[0] ?? null;
+  }
+
+  async function mintShareLink(sessionId: string, rotate: boolean): Promise<void> {
+    shareUi = shareReducer(shareUi, { kind: rotate ? "replace" : "create" });
+    redrawChat();
+    const r = await shareCall<{ shareId?: unknown; createdAt?: unknown; url?: unknown }>(shareEndpoint(sessionId), {
+      method: "POST",
+      body: JSON.stringify(rotate ? { rotate: true } : {}),
+    });
+    if (shareDialogFor !== sessionId) return;
+    if (!r.ok || typeof r.body.shareId !== "string") {
+      shareUi = shareReducer(
+        shareUi,
+        r.ok
+          ? { kind: "failed", message: SHARE_CREATE_FAILED, retryable: true }
+          : shareFailureEvent(r.status, shareBody(r), SHARE_CREATE_FAILED),
+      );
+    } else {
+      const link: ShareLinkView = {
+        shareId: r.body.shareId,
+        createdAt: typeof r.body.createdAt === "number" ? r.body.createdAt : Date.now(),
+        viewCount: 0,
+        mine: true,
+        sharerLabel: null,
+        ...(typeof r.body.url === "string" ? { url: r.body.url } : {}),
+      };
+      shareCopied = false;
+      shareUi = shareReducer(shareUi, { kind: rotate ? "replaced" : "created", link });
+    }
+    redrawChat();
+    // Puts the strip up for this viewer at once, and fills in the sharer's real display name.
+    void loadShareLinks(sessionId);
+  }
+
+  /**
+   * Turn every live link off.
+   *
+   * Offered to any member, not only the minter: the strip tells someone their messages are being
+   * published, and a notice with no way to stop it is a worse notice.
+   */
+  async function revokeShareLinks(sessionId: string): Promise<void> {
+    shareUi = shareReducer(shareUi, { kind: "revoke" });
+    redrawChat();
+    const r = await shareCall<{ turnedOff?: unknown }>(shareEndpoint(sessionId), { method: "DELETE" });
+    if (r.ok && chatState.sessionId === sessionId) {
+      chatState.shares = [];
+      shareLinksFor = sessionId;
+    }
+    if (shareDialogFor === sessionId) {
+      shareUi = r.ok
+        ? shareReducer(shareUi, { kind: "revoked" })
+        : shareReducer(shareUi, shareFailureEvent(r.status, shareBody(r), SHARE_REVOKE_FAILED));
+    }
+    redrawChat();
+    void loadShareLinks(sessionId);
+  }
+
+  /**
+   * The strip's Turn off button.
+   *
+   * It opens the dialog on the way through rather than acting silently, because revocation needs
+   * somewhere to report itself — both "it stopped working immediately" and the failure that means
+   * the link is, in fact, still live.
+   */
+  function revokeFromStrip(sessionId: string, opener: HTMLElement | null): void {
+    const link = newestShareLink(chatState.shares);
+    if (!link) return;
+    shareDialogFor = sessionId;
+    shareOpener = opener;
+    shareCopied = false;
+    shareUi = { kind: "on", link };
+    void revokeShareLinks(sessionId);
+    // Same reason as openShareDialog: the strip's button is outside the dialog it just opened.
+    focusDialogCancel(document);
+  }
+
+  async function copyShareLink(url: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(url);
+      shareCopied = true;
+    } catch (e) {
+      swallow("web-ui: copy share link", e);
+      shareCopied = false;
+    }
+    redrawChat();
+  }
+
+  /**
+   * The persistent notice every viewer of a shared conversation sees.
+   *
+   * Not dismissable, and not only for the sharer: the state it reports is standing, and the people
+   * it is really for are the ones who never opened the dialog.
+   */
+  function shareStripBanner(): TemplateResult | typeof nothing {
+    const strip = shareStrip(chatState.shares);
+    const sessionId = chatState.sessionId;
+    if (!strip.visible || !sessionId) return nothing;
+    return html`<div class="share-strip" role="status">
+      ${icon(Globe, 13)}<span class="share-strip-text">${strip.text}</span>
+      ${
+        strip.action
+          ? html`<button
+              type="button"
+              class="share-strip-action"
+              @click=${(e: MouseEvent) => revokeFromStrip(sessionId, e.currentTarget as HTMLElement)}
+            >
+              ${strip.action.label}
+            </button>`
+          : nothing
+      }
+    </div>`;
+  }
+
+  function shareButton(): TemplateResult | typeof nothing {
+    const sessionId = chatState.sessionId;
+    if (!sessionId) return nothing;
+    return html`<button
+      type="button"
+      class="icon-btn subtle share-open"
+      title=${SHARE_TITLE}
+      aria-label=${SHARE_BUTTON_LABEL}
+      @click=${(e: MouseEvent) => openShareDialog(sessionId, e.currentTarget as HTMLElement)}
+    >
+      ${icon(Share2, 17)}
+    </button>`;
+  }
+
+  /**
+   * The line under the attachment list, or none.
+   *
+   * "No files are attached yet" is a reassurance the dialog cannot support while earlier turns of
+   * this conversation are still unfetched — and the screen it would appear on is the one with the
+   * Create button, where a wrong reassurance costs the most. A windowed transcript says what it
+   * actually knows instead.
+   */
+  function shareFilesNote(loadedFiles: number): string | null {
+    if (chatState.earlierCount > 0) return SHARE_FILES_PARTIAL;
+    return loadedFiles === 0 ? SHARE_FILES_EMPTY : null;
+  }
+
+  function shareDialogTpl(): TemplateResult | typeof nothing {
+    const sessionId = shareDialogFor;
+    if (!sessionId || shareUi.kind === "closed") return nothing;
+    const view = shareDialogView(shareUi, { origin: window.location.origin, now: Date.now() });
+    const files = view.showFiles ? shareableFiles() : [];
+    const filesNote = shareFilesNote(files.length);
+    return html`
+      <div
+        class="project-dialog-backdrop"
+        @click=${(e: MouseEvent) => e.target === e.currentTarget && closeShareDialog()}
+      >
+        <div
+          class="project-dialog share-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="share-dialog-title"
+          @keydown=${(e: KeyboardEvent) => trapDialogFocus(e, closeShareDialog)}
+        >
+          <div class="project-dialog-head">
+            <div><h2 id="share-dialog-title">${view.title}</h2></div>
+          </div>
+          <p class="share-dialog-intro">${view.intro}</p>
+          ${
+            view.bullets.length
+              ? html`<ul class="share-dialog-bullets">
+                  ${view.bullets.map((b) => html`<li>${b}</li>`)}
+                </ul>`
+              : nothing
+          }
+          ${
+            view.showFiles
+              ? html`<div class="share-dialog-files">
+                  <div class="share-dialog-files-head">${SHARE_FILES_HEADING}</div>
+                  ${
+                    files.length
+                      ? html`<ul class="share-dialog-file-list">
+                          ${files.map((f) => html`<li>${shareFileLabel(f)}</li>`)}
+                        </ul>`
+                      : nothing
+                  }
+                  ${filesNote ? html`<p class="share-dialog-note">${filesNote}</p>` : nothing}
+                </div>`
+              : nothing
+          }
+          ${
+            view.url
+              ? html`<div class="share-dialog-link">
+                  <input
+                    class="share-dialog-url"
+                    type="text"
+                    readonly
+                    .value=${view.url}
+                    @focus=${(e: FocusEvent) => (e.currentTarget as HTMLInputElement).select()}
+                  />
+                </div>`
+              : nothing
+          }
+          ${view.status ? html`<p class="share-dialog-status">${view.status}</p>` : nothing}
+          ${view.note ? html`<p class="share-dialog-note">${view.note}</p>` : nothing}
+          ${view.error ? html`<p class="share-dialog-error">${view.error}</p>` : nothing}
+          <div class="project-dialog-actions actions share-dialog-actions">
+            <button class="btn" type="button" data-dialog-cancel @click=${closeShareDialog}>Close</button>
+            ${
+              view.buttons.copy && view.url
+                ? html`<button
+                    class="btn share-copy"
+                    type="button"
+                    ?disabled=${view.buttons.copy.disabled}
+                    @click=${() => void copyShareLink(view.url!)}
+                  >
+                    ${shareCopied ? SHARE_COPIED_LABEL : view.buttons.copy.label}
+                  </button>`
+                : nothing
+            }
+            ${
+              view.buttons.replace
+                ? html`<button
+                    class="btn share-replace"
+                    type="button"
+                    ?disabled=${view.buttons.replace.disabled}
+                    @click=${() => void mintShareLink(sessionId, true)}
+                  >
+                    ${view.buttons.replace.label}
+                  </button>`
+                : nothing
+            }
+            ${
+              view.buttons.turnOff
+                ? html`<button
+                    class="btn danger share-turn-off"
+                    type="button"
+                    ?disabled=${view.buttons.turnOff.disabled}
+                    @click=${() => void revokeShareLinks(sessionId)}
+                  >
+                    ${view.buttons.turnOff.label}
+                  </button>`
+                : nothing
+            }
+            ${
+              view.buttons.checkAgain
+                ? html`<button
+                    class="btn share-check-again"
+                    type="button"
+                    ?disabled=${view.buttons.checkAgain.disabled}
+                    @click=${() => void reloadShareDialog(sessionId)}
+                  >
+                    ${view.buttons.checkAgain.label}
+                  </button>`
+                : nothing
+            }
+            ${
+              view.buttons.create
+                ? html`<button
+                    class="btn primary share-create"
+                    type="button"
+                    ?disabled=${view.buttons.create.disabled}
+                    @click=${() => void mintShareLink(sessionId, false)}
+                  >
+                    ${view.buttons.create.label}
+                  </button>`
+                : nothing
+            }
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   function dispose(): void {
     redrawHooks.delete(redrawForConnector);
+    clearInterval(sharePoll);
     teardownActiveChat();
   }
 
@@ -690,6 +1260,9 @@ export function createChatSurface(
     syncLocation();
     renderList();
     drawActiveChat(agent);
+    // The conversation only became shareable — and only became capable of already being shared —
+    // at this point, because until now it had no session id to ask about.
+    syncShareLinks();
   }
 
   function postCurrentPaneState(): void {
@@ -740,6 +1313,26 @@ export function createChatSurface(
     container.replaceChildren(host);
   }
 
+  /** Shown only while this conversation actually has something running. */
+  function readOnlyStopTpl(): TemplateResult | typeof nothing {
+    if (!readOnlyRun) return nothing;
+    // "Queued" and "Working" are different enough to be worth distinguishing:
+    // one is waiting for a worker, the other is burning tokens right now.
+    const label = readOnlyRun.status === "pending" ? "Queued…" : "Working…";
+    return html`<span class="readonly-run">
+      <span class="readonly-run-dot" aria-hidden="true"></span>
+      <span>${label}</span>
+      <button
+        class="btn readonly-stop"
+        type="button"
+        ?disabled=${stoppingReadOnlyRun}
+        @click=${() => void stopReadOnlyRun()}
+      >
+        ${stoppingReadOnlyRun ? "Stopping…" : "Stop"}
+      </button>
+    </span>`;
+  }
+
   function mountReadOnly(
     s: CoreSession,
     messages: ReturnType<typeof entriesToMessages>,
@@ -749,6 +1342,8 @@ export function createChatSurface(
   ): void {
     const container = ctx.claimContainer();
     if (!container) return;
+    // The share dialog's file list has no Agent to read here, so keep what was rendered.
+    readOnlyMessages = messages;
     preserveOutgoingWorkingDot(s.threadRef);
     dropAbandonedNewChat(s.threadRef);
     detachActiveAgent();
@@ -762,6 +1357,18 @@ export function createChatSurface(
     chatState.sessionId = s.id;
     chatState.scopeId = s.scopeId;
     chatState.forkSession = s;
+    // The transcript window is published on chatState, not kept local, for the same reason
+    // setTranscriptWindow does it on the continuable path: the share dialog's
+    // `shareFilesNote` is drawn from chatState and has no other way to learn that earlier
+    // turns of THIS conversation are still unfetched. Without these two lines a windowed
+    // read-only transcript (a Slack-backed conversation is the common one) reported zero
+    // earlier turns and the dialog printed "No files are attached yet" directly above the
+    // Create button, while the unfetched turns it was reassuring about could carry
+    // attachments the link publishes. It fails the other way too: arriving here from a
+    // windowed active chat would otherwise leave that chat's stale count behind and call a
+    // complete file list partial.
+    chatState.transcriptAnchorSeq = earlierCount > 0 ? anchorSeq : null;
+    chatState.earlierCount = earlierCount;
     if (!(sameSession && chatState.inheritedLoaded)) {
       chatState.inheritedMessages = inheritedMessages;
       chatState.inheritedLoaded = !s.forkedFrom;
@@ -777,7 +1384,7 @@ export function createChatSurface(
       render(
         html`
           <div class="custom-chat-shell">
-            ${chatHeader(groupDmTitle(s), surfaceOf(s), true)}
+            ${chatHeader(groupDmTitle(s), surfaceOf(s), true)} ${shareStripBanner()} ${shareDialogTpl()}
             <div class="readonly-banner">
               ${
                 surfaceOf(s) === "slack"
@@ -795,6 +1402,7 @@ export function createChatSurface(
                     }`
                   : "This conversation is read-only here."
               }
+              ${readOnlyStopTpl()}
             </div>
             ${backgroundActivityStrip()}
             <section class="chat-scroll readonly-scroll">
@@ -865,8 +1473,10 @@ export function createChatSurface(
     draw();
     container.replaceChildren(host);
     readOnlyView = { id: s.id, threadRef: s.threadRef, session: s, anchorSeq };
+    watchReadOnlyRun(s.threadRef);
     ctx.ensureDeliveryStream();
     consumeBackgroundPanelRequest();
+    syncShareLinks();
   }
 
   function welcomeGreeting(): TemplateResult {
@@ -1028,7 +1638,7 @@ export function createChatSurface(
                 </div>`
               : nothing
           }
-          ${contextBanner()}
+          ${shareStripBanner()} ${contextBanner()} ${chatFloatActions()} ${shareDialogTpl()}
           ${
             glanceTier
               ? paneGlance(agent, messages, glanceTier)
@@ -1104,6 +1714,16 @@ export function createChatSurface(
     </div>`;
   }
 
+  /**
+   * The active chat has no topbar of its own — only the read-only view renders `chatHeader` — so
+   * the Share action rides in a small floating group at the top of the transcript, the same place
+   * the context pill already lives.
+   */
+  function chatFloatActions(): TemplateResult | typeof nothing {
+    const button = shareButton();
+    return button === nothing ? nothing : html`<div class="chat-float-actions">${button}</div>`;
+  }
+
   function chatHeader(title: string | TemplateResult, detail: string, readOnly: boolean): TemplateResult {
     return html`
       <header class="chat-topbar">
@@ -1112,6 +1732,7 @@ export function createChatSurface(
           <div class="chat-subtitle">${readOnly ? "Read-only" : detail}</div>
         </div>
         <div class="topbar-actions">
+          ${shareButton()}
           ${
             chatState.sessionId && can("admin")
               ? html`<a

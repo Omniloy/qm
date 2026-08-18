@@ -21,6 +21,15 @@ const USER_SCOPED: Rule[] = [
   pat("POST", "/v1/files/upload", { in: "body", name: "principalId" }),
   pat("POST", "/v1/sessions/:id", { in: "body", name: "principalId" }),
   pat("POST", "/v1/sessions/:id/title", { in: "body", name: "principalId" }),
+  pat("POST", "/v1/sessions/:id/share", { in: "body", name: "principalId" }),
+  // The two reads below are load-bearing in a way the writes are not: a GET is
+  // never caught by the isUnclassifiedWrite backstop, so without its own rule
+  // `GET /v1/sessions/:id/share` would require no portal identity at all and the
+  // principalId query parameter would become an unauthenticated assertion for
+  // anyone holding CORE_SIGNING_SECRET. That failure mode is silent and it fails
+  // open, which is why test/session-share-authz.test.ts asserts all three.
+  pat("GET", "/v1/sessions/:id/share", { in: "query", name: "principalId" }),
+  pat("DELETE", "/v1/sessions/:id/share", { in: "query", name: "principalId" }),
   pat("POST", "/v1/sessions/:id/fork", { in: "body", name: "principalId" }),
   pat("GET", "/v1/sessions", { in: "query", name: "principalId" }),
   pat("GET", "/v1/contexts", { in: "query", name: "principalId" }),

@@ -61,6 +61,19 @@ export interface SurfaceToolsContext {
   fileRegistration: ArtifactRegistration;
   provision: () => Promise<SandboxHandle>;
   postProvenance: (deliveryKey: string) => DeliveryProvenance;
+  /**
+   * Write a `delivery` entry for files this turn sent with `post`.
+   *
+   * Files that ride on the turn's own result get one of these from the
+   * orchestrator, and that entry is the only thing the web transcript builds an
+   * attachment block from. Files sent through the surface tool were reaching
+   * their destination and the file library but never the transcript, so a web
+   * conversation showed the message with no attachments and no way to recover
+   * them on reload — the thread had no record they were ever sent.
+   *
+   * The lease belongs to the orchestrator, so appending stays there.
+   */
+  recordDelivery: (text: string, attachments: readonly OutgoingAttachment[]) => Promise<void>;
   spine: SpineState;
 }
 
@@ -78,6 +91,7 @@ export function createSurfaceToolDeps(ctx: SurfaceToolsContext): SurfaceToolDeps
     fileRegistration,
     provision,
     postProvenance,
+    recordDelivery,
     spine,
   } = ctx;
   if (strictReadOnly || !(input.surfaceTools && defaultDestination && deps.deliveries)) return undefined;
@@ -152,6 +166,7 @@ export function createSurfaceToolDeps(ctx: SurfaceToolsContext): SurfaceToolDeps
       });
       spine.surfaceOutboundCount += 1;
       if (input.runId) deps.turnStream?.markSurfacePosted(input.runId);
+      if (attachments?.length) await recordDelivery(postText, attachments);
       return { ok: true, deliveryId: delivery.id };
     } catch (e) {
       return { ok: false, message: errMessage(e) };

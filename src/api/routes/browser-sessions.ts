@@ -62,6 +62,14 @@ function wire(s: LiveBrowserSession): Record<string, unknown> {
   };
 }
 
+// Absent means iframe: that is what every caller sent before streamed
+// browsers existed, and it is the shape that carries a secret.
+function requestedViewer(viewer: unknown): "stream" | "iframe" | null {
+  if (viewer === "stream") return "stream";
+  if (viewer === undefined || viewer === "iframe") return "iframe";
+  return null;
+}
+
 async function registerSession(ctx: ApiCtx): Promise<void> {
   const { res, deps } = ctx;
   const store = deps.liveBrowserSessions;
@@ -80,9 +88,7 @@ async function registerSession(ctx: ApiCtx): Promise<void> {
   const sessionId = typeof b.sessionId === "string" ? b.sessionId.trim() : "";
   const liveViewUrl = typeof b.liveViewUrl === "string" ? b.liveViewUrl.trim() : "";
   const expiresAt = typeof b.expiresAt === "number" ? b.expiresAt : 0;
-  // Absent means iframe: that is what every caller sent before streamed
-  // browsers existed, and it is the shape that carries a secret.
-  const viewer = b.viewer === "stream" ? "stream" : b.viewer === undefined || b.viewer === "iframe" ? "iframe" : null;
+  const viewer = requestedViewer(b.viewer);
   if (viewer === null) {
     return sendJson(res, 400, { error: "bad_request", message: 'viewer must be "iframe" or "stream"' });
   }
@@ -369,7 +375,7 @@ async function paneInput(ctx: ApiCtx): Promise<void> {
   }
   const b = isObj(ctx.body) ? ctx.body : {};
   const kind = typeof b.kind === "string" ? b.kind : "";
-  let args = "";
+  let args: string;
   if (kind === "click") {
     const x = Number(b.x);
     const y = Number(b.y);

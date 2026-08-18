@@ -1080,9 +1080,26 @@ export const TURN_PROVIDER_EFFORT_ALIASES: Record<string, string | null> = {
   auto: null,
 };
 
-export function applyFastSpeed<T>(payload: T, fast: boolean | undefined): T {
+/**
+ * Where a provider carries fast mode.
+ *
+ * Anthropic attaches it to the model as a beta header, so the model that came
+ * back from `setModel` is an honest record of whether the turn got it. OpenAI
+ * takes it per request as `service_tier`, so nothing is written on the model
+ * and there is nothing to read back — intent is the only source of truth.
+ *
+ * A provider we have no answer for keeps the Anthropic shape, which is what
+ * every caller got before OpenAI models could reach fast mode at all.
+ */
+export function fastModeChannel(provider: string | undefined): "header" | "payload" {
+  return provider === "openai" ? "payload" : "header";
+}
+
+export function applyFastSpeed<T>(payload: T, fast: boolean | undefined, model?: { provider?: string }): T {
   if (fast && payload && typeof payload === "object") {
-    (payload as Record<string, unknown>).speed = "fast";
+    const body = payload as Record<string, unknown>;
+    if (fastModeChannel(model?.provider) === "payload") body.service_tier = "fast";
+    else body.speed = "fast";
   }
   return payload;
 }
@@ -1171,6 +1188,21 @@ export function resolveConfiguredModelId(configured: string | undefined, default
     swallow("pi: configured model id not in registry, falling back to default", new Error(candidate));
   }
   return DEFAULT_AGENT_MODEL_ID;
+}
+
+/**
+ * Whether the turn about to run is actually in fast mode.
+ *
+ * For Anthropic the applied model answers this — if the beta header is not on
+ * it, the switch did not take and the turn is not fast however it was asked
+ * for. OpenAI writes nothing on the model, so intent is all there is.
+ */
+export function fastModeIsActive(
+  model: { provider?: string; headers?: Record<string, string> } | undefined,
+  wantFast: boolean,
+): boolean {
+  if (fastModeChannel(model?.provider) === "payload") return wantFast;
+  return Boolean(model?.headers?.["anthropic-beta"]?.includes(FAST_MODE_BETA));
 }
 
 function withFastModeHeaders(model: Model<Api>): Model<Api> {
@@ -1369,7 +1401,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           });
           ref.pendingPrepareNextTurn = undefined;
           ref.pendingTransformContext = undefined;
-          applyFastSpeed(payload, ref.fast);
+          applyFastSpeed(payload, ref.fast, model as { provider?: string } | undefined);
           if (cacheBoundary !== undefined) {
             try {
               applySystemPromptCacheSplit(payload, cacheBoundary);
@@ -1487,18 +1519,24 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
 
           const desiredModelId = turn.model ?? resolveModelId(turn.scopeLabel);
           const wantFast = wantsFastMode(turn.fastMode, desiredModelId);
-          const current = entry.agentSession.model as { id?: string; headers?: Record<string, string> } | undefined;
+          const current = entry.agentSession.model as
+            { id?: string; provider?: string; headers?: Record<string, string> } | undefined;
           const currentFast = Boolean(current?.headers?.["anthropic-beta"]?.includes(FAST_MODE_BETA));
-          if (current?.id !== desiredModelId || currentFast !== wantFast) {
+          // Only a header-carried fast mode is worth switching the model over.
+          // Comparing a payload-carried one against a header that will never be
+          // there re-sets the same model on every turn.
+          const wantFastHeader = wantFast && fastModeChannel(resolveModel(desiredModelId)?.provider) === "header";
+          if (current?.id !== desiredModelId || currentFast !== wantFastHeader) {
             try {
               const base = resolveModel(desiredModelId);
-              if (base) await entry.agentSession.setModel(wantFast ? withFastModeHeaders(base) : base);
+              if (base) await entry.agentSession.setModel(wantFastHeader ? withFastModeHeaders(base) : base);
             } catch (e) {
               swallow("pi: model switch", e);
             }
           }
-          const activeModel = entry.agentSession.model as { id?: string; headers?: Record<string, string> } | undefined;
-          entry.ref.fast = Boolean(activeModel?.headers?.["anthropic-beta"]?.includes(FAST_MODE_BETA));
+          const activeModel = entry.agentSession.model as
+            { id?: string; provider?: string; headers?: Record<string, string> } | undefined;
+          entry.ref.fast = fastModeIsActive(activeModel, wantFast);
           const effectiveModel = activeModel?.id ?? desiredModelId;
           const defaultThinkingLevel = entry.agentSession.model
             ? defaultInteractiveThinkingLevel(entry.agentSession.model)
@@ -1747,9 +1785,11 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
               `[pi] provider refusal — retrying on fallback model ${fromId} -> ${fallbackId} session=${turn.session.id}: ${refusal}`,
             );
             const wantFast = wantsFastMode(turn.fastMode, fallbackId);
-            await entry.agentSession.setModel(wantFast ? withFastModeHeaders(fallback) : fallback);
-            const active = entry.agentSession.model as { headers?: Record<string, string> } | undefined;
-            entry.ref.fast = Boolean(active?.headers?.["anthropic-beta"]?.includes(FAST_MODE_BETA));
+            const fallbackFastHeader = wantFast && fastModeChannel(fallback.provider) === "header";
+            await entry.agentSession.setModel(fallbackFastHeader ? withFastModeHeaders(fallback) : fallback);
+            const active = entry.agentSession.model as
+              { provider?: string; headers?: Record<string, string> } | undefined;
+            entry.ref.fast = fastModeIsActive(active, wantFast);
             applyTurnEffort(entry.agentSession, turn.thinkingLevel ?? defaultInteractiveThinkingLevel(fallback));
             const state = entry.agentSession.agent.state;
             for (let i = state.messages.length - 1; i >= messagesBefore; i--) {

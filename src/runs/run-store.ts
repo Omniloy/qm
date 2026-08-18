@@ -70,6 +70,19 @@ export interface RunStore {
 
   get(runId: string): Promise<Run | null>;
 
+  /**
+   * End a run from outside, without its lease.
+   *
+   * A stop has to be final. Interrupting the harness is a request, not a
+   * guarantee: if the turn never returns, the worker keeps heartbeating and the
+   * run stays `running` — which holds the per-session claim lock and queues
+   * every later message in that conversation behind it forever.
+   *
+   * Parks rather than requeues. A run someone deliberately stopped must never
+   * come back on a retry.
+   */
+  forceTerminal(runId: string, reason: string): Promise<boolean>;
+
   activeForThread(sessionId: string): Promise<Run | null>;
 
   activeSessionIds(): Promise<string[]>;

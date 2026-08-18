@@ -5,11 +5,7 @@ import { fileArtifactId } from "../files/file-artifact-store.ts";
 import { transcriptEntries, windowedTranscript } from "../sessions/session-store.ts";
 import { supportsProcessSessions, type Sandbox, type SandboxHandle } from "../sandbox/sandbox.ts";
 import { resolveEnvironmentId } from "../environments/environment-store.ts";
-import {
-  hiddenWorkspaceReason,
-  isHiddenWorkspacePath,
-  normalizeWorkspacePath,
-} from "../workspace/workspace-layout.ts";
+import { hiddenWorkspaceReason, isHiddenWorkspacePath, normalizeWorkspacePath } from "../workspace/workspace-layout.ts";
 import { shq } from "../util/shell.ts";
 import { swallowAs } from "../util/errors.ts";
 import { processIsGone } from "../sandbox/process-poll.ts";
@@ -64,6 +60,8 @@ export function createSessionMethods(
   | "grant"
   | "revokeGrant"
   | "promoteSkill"
+  | "demoteSkill"
+  | "listSkillGrants"
   | "belongsToScope"
   | "canManageArtifactHome"
   | "getArtifactHome"
@@ -699,6 +697,36 @@ export function createSessionMethods(
         scopeLabel: targetScopeId,
       });
       return promoted;
+    },
+
+    // Deliberately the same three gates promoteSkill applies. Giving a skill to
+    // the whole org and taking it back are the same decision in two directions,
+    // and it would be odd if one of them were easier than the other.
+    async demoteSkill(id, actorId, liveActor) {
+      const skill = await deps.skills.get(id);
+      if (!skill) throw new AdminError(404, "no such skill");
+      if (parseScopeId(skill.scopeId).kind !== "org")
+        throw new Error("only an org-wide skill is taken back this way — archive anything narrower");
+      if (liveActor !== true)
+        throw new AdminError(403, "taking a skill back from the org takes a live person, never an autonomous trigger");
+      if (!deps.admin) throw new Error("org demotion requires an admin service");
+      const status = await deps.admin.adminStatusOf({ id: actorId, type: "internal" });
+      if (!status.isAdmin) throw new AdminError(403, "only an org admin can take a skill back from the org");
+      await deps.skills.archive(id);
+      deps.auditLog.record({
+        at: Date.now(),
+        principalId: actorId,
+        action: "skill_demote",
+        resource: id,
+        scopeLabel: skill.scopeId,
+      });
+    },
+
+    async listSkillGrants(id) {
+      const skill = await deps.skills.get(id);
+      if (!skill) return [];
+      const grants = await deps.acl.grantsFor(skill.scopeId, encodeRef(skillRef(skill.id)));
+      return grants.map((g) => ({ granteeScopeId: g.granteeScopeId, permission: g.permission }));
     },
 
     belongsToScope(principalId, scope) {

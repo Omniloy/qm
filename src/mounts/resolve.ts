@@ -12,7 +12,7 @@ import { attachedFoldersSection, attachedFoldersUnavailableNote, type MountListi
  * reaches exactly the folders its owner can reach.
  */
 
-export type ListFolderFn = (accessToken: string, folderId: string, opts?: ListFolderOptions) => Promise<Listing>;
+type ListFolderFn = (accessToken: string, folderId: string, opts?: ListFolderOptions) => Promise<Listing>;
 
 export interface ResolveDeps {
   mounts: MountStore;

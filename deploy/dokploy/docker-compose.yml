@@ -46,6 +46,20 @@ services:
       HARNESS: ${HARNESS}
       HARNESS_SECURITY_POSTURE: ${HARNESS_SECURITY_POSTURE}
       MODEL_PROVIDER: anthropic
+      # GPT models resolve as built-ins whose base URL is overridden here, so
+      # they carry the names, context windows and prices the registry already
+      # models. Registering the proxy as a custom provider instead does not
+      # work: resolveModel reads the built-in registry first, and every
+      # gpt-5.6-* id is already in it, so the custom entry would never resolve.
+      #
+      # The key is the proxy's own, not an OpenAI one. It only proves that core
+      # is the caller; the ChatGPT credential never leaves the proxy.
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+      OPENAI_API_KEY: ${CODEX_PROXY_API_KEY}
+      # Lets the admin panel run the ChatGPT sign-in. Core drives the proxy's
+      # management API with this; it never holds the resulting credential.
+      CODEX_PROXY_URL: ${CODEX_PROXY_URL}
+      CODEX_PROXY_MANAGEMENT_KEY: ${CODEX_PROXY_MANAGEMENT_KEY}
       SESSION_STORE: postgres
       RUN_STORE: postgres
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@pg:5432/qm
@@ -128,6 +142,52 @@ services:
     network_mode: none
     read_only: true
     mem_limit: 32m
+
+  # Serves an OpenAI-compatible endpoint backed by a ChatGPT subscription, so
+  # pi can run GPT models without a Platform API key. It holds the ChatGPT
+  # OAuth credential and refreshes it; core never sees a token and only ever
+  # talks to the endpoint, registered as a custom model provider in admin.
+  #
+  # Deliberately not on dokploy-network and publishing no ports: Traefik must
+  # not be able to route to it, and neither the API nor the management port
+  # belongs on the Internet. Core reaches it at http://codex-proxy:8317.
+  #
+  # Pinned by digest rather than a tag. This image holds a live credential for
+  # a personal ChatGPT account, so it does not get to change under us silently.
+  codex-proxy:
+    image: eceasy/cli-proxy-api@sha256:52282964dca47d4978aaffd7dd72d6ed5fb5e5b72acfcbcd1785cfb087d6bd8e
+    restart: unless-stopped
+    environment:
+      CODEX_PROXY_API_KEY: ${CODEX_PROXY_API_KEY}
+      CODEX_PROXY_MANAGEMENT_KEY: ${CODEX_PROXY_MANAGEMENT_KEY}
+    # The config carries both keys, so it is written at boot from the
+    # application env instead of being committed. The `$$` escapes keep
+    # Compose from interpolating them here — the shell expands them inside the
+    # container, which keeps the secrets out of `docker inspect`.
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        cat > /CLIProxyAPI/config.yaml <<EOF
+        host: "0.0.0.0"
+        port: 8317
+        auth-dir: "/root/.cli-proxy-api"
+        api-keys:
+          - "$$CODEX_PROXY_API_KEY"
+        remote-management:
+          allow-remote: true
+          secret-key: "$$CODEX_PROXY_MANAGEMENT_KEY"
+          disable-control-panel: true
+        logging-to-file: false
+        usage-statistics-enabled: false
+        debug: false
+        EOF
+        exec ./CLIProxyAPI
+    volumes:
+      - codexproxyauth:/root/.cli-proxy-api
+    networks: [qm]
+    mem_limit: 512m
 
   auth:
     build:
@@ -227,6 +287,12 @@ services:
       # Without this the portal 404s /d/* itself and core never sees the
       # request, so every app the agent publishes looks like it does not exist.
       PORTAL_DEPLOYMENTS_ENABLED: "1"
+      # Traefik terminates TLS in front of the portal, so the client address is
+      # the last hop of X-Forwarded-For rather than the socket. Public share
+      # links are rate limited per client, and the portal refuses to start
+      # rather than bound an anonymous surface on an address anyone can forge —
+      # so without this the whole portal stays down, not just sharing.
+      PORTAL_XFF_TRUSTED_HOPS: "1"
       PORTAL_SESSION_SECRET: ${PORTAL_SESSION_SECRET}
       PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET}
       CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET}
@@ -241,6 +307,9 @@ services:
 
 volumes:
   pgdata:
+  # The ChatGPT credential the proxy signs in with. Losing this volume means
+  # signing in again, not losing data.
+  codexproxyauth:
 
 networks:
   qm:

@@ -148,12 +148,12 @@ instead, since changing the variable will no longer have any effect.
 
 ### Sign-in
 
-| Key                         | Value                                             |
-| --------------------------- | ------------------------------------------------- |
+| Key                         | Value                                                   |
+| --------------------------- | ------------------------------------------------------- |
 | `AUTH_EMAIL_FROM`           | verified sender, e.g. `MiniOmni <no-reply@example.com>` |
-| `AUTH_ALLOWED_EMAIL_DOMAIN` | domain allowed to sign in                         |
-| `AUTH_BRAND_NAME`           | name shown on the sign-in page                    |
-| `RESEND_API_KEY`            | Resend key that can send as `AUTH_EMAIL_FROM`     |
+| `AUTH_ALLOWED_EMAIL_DOMAIN` | domain allowed to sign in                               |
+| `AUTH_BRAND_NAME`           | name shown on the sign-in page                          |
+| `RESEND_API_KEY`            | Resend key that can send as `AUTH_EMAIL_FROM`           |
 
 The broker sends one-time sign-in links through Resend. The sender domain must be
 verified in Resend, or delivery is limited to the Resend account's own address.
@@ -306,6 +306,76 @@ is the invoice.
 The token expires quietly a year after it was minted and takes Claude-harness
 turns with it. The admin card counts that year down; the env var cannot.
 
+### Running GPT models on a ChatGPT subscription
+
+There is no equivalent of `claude setup-token` for OpenAI. Signing in with
+ChatGPT produces an OAuth bundle that expires and is refreshed as it is used, and
+it authenticates the Codex backend rather than the Platform API — OpenAI's own
+guidance is that "for general OpenAI API calls, continue to use Platform API
+keys". So a subscription cannot simply be pasted into a field the way Claude's
+can.
+
+The `codex-proxy` service closes that gap. It signs in with ChatGPT, holds the
+credential, refreshes it, and serves an OpenAI-compatible endpoint on the private
+network. Core never handles the token: `pi` reaches GPT models by way of a custom
+model provider pointed at the proxy, which is the same path a vendor endpoint or
+a LiteLLM gateway already takes.
+
+| Key                          | Value                                                                          |
+| ---------------------------- | ------------------------------------------------------------------------------ |
+| `CODEX_PROXY_API_KEY`        | what core presents to the proxy; also the key you enter on the custom provider |
+| `CODEX_PROXY_MANAGEMENT_KEY` | guards the proxy's management API, which is what signs in                      |
+
+Mint both with `openssl rand -hex 32`. Neither is an OpenAI credential — they
+only gate the proxy.
+
+Sign in once the stack is up, from the host:
+
+```bash
+MGMT=<CODEX_PROXY_MANAGEMENT_KEY>
+docker compose exec core sh -lc "wget -qO- --header='X-Management-Key: $MGMT' \
+  http://codex-proxy:8317/v0/management/codex-auth-url"
+# -> {"status":"ok","url":"https://auth.openai.com/...","state":"codex-..."}
+```
+
+Open that URL in your own browser and sign in. It redirects to
+`localhost:1455`, which will fail to connect — that is expected, because the
+proxy is on the server and not on your machine. Copy the `code` out of the failed
+URL and post it back:
+
+```bash
+docker compose exec core sh -lc "wget -qO- --post-data='{\"provider\":\"codex\",\"state\":\"<STATE>\",\"code\":\"<CODE>\"}' \
+  --header='Content-Type: application/json' --header='X-Management-Key: $MGMT' \
+  http://codex-proxy:8317/v0/management/oauth-callback"
+```
+
+Then register it at **Admin → Governance → Custom providers**: an
+OpenAI-compatible endpoint at `http://codex-proxy:8317/v1`, the key
+`CODEX_PROXY_API_KEY`, and the model ids the proxy reports at `/v1/models`. The
+models join the picker for every harness that routes through pi-ai.
+
+**Fast mode does not survive this route.** The web UI's fast toggle lights up on
+GPT-5.6 Sol and the request carries `service_tier: "fast"`, which is the right
+parameter — but measured against the proxy on 2026-08-14, the response came back
+`service_tier: "default"` whether or not the field was sent, with no latency
+difference. OpenAI documents `default` as the answer when the tier was not
+applied, so either the proxy drops the field on its way to the Codex backend or
+the subscription does not sell that tier; the two cannot be told apart from here
+without a Platform key. Sol stays marked fast-capable because it is, on the
+Platform API. Through the proxy the toggle is a no-op rather than an error. Re-run
+this probe before assuming that has changed:
+
+```bash
+docker exec qm-omniloy-core node -e 'fetch("http://codex-proxy:8317/v1/responses",{method:"POST",
+  headers:{"Content-Type":"application/json",Authorization:"Bearer "+process.env.K},
+  body:JSON.stringify({model:"gpt-5.6-sol",input:"hi",service_tier:"fast"})})
+  .then(r=>r.json()).then(j=>console.log(j.service_tier))'
+```
+
+The proxy publishes no ports and stays off `dokploy-network` on purpose. Its
+management API can sign in as your ChatGPT account, so it must not be reachable
+from the Internet; nothing outside the compose network can address it.
+
 ## The browser-extension relay (optional)
 
 Lets a person's own Chrome drive a browse session, via the MiniOmni Browser Bridge extension, so
@@ -348,7 +418,7 @@ before the first deploy or it fails in ways that look like something else.
 
 **You do not create a domain.** The portal and the relay are routed by Traefik labels in
 `docker-compose.yml` keyed on `${PUBLIC_HOST}` and `${RELAY_HOST}`, with
-`certresolver=letsencrypt`. `domain.create` is for Dokploy *applications*, not compose
+`certresolver=letsencrypt`. `domain.create` is for Dokploy _applications_, not compose
 services, and calling it here adds a record that routes nothing.
 
 Note also that two MiniOmni stacks on one host collide in two places: the Traefik

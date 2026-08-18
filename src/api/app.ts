@@ -3,6 +3,7 @@ import { createAppHelpers } from "./app-helpers.ts";
 import { createAmbientHelpers } from "./app-ambient.ts";
 import { createTurnMethods } from "./app-turn.ts";
 import { createSessionMethods } from "./app-sessions.ts";
+import { createShareMethods } from "./app-shares.ts";
 import { createMessagingMethods } from "./app-messaging.ts";
 import { createDeploymentMethods } from "./app-deployments.ts";
 import { createSkillMethods } from "./app-skills.ts";
@@ -19,6 +20,10 @@ export function createApp(deps: AppDeps): App {
     canUseContext: helpers.canUseContext,
     ...createTurnMethods(deps, helpers, ambient),
     ...createSessionMethods(deps, helpers),
+    // `app` is the same object these methods are assigned onto below, so the
+    // share file route reaches openFileForViewer's existing ACL check at call
+    // time rather than writing a second, unchecked file reader.
+    ...createShareMethods(deps, helpers, app),
     ...createMessagingMethods(deps, helpers, ambient),
     ...createDeploymentMethods(deps, helpers),
     ...createSkillMethods(deps, helpers),

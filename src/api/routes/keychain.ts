@@ -277,7 +277,14 @@ async function handleKeychain(ctx: ApiCtx): Promise<void> {
 
     if (method === "POST" && pathname === "/v1/keychain/grants") {
       if (capability.triggered) return sendJson(res, 403, { error: "forbidden", message: CONSENT_ON_TRIGGERED_TURN });
-      const b = body as { credential?: unknown; ask?: unknown; mode?: unknown; purpose?: unknown; expiresAt?: unknown };
+      const b = body as {
+        credential?: unknown;
+        ask?: unknown;
+        mode?: unknown;
+        purpose?: unknown;
+        expiresAt?: unknown;
+        audienceScopeId?: unknown;
+      };
       const expiresAt = normalizeInboundExpiresAt(b.expiresAt);
       if (!expiresAt.ok) return sendJson(res, 400, { error: "bad_request", message: expiresAt.message });
       if (
@@ -328,10 +335,39 @@ async function handleKeychain(ctx: ApiCtx): Promise<void> {
       if (credential && !samePerson(credential.ownerId, actorId)) {
         return sendJson(res, 403, { error: "forbidden", message: "only the credential owner can grant it" });
       }
+      // Normally the audience is wherever the capability already is: that is
+      // what stops an agent lending a secret to a room it was never invited to.
+      // A person choosing on the keychain page has no such room, so they name
+      // the audience — and the only limit is the one that governs every other
+      // kind of sharing here: you can lend into a context you are part of.
+      let audienceScopeId = capability.scopeId;
+      const wanted = typeof b.audienceScopeId === "string" ? b.audienceScopeId.trim() : "";
+      if (wanted && wanted !== capability.scopeId) {
+        // A turn's capability carries an `aud`; the portal's session capability
+        // does not. That difference is the whole gate — an agent stays where it
+        // is no matter what it puts in the body.
+        if (capability.aud !== undefined) {
+          return sendJson(res, 403, {
+            error: "forbidden",
+            message:
+              "an agent can only grant a credential into the conversation it is in — to lend one somewhere else, choose the audience on the keychain page",
+          });
+        }
+        if (parseScopeId(wanted).kind === null) {
+          return sendJson(res, 400, { error: "bad_request", message: `not a scope id: ${wanted}` });
+        }
+        if (!(await app.belongsToScope(actorId, wanted))) {
+          return sendJson(res, 403, {
+            error: "forbidden",
+            message: "you can only give a credential to a context you belong to",
+          });
+        }
+        audienceScopeId = wanted;
+      }
       const grant = await kc.createGrant({
         credentialId,
         ownerId: actorId,
-        audienceScopeId: capability.scopeId,
+        audienceScopeId,
         mode: b.mode as GrantMode,
         purpose: b.purpose,
         ...(expiresAt.value !== undefined ? { expiresAt: expiresAt.value } : {}),
@@ -350,7 +386,16 @@ async function handleKeychain(ctx: ApiCtx): Promise<void> {
           scopeLabel: capability.scopeId,
         });
       }
-      return sendJson(res, 200, { grant, use: useBlock(grant) });
+      // The use block is a shell command for the caller's own turn. When the
+      // grant was aimed somewhere else it would not work here, and handing over
+      // a command that fails reads as a broken grant rather than a placed one.
+      return sendJson(res, 200, {
+        grant,
+        use:
+          grant.audienceScopeId === capability.scopeId
+            ? useBlock(grant)
+            : { note: `Grant is active in ${grant.audienceScopeId}, not here.` },
+      });
     }
 
     if (method === "GET" && pathname === "/v1/keychain/grants") {
