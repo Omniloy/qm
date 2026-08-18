@@ -392,6 +392,26 @@ async function patchSession(ctx: ApiCtx): Promise<void> {
   return sendJson(res, 200, { session });
 }
 
+async function moveSession(ctx: ApiCtx): Promise<void> {
+  const { res, app, body } = ctx;
+  const b = isObj(body) ? body : {};
+  const principalId = typeof b.principalId === "string" ? b.principalId : null;
+  if (!principalId) return sendJson(res, 400, { error: "bad_request", message: "principalId required" });
+  if (typeof b.scopeId !== "string" || !b.scopeId) {
+    return sendJson(res, 400, { error: "bad_request", message: "scopeId is required" });
+  }
+  const outcome = await app.moveSessionForViewer(ctx.params.id!, principalId, b.scopeId as ScopeId);
+  if (outcome === "not_found") return sendJson(res, 404, { error: "not_found" });
+  if (outcome === "forbidden") {
+    return sendJson(res, 403, {
+      error: "forbidden",
+      message:
+        "you can only move a web conversation you started, out of a context you still belong to, and only into your own personal context or a project you belong to",
+    });
+  }
+  return sendJson(res, 200, { session: outcome });
+}
+
 async function listAgentConversations(ctx: ApiCtx): Promise<void> {
   const { res, app, capability } = ctx;
   if (!capability) {
@@ -1442,6 +1462,7 @@ export const surfaceRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "POST", path: "/v1/session-cap", auth: "source", handle: sessionCapability },
   { method: "POST", path: "/v1/sessions/:id/title", auth: "source", handle: regenerateSessionTitle },
   { method: "POST", path: "/v1/sessions/:id/fork", auth: "source", handle: forkSession },
+  { method: "POST", path: "/v1/sessions/:id/move", auth: "source", handle: moveSession },
   { method: "GET", path: "/v1/sessions/:id/approvals", auth: "source", handle: listSessionApprovals },
   { method: "GET", path: "/v1/sessions/:id/background", auth: "source", handle: getSessionBackground },
   {

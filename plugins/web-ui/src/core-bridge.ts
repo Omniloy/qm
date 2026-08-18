@@ -199,6 +199,13 @@ export async function updateSession(
   });
 }
 
+export async function moveSession(id: string, scopeId: string): Promise<{ session: CoreSession }> {
+  return api<{ session: CoreSession }>(`/api/sessions/${encodeURIComponent(id)}/move`, {
+    method: "POST",
+    body: JSON.stringify({ scopeId }),
+  });
+}
+
 export async function forkSession(
   id: string,
   upToSeq?: number,
@@ -348,9 +355,13 @@ export interface ActiveRun {
   run: RunPoll;
 }
 
+export function ownsWebThread(s: Pick<CoreSession, "threadRef">, user: string): boolean {
+  return Boolean(user) && s.threadRef.startsWith(`web:${user}:`);
+}
+
 export function isContinuable(s: Pick<CoreSession, "threadRef" | "scopeId">, user: string): boolean {
   if (!s.threadRef.startsWith("web:")) return false;
-  return s.threadRef.startsWith(`web:${user}:`) || s.scopeId.startsWith("channel:") || s.scopeId.startsWith("group:");
+  return ownsWebThread(s, user) || s.scopeId.startsWith("channel:") || s.scopeId.startsWith("group:");
 }
 
 function zeroUsage(): Usage {

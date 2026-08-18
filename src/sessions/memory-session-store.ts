@@ -101,6 +101,15 @@ export function createMemorySessionStore(opts: StoreOptions = {}): SessionStore 
       if (s) s.title = title;
     },
 
+    async updateScope(sessionId, scope) {
+      const s = sessions.get(sessionId);
+      if (!s) return;
+      s.scopeId = scope.scopeId;
+      s.type = scope.type;
+      if (scope.channelName === null) delete s.channelName;
+      else s.channelName = scope.channelName;
+    },
+
     async updateForkProvenance(sessionId, provenance) {
       const s = sessions.get(sessionId);
       if (s) Object.assign(s, provenance);

@@ -54,6 +54,7 @@ export function createSessionMethods(
   | "membershipControlsScope"
   | "authorizesCapabilityScope"
   | "updateSession"
+  | "moveSessionForViewer"
   | "regenerateTitle"
   | "spawnSession"
   | "forkSession"
@@ -532,6 +533,58 @@ export function createSessionMethods(
       await deps.sessions.updateParticipantView(sessionId, principalId, patch);
       const after = await sessionsForViewer(principalId);
       return after.find((s) => s.id === sessionId) ?? null;
+    },
+
+    async moveSessionForViewer(sessionId, principalId, toScopeId) {
+      const session = (await sessionsForViewer(principalId)).find((s) => s.id === sessionId);
+      if (!session) return "not_found";
+      if (session.surface !== "web" || !session.threadRef.startsWith(`web:${principalId}:`)) return "forbidden";
+
+      const to = parseScopeId(toScopeId);
+      const toProjectId = to.kind === "group" ? projectIdFromGroupRef(to.ref) : null;
+      if (to.kind === "personal" ? to.ref !== principalId : toProjectId === null) return "forbidden";
+      if (!(await canUseContext(principalId, session.scopeId))) return "forbidden";
+      if (!(await canUseContext(principalId, toScopeId))) return "forbidden";
+      if (session.scopeId === toScopeId) return session;
+
+      const from = parseScopeId(session.scopeId);
+      const fromProjectId = from.kind === "group" ? projectIdFromGroupRef(from.ref) : null;
+      const projects = deps.projects;
+      const underRoster = (projectId: string | null, fn: () => Promise<void>): Promise<true | null> => {
+        if (projectId === null) return fn().then(() => true as const);
+        if (!projects) return Promise.resolve(null);
+        return projects.withRosterLock(projectId, () => fn().then(() => true as const));
+      };
+
+      const detached = await underRoster(fromProjectId, async () => {
+        await deps.sessions.updateScope(sessionId, {
+          scopeId: toScopeId,
+          type: toProjectId === null ? "dm" : "group",
+          channelName: toProjectId === null ? null : ((await projects?.name(to.ref)) ?? null),
+        });
+        for (const memberId of await deps.sessions.participantsOf(sessionId)) {
+          if (!samePerson(memberId, principalId)) await deps.sessions.removeParticipant(sessionId, memberId);
+        }
+      });
+      if (!detached) return "not_found";
+
+      if (toProjectId !== null) {
+        const attached = await underRoster(toProjectId, async () => {
+          for (const memberId of (await projects?.members(to.ref)) ?? []) {
+            await deps.sessions.addParticipant(sessionId, memberId, undefined, { includeHistory: true });
+          }
+        });
+        if (!attached) return "not_found";
+      }
+
+      deps.auditLog.record({
+        at: Date.now(),
+        principalId,
+        action: "session.move",
+        resource: sessionId,
+        scopeLabel: `${session.scopeId} -> ${toScopeId}`,
+      });
+      return (await sessionsForViewer(principalId)).find((s) => s.id === sessionId) ?? "not_found";
     },
 
     async regenerateTitle(sessionId, principalId) {

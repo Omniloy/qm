@@ -165,6 +165,8 @@ export {
 } from "./orchestrator/turn-helpers.ts";
 export type { Orchestrator, OrchestratorDeps, OrchestratorInput, SurfaceContextPuller } from "./orchestrator/types.ts";
 
+const ROSTER_CHANGED = "project membership changed; retry from the current project";
+
 class ProjectRosterChanged extends Error {}
 
 const ACTIVITY_ENTRY_TYPES = new Set<EntryType>(["tool_call", "tool_result", "approval_request", "approval_resolved"]);
@@ -429,11 +431,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       const withManagedRosterVersion = async <T>(fn: () => Promise<T>): Promise<T> => {
         if (!managedGroupRef) return fn();
         const result = await deps.managedGroups!.withVersion(managedGroupRef, input.scopeVersion, fn);
-        if (result === undefined) throw new ProjectRosterChanged();
+        if (result === undefined) throw new ProjectRosterChanged(ROSTER_CHANGED);
         return result;
       };
       if (!(await managedRosterIsCurrent())) {
-        return { status: "refused", reason: "project membership changed; retry from the current project" };
+        return { status: "refused", reason: ROSTER_CHANGED };
       }
       if (conversation.kind !== "dm" && !deps.identity.audienceIsAllInternal(conversation.audience)) {
         const externalAllowed =
@@ -479,6 +481,9 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           resolution.orgScopeId,
         );
       const reconcileSessionParticipants = async (sessionId: string): Promise<void> => {
+        const current = await deps.sessions.get(sessionId);
+        if (current?.surface === "web" && current.scopeId !== scopeId)
+          throw new ProjectRosterChanged("that conversation lives in a different context");
         const participantIds = input.sessionParticipantIds;
         if (!participantIds?.length) return;
         const desired = new Set(participantIds);
@@ -733,7 +738,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             return {
               status: "refused",
               sessionId: session.id,
-              reason: "project membership changed; retry from the current project",
+              reason: err.message,
             };
           }
           throw err;
@@ -2835,7 +2840,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           return {
             status: "refused",
             sessionId: session.id,
-            reason: "project membership changed; retry from the current project",
+            reason: err.message,
           };
         }
         if (err instanceof NeedsApproval) {
@@ -2867,7 +2872,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               return {
                 status: "refused",
                 sessionId: session.id,
-                reason: "project membership changed; retry from the current project",
+                reason: writeErr.message,
               };
             }
             throw writeErr;
