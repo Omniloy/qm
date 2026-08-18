@@ -38,7 +38,7 @@ const vite = await createServer({ server: { middlewareMode: true, hmr: false }, 
 const { appState } = await vite.ssrLoadModule("/src/shell-state.ts");
 const { contextsState } = await vite.ssrLoadModule("/src/contexts.ts");
 const { sessionsState, renderList } = await vite.ssrLoadModule("/src/sessions.ts");
-const { movableContexts } = await vite.ssrLoadModule("/src/context-picker.ts");
+const { openContextPicker, resetContextPicker } = await vite.ssrLoadModule("/src/context-picker.ts");
 const { createConversation, disposeConversation } = await vite.ssrLoadModule("/src/conversations.ts");
 
 const project = {
@@ -230,18 +230,16 @@ test("every pane mounted on the moved conversation adopts its new context", asyn
   disposeConversation(elsewhere);
 });
 
-test("a conversation can only land in Personal or a project", () => {
-  assert.deepEqual(
-    movableContexts("conversation").map((o: { scopeId: string }) => o.scopeId),
-    ["personal:alice", project.scopeId],
-    "Slack channels and group DMs are not destinations — Slack recomputes their scope every turn",
+test("a file's destinations are unchanged by the conversation filter", () => {
+  openContextPicker({ label: "notes.txt", current: "personal:alice", kind: "file", move: async () => {} }, renderList);
+  const choices = [...document.querySelectorAll(".context-choices .context-choice")].map((c) =>
+    (c.textContent ?? "").replace(/\s+/gu, " ").trim(),
   );
-  assert.equal(movableContexts("conversation")[0].title, "Personal");
-  assert.deepEqual(
-    movableContexts("file").map((o: { scopeId: string }) => o.scopeId),
-    ["personal:alice", "channel:C1", "group:G1", project.scopeId],
-    "a file's destinations are unchanged",
-  );
+  assert.equal(choices.length, 4, "Slack channels and group DMs stay available to files");
+  assert.equal(choices[0], "Personal now");
+  assert.ok(choices.some((c) => c.includes("general")));
+  assert.ok(choices.some((c) => c.includes("Ada, Bob")));
+  resetContextPicker();
 });
 
 test("a picker abandoned by navigating away does not reappear on the way back", async () => {

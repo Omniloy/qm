@@ -12,7 +12,7 @@ import { contextsState, personalScopeId, scopeTitle } from "./contexts";
  * anyone your Google access, and people reasonably assume it does.
  */
 
-export type MoveKind = "folder" | "file" | "conversation";
+type MoveKind = "folder" | "file" | "conversation";
 
 export interface MoveTarget {
   /** Shown in the heading. */
@@ -46,7 +46,7 @@ export function resetContextPicker(): void {
 }
 
 /** Contexts this person could move something into, current one included. */
-export function movableContexts(kind: MoveKind): Array<{ scopeId: string; title: string }> {
+function movableContexts(kind: MoveKind): Array<{ scopeId: string; title: string }> {
   const personal = personalScopeId();
   return contextsState.list
     .filter((c) =>
