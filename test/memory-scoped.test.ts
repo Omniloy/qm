@@ -69,7 +69,11 @@ async function rig(t: TestContext, name: string): Promise<Rig> {
   const project = await built.app.createProject("owner", "Launch Cohort");
   assert.ok(project);
   assert.equal((await built.app.addProjectMember(project.id, "owner", "member")).status, "ok");
-  return { built, base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, project: projectScopeId(project.id) };
+  return {
+    built,
+    base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+    project: projectScopeId(project.id),
+  };
 }
 
 const token = (p: string) => mintSignedPayload({ p, exp: Date.now() + 60_000 }, PID);
@@ -110,7 +114,11 @@ test("project members share the project notebook through scopeId; personal stays
   assert.equal(empty.status, 200);
   assert.equal((await json(empty)).content, "", "an untouched project notebook reads empty");
 
-  const put = await putMemory(base, { principalId: "member", content: "# Memory\n\n- Ship Friday\n", scopeId: project });
+  const put = await putMemory(base, {
+    principalId: "member",
+    content: "# Memory\n\n- Ship Friday\n",
+    scopeId: project,
+  });
   assert.equal(put.status, 200);
   assert.equal(
     (await json(await getMemory(base, "owner", project))).content,
@@ -160,7 +168,10 @@ test("the org notebook stays closed to scoped self routes for every internal use
   assert.equal((await getMemory(base, "member", org)).status, 404);
   assert.equal((await getHistory(base, "member", org)).status, 404);
   assert.equal((await putMemory(base, { principalId: "member", content: "# pwned\n", scopeId: org })).status, 404);
-  assert.equal((await restoreMemory(base, "member", { revision: "1", expectedRevision: "1", scopeId: org })).status, 404);
+  assert.equal(
+    (await restoreMemory(base, "member", { revision: "1", expectedRevision: "1", scopeId: org })).status,
+    404,
+  );
   assert.equal(await built.memory.read(org), "", "the org notebook is untouched");
 });
 
@@ -172,7 +183,11 @@ test("a public channel's notebook belongs to its members, not to every internal 
     [{ channelId: "C-pub", principalId: "member" }],
   );
 
-  const memberWrite = await putMemory(base, { principalId: "member", content: "# Memory\n\n- ours\n", scopeId: channel });
+  const memberWrite = await putMemory(base, {
+    principalId: "member",
+    content: "# Memory\n\n- ours\n",
+    scopeId: channel,
+  });
   assert.equal(memberWrite.status, 200, "a channel member edits the channel notebook");
 
   assert.equal((await getMemory(base, "outsider", channel)).status, 404);
@@ -236,8 +251,13 @@ test("history and restore follow scopeId for members and 404 for everyone else",
     404,
   );
   assert.equal(
-    (await restoreMemory(base, "member", { revision: "1", expectedRevision: "3", scopeId: scopeId("personal", "owner") }))
-      .status,
+    (
+      await restoreMemory(base, "member", {
+        revision: "1",
+        expectedRevision: "3",
+        scopeId: scopeId("personal", "owner"),
+      })
+    ).status,
     404,
   );
 

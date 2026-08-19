@@ -140,7 +140,9 @@ function drawMemory(loading = false): void {
                     onChange: (value) => switchMemoryScope(value || null),
                     options: scopeOptions.map(
                       (o) =>
-                        html`<option value=${o.value} ?selected=${(memoryScopeId ?? "") === o.value}>${o.title}</option>`,
+                        html`<option value=${o.value} ?selected=${(memoryScopeId ?? "") === o.value}>
+                          ${o.title}
+                        </option>`,
                     ),
                   })}
                 </label>`
