@@ -18,6 +18,7 @@ export function createApp(deps: AppDeps): App {
   const ambient = createAmbientHelpers(deps, app);
   const methods: App = {
     canUseContext: helpers.canUseContext,
+    canEditNotebook: helpers.canEditNotebook,
     ...createTurnMethods(deps, helpers, ambient),
     ...createSessionMethods(deps, helpers),
     // `app` is the same object these methods are assigned onto below, so the

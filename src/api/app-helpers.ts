@@ -357,6 +357,11 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     return principalCanAccessCurrentScope(principalId, targetScope);
   }
 
+  async function canEditNotebook(principalId: string, targetScope: ScopeId): Promise<boolean> {
+    if (parseScopeId(targetScope).kind === "org") return false;
+    return principalCanWriteScope(principalId, targetScope);
+  }
+
   const scopeMembershipDeps = {
     ...(deps.projects ? { managedGroups: deps.projects } : {}),
     ...(deps.directory ? { directory: deps.directory } : {}),
@@ -540,6 +545,7 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     filesForViewer,
     currentResourceScopesForViewer,
     canUseContext,
+    canEditNotebook,
     principalCanAccessCurrentScope,
     principalCanManageScope,
     membershipControlsScope,

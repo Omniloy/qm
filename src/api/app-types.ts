@@ -307,6 +307,7 @@ export interface App extends ShareMethods {
    * a file to it. Exposed so callers share one rule rather than restating it.
    */
   canUseContext(principalId: string, targetScope: ScopeId): Promise<boolean>;
+  canEditNotebook(principalId: string, targetScope: ScopeId): Promise<boolean>;
   uploadFileForViewer(
     principalId: string,
     input: { scopeId?: ScopeId; name: string; mimetype?: string; data: AsyncIterable<Uint8Array> },

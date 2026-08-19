@@ -2,8 +2,9 @@ import { html, nothing, render } from "lit";
 import { Clock3, Pencil, RefreshCw, Search, Trash2 } from "lucide";
 import { api, ApiError } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
-import { icon } from "./ui";
+import { fieldSelect, icon } from "./ui";
 import { appState, replacePanePreservingFocus } from "./shell";
+import { contextsState, ensureContexts, scopeTitle } from "./contexts";
 
 interface RevisionRow {
   revision: string;
@@ -19,6 +20,8 @@ let memoryRevision = "";
 let memoryNotice = "";
 let memorySaving = false;
 let memoryLoaded = false;
+let memoryScopeId: string | null = null;
+let memoryLoadSeq = 0;
 let rawEditing = true;
 let search = "";
 let historyOpen = false;
@@ -32,11 +35,56 @@ export function resetMemoryState(): void {
   memoryNotice = "";
   memorySaving = false;
   memoryLoaded = false;
+  memoryScopeId = null;
+  memoryLoadSeq++;
   rawEditing = true;
   search = "";
   historyOpen = false;
   history = [];
   memoryConfirmation = null;
+}
+
+function memoryPath(base: string): string {
+  return memoryScopeId ? `${base}?scopeId=${encodeURIComponent(memoryScopeId)}` : base;
+}
+
+function memoryPayload(fields: Record<string, unknown>): string {
+  return JSON.stringify(memoryScopeId ? { ...fields, scopeId: memoryScopeId } : fields);
+}
+
+function memoryScopeOptions(): Array<{ value: string; title: string }> {
+  const projects = contextsState.list
+    .filter((c) => Boolean(c.project))
+    .map((c) => ({ value: c.scopeId, title: scopeTitle(c.scopeId, c.name) }))
+    .sort((a, b) => a.title.localeCompare(b.title));
+  return [{ value: "", title: "Personal" }, ...projects];
+}
+
+function switchMemoryScope(scopeId: string | null): void {
+  if (scopeId === memoryScopeId) return;
+  const apply = async (): Promise<void> => {
+    memoryConfirmation = null;
+    memoryScopeId = scopeId;
+    memoryDraft = "";
+    memorySaved = "";
+    memoryRevision = "";
+    memoryNotice = "";
+    memoryLoaded = false;
+    search = "";
+    historyOpen = false;
+    history = [];
+    await renderMemory();
+  };
+  if (memoryLoaded && memoryDraft !== memorySaved) {
+    memoryConfirmation = {
+      title: "Discard unsaved memory changes?",
+      body: "Switching notebooks will drop this draft. Copy anything you want to keep before continuing.",
+      action: "Discard and switch",
+      run: apply,
+    };
+    return void drawMemory();
+  }
+  void apply();
 }
 
 function facts(content: string): Array<{ line: number; text: string; date?: string }> {
@@ -60,6 +108,7 @@ function fmtDate(ms: number): string {
 function drawMemory(loading = false): void {
   if (appState.currentView !== "memory" || !appState.mainEl) return;
   const dirty = memoryDraft !== memorySaved;
+  const scopeOptions = memoryScopeOptions();
   const visible = facts(memoryDraft).filter(
     (fact) => !search || fact.text.toLowerCase().includes(search.toLowerCase()),
   );
@@ -70,9 +119,35 @@ function drawMemory(loading = false): void {
       <div class="pane-head">
         <div>
           <h1 class="pane-title">Memory</h1>
-          <div class="pane-subtitle">Facts the agent carries into your conversations.</div>
+          <div class="pane-subtitle">
+            ${
+              memoryScopeId
+                ? `Facts the agent carries into ${scopeTitle(memoryScopeId)} conversations.`
+                : "Facts the agent carries into your conversations."
+            }
+          </div>
         </div>
         <div class="pane-head-actions">
+          ${
+            scopeOptions.length > 1
+              ? html`<label class="list-select memory-scope">
+                  <span>Notebook</span>${fieldSelect({
+                    compact: true,
+                    ariaLabel: "Notebook context",
+                    focusKey: "memory-scope",
+                    value: memoryScopeId ?? "",
+                    disabled: memorySaving,
+                    onChange: (value) => switchMemoryScope(value || null),
+                    options: scopeOptions.map(
+                      (o) =>
+                        html`<option value=${o.value} ?selected=${(memoryScopeId ?? "") === o.value}>
+                          ${o.title}
+                        </option>`,
+                    ),
+                  })}
+                </label>`
+              : nothing
+          }
           <button
             class="btn"
             type="button"
@@ -236,18 +311,21 @@ export async function renderMemory(force = false): Promise<void> {
     };
     return void drawMemory();
   }
-  const seq = appState.viewRenderSeq;
+  const seq = ++memoryLoadSeq;
+  const stale = (): boolean => seq !== memoryLoadSeq || appState.currentView !== "memory";
   memoryNotice = "";
   drawMemory(true);
+  await ensureContexts();
+  if (stale()) return;
   try {
-    const r = await api<{ content?: string; revision?: string }>("/api/memory");
-    if (seq !== appState.viewRenderSeq || appState.currentView !== "memory") return;
+    const r = await api<{ content?: string; revision?: string }>(memoryPath("/api/memory"));
+    if (stale()) return;
     memorySaved = r.content ?? "";
     memoryDraft = memorySaved;
     memoryRevision = r.revision ?? "";
     memoryLoaded = true;
   } catch (e) {
-    if (seq !== appState.viewRenderSeq || appState.currentView !== "memory") return;
+    if (stale()) return;
     memoryNotice = errMessage(e, "Failed to load memory.");
   }
   drawMemory();
@@ -255,14 +333,16 @@ export async function renderMemory(force = false): Promise<void> {
 
 async function saveMemory(): Promise<void> {
   if (memorySaving) return;
+  const seq = memoryLoadSeq;
   memorySaving = true;
   memoryNotice = "";
   drawMemory();
   try {
     const r = await api<{ content?: string; revision?: string }>("/api/memory", {
       method: "PUT",
-      body: JSON.stringify({ content: memoryDraft, revision: memoryRevision }),
+      body: memoryPayload({ content: memoryDraft, revision: memoryRevision }),
     });
+    if (seq !== memoryLoadSeq) return;
     memorySaved = r.content ?? memoryDraft;
     memoryDraft = memorySaved;
     memoryRevision = r.revision ?? memoryRevision;
@@ -275,6 +355,7 @@ async function saveMemory(): Promise<void> {
       }
     }
   } catch (e) {
+    if (seq !== memoryLoadSeq) return;
     memoryNotice =
       e instanceof ApiError && e.status === 409
         ? "Memory changed in another conversation. Your draft is still here; copy it if needed, then refresh to merge with the latest version."
@@ -286,7 +367,9 @@ async function saveMemory(): Promise<void> {
 }
 
 async function loadHistory(): Promise<void> {
-  const r = await api<{ revisions?: RevisionRow[] }>("/api/memory/history");
+  const seq = memoryLoadSeq;
+  const r = await api<{ revisions?: RevisionRow[] }>(memoryPath("/api/memory/history"));
+  if (seq !== memoryLoadSeq) return;
   history = r.revisions ?? [];
 }
 
@@ -316,11 +399,13 @@ function requestRestoreRevision(row: RevisionRow): void {
 }
 
 async function restoreRevision(row: RevisionRow): Promise<void> {
+  const seq = memoryLoadSeq;
   try {
     const r = await api<{ content?: string; revision?: string }>("/api/memory/restore", {
       method: "POST",
-      body: JSON.stringify({ revision: row.revision, expectedRevision: memoryRevision }),
+      body: memoryPayload({ revision: row.revision, expectedRevision: memoryRevision }),
     });
+    if (seq !== memoryLoadSeq) return;
     memorySaved = r.content ?? "";
     memoryDraft = memorySaved;
     memoryRevision = r.revision ?? memoryRevision;
@@ -331,6 +416,7 @@ async function restoreRevision(row: RevisionRow): Promise<void> {
       memoryNotice = "Revision restored ✓ History could not refresh.";
     }
   } catch (e) {
+    if (seq !== memoryLoadSeq) return;
     memoryNotice = errMessage(e, "Could not restore that revision.");
   }
   drawMemory();
