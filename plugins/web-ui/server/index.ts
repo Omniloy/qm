@@ -1502,20 +1502,32 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
     }
 
     if (method === "GET" && path === "/api/memory") {
-      const r = await coreFetch("GET", `/v1/memory?principalId=${encodeURIComponent(user)}`);
+      const qs = new URLSearchParams({ principalId: user });
+      const scopeId = url.searchParams.get("scopeId");
+      if (scopeId) qs.set("scopeId", scopeId);
+      const r = await coreFetch("GET", `/v1/memory?${qs.toString()}`);
       return relay(res, r);
     }
     if (method === "GET" && path === "/api/memory/history") {
-      const r = await coreFetch("GET", `/v1/memory/history?principalId=${encodeURIComponent(user)}`);
+      const qs = new URLSearchParams({ principalId: user });
+      const scopeId = url.searchParams.get("scopeId");
+      if (scopeId) qs.set("scopeId", scopeId);
+      const r = await coreFetch("GET", `/v1/memory/history?${qs.toString()}`);
       return relay(res, r);
     }
     if (method === "POST" && path === "/api/memory/restore") {
       let revision = "";
       let expectedRevision = "";
+      let scopeId = "";
       try {
-        const p = JSON.parse(await readBody(req)) as { revision?: unknown; expectedRevision?: unknown };
+        const p = JSON.parse(await readBody(req)) as {
+          revision?: unknown;
+          expectedRevision?: unknown;
+          scopeId?: unknown;
+        };
         if (typeof p.revision === "string") revision = p.revision;
         if (typeof p.expectedRevision === "string") expectedRevision = p.expectedRevision;
+        if (typeof p.scopeId === "string") scopeId = p.scopeId;
       } catch (e) {
         if (e instanceof PayloadTooLargeError) throw e;
         return json(res, 400, { error: "bad_request" });
@@ -1523,22 +1535,26 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
       const r = await coreFetch(
         "POST",
         "/v1/memory/restore",
-        JSON.stringify({ principalId: user, revision, expectedRevision }),
+        JSON.stringify({ principalId: user, revision, expectedRevision, ...(scopeId ? { scopeId } : {}) }),
       );
       return relay(res, r);
     }
     if (method === "PUT" && path === "/api/memory") {
       let content: string;
       let revision: string;
+      let scopeId = "";
       try {
-        const p = JSON.parse(await readBody(req)) as { content?: unknown; revision?: unknown };
+        const p = JSON.parse(await readBody(req)) as { content?: unknown; revision?: unknown; scopeId?: unknown };
         if (typeof p.content !== "string")
           return json(res, 400, { error: "bad_request", message: "content must be a string" });
         content = p.content;
+        if (typeof p.scopeId === "string") scopeId = p.scopeId;
+        const headQs = new URLSearchParams({ principalId: user });
+        if (scopeId) headQs.set("scopeId", scopeId);
         revision =
           typeof p.revision === "string"
             ? p.revision
-            : await coreFetch("GET", `/v1/memory?principalId=${encodeURIComponent(user)}`).then((head) => {
+            : await coreFetch("GET", `/v1/memory?${headQs.toString()}`).then((head) => {
                 try {
                   return String((JSON.parse(head.text) as { revision?: unknown }).revision ?? "");
                 } catch {
@@ -1549,7 +1565,11 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
         if (e instanceof PayloadTooLargeError) throw e;
         return json(res, 400, { error: "bad_request" });
       }
-      const r = await coreFetch("PUT", "/v1/memory", JSON.stringify({ principalId: user, content, revision }));
+      const r = await coreFetch(
+        "PUT",
+        "/v1/memory",
+        JSON.stringify({ principalId: user, content, revision, ...(scopeId ? { scopeId } : {}) }),
+      );
       return relay(res, r);
     }
 

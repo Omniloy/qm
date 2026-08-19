@@ -149,4 +149,19 @@ describe("agent memory history and restore", () => {
     assert.equal((await get("/v1/memory/history")).status, 401);
     assert.equal((await post("/v1/memory/restore", { revision: "1", expectedRevision: "2" })).status, 401);
   });
+
+  it("rejects a scopeId alongside a capability instead of second-guessing the token's scopes", async () => {
+    const token = await capFor("U4", scopeId("personal", "U4"));
+    assert.equal((await get("/v1/memory/history?scopeId=org%3Adefault-org", token)).status, 400);
+    assert.equal(
+      (
+        await post(
+          "/v1/memory/restore",
+          { revision: "1", expectedRevision: "2", scopeId: scopeId("org", "default-org") },
+          token,
+        )
+      ).status,
+      400,
+    );
+  });
 });

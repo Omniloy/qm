@@ -523,12 +523,22 @@ async function listScopeResources(ctx: ApiCtx): Promise<void> {
   });
 }
 
+async function memoryScopeFor(
+  ctx: ApiCtx,
+  principalId: string,
+  requested: string | null | undefined,
+): Promise<ScopeId | undefined> {
+  if (!requested) return makeScopeId("personal", principalId);
+  return (await ctx.app.canEditNotebook(principalId, requested)) ? requested : undefined;
+}
+
 async function getSelfMemory(ctx: ApiCtx): Promise<void> {
   const { res, deps, url } = ctx;
   const principalId = url.searchParams.get("principalId");
   if (!principalId) return sendJson(res, 400, { error: "bad_request", message: "principalId required" });
   if (!deps.memory) return sendJson(res, 404, { error: "not_found" });
-  const scope = makeScopeId("personal", principalId);
+  const scope = await memoryScopeFor(ctx, principalId, url.searchParams.get("scopeId"));
+  if (!scope) return sendJson(res, 404, { error: "not_found", message: "not a context you can see" });
   audit(deps, { principalId, action: "memory.self.read", resource: "memory", scopeLabel: scope });
   const head = await deps.memory.readHead?.(scope);
   return sendJson(res, 200, head ?? { content: await deps.memory.read(scope), revision: "" });
@@ -536,12 +546,16 @@ async function getSelfMemory(ctx: ApiCtx): Promise<void> {
 
 async function putSelfMemory(ctx: ApiCtx): Promise<void> {
   const { res, deps, body } = ctx;
-  const b = body as { principalId?: unknown; content?: unknown; revision?: unknown };
+  const b = body as { principalId?: unknown; content?: unknown; revision?: unknown; scopeId?: unknown };
   const principalId = typeof b.principalId === "string" ? b.principalId : "";
   if (!principalId) return sendJson(res, 400, { error: "bad_request", message: "principalId required" });
   if (typeof b.content !== "string") return sendJson(res, 400, { error: "bad_request", message: "content required" });
+  if (b.scopeId !== undefined && typeof b.scopeId !== "string") {
+    return sendJson(res, 400, { error: "bad_request", message: "scopeId must be a string" });
+  }
   if (!deps.memory) return sendJson(res, 404, { error: "not_found" });
-  const scope = makeScopeId("personal", principalId);
+  const scope = await memoryScopeFor(ctx, principalId, b.scopeId);
+  if (!scope) return sendJson(res, 404, { error: "not_found", message: "not a context you can see" });
   const saved =
     typeof b.revision === "string" && b.revision !== "" && deps.memory.replaceIfRevision
       ? await deps.memory.replaceIfRevision(scope, b.content, b.revision, principalId)
@@ -564,13 +578,21 @@ async function getSelfMemoryHistory(ctx: ApiCtx): Promise<void> {
   if (url.searchParams.has("principalId") && url.searchParams.get("principalId") !== viewer) {
     return sendJson(res, 404, { error: "not_found" });
   }
+  if (capability && url.searchParams.has("scopeId")) {
+    return sendJson(res, 400, { error: "bad_request", message: "scopeId cannot be combined with a capability" });
+  }
   const requestedScope = capability ? (url.searchParams.get("scope") ?? undefined) : undefined;
   if (requestedScope !== undefined && requestedScope !== "org") {
     return sendJson(res, 400, { error: "bad_request", message: 'scope must be "org" when present' });
   }
-  let scope: ScopeId | undefined = makeScopeId("personal", principalId);
-  if (capability) scope = requestedScope === "org" ? capability.memory?.orgWrite : capability.memory?.write;
-  if (!scope) return sendJson(res, 404, { error: "not_found" });
+  let scope: ScopeId | undefined;
+  if (capability) {
+    scope = requestedScope === "org" ? capability.memory?.orgWrite : capability.memory?.write;
+    if (!scope) return sendJson(res, 404, { error: "not_found" });
+  } else {
+    scope = await memoryScopeFor(ctx, principalId, url.searchParams.get("scopeId"));
+    if (!scope) return sendJson(res, 404, { error: "not_found", message: "not a context you can see" });
+  }
   if (!deps.memory?.history) return sendJson(res, 200, { revisions: [] });
   return sendJson(res, 200, { revisions: await deps.memory.history(scope, 30) });
 }
@@ -579,19 +601,36 @@ async function restoreSelfMemory(ctx: ApiCtx): Promise<void> {
   const { res, deps, body, capability, actor } = ctx;
   const viewer = capability?.actorId ?? actor?.p;
   if (!viewer) return sendJson(res, 401, { error: "capability_required" });
-  const b = body as { principalId?: unknown; revision?: unknown; expectedRevision?: unknown; scope?: unknown };
+  const b = body as {
+    principalId?: unknown;
+    revision?: unknown;
+    expectedRevision?: unknown;
+    scope?: unknown;
+    scopeId?: unknown;
+  };
   const principalId = capability ? viewer : b.principalId;
   if (typeof principalId !== "string" || typeof b.revision !== "string" || typeof b.expectedRevision !== "string") {
     return sendJson(res, 400, { error: "bad_request", message: "revision and expectedRevision required" });
   }
   if (b.principalId !== undefined && b.principalId !== viewer) return sendJson(res, 404, { error: "not_found" });
+  if (capability && b.scopeId !== undefined) {
+    return sendJson(res, 400, { error: "bad_request", message: "scopeId cannot be combined with a capability" });
+  }
+  if (b.scopeId !== undefined && typeof b.scopeId !== "string") {
+    return sendJson(res, 400, { error: "bad_request", message: "scopeId must be a string" });
+  }
   const requestedScope = capability ? b.scope : undefined;
   if (requestedScope !== undefined && requestedScope !== "org") {
     return sendJson(res, 400, { error: "bad_request", message: 'scope must be "org" when present' });
   }
-  let scope: ScopeId | undefined = makeScopeId("personal", principalId);
-  if (capability) scope = requestedScope === "org" ? capability.memory?.orgWrite : capability.memory?.write;
-  if (!scope) return sendJson(res, 404, { error: "not_found" });
+  let scope: ScopeId | undefined;
+  if (capability) {
+    scope = requestedScope === "org" ? capability.memory?.orgWrite : capability.memory?.write;
+    if (!scope) return sendJson(res, 404, { error: "not_found" });
+  } else {
+    scope = await memoryScopeFor(ctx, principalId, b.scopeId);
+    if (!scope) return sendJson(res, 404, { error: "not_found", message: "not a context you can see" });
+  }
   const restored = await deps.memory?.restore?.(scope, b.revision, b.expectedRevision, viewer);
   if (!restored)
     return sendJson(res, 409, { error: "conflict", message: "Memory changed, or that revision no longer exists." });
