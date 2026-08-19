@@ -1,55 +1,101 @@
 import type { Deployment, DeploymentVersion } from "./deploy-store.ts";
-import type { DeployEndpoint, DeployProvider } from "./deploy-provider.ts";
+import type { DeployApplyOptions, DeployEndpoint, DeployProvider } from "./deploy-provider.ts";
 import { spawnDockerExec } from "../sandbox/docker-exec.ts";
+import { sleep } from "../util/async.ts";
 
 const NETWORK = "agent-deploynet";
 const APP_PORT = 8080;
-// The snapshot is mounted read-only, so an app has nowhere to keep state unless
-// it gets one. The AWS provider gives apps a writable /data; this is the local
-// equivalent — a per-deployment named volume that survives redeploys.
+const READY_WINDOW_MS = 30_000;
+const READY_POLL_MS = 250;
+const PROBE_TIMEOUT_MS = 1_500;
+const PROBE_CALL_TIMEOUT_MS = 3_000;
+const PORT_READ_ATTEMPTS = 3;
+const FAILURE_LOG_LINES = "40";
+const FAILURE_LOG_BYTES = 2_000;
 const APP_DATA_DIR = "/data";
 const dataVolume = (id: string) => `agent-deploy-data-${id.slice(0, 12)}`;
 
 export interface DockerDeployProviderOptions {
   image?: string;
   docker?: string;
-  basePort?: number;
-  /**
-   * Container name or id core itself runs as, when core is containerised.
-   *
-   * Apps publish on the host's loopback, which only core-on-the-host can reach.
-   * Set this and core joins the deploy network instead, addressing each app by
-   * container name. See CORE_CONTAINER.
-   */
   coreContainer?: string;
+  readyWindowMs?: number;
 }
 
 export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {}): DeployProvider {
   const docker = opts.docker ?? "docker";
   const image = opts.image ?? "node:24-alpine";
-  let nextPort = opts.basePort ?? 9200;
-  const ports = new Map<string, number>();
-  const freed: number[] = [];
-  const allocPort = (n: string): number => {
-    const existing = ports.get(n);
-    if (existing !== undefined) return existing;
-    const port = freed.pop() ?? nextPort++;
-    ports.set(n, port);
-    return port;
-  };
-  const freePort = (n: string): void => {
-    const p = ports.get(n);
-    if (p !== undefined) {
-      freed.push(p);
-      ports.delete(n);
-    }
-  };
 
   const dexec = spawnDockerExec(docker);
 
+  const publishedPort = async (n: string): Promise<number | null> => {
+    const r = await dexec(["port", n, `${APP_PORT}/tcp`]);
+    if (r.code !== 0) return null;
+    const first = r.stdout.trim().split("\n")[0] ?? "";
+    const port = Number(first.slice(first.lastIndexOf(":") + 1));
+    return Number.isInteger(port) && port > 0 ? port : null;
+  };
+
   const name = (d: Deployment) => `agent-deploy-${d.id.slice(0, 12)}`;
 
-  /** Idempotent: create the deploy network and put core on it. */
+  const containerState = async (
+    n: string,
+    timeoutMs?: number,
+  ): Promise<{ running: boolean; exitCode: number | null } | null> => {
+    const r = await dexec(["inspect", "-f", "{{.State.Running}} {{.State.ExitCode}}", n], timeoutMs);
+    if (r.code !== 0) return null;
+    const [running, exitCode] = r.stdout.trim().split(/\s+/);
+    const parsed = Number(exitCode);
+    return { running: running === "true", exitCode: Number.isInteger(parsed) ? parsed : null };
+  };
+
+  const exitedWithOutput = async (n: string, exitCode: number | null, why?: string): Promise<Error> => {
+    const logs = await dexec(["logs", "--tail", FAILURE_LOG_LINES, n]);
+    const out = `${logs.stdout}${logs.stderr}`.trim().slice(-FAILURE_LOG_BYTES);
+    const status = exitCode === null ? "" : ` (status ${exitCode})`;
+    const headline = why ?? `the entrypoint exited${status} instead of serving on port ${APP_PORT}`;
+    return new Error(
+      headline + (out ? `; last output from the entrypoint:\n${out}` : "; the entrypoint produced no output"),
+    );
+  };
+
+  const listeningInside = async (n: string): Promise<"yes" | "no" | "unknown"> => {
+    const script =
+      `const n=require("os").networkInterfaces();` +
+      `const a=Object.values(n).flat().filter(i=>i&&i.family==="IPv4"&&!i.internal).map(i=>i.address);` +
+      `const s=require("net").connect({host:a[0]||"127.0.0.1",port:${APP_PORT}});` +
+      `s.on("connect",()=>process.exit(0));s.on("error",()=>process.exit(1));` +
+      `setTimeout(()=>process.exit(1),${PROBE_TIMEOUT_MS});`;
+    const r = await dexec(["exec", n, "node", "-e", script], PROBE_CALL_TIMEOUT_MS);
+    if (r.code === 0) return "yes";
+    return r.code === 1 ? "no" : "unknown";
+  };
+
+  const waitAppReady = async (n: string, windowMs: number): Promise<void> => {
+    const deadline = Date.now() + windowMs;
+    let sawRunning = false;
+    let couldNotProbe = false;
+    for (;;) {
+      const state = await containerState(n, PROBE_CALL_TIMEOUT_MS);
+      if (state && !state.running) throw await exitedWithOutput(n, state.exitCode);
+      if (state?.running) {
+        sawRunning = true;
+        const listening = await listeningInside(n);
+        if (listening === "yes") return;
+        couldNotProbe = listening === "unknown";
+      }
+      if (Date.now() >= deadline) break;
+      await sleep(READY_POLL_MS);
+    }
+    if (!sawRunning) throw new Error(`could not confirm ${n} started: docker inspect did not answer`);
+    if (couldNotProbe) return;
+    throw await exitedWithOutput(
+      n,
+      null,
+      `nothing is serving port ${APP_PORT} on ${n}'s network address — bind 0.0.0.0, not 127.0.0.1`,
+    );
+  };
+
   const ensureCoreOnNetwork = async (): Promise<void> => {
     await dexec(["network", "create", NETWORK]);
     if (!opts.coreContainer) return;
@@ -59,25 +105,29 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
     }
   };
 
+  const endpointOf = async (d: Deployment, attempts = 1): Promise<DeployEndpoint> => {
+    if (opts.coreContainer) return { host: name(d), port: APP_PORT };
+    for (let attempt = 1; ; attempt++) {
+      const port = await publishedPort(name(d));
+      if (port !== null) return { host: "127.0.0.1", port };
+      if (attempt >= attempts) throw new Error(`could not read the published port of ${name(d)}`);
+      await sleep(READY_POLL_MS);
+    }
+  };
+
   return {
     profile: { managedScaleToZero: false },
 
     async resolveEndpoint(d: Deployment): Promise<DeployEndpoint | null> {
-      // Called before every proxied request. Core loses its endpoint on the
-      // deploy network whenever its own container is recreated, so rejoining
-      // here is what keeps published apps reachable across a redeploy.
       await ensureCoreOnNetwork();
-      const running = await dexec(["inspect", "-f", "{{.State.Running}}", name(d)]);
-      if (running.code !== 0 || running.stdout.trim() !== "true") return null;
-      if (opts.coreContainer) return { host: name(d), port: APP_PORT };
-      const port = ports.get(name(d));
-      return port === undefined ? null : { host: "127.0.0.1", port };
+      const state = await containerState(name(d));
+      if (!state?.running) return null;
+      return endpointOf(d);
     },
 
-    async apply(d: Deployment, version: DeploymentVersion): Promise<DeployEndpoint> {
+    async apply(d: Deployment, version: DeploymentVersion, applyOpts?: DeployApplyOptions): Promise<DeployEndpoint> {
       await ensureCoreOnNetwork();
       await dexec(["rm", "-f", name(d)]);
-      const hostPort = allocPort(name(d));
       const envArgs = Object.entries(version.env ?? {}).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
       const r = await dexec([
         "run",
@@ -93,7 +143,7 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
         "--pids-limit",
         "256",
         "-p",
-        `127.0.0.1:${hostPort}:${APP_PORT}`,
+        `127.0.0.1::${APP_PORT}`,
         "-v",
         `${version.snapshotDir}:/app:ro`,
         "-v",
@@ -110,20 +160,18 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
         "-c",
         version.entrypoint,
       ]);
-      if (r.code !== 0) {
-        freePort(name(d));
-        throw new Error(`deploy run failed: ${r.stderr.trim()}`);
+      if (r.code !== 0) throw new Error(`deploy run failed: ${r.stderr.trim()}`);
+      try {
+        await waitAppReady(name(d), applyOpts?.readyWindowMs ?? opts.readyWindowMs ?? READY_WINDOW_MS);
+      } catch (e) {
+        await dexec(["rm", "-f", name(d)]);
+        throw e;
       }
-      // Containerised core shares the deploy network, so it reaches the app at
-      // its container name; the published host port is for humans only.
-      if (opts.coreContainer) return { host: name(d), port: APP_PORT };
-      return { host: "127.0.0.1", port: hostPort };
+      return endpointOf(d, PORT_READ_ATTEMPTS);
     },
 
     async destroy(d: Deployment): Promise<void> {
       await dexec(["rm", "-f", name(d)]);
-      await dexec(["volume", "rm", dataVolume(d.id)]);
-      freePort(name(d));
     },
   };
 }

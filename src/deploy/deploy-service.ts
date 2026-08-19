@@ -15,7 +15,7 @@ import {
   type DeployEndpoint,
   type DeploymentVersion,
 } from "./deploy-store.ts";
-import type { DeployProfile, DeployProvider } from "./deploy-provider.ts";
+import type { DeployApplyOptions, DeployProfile, DeployProvider } from "./deploy-provider.ts";
 import { createNoopLeaderLease, type LeaderLease } from "../persistence/leader-lease.ts";
 import { createNoopAdvisoryLock, type AdvisoryLock } from "../persistence/advisory-lock.ts";
 import { createKeyedQueue } from "../util/async.ts";
@@ -110,6 +110,7 @@ export interface DeployServiceDeps {
   managesArtifactHome?: (homeScopeId: ScopeId, createdBy: string, principalId: string) => Promise<boolean>;
 }
 
+const REPAIR_READY_WINDOW_MS = 3_000;
 const NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -140,6 +141,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
     id: string,
     version: DeploymentVersion,
     fromVersion?: number,
+    applyOpts?: DeployApplyOptions,
   ): Promise<DeployEndpoint> => {
     const d = (await deps.deployStore.get(id))!;
     let endpoint: DeployEndpoint;
@@ -154,7 +156,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         allPaths,
       });
     } else {
-      endpoint = await deps.provider.apply(d, version);
+      endpoint = await deps.provider.apply(d, version, applyOpts);
     }
     if (endpoint.image && endpoint.image !== version.image) {
       await deps.deployStore.setVersionImage(id, version.version, endpoint.image);
@@ -168,26 +170,54 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
     await deps.deployStore.setAppliedVersion(id, version);
   };
 
-  const liveEndpoint = async (d: Deployment): Promise<DeployEndpoint> => {
-    if (!deps.provider.resolveEndpoint || d.endpoint == null) return d.endpoint!;
+  const liveEndpoint = async (d: Deployment): Promise<DeployEndpoint | null> => {
+    if (!deps.provider.resolveEndpoint || d.endpoint == null) return d.endpoint ?? null;
     const version = d.versions.find((v) => v.version === d.currentVersion);
     if (!version) return d.endpoint;
-    const resolved = await deps.provider.resolveEndpoint(d, version);
+    let unreadable = false;
+    const resolve = async (dep: Deployment, v: DeploymentVersion): Promise<DeployEndpoint | null> => {
+      try {
+        return await deps.provider.resolveEndpoint!(dep, v);
+      } catch (e) {
+        unreadable = true;
+        console.error(`[deploy] ${dep.id}: could not resolve its endpoint:`, errMessage(e));
+        return null;
+      }
+    };
+    const resolved = await resolve(d, version);
     if (resolved) {
       if (!endpointsEqual(resolved, d.endpoint)) await deps.deployStore.setEndpoint(d.id, resolved);
       return resolved;
     }
+    if (unreadable) return null;
     return withDeployLock(d.id, async () => {
       const cur = (await deps.deployStore.get(d.id)) ?? d;
-      const v = cur.versions.find((x) => x.version === cur.currentVersion) ?? version;
-      const again = await deps.provider.resolveEndpoint!(cur, v);
+      if (cur.status !== "running") return null;
+      const want = cur.appliedVersion ?? cur.currentVersion;
+      const v = cur.versions.find((x) => x.version === want) ?? version;
+      const again = await resolve(cur, v);
       if (again) {
         if (!endpointsEqual(again, cur.endpoint)) await deps.deployStore.setEndpoint(cur.id, again);
         return again;
       }
-      const fresh = await applyVersion(cur.id, v, cur.appliedVersion ?? cur.currentVersion);
-      await markVersionRunning(cur.id, v.version, fresh);
-      return fresh;
+      if (unreadable) return null;
+      try {
+        const fresh = await applyVersion(cur.id, v, want, { readyWindowMs: REPAIR_READY_WINDOW_MS });
+        await markVersionRunning(cur.id, v.version, fresh);
+        return fresh;
+      } catch (e) {
+        console.error(`[deploy] ${cur.id}: relaunching v${v.version} failed:`, errMessage(e));
+        deps.auditLog.record({
+          at: Date.now(),
+          principalId: "system",
+          action: "deploy_relaunch_failed",
+          resource: `${cur.id}@v${v.version}`,
+          scopeLabel: cur.ownerScopeId,
+          status: "error",
+          detail: errMessage(e),
+        });
+        return null;
+      }
     });
   };
 
@@ -333,7 +363,13 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         ...(input.createdInScope !== undefined ? { createdInScope: input.createdInScope } : {}),
         ...(input.env ? { env: input.env } : {}),
       });
-      const endpoint = await applyVersion(d.id, d.versions[0]!);
+      let endpoint: DeployEndpoint;
+      try {
+        endpoint = await applyVersion(d.id, d.versions[0]!);
+      } catch (e) {
+        await deps.provider.destroy(d).catch((cleanup) => swallow("deploy first-publish cleanup", cleanup));
+        throw e;
+      }
       await markVersionRunning(d.id, d.versions[0]!.version, endpoint);
       deps.auditLog.record({
         at: Date.now(),
@@ -484,6 +520,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
       if (!d || d.status !== "running" || d.endpoint == null) return { status: "not_found" };
       if (!opts.bypassAcl && !(await reachAllowed(d, principalId))) return { status: "denied" };
       const endpoint = await liveEndpoint(d);
+      if (!endpoint) return { status: "not_found" };
       await deps.deployStore.touch(d.id, Date.now());
       return { status: "ok", endpoint };
     },
@@ -524,6 +561,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
             resource: id,
             scopeLabel: ownerScopeId,
             status: "error",
+            detail: errMessage(e),
           });
         }
         return result;

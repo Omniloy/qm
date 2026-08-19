@@ -1,0 +1,219 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createDeployService } from "../src/deploy/deploy-service.ts";
+import { createDeployStore } from "../src/deploy/deploy-store.ts";
+import { createAclStore } from "../src/acl/acl-store.ts";
+import { scopeId } from "../src/types.ts";
+
+const OWNER = scopeId("personal", "u1");
+
+function harness() {
+  const started: string[] = [];
+  let refuse: string | null = null;
+  let gone = false;
+  const deploy = createDeployService({
+    deployStore: createDeployStore(),
+    provider: {
+      profile: { managedScaleToZero: false },
+      apply: async (_d, version) => {
+        if (refuse !== null && version.entrypoint === refuse) {
+          gone = true;
+          throw new Error(`the entrypoint exited (status 127) without binding port 8080`);
+        }
+        started.push(version.entrypoint);
+        gone = false;
+        return { host: "127.0.0.1", port: 20500 + version.version };
+      },
+      destroy: async () => {
+        gone = true;
+      },
+      resolveEndpoint: async (d) => (gone ? null : (d.endpoint ?? null)),
+    },
+    auditLog: { record() {}, events: async () => [], tail: async () => [] },
+    acl: createAclStore(),
+    deployDir: mkdtempSync(join(tmpdir(), "deploy-failed-version-")),
+  });
+  return {
+    deploy,
+    started: () => started,
+    refuseEntrypoint: (e: string | null) => {
+      refuse = e;
+    },
+    vanishContainer: () => {
+      gone = true;
+    },
+  };
+}
+
+const files = [{ path: "server.js", data: "x" }];
+
+test("a redeploy that will not start is repaired back onto the version that worked", async () => {
+  const h = harness();
+  const d = await h.deploy.deploy({
+    ownerScopeId: OWNER,
+    createdBy: "u1",
+    entrypoint: "node server.js",
+    files,
+  });
+
+  h.refuseEntrypoint("server.js");
+  await assert.rejects(() => h.deploy.redeploy(d.id, { entrypoint: "server.js", files }), /exited \(status 127\)/);
+
+  const after = await h.deploy.getDeployment(d.id);
+  assert.equal(after?.currentVersion, 2, "the candidate stays recorded as what was asked for");
+  assert.equal(after?.appliedVersion, 1, "but v1 is still the version that ran");
+
+  const reach = await h.deploy.reachDeployment(d.id, "u1", { bypassAcl: true });
+  assert.equal(reach.status, "ok", "the next request should bring the app back");
+  assert.deepEqual(h.started(), ["node server.js", "node server.js"], "on v1, not the version that crashed");
+});
+
+test("a first publish that will not start is stopped, not left claiming to run", async () => {
+  const h = harness();
+  h.refuseEntrypoint("server.js");
+
+  await assert.rejects(
+    () => h.deploy.deploy({ ownerScopeId: OWNER, createdBy: "u1", entrypoint: "server.js", files }),
+    /exited \(status 127\)/,
+  );
+
+  const all = await h.deploy.listDeployments();
+  assert.equal(all.length, 1);
+  assert.notEqual(all[0]!.status, "running", "a deployment that never started must not claim to be running");
+  assert.equal((await h.deploy.reachDeployment(all[0]!.id, "u1", { bypassAcl: true })).status, "not_found");
+});
+
+test("a rollback to a version that will not start does not strand the app", async () => {
+  const h = harness();
+  const d = await h.deploy.deploy({
+    ownerScopeId: OWNER,
+    createdBy: "u1",
+    entrypoint: "node server.js",
+    files,
+  });
+  await h.deploy.redeploy(d.id, { entrypoint: "node v2.js", files });
+
+  h.refuseEntrypoint("node server.js");
+  await assert.rejects(() => h.deploy.rollbackDeployment(d.id, 1), /exited \(status 127\)/);
+
+  const after = await h.deploy.getDeployment(d.id);
+  assert.equal(after?.status, "running");
+  assert.equal(after?.appliedVersion, 2, "the version that still starts should be the one serving");
+});
+
+test("a failed redeploy does not resurrect an app the reaper stopped", async () => {
+  const h = harness();
+  const d = await h.deploy.deploy({
+    ownerScopeId: OWNER,
+    createdBy: "u1",
+    entrypoint: "node server.js",
+    files,
+  });
+  assert.equal(await h.deploy.reapIdleDeployments(-1), 1);
+  assert.equal((await h.deploy.getDeployment(d.id))?.status, "stopped");
+  const beforeStarts = h.started().length;
+
+  h.refuseEntrypoint("server.js");
+  await assert.rejects(() => h.deploy.redeploy(d.id, { entrypoint: "server.js", files }), /exited \(status 127\)/);
+
+  assert.equal((await h.deploy.getDeployment(d.id))?.status, "stopped", "it should still be stopped");
+  assert.equal(h.started().length, beforeStarts, "nothing should have been relaunched");
+});
+
+test("a transient failure while repairing leaves the app recoverable", async () => {
+  const h = harness();
+  const d = await h.deploy.deploy({
+    ownerScopeId: OWNER,
+    createdBy: "u1",
+    entrypoint: "node server.js",
+    files,
+  });
+
+  h.vanishContainer();
+  h.refuseEntrypoint("node server.js");
+  const during = await h.deploy.reachDeployment(d.id, "u1", { bypassAcl: true });
+  assert.equal(during.status, "not_found", "unreachable is a 404, not a rejection and not a stale address");
+
+  h.refuseEntrypoint(null);
+  const again = await h.deploy.reachDeployment(d.id, "u1", { bypassAcl: true });
+  assert.equal(again.status, "ok", "once docker recovers, the next request should repair the app");
+});
+
+test("a repair relaunch waits for the app to bind, on a shorter window than a first deploy", async () => {
+  const windows: Array<number | undefined> = [];
+  let gone = false;
+  const deploy = createDeployService({
+    deployStore: createDeployStore(),
+    provider: {
+      profile: { managedScaleToZero: false },
+      apply: async (_d, v, opts) => {
+        windows.push(opts?.readyWindowMs);
+        gone = false;
+        return { host: "127.0.0.1", port: 20700 + v.version };
+      },
+      destroy: async () => {
+        gone = true;
+      },
+      resolveEndpoint: async (d) => (gone ? null : (d.endpoint ?? null)),
+    },
+    auditLog: { record() {}, events: async () => [], tail: async () => [] },
+    acl: createAclStore(),
+    deployDir: mkdtempSync(join(tmpdir(), "deploy-repair-window-")),
+  });
+
+  const d = await deploy.deploy({ ownerScopeId: OWNER, createdBy: "u1", entrypoint: "node server.js", files });
+  gone = true;
+  assert.equal((await deploy.reachDeployment(d.id, "u1", { bypassAcl: true })).status, "ok");
+
+  assert.deepEqual(windows.length, 2, "the app should have been relaunched once");
+  const repair = windows[1];
+  assert.ok(repair && repair > 0, "a repair must gate on readiness rather than hand out an address that 502s");
+  assert.ok(repair! <= 5_000, "but on a window short enough not to stall the request that triggered it");
+});
+
+test("a running app whose endpoint cannot be read is not torn down and rebuilt", async () => {
+  const started: string[] = [];
+  let unreadable = false;
+  const deploy = createDeployService({
+    deployStore: createDeployStore(),
+    provider: {
+      profile: { managedScaleToZero: false },
+      apply: async (_d, v) => {
+        started.push(v.entrypoint);
+        return { host: "127.0.0.1", port: 20600 + v.version };
+      },
+      destroy: async () => {},
+      resolveEndpoint: async (d) => {
+        if (unreadable) throw new Error("could not read the published port of agent-deploy-x");
+        return d.endpoint ?? null;
+      },
+    },
+    auditLog: { record() {}, events: async () => [], tail: async () => [] },
+    acl: createAclStore(),
+    deployDir: mkdtempSync(join(tmpdir(), "deploy-unreadable-")),
+  });
+
+  const d = await deploy.deploy({ ownerScopeId: OWNER, createdBy: "u1", entrypoint: "node server.js", files });
+  unreadable = true;
+  const reach = await deploy.reachDeployment(d.id, "u1", { bypassAcl: true });
+
+  assert.equal(reach.status, "not_found", "a docker read failure is unreachable, not a reason to rebuild");
+  assert.deepEqual(started, ["node server.js"], "the healthy container must not be replaced");
+});
+
+test("a reap that lands while a request waits for the lock is not undone", async () => {
+  const h = harness();
+  const d = await h.deploy.deploy({ ownerScopeId: OWNER, createdBy: "u1", entrypoint: "node server.js", files });
+  const startsBefore = h.started().length;
+
+  h.vanishContainer();
+  await h.deploy.reapIdleDeployments(-1);
+
+  const reach = await h.deploy.reachDeployment(d.id, "u1", { bypassAcl: true });
+  assert.equal(reach.status, "not_found");
+  assert.equal((await h.deploy.getDeployment(d.id))?.status, "stopped", "the reaper's decision should stand");
+  assert.equal(h.started().length, startsBefore, "nothing should have been relaunched");
+});
