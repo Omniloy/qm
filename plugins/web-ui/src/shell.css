@@ -4043,6 +4043,7 @@ a.chat-row-open {
 }
 .memory-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-end;
   justify-content: space-between;
   gap: 12px;
@@ -4058,6 +4059,7 @@ a.chat-row-open {
 }
 .memory-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
 }

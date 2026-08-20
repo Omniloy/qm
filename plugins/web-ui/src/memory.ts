@@ -7,7 +7,6 @@ import { appState, replacePanePreservingFocus } from "./shell";
 import { contextsState, ensureContexts, scopeTitle } from "./contexts";
 import { mainConversation } from "./conversations";
 import { addPendingSession } from "./sessions";
-import { newChatDraftKey, saveDraft } from "./drafts";
 
 interface RevisionRow {
   revision: string;
@@ -96,9 +95,12 @@ const COMPACT_PROMPT =
 function openCompactChat(): void {
   const scope = memoryScopeId;
   const name = scope ? scopeTitle(scope) : null;
-  saveDraft(newChatDraftKey(appState.me?.user), COMPACT_PROMPT);
-  const threadRef = mainConversation().newChat(scope ? { scopeId: scope, name } : undefined);
+  const conv = mainConversation();
+  const threadRef = conv.newChat(scope ? { scopeId: scope, name } : undefined);
   if (scope) addPendingSession(threadRef, scope, name);
+  conv.composer.state.draft = COMPACT_PROMPT;
+  conv.drawActiveChat(conv.state.agent);
+  conv.composer.focusComposerEnd();
 }
 
 function facts(content: string): Array<{ line: number; text: string; date?: string }> {
@@ -113,6 +115,12 @@ function removeFact(line: number): void {
   lines.splice(line, 1);
   memoryDraft = lines.join("\n");
   drawMemory();
+}
+
+function emptyFactsMessage(): string {
+  if (search) return "No remembered facts match this search.";
+  if (memoryDraft.trim()) return "Nothing here is written as facts — the Notebook tab shows the full text.";
+  return "The agent hasn’t noted any facts yet.";
 }
 
 function fmtDate(ms: number): string {
@@ -254,9 +262,7 @@ function drawMemory(loading = false): void {
                               </button>
                             </div>`,
                         )
-                      : html`<div class="empty-state">
-                          ${search ? "No remembered facts match this search." : "The agent hasn’t noted any facts yet."}
-                        </div>`
+                      : html`<div class="empty-state">${emptyFactsMessage()}</div>`
                   }
                 </div>`
         }
@@ -273,8 +279,12 @@ function drawMemory(loading = false): void {
           <button
             class="btn memory-compact"
             type="button"
-            title="Open a conversation here with a compaction request ready to send"
-            ?disabled=${loading || memorySaving || !memorySaved.trim()}
+            title=${
+              dirty
+                ? "Save your changes first, so the agent compacts what you see"
+                : "Open a conversation here with a compaction request ready to send"
+            }
+            ?disabled=${loading || memorySaving || dirty || !memorySaved.trim()}
             @click=${openCompactChat}
           >
             ${icon(Sparkles, 15)} Compact with the agent

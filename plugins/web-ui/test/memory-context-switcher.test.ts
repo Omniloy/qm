@@ -87,27 +87,9 @@ appState.me = { user: "alice", org: "acme" };
 appState.currentView = "memory";
 appState.mainEl = document.querySelector("#main");
 
-const realSetTimeout = globalThis.setTimeout;
-const realSetInterval = globalThis.setInterval;
-const liveTimers = new Set<Parameters<typeof clearTimeout>[0]>();
-(globalThis as Record<string, unknown>).setTimeout = ((fn: () => void, ms?: number, ...args: unknown[]) => {
-  const id = realSetTimeout(fn, ms, ...args);
-  liveTimers.add(id);
-  return id;
-}) as typeof setTimeout;
-(globalThis as Record<string, unknown>).setInterval = ((fn: () => void, ms?: number, ...args: unknown[]) => {
-  const id = realSetInterval(fn, ms, ...args);
-  liveTimers.add(id);
-  return id;
-}) as typeof setInterval;
-
 test.after(async () => {
   await vite.close();
   dom.window.close();
-  for (const id of liveTimers) {
-    clearTimeout(id);
-    clearInterval(id);
-  }
 });
 
 async function settle(): Promise<void> {
@@ -339,7 +321,7 @@ test("facts are the default view, with the notebook one tab away", async () => {
 });
 
 test("compacting stages the ask in a conversation in the notebook's context", async () => {
-  const { storedDraft, newChatDraftKey } = await vite.ssrLoadModule("/src/drafts.ts");
+  const { storedDraft, saveDraft, newChatDraftKey } = await vite.ssrLoadModule("/src/drafts.ts");
   const { mainConversation } = await vite.ssrLoadModule("/src/conversations.ts");
   resetMemoryState();
   requests = [];
@@ -362,16 +344,52 @@ test("compacting stages the ask in a conversation in the notebook's context", as
       return Response.json({});
     }
   };
+  saveDraft(newChatDraftKey("alice"), "half-written note I care about");
   document.querySelector<HTMLButtonElement>(".memory-compact")!.click();
   await settle();
-  const staged = storedDraft(newChatDraftKey("alice")) as string;
-  assert.ok(staged.includes("compact it"), "the compaction ask is staged in the composer");
+  const conv = mainConversation();
+  assert.ok(String(conv.composer.state.draft).includes("compact it"), "the compaction ask is staged in the composer");
+  assert.equal(
+    storedDraft(newChatDraftKey("alice")),
+    "half-written note I care about",
+    "an unsent chat draft is not clobbered by compacting",
+  );
   assert.equal(appState.currentView, "chats", "the person lands in the conversation to send it");
-  assert.equal(mainConversation().state.scopeId, launch.scopeId, "the conversation opens in the notebook's context");
-  mainConversation().resetChatState();
+  assert.equal(conv.state.scopeId, launch.scopeId, "the conversation opens in the notebook's context");
+  conv.resetChatState();
   appState.currentView = "memory";
   appState.mainEl = document.querySelector("#main");
   globalThis.fetch = async (input, init) => respond(input, init);
+});
+
+test("compacting waits for unsaved notebook edits", async () => {
+  resetMemoryState();
+  requests = [];
+  await renderMemory();
+  await settle();
+  assert.equal(document.querySelector<HTMLButtonElement>(".memory-compact")!.disabled, false);
+  const area = draftTextarea();
+  area.value = "- personal fact\n- unsaved";
+  area.dispatchEvent(new dom.window.Event("input"));
+  assert.equal(
+    document.querySelector<HTMLButtonElement>(".memory-compact")!.disabled,
+    true,
+    "a dirty draft would make the agent compact something other than what is shown",
+  );
+});
+
+test("a notebook holding non-fact text does not claim to be empty", async () => {
+  resetMemoryState();
+  notebooks[""] = { content: "Some prose the agent kept\nwithout bullets", revision: "pr2" };
+  requests = [];
+  await renderMemory();
+  await settle();
+  assert.match(
+    document.querySelector(".empty-state")?.textContent ?? "",
+    /Notebook tab shows the full text/u,
+    "the facts view points at the notebook instead of calling the memory empty",
+  );
+  notebooks[""] = { content: "- personal fact", revision: "pr1" };
 });
 
 test("without projects the pane keeps today's plain header", async () => {
