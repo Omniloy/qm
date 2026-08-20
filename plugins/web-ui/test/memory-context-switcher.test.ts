@@ -48,6 +48,7 @@ const notebooks: Record<string, { content: string; revision: string }> = {
   "": { content: "- personal fact", revision: "pr1" },
   [launch.scopeId]: { content: "- launch fact", revision: "lr1" },
   [alpha.scopeId]: { content: "- alpha fact", revision: "ar1" },
+  "channel:C1": { content: "- channel fact", revision: "cr1" },
 };
 const revisions = [
   { revision: "h2", content: "- newer", operation: "write", at: 2000 },
@@ -121,17 +122,28 @@ function draftTextarea(): HTMLTextAreaElement {
   return document.querySelector<HTMLTextAreaElement>(".memory-text")!;
 }
 
-test("the switcher offers Personal first, then the viewer's projects by title", async () => {
+test("the switcher offers Personal first, then every channel and group by title", async () => {
   requests = [];
   contextsState.list = [];
   contextsState.loaded = false;
   await renderMemory();
   await settle();
-  assert.deepEqual(optionTitles(), ["Personal", "Alpha", "Launch"], "channels and group DMs are not notebooks to pick");
+  assert.deepEqual(optionTitles(), ["Personal", "#general", "Ada, Bob", "Alpha", "Launch"]);
   assert.equal(subtitle(), "Facts the agent carries into your conversations.");
   assert.equal(draftTextarea().value, "- personal fact");
   const load = requests.find((r) => r.pathname.endsWith("/api/memory"));
   assert.equal(load?.scopeId, null, "the personal notebook is fetched with no scope");
+
+  requests = [];
+  switchTo("channel:C1");
+  await settle();
+  assert.equal(requests.find((r) => r.pathname.endsWith("/api/memory"))?.scopeId, "channel:C1");
+  assert.equal(subtitle(), "Facts the agent carries into #general conversations.");
+  assert.equal(draftTextarea().value, "- channel fact");
+
+  switchTo("");
+  await settle();
+  assert.equal(draftTextarea().value, "- personal fact");
 });
 
 test("switching notebooks scopes every call and names the project", async () => {
@@ -362,6 +374,40 @@ test("compacting stages the ask in a conversation in the notebook's context", as
   globalThis.fetch = async (input, init) => respond(input, init);
 });
 
+test("compacting a channel notebook carries the raw channel name, not the # title", async () => {
+  const { mainConversation } = await vite.ssrLoadModule("/src/conversations.ts");
+  resetMemoryState();
+  requests = [];
+  await renderMemory();
+  await settle();
+  switchTo("channel:C1");
+  await settle();
+  globalThis.fetch = async (input, init) => {
+    const u = new URL(String(input), "http://localhost");
+    if (u.pathname.endsWith("/api/runtime-config")) {
+      return Response.json({
+        approvedHarnesses: [],
+        modelsByHarness: {},
+        effective: { harnessId: "pi", modelId: "claude-opus-5" },
+      });
+    }
+    try {
+      return respond(input, init);
+    } catch {
+      return Response.json({});
+    }
+  };
+  document.querySelector<HTMLButtonElement>(".memory-compact")!.click();
+  await settle();
+  const conv = mainConversation();
+  assert.equal(conv.state.scopeId, "channel:C1");
+  assert.equal(conv.state.contextName, "general", "the stored name matches what Projects new-chat would store");
+  conv.resetChatState();
+  appState.currentView = "memory";
+  appState.mainEl = document.querySelector("#main");
+  globalThis.fetch = async (input, init) => respond(input, init);
+});
+
 test("compacting waits for unsaved notebook edits", async () => {
   resetMemoryState();
   requests = [];
@@ -392,10 +438,10 @@ test("a notebook holding non-fact text does not claim to be empty", async () => 
   notebooks[""] = { content: "- personal fact", revision: "pr1" };
 });
 
-test("without projects the pane keeps today's plain header", async () => {
+test("without shared contexts the pane keeps today's plain header", async () => {
   resetMemoryState();
   const all = contextsState.list;
-  contextsState.list = contexts.filter((c) => !("project" in c));
+  contextsState.list = contexts.filter((c) => c.kind === "personal");
   requests = [];
   await renderMemory();
   await settle();

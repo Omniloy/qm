@@ -359,7 +359,7 @@ export function createAppHelpers(deps: AppDeps, app: App) {
 
   async function canEditNotebook(principalId: string, targetScope: ScopeId): Promise<boolean> {
     if (parseScopeId(targetScope).kind === "org") return false;
-    return principalCanWriteScope(principalId, targetScope);
+    return principalCanAccessCurrentScope(principalId, targetScope);
   }
 
   const scopeMembershipDeps = {

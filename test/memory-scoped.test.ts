@@ -175,12 +175,34 @@ test("the org notebook stays closed to scoped self routes for every internal use
   assert.equal(await built.memory.read(org), "", "the org notebook is untouched");
 });
 
-test("a public channel's notebook belongs to its members, not to every internal user", async (t) => {
+test("a public channel's notebook opens to every internal user, matching the channel's other resources", async (t) => {
   const { built, base } = await rig(t, "memory-scoped-public-channel");
   const channel = scopeId("channel", "C-pub");
+  await built.directory.replaceChannels([{ channelId: "C-pub", name: "town-square", isPrivate: false }], []);
+
+  const read = await getMemory(base, "outsider", channel);
+  assert.equal(read.status, 200, "an internal non-member reads the public channel notebook");
+  assert.equal((await json(read)).content, "");
+
+  const write = await putMemory(base, {
+    principalId: "outsider",
+    content: "# Memory\n\n- anyone internal\n",
+    scopeId: channel,
+  });
+  assert.equal(write.status, 200, "an internal non-member edits the public channel notebook");
+  assert.equal(await built.memory.read(channel), "# Memory\n\n- anyone internal\n");
+
+  assert.equal((await getHistory(base, "member", channel)).status, 200);
+  const restored = await restoreMemory(base, "member", { revision: "1", expectedRevision: "1", scopeId: channel });
+  assert.equal(restored.status, 200, "history and restore follow the same open gate");
+});
+
+test("a private channel's notebook stays member-only", async (t) => {
+  const { built, base } = await rig(t, "memory-scoped-private-channel");
+  const channel = scopeId("channel", "C-priv");
   await built.directory.replaceChannels(
-    [{ channelId: "C-pub", name: "town-square", isPrivate: false }],
-    [{ channelId: "C-pub", principalId: "member" }],
+    [{ channelId: "C-priv", name: "war-room", isPrivate: true }],
+    [{ channelId: "C-priv", principalId: "member" }],
   );
 
   const memberWrite = await putMemory(base, {
@@ -201,6 +223,25 @@ test("a public channel's notebook belongs to its members, not to every internal 
     404,
   );
   assert.equal(await built.memory.read(channel), "# Memory\n\n- ours\n", "non-members leave the notebook untouched");
+});
+
+test("a guest cannot touch a public channel's notebook", async (t) => {
+  const { built, base } = await rig(t, "memory-scoped-guest");
+  const channel = scopeId("channel", "C-pub");
+  await built.directory.replaceChannels([{ channelId: "C-pub", name: "town-square", isPrivate: false }], []);
+  await built.identity.deactivate("outsider");
+
+  assert.equal((await getMemory(base, "outsider", channel)).status, 404);
+  assert.equal((await getHistory(base, "outsider", channel)).status, 404);
+  assert.equal(
+    (await putMemory(base, { principalId: "outsider", content: "# poisoned\n", scopeId: channel })).status,
+    404,
+  );
+  assert.equal(
+    (await restoreMemory(base, "outsider", { revision: "1", expectedRevision: "1", scopeId: channel })).status,
+    404,
+  );
+  assert.equal(await built.memory.read(channel), "", "the guest leaves the notebook untouched");
 });
 
 test("revisioned saves on a project notebook still reject stale editors", async (t) => {

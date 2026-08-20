@@ -55,11 +55,11 @@ function memoryPayload(fields: Record<string, unknown>): string {
 }
 
 function memoryScopeOptions(): Array<{ value: string; title: string }> {
-  const projects = contextsState.list
-    .filter((c) => Boolean(c.project))
+  const shared = contextsState.list
+    .filter((c) => c.kind === "channel" || c.kind === "group")
     .map((c) => ({ value: c.scopeId, title: scopeTitle(c.scopeId, c.name) }))
     .sort((a, b) => a.title.localeCompare(b.title));
-  return [{ value: "", title: "Personal" }, ...projects];
+  return [{ value: "", title: "Personal" }, ...shared];
 }
 
 function switchMemoryScope(scopeId: string | null): void {
@@ -94,7 +94,7 @@ const COMPACT_PROMPT =
 
 function openCompactChat(): void {
   const scope = memoryScopeId;
-  const name = scope ? scopeTitle(scope) : null;
+  const name = scope ? (contextsState.list.find((c) => c.scopeId === scope)?.name ?? null) : null;
   const conv = mainConversation();
   const threadRef = conv.newChat(scope ? { scopeId: scope, name } : undefined);
   if (scope) addPendingSession(threadRef, scope, name);
