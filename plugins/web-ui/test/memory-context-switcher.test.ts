@@ -87,9 +87,27 @@ appState.me = { user: "alice", org: "acme" };
 appState.currentView = "memory";
 appState.mainEl = document.querySelector("#main");
 
+const realSetTimeout = globalThis.setTimeout;
+const realSetInterval = globalThis.setInterval;
+const liveTimers = new Set<ReturnType<typeof setTimeout>>();
+(globalThis as Record<string, unknown>).setTimeout = ((fn: () => void, ms?: number, ...args: unknown[]) => {
+  const id = realSetTimeout(fn, ms, ...args);
+  liveTimers.add(id);
+  return id;
+}) as typeof setTimeout;
+(globalThis as Record<string, unknown>).setInterval = ((fn: () => void, ms?: number, ...args: unknown[]) => {
+  const id = realSetInterval(fn, ms, ...args);
+  liveTimers.add(id);
+  return id;
+}) as typeof setInterval;
+
 test.after(async () => {
   await vite.close();
   dom.window.close();
+  for (const id of liveTimers) {
+    clearTimeout(id);
+    clearInterval(id);
+  }
 });
 
 async function settle(): Promise<void> {
@@ -113,6 +131,11 @@ function switchTo(value: string): void {
 }
 
 function draftTextarea(): HTMLTextAreaElement {
+  const existing = document.querySelector<HTMLTextAreaElement>(".memory-text");
+  if (existing) return existing;
+  [...document.querySelectorAll<HTMLButtonElement>('.memory-toolbar [role="tab"]')]
+    .find((b) => (b.textContent ?? "").includes("Notebook"))!
+    .click();
   return document.querySelector<HTMLTextAreaElement>(".memory-text")!;
 }
 
@@ -296,6 +319,58 @@ test("a save that answers after switching notebooks stays out of the new noteboo
   assert.ok(!(document.querySelector(".status")?.textContent ?? "").includes("Saved"));
   const put = requests.find((r) => r.method === "PUT");
   assert.equal(put?.body?.scopeId, undefined, "the save still targeted the personal notebook");
+  globalThis.fetch = async (input, init) => respond(input, init);
+});
+
+test("facts are the default view, with the notebook one tab away", async () => {
+  resetMemoryState();
+  requests = [];
+  await renderMemory();
+  await settle();
+  assert.equal(document.querySelector(".memory-text"), null, "the raw editor stays behind the Notebook tab");
+  const factRows = [...document.querySelectorAll(".memory-fact")].map((f) => (f.textContent ?? "").trim());
+  assert.ok(factRows.some((f) => f.includes("personal fact")));
+  const factsTab = [...document.querySelectorAll<HTMLButtonElement>('.memory-toolbar [role="tab"]')].find((b) =>
+    (b.textContent ?? "").includes("Facts"),
+  )!;
+  assert.ok(factsTab.classList.contains("active"));
+  assert.equal(factsTab.querySelector("span")?.textContent, "1", "the tab counts the facts");
+  assert.equal(draftTextarea().value, "- personal fact");
+});
+
+test("compacting stages the ask in a conversation in the notebook's context", async () => {
+  const { storedDraft, newChatDraftKey } = await vite.ssrLoadModule("/src/drafts.ts");
+  const { mainConversation } = await vite.ssrLoadModule("/src/conversations.ts");
+  resetMemoryState();
+  requests = [];
+  await renderMemory();
+  await settle();
+  switchTo(launch.scopeId);
+  await settle();
+  globalThis.fetch = async (input, init) => {
+    const u = new URL(String(input), "http://localhost");
+    if (u.pathname.endsWith("/api/runtime-config")) {
+      return Response.json({
+        approvedHarnesses: [],
+        modelsByHarness: {},
+        effective: { harnessId: "pi", modelId: "claude-opus-5" },
+      });
+    }
+    try {
+      return respond(input, init);
+    } catch {
+      return Response.json({});
+    }
+  };
+  document.querySelector<HTMLButtonElement>(".memory-compact")!.click();
+  await settle();
+  const staged = storedDraft(newChatDraftKey("alice")) as string;
+  assert.ok(staged.includes("compact it"), "the compaction ask is staged in the composer");
+  assert.equal(appState.currentView, "chats", "the person lands in the conversation to send it");
+  assert.equal(mainConversation().state.scopeId, launch.scopeId, "the conversation opens in the notebook's context");
+  mainConversation().resetChatState();
+  appState.currentView = "memory";
+  appState.mainEl = document.querySelector("#main");
   globalThis.fetch = async (input, init) => respond(input, init);
 });
 
