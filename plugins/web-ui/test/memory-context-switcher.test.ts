@@ -89,7 +89,7 @@ appState.mainEl = document.querySelector("#main");
 
 const realSetTimeout = globalThis.setTimeout;
 const realSetInterval = globalThis.setInterval;
-const liveTimers = new Set<ReturnType<typeof setTimeout>>();
+const liveTimers = new Set<Parameters<typeof clearTimeout>[0]>();
 (globalThis as Record<string, unknown>).setTimeout = ((fn: () => void, ms?: number, ...args: unknown[]) => {
   const id = realSetTimeout(fn, ms, ...args);
   liveTimers.add(id);
