@@ -4041,10 +4041,30 @@ a.chat-row-open {
 .memory-text:disabled {
   opacity: 0.6;
 }
+.memory-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.memory-toolbar .resource-tabs {
+  width: auto;
+  margin: 0;
+  border-bottom: 0;
+}
+.memory-toolbar .list-select {
+  padding-bottom: 6px;
+}
 .memory-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
+}
+.memory-compact {
+  margin-left: auto;
 }
 .memory-hint {
   font-size: 12px;

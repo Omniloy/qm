@@ -113,6 +113,11 @@ function switchTo(value: string): void {
 }
 
 function draftTextarea(): HTMLTextAreaElement {
+  const existing = document.querySelector<HTMLTextAreaElement>(".memory-text");
+  if (existing) return existing;
+  [...document.querySelectorAll<HTMLButtonElement>('.memory-toolbar [role="tab"]')]
+    .find((b) => (b.textContent ?? "").includes("Notebook"))!
+    .click();
   return document.querySelector<HTMLTextAreaElement>(".memory-text")!;
 }
 
@@ -297,6 +302,94 @@ test("a save that answers after switching notebooks stays out of the new noteboo
   const put = requests.find((r) => r.method === "PUT");
   assert.equal(put?.body?.scopeId, undefined, "the save still targeted the personal notebook");
   globalThis.fetch = async (input, init) => respond(input, init);
+});
+
+test("facts are the default view, with the notebook one tab away", async () => {
+  resetMemoryState();
+  requests = [];
+  await renderMemory();
+  await settle();
+  assert.equal(document.querySelector(".memory-text"), null, "the raw editor stays behind the Notebook tab");
+  const factRows = [...document.querySelectorAll(".memory-fact")].map((f) => (f.textContent ?? "").trim());
+  assert.ok(factRows.some((f) => f.includes("personal fact")));
+  const factsTab = [...document.querySelectorAll<HTMLButtonElement>('.memory-toolbar [role="tab"]')].find((b) =>
+    (b.textContent ?? "").includes("Facts"),
+  )!;
+  assert.ok(factsTab.classList.contains("active"));
+  assert.equal(factsTab.querySelector("span")?.textContent, "1", "the tab counts the facts");
+  assert.equal(draftTextarea().value, "- personal fact");
+});
+
+test("compacting stages the ask in a conversation in the notebook's context", async () => {
+  const { storedDraft, saveDraft, newChatDraftKey } = await vite.ssrLoadModule("/src/drafts.ts");
+  const { mainConversation } = await vite.ssrLoadModule("/src/conversations.ts");
+  resetMemoryState();
+  requests = [];
+  await renderMemory();
+  await settle();
+  switchTo(launch.scopeId);
+  await settle();
+  globalThis.fetch = async (input, init) => {
+    const u = new URL(String(input), "http://localhost");
+    if (u.pathname.endsWith("/api/runtime-config")) {
+      return Response.json({
+        approvedHarnesses: [],
+        modelsByHarness: {},
+        effective: { harnessId: "pi", modelId: "claude-opus-5" },
+      });
+    }
+    try {
+      return respond(input, init);
+    } catch {
+      return Response.json({});
+    }
+  };
+  saveDraft(newChatDraftKey("alice"), "half-written note I care about");
+  document.querySelector<HTMLButtonElement>(".memory-compact")!.click();
+  await settle();
+  const conv = mainConversation();
+  assert.ok(String(conv.composer.state.draft).includes("compact it"), "the compaction ask is staged in the composer");
+  assert.equal(
+    storedDraft(newChatDraftKey("alice")),
+    "half-written note I care about",
+    "an unsent chat draft is not clobbered by compacting",
+  );
+  assert.equal(appState.currentView, "chats", "the person lands in the conversation to send it");
+  assert.equal(conv.state.scopeId, launch.scopeId, "the conversation opens in the notebook's context");
+  conv.resetChatState();
+  appState.currentView = "memory";
+  appState.mainEl = document.querySelector("#main");
+  globalThis.fetch = async (input, init) => respond(input, init);
+});
+
+test("compacting waits for unsaved notebook edits", async () => {
+  resetMemoryState();
+  requests = [];
+  await renderMemory();
+  await settle();
+  assert.equal(document.querySelector<HTMLButtonElement>(".memory-compact")!.disabled, false);
+  const area = draftTextarea();
+  area.value = "- personal fact\n- unsaved";
+  area.dispatchEvent(new dom.window.Event("input"));
+  assert.equal(
+    document.querySelector<HTMLButtonElement>(".memory-compact")!.disabled,
+    true,
+    "a dirty draft would make the agent compact something other than what is shown",
+  );
+});
+
+test("a notebook holding non-fact text does not claim to be empty", async () => {
+  resetMemoryState();
+  notebooks[""] = { content: "Some prose the agent kept\nwithout bullets", revision: "pr2" };
+  requests = [];
+  await renderMemory();
+  await settle();
+  assert.match(
+    document.querySelector(".empty-state")?.textContent ?? "",
+    /Notebook tab shows the full text/u,
+    "the facts view points at the notebook instead of calling the memory empty",
+  );
+  notebooks[""] = { content: "- personal fact", revision: "pr1" };
 });
 
 test("without projects the pane keeps today's plain header", async () => {

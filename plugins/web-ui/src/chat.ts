@@ -255,6 +255,7 @@ export function createChatSurface(
     forkOriginController.invalidateRefresh();
     readOnlyView = null;
     stopWatchingReadOnlyRun();
+    stopBrowserPanePolling();
     preserveOutgoingWorkingDot(null);
     detachActiveAgent();
     chatState.agent = null;

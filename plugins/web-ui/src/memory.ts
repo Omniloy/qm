@@ -1,10 +1,12 @@
 import { html, nothing, render } from "lit";
-import { Clock3, Pencil, RefreshCw, Search, Trash2 } from "lucide";
+import { Clock3, RefreshCw, Search, Sparkles, Trash2 } from "lucide";
 import { api, ApiError } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
 import { fieldSelect, icon } from "./ui";
 import { appState, replacePanePreservingFocus } from "./shell";
 import { contextsState, ensureContexts, scopeTitle } from "./contexts";
+import { mainConversation } from "./conversations";
+import { addPendingSession } from "./sessions";
 
 interface RevisionRow {
   revision: string;
@@ -22,7 +24,7 @@ let memorySaving = false;
 let memoryLoaded = false;
 let memoryScopeId: string | null = null;
 let memoryLoadSeq = 0;
-let rawEditing = true;
+let notebookEditing = false;
 let search = "";
 let historyOpen = false;
 let history: RevisionRow[] = [];
@@ -37,7 +39,7 @@ export function resetMemoryState(): void {
   memoryLoaded = false;
   memoryScopeId = null;
   memoryLoadSeq++;
-  rawEditing = true;
+  notebookEditing = false;
   search = "";
   historyOpen = false;
   history = [];
@@ -87,6 +89,20 @@ function switchMemoryScope(scopeId: string | null): void {
   void apply();
 }
 
+const COMPACT_PROMPT =
+  "Your memory notebook has grown long. Please compact it: merge duplicate and overlapping facts, drop anything stale or superseded, and keep each remaining fact short, on its own line. Do not invent facts and keep everything that still matters. Save the compacted notebook to memory when you are done.";
+
+function openCompactChat(): void {
+  const scope = memoryScopeId;
+  const name = scope ? scopeTitle(scope) : null;
+  const conv = mainConversation();
+  const threadRef = conv.newChat(scope ? { scopeId: scope, name } : undefined);
+  if (scope) addPendingSession(threadRef, scope, name);
+  conv.composer.state.draft = COMPACT_PROMPT;
+  conv.drawActiveChat(conv.state.agent);
+  conv.composer.focusComposerEnd();
+}
+
 function facts(content: string): Array<{ line: number; text: string; date?: string }> {
   return content.split("\n").flatMap((row, line) => {
     const match = row.match(/^\s*[-*]\s+(?:\((\d{4}-\d{2}-\d{2})\)\s*)?(.*\S)\s*$/);
@@ -99,6 +115,12 @@ function removeFact(line: number): void {
   lines.splice(line, 1);
   memoryDraft = lines.join("\n");
   drawMemory();
+}
+
+function emptyFactsMessage(): string {
+  if (search) return "No remembered facts match this search.";
+  if (memoryDraft.trim()) return "Nothing here is written as facts — the Notebook tab shows the full text.";
+  return "The agent hasn’t noted any facts yet.";
 }
 
 function fmtDate(ms: number): string {
@@ -128,10 +150,51 @@ function drawMemory(loading = false): void {
           </div>
         </div>
         <div class="pane-head-actions">
+          <button class="btn" type="button" @click=${() => void toggleHistory()}>${icon(Clock3, 15)} History</button>
+          <button
+            class="pane-refresh"
+            type="button"
+            aria-label="Refresh memory"
+            title="Refresh memory"
+            @click=${() => void renderMemory(true)}
+          >
+            ${icon(RefreshCw, 17)}
+          </button>
+        </div>
+      </div>
+      ${memoryNotice || loading ? html`<div class="status">${memoryNotice || "Loading…"}</div>` : nothing}
+      <div class="memory-editor">
+        <div class="memory-toolbar">
+          <div class="resource-tabs" role="tablist" aria-label="Memory view">
+            <button
+              role="tab"
+              type="button"
+              aria-selected=${!notebookEditing}
+              class=${!notebookEditing ? "active" : ""}
+              @click=${() => {
+                notebookEditing = false;
+                drawMemory();
+              }}
+            >
+              Facts${memoryLoaded ? html`<span>${facts(memoryDraft).length}</span>` : nothing}
+            </button>
+            <button
+              role="tab"
+              type="button"
+              aria-selected=${notebookEditing}
+              class=${notebookEditing ? "active" : ""}
+              @click=${() => {
+                notebookEditing = true;
+                drawMemory();
+              }}
+            >
+              Notebook
+            </button>
+          </div>
           ${
             scopeOptions.length > 1
               ? html`<label class="list-select memory-scope">
-                  <span>Notebook</span>${fieldSelect({
+                  <span>Context</span>${fieldSelect({
                     compact: true,
                     ariaLabel: "Notebook context",
                     focusKey: "memory-scope",
@@ -148,47 +211,24 @@ function drawMemory(loading = false): void {
                 </label>`
               : nothing
           }
-          <button
-            class="btn"
-            type="button"
-            @click=${() => {
-              rawEditing = !rawEditing;
-              drawMemory();
-            }}
-          >
-            ${icon(Pencil, 15)} ${rawEditing ? "Facts view" : "Edit notebook"}
-          </button>
-          <button class="btn" type="button" @click=${() => void toggleHistory()}>${icon(Clock3, 15)} History</button>
-          <button
-            class="pane-refresh"
-            type="button"
-            aria-label="Refresh memory"
-            title="Refresh memory"
-            @click=${() => void renderMemory(true)}
-          >
-            ${icon(RefreshCw, 17)}
-          </button>
         </div>
-      </div>
-      ${memoryNotice || loading ? html`<div class="status">${memoryNotice || "Loading…"}</div>` : nothing}
-      <div class="memory-editor">
-        <p class="memory-help">
-          Edit the notebook directly. Switch to Facts view to search or remove individual facts. Saves are protected if
-          the agent remembers something new while this page is open.
-        </p>
         ${
-          rawEditing
-            ? html`<textarea
-                class="memory-text"
-                data-focus-key="memory-raw"
-                spellcheck="false"
-                ?disabled=${loading || memorySaving}
-                @input=${(e: Event) => {
-                  memoryDraft = (e.target as HTMLTextAreaElement).value;
-                  drawMemory();
-                }}
-                .value=${memoryDraft}
-              ></textarea>`
+          notebookEditing
+            ? html`<p class="memory-help">
+                  Edit the notebook directly — one fact per line. Saves are protected if the agent remembers something
+                  new while this page is open.
+                </p>
+                <textarea
+                  class="memory-text"
+                  data-focus-key="memory-raw"
+                  spellcheck="false"
+                  ?disabled=${loading || memorySaving}
+                  @input=${(e: Event) => {
+                    memoryDraft = (e.target as HTMLTextAreaElement).value;
+                    drawMemory();
+                  }}
+                  .value=${memoryDraft}
+                ></textarea>`
             : html` <label class="memory-search"
                   >${icon(Search, 16)}<input
                     data-focus-key="memory-search"
@@ -222,9 +262,7 @@ function drawMemory(loading = false): void {
                               </button>
                             </div>`,
                         )
-                      : html`<div class="empty-state">
-                          ${search ? "No remembered facts match this search." : "The agent hasn’t noted any facts yet."}
-                        </div>`
+                      : html`<div class="empty-state">${emptyFactsMessage()}</div>`
                   }
                 </div>`
         }
@@ -238,6 +276,19 @@ function drawMemory(loading = false): void {
             ${memorySaving ? "Saving…" : "Save changes"}
           </button>
           <span class="memory-hint">${dirty && !memorySaving ? "Unsaved changes" : ""}</span>
+          <button
+            class="btn memory-compact"
+            type="button"
+            title=${
+              dirty
+                ? "Save your changes first, so the agent compacts what you see"
+                : "Open a conversation here with a compaction request ready to send"
+            }
+            ?disabled=${loading || memorySaving || dirty || !memorySaved.trim()}
+            @click=${openCompactChat}
+          >
+            ${icon(Sparkles, 15)} Compact with the agent
+          </button>
         </div>
         ${
           historyOpen
