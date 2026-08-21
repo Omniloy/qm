@@ -211,6 +211,8 @@ describe("private-channel membership (authorizes private-channel sends, §10)", 
     assert.equal(await d.channelMembership("C-sec", "U-alice"), false);
     assert.equal(await d.channelMember("C-sec", "U-alice"), false);
     assert.equal(await d.channelMember("C-other", "U-carol"), false);
+    assert.deepEqual(await d.channelRoster("C-sec"), ["U-carol"]);
+    assert.deepEqual(await d.channelRoster("C-other"), []);
 
     await d.replaceChannels([{ channelId: "C-sec", name: "secret", isPrivate: true }]);
     assert.equal(await d.channelMember("C-sec", "U-carol"), true);

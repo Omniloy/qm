@@ -95,6 +95,9 @@ describe("agent conversations self-API", async () => {
     const token = await capFor("U1", scopeId("personal", "U1"), false);
     const res = await post("/v1/conversations", { text: "cron trying to spawn" }, token);
     assert.equal(res.status, 403);
+    const message = ((await res.json()) as { message: string }).message;
+    assert.match(message, /audience can't be verified/, "the refusal names the unattestable-human cause too");
+    assert.match(message, /DM or project conversation/, "the refusal points at a context that can attest");
   });
 
   it("spawn refuses a scope the actor doesn't own", async () => {

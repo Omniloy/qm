@@ -30,6 +30,7 @@ import {
   livePersonCapability,
   splitToScope,
   SHARED_SKILL_TRIGGER_REFUSAL,
+  UNATTESTED_TURN_CAUSE,
 } from "../artifact-share.ts";
 
 function isGrant(b: unknown): b is Grant {
@@ -89,8 +90,7 @@ async function spawnAgentConversation(ctx: ApiCtx): Promise<void> {
   if (!livePersonCapability(capability)) {
     return sendJson(res, 403, {
       error: "human_attended_only",
-      message:
-        "starting a fresh conversation requires a turn a person is attending — not a cron, trigger, or other automation",
+      message: `starting a fresh conversation requires a turn a person is attending — ${UNATTESTED_TURN_CAUSE}`,
     });
   }
   const b = isObj(body) ? body : {};

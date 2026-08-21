@@ -16,6 +16,7 @@ import {
 import { selectableCatalogForHarness, selectableModelCatalog } from "../model/model-catalog.ts";
 import { resolveRuntimeChoiceDurable } from "../harness/harness-router.ts";
 import { errMessage } from "../util/errors.ts";
+import { samePerson } from "../directory/person.ts";
 
 import type { App, AppDeps } from "./app-types.ts";
 import { STALE_LEASE_GRACE_MS } from "./app-types.ts";
@@ -52,6 +53,25 @@ export function createTurnMethods(
     replayOrphanedRunSignals,
   } = h;
   const { shouldRouteToSpine, markTriggerHandled, addressedWakeText } = ambient;
+
+  async function attestedChannelRoster(channelRef: string, actor: Principal): Promise<Principal[] | undefined> {
+    try {
+      if ((await deps.directory.channelPrivacy(channelRef)) !== true) return undefined;
+      const roster = await deps.directory.channelRoster(channelRef);
+      if (!roster.some((principalId) => samePerson(principalId, actor.id))) return undefined;
+      const members = await Promise.all(
+        roster.map(async (principalId) => {
+          if (samePerson(principalId, actor.id)) return actor;
+          const principal = deps.identity.classify(principalId);
+          const member = await deps.directory.get(principalId).catch(() => null);
+          return member?.displayName ? { ...principal, displayName: member.displayName } : principal;
+        }),
+      );
+      return deps.identity.audienceIsAllInternal(members) ? members : undefined;
+    } catch {
+      return undefined;
+    }
+  }
 
   /** What a stopped run records as its reason, wherever it is read back. */
   const STOPPED_REASON = "stopped by a person";
@@ -129,6 +149,7 @@ export function createTurnMethods(
       let projectName: string | undefined;
       let projectVersion: string | undefined;
       let sessionParticipantIds: string[] | undefined;
+      let channelPublishMembers: Principal[] | undefined;
       const conversationRef = req.conversation.channelRef;
       const projectGroup = req.conversation.kind === "group" && !!conversationRef && isProjectGroupRef(conversationRef);
       const projectId = projectGroup ? projectIdFromGroupRef(conversationRef) : null;
@@ -165,6 +186,9 @@ export function createTurnMethods(
       } else if (req.surface === "web" && req.conversation.kind !== "dm") {
         if (!conversationRef || !(await mayUseSharedScope(req.conversation.kind, conversationRef, actor))) {
           return { status: "refused", reason: "you're not a member of that context" };
+        }
+        if (req.conversation.kind === "channel") {
+          channelPublishMembers = await attestedChannelRoster(conversationRef, actor);
         }
       }
 
@@ -271,7 +295,11 @@ export function createTurnMethods(
 
       const publishMembers =
         projectAudience ??
-        req.conversation.publishMembers?.map((a) => deps.identity.classify(a.externalId, a.isExternalGuest));
+        req.conversation.publishMembers?.map((a) => {
+          const p = deps.identity.classify(a.externalId, a.isExternalGuest);
+          return a.displayName ? { ...p, displayName: a.displayName } : p;
+        }) ??
+        channelPublishMembers;
 
       const conversation: Conversation = {
         kind: req.conversation.kind,

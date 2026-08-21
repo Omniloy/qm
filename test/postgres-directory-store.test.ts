@@ -177,6 +177,8 @@ test(
     assert.equal(await store.channelMembership("C-sec", "U-alice"), false);
     assert.equal(await store.channelMember("C-sec", "U-alice"), false);
     assert.equal(await store.channelMember("C-other", "U-carol"), false);
+    assert.deepEqual(await store.channelRoster("C-sec"), ["U-carol"]);
+    assert.deepEqual(await store.channelRoster("C-other"), []);
 
     await store.replaceChannels([{ channelId: "C-sec", name: "secret", isPrivate: true }]);
     assert.equal(await store.channelMember("C-sec", "U-carol"), true);

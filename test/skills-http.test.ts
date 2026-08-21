@@ -727,6 +727,10 @@ test("a shared-scope skill cannot be created/edited/deleted by an automated trig
       body: JSON.stringify({ name: "auto-thing", description: "d", body: "# b" }),
     });
     assert.equal(create.status, 403, "an automated trigger cannot create a shared skill");
+    const refusal = ((await create.json()) as { message: string }).message;
+    assert.match(refusal, /automated trigger/, "the refusal names real automation as a cause");
+    assert.match(refusal, /audience can't be verified/, "the refusal also names an unattestable human context");
+    assert.match(refusal, /DM or project conversation/, "the refusal points at a context that can attest");
     assert.equal(
       (await srv.skills.list()).find((s) => s.manifest.name === "auto-thing"),
       undefined,
