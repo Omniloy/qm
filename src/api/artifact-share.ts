@@ -3,8 +3,10 @@ import { isSharedScope, parseScopeId, scopeId, type Permission, type ScopeId } f
 import type { ResourceKind } from "../acl/resource-ref.ts";
 import type { RecipientResolution } from "../directory/directory-store.ts";
 
-export const SHARED_SKILL_TRIGGER_REFUSAL =
-  "a skill in a shared scope can only be changed by a person, not an automated trigger";
+export const UNATTESTED_TURN_CAUSE =
+  "this request came from an automated trigger or from a conversation whose audience can't be verified; ask again from a DM or project conversation";
+
+export const SHARED_SKILL_TRIGGER_REFUSAL = `a skill in a shared scope can only be changed by a person the platform can attest is present — ${UNATTESTED_TURN_CAUSE}`;
 
 export function triggerBlocksSharedSkill(homeScope: ScopeId, liveActor: boolean): boolean {
   return isSharedScope(homeScope) && !liveActor;

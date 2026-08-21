@@ -315,6 +315,14 @@ export function createPostgresDirectoryStore(connectionString: string): Director
       return rows.length > 0;
     },
 
+    async channelRoster(channelId) {
+      const rows = await q("SELECT principal_id FROM directory_channel_members WHERE org_id = $1 AND channel_id = $2", [
+        orgId,
+        channelId,
+      ]);
+      return rows.map((r) => r.principal_id as string);
+    },
+
     async channelMembership(channelId, principalId) {
       const rows = await q(
         `SELECT EXISTS (

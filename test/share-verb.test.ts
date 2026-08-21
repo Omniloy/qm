@@ -11,7 +11,7 @@ import type { RecipientResolution } from "../src/directory/directory-store.ts";
 import { shareArtifact as shareRoute, demoteSkill, listSkillSharing, unshareSkill } from "../src/api/routes/surface.ts";
 import type { ApiCtx } from "../src/api/routes/route.ts";
 import { createSkillStore } from "../src/skills/skill-store.ts";
-import { splitToScope } from "../src/api/artifact-share.ts";
+import { splitToScope, UNATTESTED_TURN_CAUSE } from "../src/api/artifact-share.ts";
 import { createAclStore } from "../src/acl/acl-store.ts";
 import type { ManagesArtifactHome } from "../src/resolution/scope-membership.ts";
 
@@ -75,14 +75,20 @@ function fakeApp(state: FakeState): App {
     },
     async promoteSkill(id: string, targetScopeId: ScopeId, actorId: string, liveActor: boolean) {
       if (liveActor !== true)
-        throw new AdminError(403, "promoting a skill org-wide takes a live person, never an autonomous trigger");
+        throw new AdminError(
+          403,
+          `promoting a skill org-wide takes a live person the platform can attest is present — ${UNATTESTED_TURN_CAUSE}`,
+        );
       if (!state.admins.has(actorId)) throw new AdminError(403, "only an org admin can promote a skill org-wide");
       state.promotes.push({ id, targetScopeId, actorId });
       return { id: `org-${id}` } as never;
     },
     async demoteSkill(id: string, actorId: string, liveActor: boolean) {
       if (liveActor !== true)
-        throw new AdminError(403, "taking a skill back from the org takes a live person, never an autonomous trigger");
+        throw new AdminError(
+          403,
+          `taking a skill back from the org takes a live person the platform can attest is present — ${UNATTESTED_TURN_CAUSE}`,
+        );
       if (!state.admins.has(actorId)) throw new AdminError(403, "only an org admin can take a skill back from the org");
       state.demotes.push({ id, actorId });
     },

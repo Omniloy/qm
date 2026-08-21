@@ -53,6 +53,7 @@ export interface DirectoryStore {
   resolve(query: string): Promise<RecipientResolution>;
   resolveChannel(query: string): Promise<ChannelResolution>;
   channelMember(channelId: string, principalId: string): Promise<boolean>;
+  channelRoster(channelId: string): Promise<string[]>;
   channelMembership(channelId: string, principalId: string): Promise<boolean | undefined>;
   channelPrivacy(channelId: string): Promise<boolean | undefined>;
   replaceGroups(groupMembers: GroupMembership[], syncedAt?: number): Promise<boolean>;
@@ -136,6 +137,9 @@ export function createDirectoryStore(): DirectoryStore {
     },
     async channelMember(channelId, principalId) {
       return channelMembers?.get(channelId)?.has(principalId) ?? false;
+    },
+    async channelRoster(channelId) {
+      return [...(channelMembers?.get(channelId) ?? [])];
     },
     async channelMembership(channelId, principalId) {
       const memberships = channelMembers;

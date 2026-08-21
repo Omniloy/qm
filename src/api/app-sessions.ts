@@ -12,7 +12,7 @@ import { processIsGone } from "../sandbox/process-poll.ts";
 import { cronRef, deployRef, encodeRef, fileRef, skillRef } from "../acl/resource-ref.ts";
 import { samePerson } from "../directory/person.ts";
 import { AdminError } from "../admin/admin-service.ts";
-import { type ArtifactHome } from "./artifact-share.ts";
+import { type ArtifactHome, UNATTESTED_TURN_CAUSE } from "./artifact-share.ts";
 import { randomUUID } from "node:crypto";
 import { MAX_ATTACHMENT_BYTES, mimeFromName, safeAttachmentName } from "../core/attachments.ts";
 import { projectIdFromGroupRef, projectScopeId } from "../projects/project-store.ts";
@@ -737,7 +737,10 @@ export function createSessionMethods(
       if (parseScopeId(targetScopeId).kind !== "org")
         throw new Error("promote targets the org scope — use share or move for anything narrower");
       if (liveActor !== true)
-        throw new AdminError(403, "promoting a skill org-wide takes a live person, never an autonomous trigger");
+        throw new AdminError(
+          403,
+          `promoting a skill org-wide takes a live person the platform can attest is present — ${UNATTESTED_TURN_CAUSE}`,
+        );
       if (!deps.admin) throw new Error("org promotion requires an admin service");
       const status = await deps.admin.adminStatusOf({ id: actorId, type: "internal" });
       if (!status.isAdmin) throw new AdminError(403, "only an org admin can promote a skill org-wide");
@@ -761,7 +764,10 @@ export function createSessionMethods(
       if (parseScopeId(skill.scopeId).kind !== "org")
         throw new Error("only an org-wide skill is taken back this way — archive anything narrower");
       if (liveActor !== true)
-        throw new AdminError(403, "taking a skill back from the org takes a live person, never an autonomous trigger");
+        throw new AdminError(
+          403,
+          `taking a skill back from the org takes a live person the platform can attest is present — ${UNATTESTED_TURN_CAUSE}`,
+        );
       if (!deps.admin) throw new Error("org demotion requires an admin service");
       const status = await deps.admin.adminStatusOf({ id: actorId, type: "internal" });
       if (!status.isAdmin) throw new AdminError(403, "only an org admin can take a skill back from the org");
