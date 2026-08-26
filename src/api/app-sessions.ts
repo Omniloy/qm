@@ -10,11 +10,12 @@ import { shq } from "../util/shell.ts";
 import { swallowAs } from "../util/errors.ts";
 import { processIsGone } from "../sandbox/process-poll.ts";
 import { cronRef, deployRef, encodeRef, fileRef, skillRef } from "../acl/resource-ref.ts";
+import { revokeAllGrants } from "../acl/acl-store.ts";
 import { samePerson } from "../directory/person.ts";
 import { AdminError } from "../admin/admin-service.ts";
 import { type ArtifactHome, UNATTESTED_TURN_CAUSE } from "./artifact-share.ts";
 import { randomUUID } from "node:crypto";
-import { MAX_ATTACHMENT_BYTES, mimeFromName, safeAttachmentName } from "../core/attachments.ts";
+import { grantSharedContextRead, MAX_ATTACHMENT_BYTES, mimeFromName, safeAttachmentName } from "../core/attachments.ts";
 import { projectIdFromGroupRef, projectScopeId } from "../projects/project-store.ts";
 
 import type { App, AppDeps } from "./app-types.ts";
@@ -140,15 +141,7 @@ export function createSessionMethods(
         createdInScope,
         maxBytes: MAX_ATTACHMENT_BYTES,
       });
-      if (createdInScope !== ownerScopeId) {
-        await deps.acl.grant({
-          ownerScopeId,
-          ref: path,
-          granteeScopeId: createdInScope,
-          permission: "read",
-          grantedBy: principalId,
-        });
-      }
+      await grantSharedContextRead(deps.acl, { ownerScopeId, path, createdInScope, grantedBy: principalId });
       deps.auditLog?.record({
         at: Date.now(),
         principalId,
@@ -190,9 +183,7 @@ export function createSessionMethods(
       // Grants outlive the artifact they point at — the ACL is keyed on
       // (ownerScopeId, path), not on the row — so a stale grant would survive
       // and re-attach itself to any later file that reused the path.
-      for (const g of grants) {
-        await deps.acl.revoke(art.ownerScopeId, art.path, g.granteeScopeId, principalId);
-      }
+      await revokeAllGrants(deps.acl, art.ownerScopeId, art.path, principalId);
       await deps.files.delete(id);
 
       deps.auditLog?.record({
@@ -224,20 +215,13 @@ export function createSessionMethods(
       // Revoke first, then grant. The reverse order would briefly expose the
       // file to both contexts at once, and revoking cannot fail in a way that
       // leaves it exposed.
-      for (const g of grants) {
-        await deps.acl.revoke(art.ownerScopeId, art.path, g.granteeScopeId, principalId);
-      }
-      // A file in its owner's own scope needs no grant — that is what moving
-      // it back out of a project means.
-      if (target !== art.ownerScopeId) {
-        await deps.acl.grant({
-          ownerScopeId: art.ownerScopeId,
-          ref: art.path,
-          granteeScopeId: target,
-          permission: "read",
-          grantedBy: principalId,
-        });
-      }
+      await revokeAllGrants(deps.acl, art.ownerScopeId, art.path, principalId);
+      await grantSharedContextRead(deps.acl, {
+        ownerScopeId: art.ownerScopeId,
+        path: art.path,
+        createdInScope: target,
+        grantedBy: principalId,
+      });
       await deps.files.setCreatedInScope(id, target);
 
       deps.auditLog?.record({

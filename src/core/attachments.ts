@@ -1,13 +1,15 @@
 import { basename } from "node:path";
 import { randomUUID } from "node:crypto";
-import type {
-  AttachmentMeta,
-  GrantedHandle,
-  IncomingAttachment,
-  OutgoingAttachment,
-  ScopeId,
-  SessionEntry,
+import {
+  isSharedScope,
+  type AttachmentMeta,
+  type GrantedHandle,
+  type IncomingAttachment,
+  type OutgoingAttachment,
+  type ScopeId,
+  type SessionEntry,
 } from "../types.ts";
+import { revokeAllGrants, type AclStore } from "../acl/acl-store.ts";
 import { hasParentPathSegment, type Sandbox, type SandboxHandle } from "../sandbox/sandbox.ts";
 import { MAX_BLOB_BYTES, collectBlob, type BlobTransferStore } from "../persistence/blob-transfer.ts";
 import { fileArtifactId, type FileArtifactStore, type FileDirection } from "../files/file-artifact-store.ts";
@@ -111,12 +113,22 @@ export const MAX_SHARED_FILES_LISTED = 25;
 
 export interface ArtifactRegistration {
   store: FileArtifactStore;
+  acl?: AclStore;
   ownerScopeId: ScopeId;
   createdBy: string;
   createdInScope?: ScopeId;
   seed: string;
   onRegistered?: (a: { id: string; path: string; ownerScopeId: ScopeId; direction: FileDirection }) => Promise<void>;
   onError?: (e: unknown) => void;
+}
+
+export async function grantSharedContextRead(
+  acl: AclStore,
+  args: { ownerScopeId: ScopeId; path: string; createdInScope: ScopeId | undefined; grantedBy: string },
+): Promise<void> {
+  const { ownerScopeId, path, createdInScope, grantedBy } = args;
+  if (!createdInScope || createdInScope === ownerScopeId || !isSharedScope(createdInScope)) return;
+  await acl.grant({ ownerScopeId, ref: path, granteeScopeId: createdInScope, permission: "read", grantedBy });
 }
 
 async function registerArtifact(
@@ -145,6 +157,14 @@ async function registerArtifact(
       maxBytes: MAX_ATTACHMENT_BYTES,
     });
     const registered = { id, path, ownerScopeId: reg.ownerScopeId, direction, created };
+    if (reg.acl) {
+      await grantSharedContextRead(reg.acl, {
+        ownerScopeId: reg.ownerScopeId,
+        path,
+        createdInScope: reg.createdInScope,
+        grantedBy: reg.createdBy,
+      });
+    }
     await reg.onRegistered?.(registered);
     return registered;
   } catch (e) {
@@ -411,7 +431,7 @@ export async function collectNamedOutbound(
   const oversized: string[] = [];
   const usedNames = new Set<string>();
   const doomed = () => missing.length > 0 || empty.length > 0 || oversized.length > 0;
-  const createdArtifactIds = new Set<string>();
+  const createdArtifacts = new Map<string, string>();
   let i = 0;
   for (const p of paths) {
     const bytes = await sandbox.readFileBytes(handle, p);
@@ -433,7 +453,7 @@ export async function collectNamedOutbound(
     const mimetype = mimeFromName(name);
     const { blobId } = await transfer.put(bytes);
     const artifact = register ? await registerArtifact(register, "out", i, name, mimetype, bytes) : undefined;
-    if (artifact?.created) createdArtifactIds.add(artifact.id);
+    if (artifact?.created) createdArtifacts.set(artifact.id, artifact.path);
     i += 1;
     attachments.push({
       name,
@@ -447,7 +467,8 @@ export async function collectNamedOutbound(
     await Promise.all(
       attachments.map(async (a) => {
         await transfer.delete(a.blobId).catch(swallowAs("attachments: rollback blob delete", undefined));
-        if (register && a.artifactId && createdArtifactIds.has(a.artifactId)) {
+        const createdPath = a.artifactId ? createdArtifacts.get(a.artifactId) : undefined;
+        if (register && a.artifactId && createdPath !== undefined) {
           await register.store.delete(a.artifactId).catch((e) => {
             try {
               register.onError?.(e);
@@ -455,6 +476,11 @@ export async function collectNamedOutbound(
               swallowAs("attachments: rollback onError", undefined)(err);
             }
           });
+          if (register.acl) {
+            await revokeAllGrants(register.acl, register.ownerScopeId, createdPath, register.createdBy).catch(
+              swallowAs("attachments: rollback grant revoke", undefined),
+            );
+          }
         }
       }),
     );

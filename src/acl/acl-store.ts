@@ -69,6 +69,17 @@ export interface AclStore {
   list(): Promise<readonly Grant[]>;
 }
 
+export async function revokeAllGrants(
+  acl: AclStore,
+  ownerScopeId: ScopeId,
+  ref: string,
+  revokedBy: string,
+): Promise<void> {
+  for (const g of await acl.grantsFor(ownerScopeId, ref)) {
+    await acl.revoke(ownerScopeId, ref, g.granteeScopeId, revokedBy);
+  }
+}
+
 export interface AclStoreOptions {
   manages?: ScopeManagement;
 }
