@@ -5,6 +5,7 @@ import { createSurfaceToolDeps, type SurfaceToolsContext } from "../src/core/orc
 import { createMemoryBlobTransferStore } from "../src/persistence/blob-transfer.ts";
 import { createMemoryFileArtifactStore } from "../src/files/file-artifact-store.ts";
 import { createMemoryDurableByteStore } from "../src/files/durable-byte-store.ts";
+import { createAclStore } from "../src/acl/acl-store.ts";
 import { scopeId } from "../src/types.ts";
 import type { Sandbox, SandboxHandle } from "../src/sandbox/sandbox.ts";
 
@@ -135,6 +136,42 @@ test("collectNamedOutbound: a doomed call's rollback never deletes an artifact a
   assert.deepEqual(doomed.missing, ["outbox/gone.md"]);
   assert.deepEqual(doomed.attachments, [], "the doomed call stages nothing");
   assert.ok(await store.get(priorArtifactId), "post #1's artifact survives post #2's rollback");
+});
+
+test("collectNamedOutbound: a doomed channel batch revokes the createdInScope grant it wrote — no orphan", async () => {
+  const transfer = createMemoryBlobTransferStore();
+  const channel = scopeId("channel", "C1");
+  const reg = (acl: ReturnType<typeof createAclStore>, seed: string): ArtifactRegistration => ({
+    store: createMemoryFileArtifactStore(createMemoryDurableByteStore()),
+    acl,
+    ownerScopeId: scopeId("personal", "U1"),
+    createdBy: "U1",
+    createdInScope: channel,
+    seed,
+  });
+
+  const okAcl = createAclStore();
+  const ok = await collectNamedOutbound(
+    fakeSandbox({ "outbox/kept.md": bytes("good") }, []),
+    handle,
+    ["outbox/kept.md"],
+    transfer,
+    reg(okAcl, "reach-ok"),
+  );
+  assert.equal(ok.attachments.length, 1);
+  assert.equal((await okAcl.list()).length, 1, "a delivered channel attachment leaves exactly one grant");
+
+  const doomedAcl = createAclStore();
+  const doomed = await collectNamedOutbound(
+    fakeSandbox({ "outbox/kept.md": bytes("good") }, []),
+    handle,
+    ["outbox/kept.md", "outbox/gone.md"],
+    transfer,
+    reg(doomedAcl, "reach-doomed"),
+  );
+  assert.deepEqual(doomed.missing, ["outbox/gone.md"]);
+  assert.deepEqual(doomed.attachments, [], "the doomed call stages nothing");
+  assert.deepEqual(await doomedAcl.list(), [], "and its rollback leaves no orphan channel grant behind");
 });
 
 test("collectOutbound: harvests every outbox file (the turn-result rail for a non-surfaceTools turn)", async () => {

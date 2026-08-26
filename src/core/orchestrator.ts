@@ -1645,6 +1645,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           : [];
         const fileRegistration: ArtifactRegistration = {
           store: deps.files,
+          acl: deps.acl,
           ownerScopeId: toScopeId("personal", actor.id),
           createdBy: actor.id,
           createdInScope: scopeId,

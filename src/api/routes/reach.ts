@@ -156,6 +156,7 @@ async function reachNow(ctx: ApiCtx): Promise<void> {
     const register: ArtifactRegistration | undefined = deps.files
       ? {
           store: deps.files,
+          ...(deps.acl ? { acl: deps.acl } : {}),
           ownerScopeId: scopeId("personal", capability.actorId),
           createdBy: capability.actorId,
           createdInScope: capability.scopeId,
