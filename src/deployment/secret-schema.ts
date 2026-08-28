@@ -20,6 +20,7 @@ type SecretGate =
   | "dropbox-oauth"
   | "linear-oauth"
   | "email-auth"
+  | "microsoft-oauth"
   | "model-anthropic"
   | "model-openai"
   | "model-openrouter";
@@ -55,6 +56,7 @@ export const CORE_SECRET_SPECS: readonly RuntimeSecretSpec[] = [
   { name: "GOOGLE_OAUTH_CLIENT_SECRET", requiredWhen: "google-oauth" },
   { name: "DROPBOX_OAUTH_CLIENT_SECRET", requiredWhen: "dropbox-oauth" },
   { name: "LINEAR_OAUTH_CLIENT_SECRET", requiredWhen: "linear-oauth" },
+  { name: "MICROSOFT_OAUTH_CLIENT_SECRET", requiredWhen: "microsoft-oauth" },
 ];
 
 function sandboxBackendSelected(env: NodeJS.ProcessEnv, backend: string): boolean {
@@ -85,6 +87,7 @@ const GATE_PREDICATES: Readonly<Record<SecretGate, (env: NodeJS.ProcessEnv) => b
   "dropbox-oauth": (env) => Boolean(env.DROPBOX_OAUTH_CLIENT_ID),
   "linear-oauth": (env) => Boolean(env.LINEAR_OAUTH_CLIENT_ID),
   "email-auth": (env) => env.AUTH_ALLOWED_EMAILS !== undefined,
+  "microsoft-oauth": (env) => Boolean(env.MICROSOFT_OAUTH_CLIENT_ID),
   "model-anthropic": (env) => env.MODEL_PROVIDER?.trim() === "anthropic",
   "model-openai": (env) =>
     env.MODEL_PROVIDER?.trim() === "openai" &&

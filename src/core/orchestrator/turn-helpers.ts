@@ -97,6 +97,7 @@ const CONNECTOR_SKILL_PROVIDERS: Readonly<Record<string, string>> = {
   "google-drive-sheets": "google",
   "google-workspace": "google",
   linear: "linear",
+  "microsoft-graph": "microsoft",
   "morning-digest": "x",
   "slack-drafts": "slack",
   x: "x",

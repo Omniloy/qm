@@ -31,6 +31,7 @@ test("provider skills are visible only for connectors configured by the admin", 
     skill("linear"),
     skill("x"),
     skill("slack-drafts"),
+    skill("microsoft-graph"),
   ];
   assert.deepEqual(
     filterConnectorSkills(all, []).map((entry) => entry.skill?.manifest.name),
@@ -39,6 +40,10 @@ test("provider skills are visible only for connectors configured by the admin", 
   assert.deepEqual(
     filterConnectorSkills(all, ["google", "linear"]).map((entry) => entry.skill?.manifest.name),
     ["memory", "google-workspace", "linear"],
+  );
+  assert.deepEqual(
+    filterConnectorSkills(all, ["microsoft"]).map((entry) => entry.skill?.manifest.name),
+    ["memory", "microsoft-graph"],
   );
   assert.deepEqual(
     filterConnectorSkills(all, ["slack"]).map((entry) => entry.skill?.manifest.name),
