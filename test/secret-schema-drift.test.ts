@@ -56,6 +56,19 @@ test("a declared base model provider is enforced at boot, not just at deploy tim
   assert.deepEqual(validateCoreSecretEnv({} as NodeJS.ProcessEnv), [], "no provider declared, nothing required");
 });
 
+test("a configured OAuth connector's client secret is enforced at boot when its client id is present", () => {
+  for (const [id, secret] of [
+    ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET"],
+    ["DROPBOX_OAUTH_CLIENT_ID", "DROPBOX_OAUTH_CLIENT_SECRET"],
+    ["LINEAR_OAUTH_CLIENT_ID", "LINEAR_OAUTH_CLIENT_SECRET"],
+    ["MICROSOFT_OAUTH_CLIENT_ID", "MICROSOFT_OAUTH_CLIENT_SECRET"],
+  ] as const) {
+    assert.deepEqual(validateCoreSecretEnv({ [id]: "cid" } as NodeJS.ProcessEnv), [secret]);
+    assert.deepEqual(validateCoreSecretEnv({ [id]: "cid", [secret]: "real" } as NodeJS.ProcessEnv), []);
+    assert.deepEqual(validateCoreSecretEnv({} as NodeJS.ProcessEnv), [], "no client id, nothing required");
+  }
+});
+
 test("an OpenAI base model on the Codex harness reports its one missing key once", () => {
   assert.deepEqual(
     validateCoreSecretEnv({ MODEL_PROVIDER: "openai", HARNESS: "codex" } as NodeJS.ProcessEnv),

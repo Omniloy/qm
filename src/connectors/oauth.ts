@@ -66,6 +66,10 @@ export type FetchLike = (
 
 const realFetch: FetchLike = (url, init) => fetch(url, init);
 
+function applyTenant(url: string, client: ResolvedClient): string {
+  return url.replace("{tenant}", client.tenant ?? "organizations");
+}
+
 function parseScopes(raw: unknown): string[] | undefined {
   if (Array.isArray(raw)) return raw.map(String);
   if (typeof raw === "string" && raw.trim()) return raw.trim().split(/\s+/);
@@ -116,7 +120,7 @@ function makeTokenAdapters(opts: {
   };
   return {
     async exchange({ provider, client, code, redirectUri, fetchImpl, now, codeVerifier }) {
-      const res = await fetchImpl(provider.tokenUrl, {
+      const res = await fetchImpl(applyTenant(provider.tokenUrl, client), {
         method: "POST",
         headers: headers(client),
         body: new URLSearchParams({
@@ -133,7 +137,7 @@ function makeTokenAdapters(opts: {
       return { hosts: provider.hosts, token: toToken(raw, undefined, now), raw };
     },
     async refresh({ provider, client, token, fetchImpl, now }) {
-      const res = await fetchImpl(provider.tokenUrl, {
+      const res = await fetchImpl(applyTenant(provider.tokenUrl, client), {
         method: "POST",
         headers: headers(client),
         body: new URLSearchParams({
@@ -439,6 +443,50 @@ export const PROVIDERS: Record<string, OAuthProviderConfig> = {
         "tweet.read/users.read back reads; tweet.write lets the connecting user post as themselves; offline.access issues a refresh token so the 2-hour access token renews.",
     },
   },
+
+  microsoft: {
+    hosts: ["graph.microsoft.com"],
+    authUrl: "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize",
+    tokenUrl: "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token",
+    scopes: [
+      "offline_access",
+      "openid",
+      "email",
+      "profile",
+      "User.Read",
+      "Mail.ReadWrite",
+      "Mail.Send",
+      "Calendars.ReadWrite",
+      "Files.ReadWrite.All",
+      "Sites.Read.All",
+      "Team.ReadBasic.All",
+      "Channel.ReadBasic.All",
+      "ChannelMessage.Read.All",
+      "ChannelMessage.Send",
+      "Chat.ReadWrite",
+      "ChatMessage.Send",
+    ],
+    clientIdEnv: "MICROSOFT_OAUTH_CLIENT_ID",
+    clientSecretEnv: "MICROSOFT_OAUTH_CLIENT_SECRET",
+    redirectPath: "microsoft/callback",
+    consentMode: "standard",
+    egressRule: ["graph.microsoft.com", "login.microsoftonline.com", "sharepoint.com", "1drv.com"],
+    authParams: { prompt: "consent" },
+    pkce: true,
+    setupGuide: {
+      console: "Azure Portal → Microsoft Entra ID → App registrations",
+      url: "https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade",
+      steps: [
+        "Register an application (single tenant: 'Accounts in this organizational directory only').",
+        "Under Authentication, add a Web platform and set the Redirect URI to the one shown below.",
+        "Under Certificates & secrets, create a new client secret and copy its value.",
+        "Under API permissions, add the Microsoft Graph DELEGATED permissions matching the scopes below, then click 'Grant admin consent' once for the tenant.",
+        "Set MICROSOFT_TENANT_ID to your directory (tenant) ID, and paste the Application (client) ID + client secret below.",
+      ],
+      scopesRationale:
+        "Mail.ReadWrite/Mail.Send back Outlook mail; Calendars.ReadWrite backs Calendar; Files.ReadWrite.All + Sites.Read.All back OneDrive/SharePoint document read/search/download and upload (new content and new versions) without site-wide write; Team/Channel/ChannelMessage/Chat scopes back Teams read and send; offline_access issues the refresh token; openid/email/profile/User.Read identify the account.",
+    },
+  },
 };
 
 export interface ResolvedClient {
@@ -447,6 +495,7 @@ export interface ResolvedClient {
   scopes?: string[];
   redirectAllowlist?: string[];
   hostedDomain?: string;
+  tenant?: string;
   clientRef: string;
 }
 
@@ -460,7 +509,14 @@ export function createSecretClientResolver(secrets: SecretSource = createEnvSecr
     const secret = await secrets.get(p.clientSecretEnv);
     if (!id || !secret) throw new Error(`provider not configured — set ${p.clientIdEnv} and ${p.clientSecretEnv}`);
     const hostedDomain = await secrets.get("GOOGLE_WORKSPACE_DOMAIN");
-    return { id, secret, clientRef: `env:${providerName}`, ...(hostedDomain ? { hostedDomain } : {}) };
+    const tenant = await secrets.get("MICROSOFT_TENANT_ID");
+    return {
+      id,
+      secret,
+      clientRef: `env:${providerName}`,
+      ...(hostedDomain ? { hostedDomain } : {}),
+      ...(tenant ? { tenant } : {}),
+    };
   };
 }
 
@@ -559,7 +615,7 @@ export function authorizeUrl(
   q.set(p.scopeParam ?? "scope", scopes.join(" "));
   for (const [k, v] of Object.entries(p.authParams ?? {})) q.set(k, v);
   if (accountType === "company" && opts.client.hostedDomain) q.set("hd", opts.client.hostedDomain);
-  return `${p.authUrl}?${q.toString()}`;
+  return `${applyTenant(p.authUrl, opts.client)}?${q.toString()}`;
 }
 
 export async function exchangeCode(
