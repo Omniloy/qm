@@ -7,6 +7,7 @@ import type { DurableMap } from "../persistence/durable-map.ts";
 import { createMemoryMap } from "../persistence/durable-map.ts";
 import { createKeyedQueue } from "../util/async.ts";
 import { isHarnessId, modelSupportedByHarness } from "../model/pi-models.ts";
+import type { ModelStatus } from "../model/model-classification.ts";
 import { composeSecurityPosture, type SecurityPosture } from "../security/security-posture.ts";
 import type { ApprovalGrantModes } from "../types.ts";
 import {
@@ -83,6 +84,10 @@ export interface PersistedApprovedHarnesses {
 export interface PersistedWebuiModels {
   scopeId: ScopeId;
   ids: string[];
+}
+export interface PersistedModelClassification {
+  scopeId: ScopeId;
+  statuses: Record<string, ModelStatus>;
 }
 export interface PersistedPeopleDirectoryUrl {
   scopeId: ScopeId;
@@ -185,6 +190,9 @@ export interface ScopedConfigStore {
   getBaseModelOwnDurable(id: ScopeId): Promise<string | null>;
   getWebuiModels(id: ScopeId): string[] | null;
   setWebuiModels(id: ScopeId, ids: string[] | null): void;
+  getModelClassifications(id: ScopeId): Record<string, ModelStatus>;
+  setModelClassification(id: ScopeId, modelId: string, status: ModelStatus): void;
+  getModelClassificationsDurable(id: ScopeId): Promise<Record<string, ModelStatus>>;
   getBaseModelDurable(id: ScopeId): Promise<string | null>;
   getWebuiModelsDurable(id: ScopeId): Promise<string[] | null>;
   getPeopleDirectoryUrl(id: ScopeId): string | null;
@@ -229,6 +237,7 @@ export function createMemoryConfigStore(
     orgAmbient?: DurableMap<PersistedScopedFlag>;
     interactiveFastMode?: DurableMap<PersistedScopedFlag>;
     webuiModels?: DurableMap<PersistedWebuiModels>;
+    modelClassifications?: DurableMap<PersistedModelClassification>;
     peopleDirectoryUrls?: DurableMap<PersistedPeopleDirectoryUrl>;
     branding?: DurableMap<PersistedBranding>;
     browseMaxSteps?: DurableMap<PersistedBrowseMaxSteps>;
@@ -254,6 +263,7 @@ export function createMemoryConfigStore(
   let orgAmbient = true;
   let interactiveFastMode = false;
   const webuiModels = new Map<ScopeId, string[]>();
+  const modelClassifications = new Map<ScopeId, Record<string, ModelStatus>>();
   const peopleDirectoryUrls = new Map<ScopeId, string>();
   const branding = new Map<ScopeId, OrgBranding>();
   const browseMaxSteps = new Map<ScopeId, number>();
@@ -273,6 +283,7 @@ export function createMemoryConfigStore(
   const orgAmbientStore = opts.orgAmbient ?? createMemoryMap<PersistedScopedFlag>();
   const interactiveFastModeStore = opts.interactiveFastMode ?? createMemoryMap<PersistedScopedFlag>();
   const webuiModelStore = opts.webuiModels ?? createMemoryMap<PersistedWebuiModels>();
+  const modelClassificationStore = opts.modelClassifications ?? createMemoryMap<PersistedModelClassification>();
   const peopleDirectoryUrlStore = opts.peopleDirectoryUrls ?? createMemoryMap<PersistedPeopleDirectoryUrl>();
   const brandingStore = opts.branding ?? createMemoryMap<PersistedBranding>();
   const browseMaxStepsStore = opts.browseMaxSteps ?? createMemoryMap<PersistedBrowseMaxSteps>();
@@ -413,6 +424,7 @@ export function createMemoryConfigStore(
           orgAmbient = (await orgAmbientStore.get(org))?.on ?? true;
           interactiveFastMode = (await interactiveFastModeStore.get(org))?.on ?? false;
           for (const r of await webuiModelStore.all()) webuiModels.set(r.scopeId, r.ids);
+          for (const r of await modelClassificationStore.all()) modelClassifications.set(r.scopeId, r.statuses);
           for (const r of await peopleDirectoryUrlStore.all()) peopleDirectoryUrls.set(r.scopeId, r.url);
           for (const r of await brandingStore.all()) branding.set(r.scopeId, r.branding);
           for (const r of await browseMaxStepsStore.all()) browseMaxSteps.set(r.scopeId, r.steps);
@@ -783,6 +795,23 @@ export function createMemoryConfigStore(
     },
     getWebuiModelsDurable: async (id) =>
       (await webuiModelStore.get(id))?.ids ?? (await webuiModelStore.get(org))?.ids ?? null,
+    getModelClassifications: (id) => modelClassifications.get(id) ?? {},
+    setModelClassification(id, modelId, status) {
+      const merged = { ...modelClassifications.get(id) };
+      if (status === "active") delete merged[modelId];
+      else merged[modelId] = status;
+      if (Object.keys(merged).length === 0) {
+        modelClassifications.delete(id);
+        persist(`modelClassifications:${id}`, "model classifications", () => modelClassificationStore.delete(id));
+      } else {
+        modelClassifications.set(id, merged);
+        persist(`modelClassifications:${id}`, "model classifications", () =>
+          modelClassificationStore.put(id, { scopeId: id, statuses: merged }),
+        );
+      }
+    },
+    getModelClassificationsDurable: async (id) =>
+      (await modelClassificationStore.get(id))?.statuses ?? (await modelClassificationStore.get(org))?.statuses ?? {},
     getPeopleDirectoryUrl: (id) => peopleDirectoryUrls.get(id) ?? null,
     setPeopleDirectoryUrl(id, url) {
       if (url === null) {

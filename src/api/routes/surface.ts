@@ -15,6 +15,7 @@ import {
   type HarnessId,
 } from "../../model/pi-models.ts";
 import { builtInModelCatalog, selectableCatalogForHarness, selectableModelCatalog } from "../../model/model-catalog.ts";
+import { dropHidden } from "../../model/model-classification.ts";
 import { BRAND } from "../../../plugins/chassis/src/brand.ts";
 import { sanitizeLogoSvg } from "../../../plugins/chassis/src/svg-sanitize.ts";
 import { errMessage } from "../../util/errors.ts";
@@ -1186,6 +1187,7 @@ async function getSurfaceConfig(ctx: ApiCtx): Promise<void> {
   const resolvedBase = modelSupportedByHarness(baseModel ?? undefined, harnessId)
     ? baseModel!
     : defaultModelForHarness(harnessId, deps.baseModelDefault);
+  const classifications = await deps.config.getModelClassificationsDurable(orgScope(deps));
   const dflt = deps.brandingDefault;
   const pick = (a: unknown, b: unknown): string | undefined => {
     if (typeof a === "string") return a;
@@ -1217,7 +1219,7 @@ async function getSurfaceConfig(ctx: ApiCtx): Promise<void> {
     logoSvg,
   };
   return sendJson(res, 200, {
-    webuiModels: configuredPicker.length ? configuredPicker : allowed,
+    webuiModels: dropHidden(configuredPicker.length ? configuredPicker : allowed, classifications, [resolvedBase]),
     baseModel: resolvedBase,
     harnessId,
     ...(managedKeys ? { modelProviderConfigured: Object.values(managedKeys).some(Boolean) } : {}),
@@ -1334,7 +1336,9 @@ async function runtimeConfigBody(ctx: ApiCtx, scope: ScopeId): Promise<Record<st
   }
   const effective = scopeOverride ?? orgDefault;
   const selected = [orgDefault, scopeOverride, effective].filter((choice) => choice !== null);
+  const selectedIds = selected.map((choice) => choice.modelId);
   const allowlist = await config.getWebuiModelsDurable(org);
+  const classifications = await config.getModelClassificationsDurable(org);
   const modelsByHarness = Object.fromEntries(
     approvedHarnesses.map((harnessId) => {
       const ids = allowlist?.length
@@ -1348,7 +1352,7 @@ async function runtimeConfigBody(ctx: ApiCtx, scope: ScopeId): Promise<Record<st
         )
           ids.push(choice.modelId);
       }
-      return [harnessId, serviceableModelIds(ids, providersFor(harnessId))];
+      return [harnessId, serviceableModelIds(dropHidden(ids, classifications, selectedIds), providersFor(harnessId))];
     }),
   );
   const advertisedModelIds = new Set(Object.values(modelsByHarness).flat());

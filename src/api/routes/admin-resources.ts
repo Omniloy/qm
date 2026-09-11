@@ -15,6 +15,7 @@ import {
   SELECTABLE_BASE_MODELS,
   ALL_PROVIDERS_AVAILABLE,
 } from "../../model/pi-models.ts";
+import { isModelStatus, MODEL_STATUSES } from "../../model/model-classification.ts";
 import { resolveRuntimeChoiceDurable } from "../../harness/harness-router.ts";
 import { type OrgBranding } from "../../resolution/config-store.ts";
 import {
@@ -465,6 +466,29 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
       },
       (deps, scope, ids) => deps.config!.setWebuiModels(scope, ids),
     ),
+  },
+  {
+    id: "model-classifications",
+    kind: "custom",
+    target: "org",
+    clearable: true,
+    label:
+      "Per-model lifecycle classification (active | legacy | deprecated | hidden). Hidden and deprecated models drop from the web UI picker and base-model options; legacy stays selectable. Setting active clears the override.",
+    readKey: "modelClassifications",
+    get: (deps, scope) => deps.config!.getModelClassificationsDurable(scope),
+    apply: async (ctx, _actor, scope) => {
+      const bad = orgOnly(scope, "model classifications are org-wide");
+      if (bad) return bad;
+      const body = ctx.body as { modelId?: unknown; status?: unknown };
+      const modelId = typeof body.modelId === "string" ? body.modelId.trim() : "";
+      if (!modelId) {
+        return { error: `model-classifications requires { modelId: string, status: ${MODEL_STATUSES.join(" | ")} }` };
+      }
+      if (!resolveModel(modelId)) return { error: `unknown model id: ${modelId}` };
+      if (!isModelStatus(body.status)) return { error: `status must be one of ${MODEL_STATUSES.join(" | ")}` };
+      ctx.deps.config!.setModelClassification(scope, modelId, body.status);
+      return { ok: true };
+    },
   },
   {
     id: "people-directory-url",
