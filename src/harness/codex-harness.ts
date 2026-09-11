@@ -348,7 +348,7 @@ export function codexTurnInputText(
 export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
   const active = new Map<string, ActiveTurn>();
   const configuredModel = opts.modelId;
-  const judgeModelId = opts.judgeModelId ?? "gpt-5.4-mini";
+  const judgeModelId = opts.judgeModelId ?? "gpt-5.6-luna";
   const resolveModelId = (scope?: ScopeId) =>
     [
       typeof configuredModel === "function" ? configuredModel(scope) : configuredModel,
