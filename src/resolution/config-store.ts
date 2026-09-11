@@ -204,7 +204,6 @@ export interface ScopedConfigStore {
   setBrowseMaxSteps(id: ScopeId, steps: number | null): void;
   getBrowseModel(id: ScopeId): string | null;
   setBrowseModel(id: ScopeId, modelId: string | null): void;
-  /** Which browser a scope reaches for. Null means the built-in one. */
   getBrowserProvider(id: ScopeId): string | null;
   setBrowserProvider(id: ScopeId, providerId: string | null): void;
   getBrowserProviderDurable(id: ScopeId): Promise<string | null>;

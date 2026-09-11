@@ -22,9 +22,6 @@ export interface BrowserProviderSpec {
   homeUrl?: string;
 }
 
-/** The always-present option: the browser MiniOmni runs in the sandbox itself. */
-export const BUILT_IN_BROWSER_ID = "built-in";
-
 /**
  * The person's own Chrome, reached through the MiniOmni Browser Bridge extension.
  * Offered only where the relay is exposed — otherwise there is nothing to
@@ -94,9 +91,9 @@ export function loadBrowserProviders(skillsSeedDir: string): BrowserProviderSpec
 }
 
 /**
- * Every id the picker will accept, built-in first, with the extension appended
- * when its relay is configured.
+ * Every id the picker will accept: the hosted providers, with the extension
+ * appended when its relay is configured.
  */
 export function browserProviderIds(specs: readonly BrowserProviderSpec[], relayConfigured = false): string[] {
-  return [BUILT_IN_BROWSER_ID, ...specs.map((spec) => spec.id), ...(relayConfigured ? [EXTENSION_BROWSER_ID] : [])];
+  return [...specs.map((spec) => spec.id), ...(relayConfigured ? [EXTENSION_BROWSER_ID] : [])];
 }

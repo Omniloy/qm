@@ -11,59 +11,17 @@ import type { RowActionSpec } from "./drive-mount";
 
 type ControlMode = "agent" | "human_control";
 
-/**
- * Where the picture comes from.
- *
- * `iframe` embeds a vendor's viewer at a URL. `stream` is a browser MiniOmni hosts
- * itself: Chrome will not expose its debug port off loopback, so there is no
- * URL to embed — the pane asks MiniOmni for frames instead, and there is
- * correspondingly no bearer material anywhere in the pane.
- */
-type ViewerKind = "iframe" | "stream";
+type ViewerKind = "iframe";
 
 export interface LiveSession {
   provider: string;
   sessionId: string;
   threadRef: string;
   viewer: ViewerKind;
-  /** Only ever present for an `iframe` viewer. */
   liveViewUrl?: string;
   controlMode: ControlMode;
   expiresAt: number;
   handedOffAt?: number;
-}
-
-/**
- * How often to ask for a new frame, in milliseconds.
- *
- * A frame costs about 145ms to produce, so asking faster than this only queues
- * work. While the agent drives, the picture is something to glance at and a
- * slower cadence is plenty; once a person takes the wheel they are steering by
- * it, and latency is the whole experience.
- */
-export function frameInterval(session: LiveSession): number {
-  return session.controlMode === "human_control" ? 300 : 1000;
-}
-
-/**
- * Map a click on the rendered image back to a page coordinate.
- *
- * The frame is downscaled to save bandwidth and then laid out at whatever width
- * the pane happens to be, so two different scalings sit between a person's
- * click and the page. Getting this wrong does not look broken — it looks like
- * the browser ignoring you, or worse, clicking the wrong thing.
- */
-export function toPageCoords(
-  click: { x: number; y: number },
-  rendered: { width: number; height: number },
-  viewport: { w: number; h: number },
-): { x: number; y: number } | null {
-  if (!(rendered.width > 0) || !(rendered.height > 0)) return null;
-  if (!(viewport.w > 0) || !(viewport.h > 0)) return null;
-  return {
-    x: Math.round((click.x / rendered.width) * viewport.w),
-    y: Math.round((click.y / rendered.height) * viewport.h),
-  };
 }
 
 /**
@@ -78,13 +36,6 @@ export function paneVisible(session: LiveSession | null, threadRef: string | nul
   if (session.threadRef !== threadRef) return false;
   // An expired session is a pane pointing at a browser that is already gone.
   return session.expiresAt > nowMs;
-}
-
-/**
- *
- */
-export function dropStaleFrame(previousSessionId: string | null, nextSessionId: string | null): boolean {
-  return nextSessionId !== null && nextSessionId !== previousSessionId;
 }
 
 export interface PaneStatus {
@@ -137,10 +88,7 @@ export function paneActions(session: LiveSession): RowActionSpec[] {
   const human = session.controlMode === "human_control";
   return [
     { id: "minimize", label: "Minimize" },
-    // Only a vendor's viewer has a page to open. A browser MiniOmni streams has no
-    // URL at all — offering it opened a blank tab, which reads as broken
-    // rather than as "there is nothing to open".
-    ...(session.viewer === "iframe" ? [{ id: "open", label: "Open in a new tab" } satisfies RowActionSpec] : []),
+    { id: "open", label: "Open in a new tab" },
     {
       id: "release",
       label: "Give back to agent",

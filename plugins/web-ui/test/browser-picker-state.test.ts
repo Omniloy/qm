@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  BUILT_IN_BROWSER_ID,
   browserAction,
   browserById,
   browserTabs,
@@ -32,14 +31,13 @@ const KERNEL: BrowserProvider = {
   connected: false,
 };
 
-test("the built-in browser always leads and never needs connecting", () => {
-  const tabs = browserTabs([ANCHOR, KERNEL], BUILT_IN_BROWSER_ID);
+test("the tabs are the catalog core sent, with no built-in prepended", () => {
+  const tabs = browserTabs([ANCHOR, KERNEL], null);
   assert.deepEqual(
     tabs.map((tab) => tab.id),
-    [BUILT_IN_BROWSER_ID, "anchor", "kernel"],
+    ["anchor", "kernel"],
   );
-  assert.equal(tabs[0]!.connected, true);
-  assert.equal(tabs[0]!.active, true);
+  assert.doesNotMatch(tabs.map((tab) => tab.id).join(","), /built-in/);
 });
 
 test("exactly one tab is live, and it is the one core reported", () => {
@@ -54,21 +52,29 @@ test("the card opens on the browser in use, so it answers that first", () => {
   assert.equal(initialBrowserTab([ANCHOR, KERNEL], "anchor"), "anchor");
 });
 
-test("an active provider that has since disappeared falls back to built-in", () => {
+test("an active provider that has since disappeared falls back to the first tab", () => {
   // A provider doc can be removed while someone still has it selected; the card
   // must not open on a tab that is not there.
-  assert.equal(initialBrowserTab([KERNEL], "anchor"), BUILT_IN_BROWSER_ID);
+  assert.equal(initialBrowserTab([KERNEL], "anchor"), "kernel");
+});
+
+test("with no browser connected at all, there is no tab to open on", () => {
+  // The built-in browser used to be the guaranteed fallback. With it gone, a
+  // person who has connected nothing has an empty picker and an empty state.
+  assert.deepEqual(browserTabs([], null), []);
+  assert.equal(initialBrowserTab([], null), null);
 });
 
 test("the button offers the one thing that tab can do", () => {
-  const tabs = browserTabs([ANCHOR, KERNEL], BUILT_IN_BROWSER_ID);
-  assert.deepEqual(browserAction(tabs[0]!), { kind: "in-use" });
-  assert.deepEqual(browserAction(tabs[1]!), { kind: "use", label: "Use Anchor" });
-  assert.deepEqual(browserAction(tabs[2]!), { kind: "connect", label: "Connect Kernel" });
+  const tabs = browserTabs([ANCHOR, KERNEL], null);
+  assert.deepEqual(browserAction(tabs[0]!), { kind: "use", label: "Use Anchor" });
+  assert.deepEqual(browserAction(tabs[1]!), { kind: "connect", label: "Connect Kernel" });
+  // The live one says so rather than offering to switch to itself.
+  assert.deepEqual(browserAction(browserTabs([ANCHOR], "anchor")[0]!), { kind: "in-use" });
 });
 
 test("a connected provider is never asked for its key again", () => {
-  const [, anchorTab] = browserTabs([ANCHOR], BUILT_IN_BROWSER_ID);
+  const [anchorTab] = browserTabs([ANCHOR], null);
   assert.notEqual(browserAction(anchorTab!).kind, "connect");
 });
 
@@ -93,8 +99,9 @@ test("a provider without a profile also asks only for its key", () => {
   );
 });
 
-test("the built-in browser has nothing to connect", () => {
-  assert.equal(connectDraft(browserById([ANCHOR], BUILT_IN_BROWSER_ID)), null);
+test("a browser that is not in the catalog has nothing to connect", () => {
+  assert.equal(browserById([ANCHOR], "gone"), undefined);
+  assert.equal(connectDraft(browserById([ANCHOR], "gone")), null);
 });
 
 const EXTENSION: BrowserProvider = {
@@ -108,7 +115,7 @@ const EXTENSION: BrowserProvider = {
 
 test("the extension is chosen, not key-dropped, even when not attached", async () => {
   const { browserAction, browserTabs, connectDraft, isExtensionTab } = await import("../src/browser-picker-state.ts");
-  const [, extTab] = browserTabs([EXTENSION], BUILT_IN_BROWSER_ID);
+  const [extTab] = browserTabs([EXTENSION], null);
   // A detached extension still offers "use": the person selects it, then pairs.
   assert.deepEqual(browserAction(extTab!), { kind: "use", label: "Use my Chrome" });
   // Nothing to paste — pairing is a token, not a stored secret.

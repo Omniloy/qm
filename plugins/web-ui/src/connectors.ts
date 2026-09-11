@@ -26,7 +26,6 @@ import {
   extensionNote,
   extensionState,
   initialBrowserTab,
-  BUILT_IN_BROWSER_ID,
   isExtensionTab,
   type BrowserAction,
   type BrowserProvider,
@@ -163,7 +162,7 @@ let connectorNotice = "";
 let addingCredential: { service: string; envKey: string; purpose: string } | null = null;
 let secureDropUrl: string | null = null;
 let browserProviders: BrowserProvider[] = [];
-let activeBrowser = BUILT_IN_BROWSER_ID;
+let activeBrowser: string | null = null;
 let browserTab: string | null = null;
 let relayChecking = false;
 // The paste happens here rather than in a handed-off tab. It still goes
@@ -194,7 +193,7 @@ export function resetKeychainState(): void {
   keychainUsage = [];
   keychainScopeNames = {};
   browserProviders = [];
-  activeBrowser = BUILT_IN_BROWSER_ID;
+  activeBrowser = null;
   browserTab = null;
   relayChecking = false;
   browserConnect = null;
@@ -513,11 +512,31 @@ function browserActionTpl(action: BrowserAction, tabId: string, provider: Browse
 
 function browserCard(): TemplateResult {
   const tabs = browserTabs(browserProviders, activeBrowser);
+  const live = tabs.find((tab) => tab.active);
+  if (tabs.length === 0) {
+    return html`
+      <article class="kc-resource kc-account kc-browser">
+        <div class="kc-resource-main">
+          <span class="connector-logo">${icon(Globe, 18)}</span>
+          <div class="kc-resource-copy">
+            <div class="kc-resource-title-row">
+              <h3>Browser</h3>
+              <span class="kc-state neutral">None</span>
+            </div>
+            <div class="kc-resource-meta">Which browser the agent uses for you</div>
+          </div>
+        </div>
+        <p class="kc-resource-description">
+          No browser is connected yet. Connect your own Chrome with the browser extension, or add a hosted provider key,
+          to let the agent browse for you.
+        </p>
+      </article>
+    `;
+  }
   const shownId = browserTab ?? initialBrowserTab(browserProviders, activeBrowser);
   const shown = tabs.find((tab) => tab.id === shownId) ?? tabs[0]!;
-  const provider = browserById(browserProviders, shown.id);
+  const provider = browserById(browserProviders, shown.id)!;
   const action = browserAction(shown);
-  const live = tabs.find((tab) => tab.active);
   return html`
     <article class="kc-resource kc-account kc-browser">
       <div class="kc-resource-main">
@@ -525,7 +544,7 @@ function browserCard(): TemplateResult {
         <div class="kc-resource-copy">
           <div class="kc-resource-title-row">
             <h3>Browser</h3>
-            <span class="kc-state neutral">${live ? live.name : "Built-in"}</span>
+            <span class="kc-state neutral">${live ? live.name : "None"}</span>
           </div>
           <div class="kc-resource-meta">Which browser the agent uses for you</div>
         </div>
@@ -602,6 +621,13 @@ function browserCard(): TemplateResult {
               >`
             : ""
         }
+        ${
+          live
+            ? html`<button class="kc-text-action" type="button" @click=${() => void chooseBrowser(null)}>
+                Use org default
+              </button>`
+            : ""
+        }
       </div>
     </article>
   `;
@@ -659,17 +685,19 @@ async function recheckExtension(): Promise<void> {
   }
 }
 
-async function chooseBrowser(providerId: string): Promise<void> {
+async function chooseBrowser(providerId: string | null): Promise<void> {
   const operation = beginKeychainMutation();
   if (!operation) return;
   connectorNotice = "";
   drawConnectors();
   try {
-    await api("/api/keychain/browser", { method: "POST", body: JSON.stringify({ provider: providerId }) });
+    await api("/api/keychain/browser", { method: "POST", body: JSON.stringify({ provider: providerId ?? "" }) });
     if (!keychainOperations.isCurrentEpoch(operation.epoch)) return;
     activeBrowser = providerId;
     browserTab = providerId;
-    connectorNotice = `${browserById(browserProviders, providerId).name} is now your browser.`;
+    connectorNotice = providerId
+      ? `${browserById(browserProviders, providerId)?.name ?? providerId} is now your browser.`
+      : "The agent will use your organization's default browser.";
   } catch (e) {
     if (!keychainOperations.isCurrentEpoch(operation.epoch)) return;
     connectorNotice = errMessage(e, "Could not switch browser.");
@@ -1146,7 +1174,7 @@ export async function renderConnectors(): Promise<void> {
     keychainUsage = keys.value.usage ?? [];
     keychainScopeNames = keys.value.scopeNames ?? {};
     browserProviders = keys.value.browserProviders ?? [];
-    activeBrowser = keys.value.activeBrowser ?? BUILT_IN_BROWSER_ID;
+    activeBrowser = keys.value.activeBrowser ?? null;
     if (browserTab === null) browserTab = initialBrowserTab(browserProviders, activeBrowser);
   } else {
     keychainCredentials = [];

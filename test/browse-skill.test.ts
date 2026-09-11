@@ -11,7 +11,7 @@ const CLI = read("skills-seed/browse/scripts/browser.py");
 // SAYS. Code and shape assertions keep using the raw text.
 const SKILL = RAW.replace(/\s+/g, " ");
 
-const openBlock = (): string => /if a\.cmd == "open":[\s\S]*?if a\.cmd == "watch":/.exec(CLI)?.[0] ?? "";
+const openBlock = (): string => /if a\.cmd == "open":[\s\S]*?if a\.cmd == "status":/.exec(CLI)?.[0] ?? "";
 
 /* ----------------------------------------------------------- the surface */
 
@@ -40,10 +40,10 @@ test("every verb the skill documents actually exists in the CLI", () => {
   }
 });
 
-test("the extension routes to the relay, not a provider doc or the local browser", () => {
+test("the extension routes to the relay, not a provider doc", () => {
   // The bug this guards: BROWSE_PROVIDER=extension fell through to the hosted
-  // -provider branch (read a doc that does not exist) or to the local launch,
-  // instead of attaching to the person's own Chrome over the relay.
+  // -provider branch (read a doc that does not exist) instead of attaching to
+  // the person's own Chrome over the relay.
   assert.match(CLI, /chosen == "extension"/);
   assert.match(CLI, /QM_RELAY_URL/);
   assert.match(SKILL, /\*\*`extension`\*\*/);
@@ -63,12 +63,8 @@ test("the credential verbs exist for curl-based skills and warn about the secret
 test("the browser surface carries no provider concepts", () => {
   // The verb set is the expensive-to-undo decision: once skills call these,
   // changing them means rewriting every caller. Keeping it plain CDP is what
-  // lets the same calls run against a local Chromium, a hosted session, or a
-  // browser driven through an extension.
-  // Provider names, a provider's own field names, and key material. Core's
-  // own field names are not on this list: browser.py already speaks core's
-  // browser-session API, and `liveViewUrl` is what that API calls the viewer
-  // it is handed — naming it says nothing about which provider produced it.
+  // lets the same calls run against a hosted session or a browser driven
+  // through an extension.
   for (const leak of ["anchor", "kernel", "browserbase", "live_view", "api-key", "API_KEY"]) {
     assert.doesNotMatch(CLI, new RegExp(leak, "i"), `browser.py must not mention ${leak}`);
   }
@@ -78,11 +74,23 @@ test("the browser surface carries no provider concepts", () => {
   assert.match(CLI, /--provider/);
 });
 
-test("a browser is available without any key at all", () => {
-  // The whole point of the change: someone who has configured nothing can still
-  // browse. If this line goes, the feature quietly returns to needing setup.
-  assert.match(SKILL, /costs nothing, needs no key/);
-  assert.match(SKILL, /None set is not a dead end/);
+/* ------------------------------------- the built-in browser is gone */
+
+test("no built-in browser, no local launch, no streamed pane", () => {
+  // The interactive built-in browser and everything that served it are deleted:
+  // the sandbox Chromium launch, the watchdog that owned it, and the streamed
+  // pane it fed. Leaving any of it behind is a path back to the browser we
+  // removed.
+  assert.doesNotMatch(CLI, /built-in/, "no built-in browser framing remains");
+  assert.doesNotMatch(CLI, /force[-_]built[-_]in/, "the --force-built-in escape hatch is gone");
+  assert.doesNotMatch(CLI, /def spawn_chromium/, "nothing launches a local chromium");
+  assert.doesNotMatch(CLI, /def watchdog/, "the watchdog is gone");
+  assert.doesNotMatch(CLI, /def register\(/, "there is no streamed session to register");
+  assert.doesNotMatch(CLI, /"viewer": "stream"/, "no stream viewer is producible");
+  assert.doesNotMatch(CLI, /from[-_]pane/, "the from-pane input bypass is gone");
+  assert.doesNotMatch(CLI, /sub\.add_parser\("frame"/, "the frame verb is gone");
+  assert.doesNotMatch(CLI, /sub\.add_parser\("watch"/, "the watchdog verb is gone");
+  assert.doesNotMatch(SKILL, /built-in/, "the skill no longer mentions a built-in browser");
 });
 
 /* ------------------------------------------------- regressions from testing */
@@ -96,23 +104,6 @@ test("Enter is sent as rawKeyDown + char + keyUp", () => {
   assert.match(press, /type="rawKeyDown"/);
   assert.match(press, /type="char", text="\\r"/);
   assert.match(press, /type="keyUp"/);
-});
-
-test("closing is graceful, because a hard kill loses the sign-in", () => {
-  // Measured: after pkill, localStorage survived and cookies did not — Chromium
-  // batches cookie writes. The cookie discarded is exactly the session someone
-  // just signed in to create. Asking and reaping both go through one function,
-  // so a person closing a browser and a watchdog reaping one behave the same.
-  const verb = /if a\.cmd == "close":[\s\S]{0,1600}/.exec(CLI)?.[0] ?? "";
-  assert.match(verb, /close_browser\(state/);
-  assert.match(CLI, /chromium batches cookie writes/i);
-});
-
-test("the profile sits on the volume that survives a restart", () => {
-  // ~/.config/chromium is inside HOME_DIR, which local-sandbox.ts mounts as a
-  // persistent Docker volume. Anywhere else and sign-ins die with the container.
-  assert.match(CLI, /PROFILE_DIR = os\.path\.expanduser\("~\/\.config\/chromium"\)/);
-  assert.match(CLI, /--user-data-dir=\{PROFILE_DIR\}/);
 });
 
 test("a scheme-bearing URL is left alone", () => {
@@ -130,40 +121,18 @@ test("a CDP failure reads as a message, not a traceback", () => {
 
 /* ------------------------------------------------------- pane and control */
 
-test("a local browser registers as streamed, carrying no URL", () => {
-  // Core refuses a liveViewUrl on a streamed viewer precisely so a CDP URL
-  // cannot be pasted where a viewer URL belongs. Sending one here would turn
-  // that protection into a failed registration and a missing pane.
-  const reg = /def register\([\s\S]{0,1200}/.exec(CLI)?.[0] ?? "";
-  assert.match(reg, /"viewer": "stream"/);
-  assert.doesNotMatch(reg, /liveViewUrl/, "a streamed browser has no viewer URL to send");
-  assert.match(reg, /"provider": "local"/);
-});
-
-test("losing the pane never costs the person the browser", () => {
-  // They asked to browse. If MiniOmni cannot be reached the picture is gone, but the
-  // task is still doable, and refusing would be the wrong trade.
-  assert.match(CLI, /never as "no browser"/);
-  const open = /outcome, why = register\(state\)[\s\S]{0,1400}/.exec(CLI)?.[0] ?? "";
-  assert.match(open, /Browsing still works/);
-  // The distinction that matters: "no room" is obeyed, "cannot reach MiniOmni" is not.
-  assert.match(open, /outcome == "full"/);
-  assert.match(open, /outcome == "ok"/);
-});
-
 test("the agent is refused while a person holds the wheel", () => {
-  // Replaces the old parking loop: the calls are short, so a single check
-  // before each one is enough and there is no long action to interrupt.
+  // The calls are short, so a single check before each one is enough and there
+  // is no long action to interrupt.
   const guard = /if a\.cmd in \("go", "click", "type", "key", "scroll"\)[\s\S]{0,500}/.exec(CLI)?.[0] ?? "";
-  assert.match(guard, /not a\.from_pane/);
   assert.match(guard, /human_control/);
   assert.match(guard, /Wait for them to hand it back/);
 });
 
-test("input relayed from the pane is not blocked by that check", () => {
-  // The person IS the wheel; refusing their own click would deadlock takeover.
-  assert.match(CLI, /--from-pane/);
-  assert.match(CLI, /they ARE the wheel/);
+test("registering a pane persists the session so the wheel guard can query core", () => {
+  const pane = /if a\.cmd == "pane":[\s\S]{0,2600}/.exec(CLI)?.[0] ?? "";
+  assert.match(pane, /state\["sessionId"\] = a\.session/);
+  assert.match(pane, /state\["registered"\] = True/);
 });
 
 test("an unknown control mode lets the agent carry on", () => {
@@ -171,15 +140,6 @@ test("an unknown control mode lets the agent carry on", () => {
   // a lookup error would strand every task whenever MiniOmni hiccups.
   const cm = /def control_mode\([\s\S]{0,700}/.exec(CLI)?.[0] ?? "";
   assert.match(cm, /return "agent"/);
-});
-
-test("a frame carries the viewport size, so a click lands where it was aimed", () => {
-  // The pane scales the image to fit. Without the true viewport size it cannot
-  // map a click back to page coordinates, and every click misses.
-  const frame = /elif a\.cmd == "frame":[\s\S]{0,1800}/.exec(CLI)?.[0] ?? "";
-  assert.match(frame, /"w": size\["w"\]/);
-  assert.match(frame, /"h": size\["h"\]/);
-  assert.match(frame, /clip=/, "downscaled on the way out rather than in the pane");
 });
 
 /* ---------------------------------------------------------------- safety */
@@ -222,69 +182,32 @@ test("refs are preferred over selectors, and re-taken after the page changes", (
   assert.match(SKILL, /Prefer refs to CSS selectors/);
 });
 
-/* ------------------------------------------------ closing what nobody wants */
+/* --------------------------------------------- opening, with nothing to launch */
 
-test("the browser is claimed before it is started", () => {
-  // A browser costs about 1.25 GB. Registering first means a refusal arrives
-  // while there is still nothing to throw away.
+test("open refuses when no browser is connected, rather than launching one", () => {
+  // There is no browser of our own any more. With neither the extension relay
+  // nor a --cdp endpoint, `open` must say what to connect and stop — never fall
+  // through to a launch that no longer exists.
   const open = openBlock();
-  const claimAt = open.indexOf("register(state)");
-  const launchAt = open.indexOf("start_watchdog");
-  assert.ok(claimAt > 0 && launchAt > 0, "both steps are in open");
-  assert.ok(claimAt < launchAt, "the claim comes first");
-  assert.match(open, /outcome == "full"/);
+  assert.match(open, /No browser is connected for this person/);
+  assert.doesNotMatch(open, /start_watchdog|spawn_chromium/, "and it does not try to launch anything");
 });
 
 test("a relay with no shared tab stops the turn rather than switching browsers", () => {
   const open = openBlock();
   assert.match(open, /via_extension/, "the extension path is distinguished from a hosted --cdp");
   assert.match(open, /not sharing a tab/);
-  assert.match(open, /Do NOT quietly switch to the built-in browser/);
+  assert.match(open, /Do NOT quietly attach to a different browser/);
   assert.match(open, /clear_state\(\)/, "and it leaves no remote state behind to be reused");
 });
 
-test("the skill tells the agent to ask rather than fall back on its own", () => {
+test("the skill tells the agent to ask rather than switch browsers on its own", () => {
   assert.match(SKILL, /stop and ask/i);
-  assert.match(SKILL, /Do \*\*not\*\* fall back to the built-in browser on your own/);
+  assert.match(SKILL, /Do \*\*not\*\* attach to a different browser on your own/);
 });
 
-test("forcing the built-in browser lets go of a browser somewhere else", () => {
-  const open = openBlock();
-  const forceAt = open.indexOf("a.force_built_in:");
-  const reuseAt = open.indexOf("Reusing it");
-  assert.ok(forceAt > 0 && reuseAt > 0, "both branches are in open");
-  assert.ok(forceAt < reuseAt, "the stale remote record is dropped before the reuse check");
-  assert.match(open, /billing until its own timeout/, "and a hosted browser we let go of is not left silent");
-});
-
-test("the browser is not closed the moment the answer is ready", () => {
-  assert.match(SKILL, /Do not close it just because your answer is ready/);
-  assert.match(SKILL, /reaped automatically once it has been idle/);
-});
-
-test("a refusal to open is passed on as news, not as a failure", () => {
-  assert.match(CLI, /Nothing is broken and nothing is lost/);
-});
-
-test("an idle browser is closed gracefully, and killed only if it refuses", () => {
-  // Measured: a hard kill discards the cookies chromium has not yet flushed,
-  // which is exactly the sign-in someone just completed.
-  const close = /def close_browser\([\s\S]{0,1400}/.exec(CLI)?.[0] ?? "";
-  const graceAt = close.indexOf("Browser.close");
-  const killAt = close.indexOf("pkill");
-  assert.ok(graceAt > 0 && killAt > 0);
-  assert.ok(graceAt < killAt, "ask first");
-  assert.match(close, /deliberately last/);
-});
-
-test("the watchdog owns the browser rather than orphaning it", () => {
-  // Measured: chromium orphaned to PID 1 leaves ~14 dead process entries per
-  // session, because PID 1 here is the exec daemon and reaps nobody. Owning
-  // the tree took that to zero across three open/reap cycles.
-  const spawn = /def spawn_chromium\([\s\S]{0,900}/.exec(CLI)?.[0] ?? "";
-  assert.doesNotMatch(spawn, /start_new_session=True/, "chromium stays a child of the watchdog");
-  assert.match(CLI, /PR_SET_CHILD_SUBREAPER/);
-  assert.match(CLI, /def reap_orphans/);
+test("a temp file per process, so concurrent writes cannot interleave", () => {
+  assert.match(CLI, /STATE_FILE \+ f"\.\{os\.getpid\(\)\}\.tmp"/);
 });
 
 /* ---------------------------------------------- when a site refuses us */
@@ -324,79 +247,6 @@ test("closing a browser we did not start does not claim to have stopped it", () 
 });
 
 /* ------------------------------------------- found by deploying and using it */
-
-test("two writers share the state file without erasing each other", () => {
-  // `open` records the session it claimed; the watchdog records the port once
-  // chromium is listening. They race. A plain write means whoever finishes
-  // second wins — which is how the port went missing and every later call
-  // reported no browser at all.
-  assert.match(CLI, /def merge_state/);
-  const merge = /def merge_state\([\s\S]{0,700}/.exec(CLI)?.[0] ?? "";
-  assert.match(merge, /state = read_state\(\) or \{\}/);
-  assert.match(merge, /state\.update\(fields\)/);
-  // touch() runs on every verb, so it is the most frequent clobberer.
-  const touch = /def touch\([\s\S]{0,500}/.exec(CLI)?.[0] ?? "";
-  assert.match(touch, /merge_state\(/);
-});
-
-test("a fresh browser is never idle before anyone has used it", () => {
-  // Observed on the deployed stack: a stale lastUsedAt from a previous session
-  // made the watchdog reap a brand-new browser within seconds, and the pane sat
-  // on "waiting for the browser" forever while chromium was still running.
-  assert.match(
-    CLI,
-    /last = max\(state\.get\("lastUsedAt", 0\), started\)/,
-    "idleness is measured from the later of last-use and start",
-  );
-  assert.match(CLI, /started = time\.time\(\)/);
-});
-
-test("a temp file per process, so concurrent writes cannot interleave", () => {
-  assert.match(CLI, /STATE_FILE \+ f"\.\{os\.getpid\(\)\}\.tmp"/);
-});
-
-test("two turns opening at once do not each start a browser", () => {
-  // Reproduced on the deployed stack: both saw an empty state file, both
-  // launched a watchdog, and when one decided its browser was idle it closed
-  // the port the other was still using. The second turn's browser died under
-  // it while every call reported success.
-  assert.match(CLI, /class OpenLock/);
-  assert.match(CLI, /fcntl\.flock\(self\.fd, fcntl\.LOCK_EX\)/);
-  const open = openBlock();
-  assert.match(open, /with OpenLock\(\):/);
-  // The loser must reuse rather than fail — it is what it would have done had
-  // it arrived a moment later.
-  assert.match(open, /already open[\s\S]{0,80}Reusing it/);
-});
-
-test("a lock from a container that no longer exists cannot wedge the profile", () => {
-  // The worst bug of the build, and it only appears after a restart. Chromium
-  // guards a profile with a symlink naming the host holding it — here
-  // "21a7194ab74a-379", a container that had been destroyed. The profile lives
-  // on a volume that outlives its container, so that lock was permanent:
-  // chromium refused to start forever, dying instantly with an error nobody
-  // saw, while the pane sat on "waiting for the browser".
-  assert.match(CLI, /def clear_profile_lock/);
-  const fn = /def clear_profile_lock\([\s\S]{0,1400}/.exec(CLI)?.[0] ?? "";
-  assert.match(fn, /SingletonLock/);
-  assert.match(fn, /SingletonSocket/);
-  assert.match(fn, /SingletonCookie/);
-  // Only when nothing is actually listening: a running browser's lock is real.
-  assert.match(fn, /if alive\(DEBUG_PORT\):\s*\n\s*return/);
-  assert.match(CLI, /clear_profile_lock\(\)/);
-});
-
-test("the frame follows the scroll, instead of photographing the page top", () => {
-  // Reported from real use: "when I scrolled it turned into a white screen".
-  // Page.captureScreenshot's clip is in PAGE coordinates, so clipping at the
-  // document origin while the viewport sits further down captures an unpainted
-  // region. Measured on a scrolled article: a 43KB screenshot became 2.7KB of
-  // blank. It also silently broke clicking, since the picture no longer showed
-  // the part of the page that input events were being sent to.
-  const frame = /elif a\.cmd == "frame":[\s\S]{0,2000}/.exec(CLI)?.[0] ?? "";
-  assert.match(frame, /sx: scrollX, sy: scrollY/);
-  assert.match(frame, /"x": size\["sx"\], "y": size\["sy"\]/);
-});
 
 test("a file is fetched rather than navigated to, which is what breaks the bridge", () => {
   assert.match(SKILL, /Never navigate to a file/);
