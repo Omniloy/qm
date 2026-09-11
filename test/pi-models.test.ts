@@ -90,12 +90,14 @@ test("the curated catalog contains only current model families", () => {
   assert.deepEqual(
     SELECTABLE_BASE_MODELS.map((model) => model.id),
     [
+      "claude-fable-5-1",
       "claude-fable-5",
       "claude-opus-5",
       "claude-opus-4-8",
       "claude-sonnet-5",
       "claude-haiku-4-5",
       "gpt-5.6-sol",
+      "gpt-6-astra",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
       "openrouter/auto",
@@ -124,6 +126,10 @@ test("the Anthropic auxiliary is resolvable by provider, so Anthropic-only surfa
   assert.equal(auxiliaryModelForProvider("anthropic"), "claude-haiku-4-5");
   assert.equal(auxiliaryModelForProvider("openai"), "gpt-5.6-luna");
   assert.equal(auxiliaryModelForProvider("nope"), undefined);
+  assert.ok(
+    modelSupportedByHarness(auxiliaryModelForProvider("openai"), "codex"),
+    "the OpenAI auxiliary is codex-supported, so the codex judge default it derives from stays live",
+  );
 });
 
 test("auxiliary selection falls back to the base model when its provider has no cheaper sibling", () => {

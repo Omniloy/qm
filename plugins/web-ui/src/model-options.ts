@@ -17,6 +17,10 @@ interface ModelMeta {
 }
 
 const MODEL_CATALOG: Record<string, ModelMeta> = {
+  "claude-fable-5-1": {
+    label: "Fable 5.1",
+    buttonLabel: "Fable 5.1",
+  },
   "claude-opus-5": {
     label: "Opus 5",
     buttonLabel: "Opus 5",
@@ -37,6 +41,10 @@ const MODEL_CATALOG: Record<string, ModelMeta> = {
     label: "Fable 5",
     buttonLabel: "Fable 5",
   },
+  "gpt-6-astra": {
+    label: "GPT-6 Astra",
+    buttonLabel: "GPT-6",
+  },
   "gpt-5.6-sol": {
     label: "GPT-5.6 Sol",
     buttonLabel: "5.6 Sol",
@@ -52,13 +60,14 @@ const MODEL_CATALOG: Record<string, ModelMeta> = {
 };
 
 const DEFAULT_PICKER_MODEL_IDS: readonly string[] = [
+  "claude-fable-5-1",
   "claude-fable-5",
   "claude-opus-5",
   "claude-opus-4-8",
   "claude-sonnet-5",
   "claude-haiku-4-5",
 ];
-const DEFAULT_CODEX_MODEL_IDS: readonly string[] = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+const DEFAULT_CODEX_MODEL_IDS: readonly string[] = ["gpt-5.6-sol", "gpt-6-astra", "gpt-5.6-terra", "gpt-5.6-luna"];
 
 function defaultModelIdsForHarness(harnessId: string): readonly string[] {
   if (harnessId === "codex") return DEFAULT_CODEX_MODEL_IDS;

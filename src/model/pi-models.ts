@@ -44,6 +44,21 @@ interface ModelEntry {
 const GPT_56_CLONE = { template: "gpt-5.5", contextWindow: 1_050_000, maxTokens: 128_000 } as const;
 
 export const MODEL_REGISTRY: readonly ModelEntry[] = [
+  {
+    id: "claude-fable-5-1",
+    name: "Claude Fable 5.1",
+    fastMode: false,
+    webui: true,
+    base: true,
+    clone: {
+      template: "claude-fable-5",
+      input: 10,
+      output: 50,
+      cacheWrite: 12.5,
+      contextWindow: 1_000_000,
+      maxTokens: 128_000,
+    },
+  },
   { id: "claude-fable-5", name: "Claude Fable 5", fastMode: false, webui: true, base: true },
   {
     id: "claude-opus-5",
@@ -73,6 +88,14 @@ export const MODEL_REGISTRY: readonly ModelEntry[] = [
     webui: true,
     base: true,
     clone: { ...GPT_56_CLONE, input: 5, output: 30 },
+  },
+  {
+    id: "gpt-6-astra",
+    name: "GPT-6 Astra",
+    fastMode: true,
+    webui: true,
+    base: true,
+    clone: { ...GPT_56_CLONE, input: 10, output: 50 },
   },
   {
     id: "gpt-5.6-terra",
