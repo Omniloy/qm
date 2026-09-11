@@ -126,6 +126,10 @@ test("the Anthropic auxiliary is resolvable by provider, so Anthropic-only surfa
   assert.equal(auxiliaryModelForProvider("anthropic"), "claude-haiku-4-5");
   assert.equal(auxiliaryModelForProvider("openai"), "gpt-5.6-luna");
   assert.equal(auxiliaryModelForProvider("nope"), undefined);
+  assert.ok(
+    modelSupportedByHarness(auxiliaryModelForProvider("openai"), "codex"),
+    "the OpenAI auxiliary is codex-supported, so the codex judge default it derives from stays live",
+  );
 });
 
 test("auxiliary selection falls back to the base model when its provider has no cheaper sibling", () => {

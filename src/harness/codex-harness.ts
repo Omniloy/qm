@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { CONFIG_DEFAULTS, type Config } from "../config.ts";
 import { NonRetryableTurnError } from "../core/turn-error.ts";
-import { DEFAULT_CODEX_MODEL_ID, modelSupportedByHarness } from "../model/pi-models.ts";
+import { auxiliaryModelForProvider, DEFAULT_CODEX_MODEL_ID, modelSupportedByHarness } from "../model/pi-models.ts";
 import { startSignalPoll, type RunSignalStore } from "../runs/run-signal-store.ts";
 import type { TaskStatus, TaskStore } from "../tasks/task-store.ts";
 import type { LlmCallUsage } from "../sessions/session-store.ts";
@@ -348,7 +348,7 @@ export function codexTurnInputText(
 export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
   const active = new Map<string, ActiveTurn>();
   const configuredModel = opts.modelId;
-  const judgeModelId = opts.judgeModelId ?? "gpt-5.6-luna";
+  const judgeModelId = opts.judgeModelId ?? auxiliaryModelForProvider("openai") ?? DEFAULT_CODEX_MODEL_ID;
   const resolveModelId = (scope?: ScopeId) =>
     [
       typeof configuredModel === "function" ? configuredModel(scope) : configuredModel,
