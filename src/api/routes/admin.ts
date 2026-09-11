@@ -32,7 +32,12 @@ import {
   listSlackMirrorMessages,
 } from "./admin/slack-mirror.ts";
 import { deleteSlackInstallation, getSlackInstallation, putSlackInstallation } from "./admin/slack-installation.ts";
-import { deleteModelProvider, getModelProviders, putModelProvider } from "./admin/model-providers.ts";
+import {
+  deleteModelProvider,
+  getModelProviders,
+  getProviderModels,
+  putModelProvider,
+} from "./admin/model-providers.ts";
 import { deleteHarnessAuth, getHarnessAuth, putHarnessAuth } from "./admin/harness-auth.ts";
 import { completeCodexAuth, deleteCodexAuth, getCodexAuth, startCodexAuth } from "./admin/codex-auth.ts";
 import { deleteCustomProvider, getCustomProviders, putCustomProvider } from "./admin/custom-providers.ts";
@@ -59,6 +64,7 @@ const routes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "PUT", path: "/v1/admin/slack-installation", auth: "either", handle: putSlackInstallation },
   { method: "DELETE", path: "/v1/admin/slack-installation", auth: "either", handle: deleteSlackInstallation },
   { method: "GET", path: "/v1/admin/model-providers", auth: "either", handle: getModelProviders },
+  { method: "GET", path: "/v1/admin/model-providers/:provider/models", auth: "either", handle: getProviderModels },
   { method: "PUT", path: "/v1/admin/model-providers/:provider", auth: "either", handle: putModelProvider },
   { method: "DELETE", path: "/v1/admin/model-providers/:provider", auth: "either", handle: deleteModelProvider },
   { method: "GET", path: "/v1/admin/harness-auth", auth: "either", handle: getHarnessAuth },

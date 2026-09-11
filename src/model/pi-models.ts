@@ -125,6 +125,11 @@ export function modelDisplayName(id: string): string {
   return REGISTRY_BY_ID.get(id)?.name ?? id;
 }
 
+export function builtinRegistryEntry(id: string): { webui: boolean; base: boolean } | undefined {
+  const entry = REGISTRY_BY_ID.get(id);
+  return entry ? { webui: entry.webui, base: entry.base } : undefined;
+}
+
 export const DEFAULT_WEBUI_MODEL_IDS: readonly string[] = MODEL_REGISTRY.filter((m) => m.webui).map((m) => m.id);
 
 export const SELECTABLE_BASE_MODELS: ReadonlyArray<{ id: string; name: string }> = MODEL_REGISTRY.filter(
