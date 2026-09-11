@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  BUILT_IN_BROWSER_ID,
+  EXTENSION_BROWSER_ID,
   browserProviderIds,
   loadBrowserProviders,
   parseBrowserProviderDoc,
@@ -64,9 +64,16 @@ test("no providers directory yields no providers, not a throw", () => {
   assert.deepEqual(loadBrowserProviders(mkdtempSync(join(tmpdir(), "empty-"))), []);
 });
 
-test("the built-in browser is always an option and always comes first", () => {
+test("the ids are the hosted providers, with no built-in prepended", () => {
   const specs = loadBrowserProviders(seedDir({ "anchor.md": GOOD }));
-  assert.deepEqual(browserProviderIds(specs), [BUILT_IN_BROWSER_ID, "anchor"]);
+  assert.deepEqual(browserProviderIds(specs), ["anchor"]);
+  assert.doesNotMatch(browserProviderIds(specs).join(","), /built-in/, "the built-in browser is gone");
+});
+
+test("the extension is offered only where the relay is configured", () => {
+  const specs = loadBrowserProviders(seedDir({ "anchor.md": GOOD }));
+  assert.deepEqual(browserProviderIds(specs, true), ["anchor", EXTENSION_BROWSER_ID]);
+  assert.deepEqual(browserProviderIds(specs, false), ["anchor"]);
 });
 
 test("the shipped provider docs each describe themselves", () => {

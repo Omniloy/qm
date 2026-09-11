@@ -3,10 +3,10 @@
 
 Each invocation connects, does one thing, and exits — so an agent stays inside
 its turn instead of handing a whole task to a background process it cannot
-steer. The browser itself outlives the call: it is a long-running Chromium
-whose CDP endpoint is recorded in a state file, so the next call reattaches.
+steer. The browser itself outlives the call: its CDP endpoint is recorded in a
+state file, so the next call reattaches.
 
-  browser.py open [--cdp URL]            start, reattach, or drive one elsewhere
+  browser.py open [--cdp URL]            attach to the person's Chrome, or one elsewhere
   browser.py go URL                      navigate, wait for load
   browser.py snapshot [--max N]          numbered interactive elements
   browser.py read [--selector S]         visible text
@@ -16,15 +16,15 @@ whose CDP endpoint is recorded in a state file, so the next call reattaches.
   browser.py scroll [--by N|--to top|bottom]
   browser.py screenshot [--path P]
   browser.py status                      is anything open, and where
-  browser.py close                       graceful shutdown
+  browser.py close                       detach from the browser
 
 Refs come from `snapshot` and are stamped onto the DOM, so `click 3` acts on the
 thing that was listed as 3. They survive until the page changes structurally;
 take a fresh snapshot after a navigation.
 
 Deliberately free of provider concepts. Every verb is plain CDP, so the same
-surface works against a local Chromium, a hosted session, or a browser someone
-is driving through an extension — the transport is a CDP URL and nothing else.
+surface works against a hosted session or a browser someone is driving through
+an extension — the transport is a CDP URL and nothing else.
 
 Speaks WebSocket over the standard library so it runs under any python3 in the
 image, with no virtualenv to activate and nothing to install.
@@ -35,11 +35,9 @@ import base64
 import json
 import os
 import re
-import shutil
 import socket
 import ssl
 import struct
-import subprocess
 import sys
 import time
 import urllib.error
@@ -48,10 +46,6 @@ import urllib.request
 
 STATE_DIR = os.path.expanduser("~/.browser")
 STATE_FILE = os.path.join(STATE_DIR, "state.json")
-PROFILE_DIR = os.path.expanduser("~/.config/chromium")
-DEBUG_PORT = 9222
-# Chromium needs a moment between "port is listening" and "a page target exists".
-LAUNCH_TIMEOUT = 45
 
 
 def die(msg, code=1):
@@ -315,68 +309,11 @@ def write_state(state):
     os.replace(tmp, STATE_FILE)
 
 
-class OpenLock:
-    """Serialise opening, so two turns cannot each start a browser.
-
-    Two concurrent `open` calls both saw an empty state file and both launched
-    a watchdog. Two watchdogs is not merely wasteful: when one decides its
-    browser is idle it closes the port the other is still using, so the second
-    turn's browser dies under it and the pane goes blank while everything
-    reports success.
-    """
-
-    def __init__(self):
-        self.fd = None
-
-    def __enter__(self):
-        os.makedirs(STATE_DIR, exist_ok=True)
-        self.fd = os.open(os.path.join(STATE_DIR, "open.lock"), os.O_CREAT | os.O_RDWR, 0o600)
-        import fcntl
-
-        # Blocking: the loser should end up reusing the winner's browser, which
-        # is exactly what it would have done had it arrived a moment later.
-        fcntl.flock(self.fd, fcntl.LOCK_EX)
-        return self
-
-    def __exit__(self, *_):
-        try:
-            import fcntl
-
-            fcntl.flock(self.fd, fcntl.LOCK_UN)
-        except Exception:
-            pass
-        try:
-            os.close(self.fd)
-        except Exception:
-            pass
-        return False
-
-
-def merge_state(**fields):
-    """Update some fields without discarding what another writer just added.
-
-    Two processes write this file: `open` records the session it claimed, and
-    the watchdog records the port once chromium is actually listening. They
-    race, and a plain write means whoever finishes second wins — which cost a
-    whole deploy cycle when `open` clobbered the port and every later call
-    reported no browser at all.
-    """
-    state = read_state() or {}
-    state.update(fields)
-    write_state(state)
-    return state
-
-
 def clear_state():
     try:
         os.remove(STATE_FILE)
     except FileNotFoundError:
         pass
-
-
-def http_json(url, timeout=5):
-    with urllib.request.urlopen(url, timeout=timeout) as r:
-        return json.loads(r.read().decode())
 
 
 # ------------------------------------------------------------------- core
@@ -420,40 +357,6 @@ def core_call_status(method, path, body=None, timeout=8):
         return None, None
 
 
-def register(state):
-    """Claim a browser with MiniOmni, before spending a gigabyte starting one.
-
-    Registered as a streamed viewer with no URL: this browser is reached
-    through MiniOmni's own authenticated endpoint, so unlike a hosted one there is no
-    link that would work for whoever found it.
-
-    Returns "ok", "full" (MiniOmni says there is no room — obey it), or "no-pane"
-    (MiniOmni could not be reached, so browse anyway without one).
-    """
-    session_id = state.get("sessionId") or os.urandom(8).hex()
-    state["sessionId"] = session_id
-    merge_state(sessionId=session_id)
-    status, payload = core_call_status("POST", "/v1/browser-sessions", {
-        "provider": "local",
-        "sessionId": session_id,
-        "viewer": "stream",
-        # The pane stops showing a browser that has gone; the watchdog below
-        # enforces the same bound on the browser itself.
-        "expiresAt": int((time.time() + 30 * 60) * 1000),
-    })
-    if status == 409:
-        return "full", (payload or {}).get("message", "there is no room for another browser right now")
-    ok = bool(status and 200 <= status < 300)
-    merge_state(registered=ok)
-    return ("ok" if ok else "no-pane"), ""
-
-
-def unregister(state):
-    sid = state.get("sessionId")
-    if sid:
-        core_call("DELETE", f"/v1/browser-sessions/{sid}")
-
-
 def control_mode(state):
     """Who has the wheel right now, as far as MiniOmni knows.
 
@@ -467,27 +370,6 @@ def control_mode(state):
     if not isinstance(r, dict):
         return "agent"
     return r.get("controlMode") or "agent"
-
-
-def page_ws_url(port):
-    """The debugger URL of the first real page target."""
-    for t in http_json(f"http://127.0.0.1:{port}/json/list"):
-        if t.get("type") == "page":
-            return t["webSocketDebuggerUrl"]
-    # A browser with no page (all tabs closed) still answers /json/new.
-    with urllib.request.urlopen(
-        urllib.request.Request(f"http://127.0.0.1:{port}/json/new?about:blank", method="PUT"),
-        timeout=5,
-    ) as r:
-        return json.loads(r.read().decode())["webSocketDebuggerUrl"]
-
-
-def alive(port):
-    try:
-        http_json(f"http://127.0.0.1:{port}/json/version", timeout=2)
-        return True
-    except Exception:
-        return False
 
 
 def attach_remote(cdp_url, timeout=60):
@@ -511,239 +393,18 @@ def attach_remote(cdp_url, timeout=60):
     return c
 
 
-def connect(fresh_page=False):
+def connect():
     """Attach to the browser this person already has open, wherever it runs."""
     state = read_state()
-    if not state:
+    if not state or not state.get("cdpUrl"):
         die("No browser is open. Run: browser.py open")
-    touch(state)
-    cdp_url = state.get("cdpUrl")
-    if cdp_url:
-        try:
-            return attach_remote(cdp_url), state
-        except SystemExit:
-            raise
-        except Exception as e:
-            clear_state()
-            die(f"The browser that was open has gone ({str(e)[:80]}). Run: browser.py open")
-    port = state.get("port", DEBUG_PORT)
-    if not alive(port):
+    try:
+        return attach_remote(state["cdpUrl"]), state
+    except SystemExit:
+        raise
+    except Exception as e:
         clear_state()
-        die("The browser that was open has gone. Run: browser.py open")
-    return CDP(page_ws_url(port)), state
-
-
-def touch(state):
-    """Record activity, so an idle reaper can tell a parked browser from a busy one.
-
-    Merges rather than writes: the watchdog owns `port` in the same file, and a
-    full write from here would erase it.
-    """
-    state["lastUsedAt"] = int(time.time())
-    merge_state(lastUsedAt=state["lastUsedAt"])
-
-
-# ------------------------------------------------------------------ launch
-
-def clear_profile_lock():
-    """Remove a profile lock left behind by a browser that no longer exists.
-
-    Chromium guards a profile with a symlink naming the host and pid holding
-    it. That guard assumes the host outlives the lock — but this profile sits
-    on a volume that survives its container, so after a restart the lock names
-    a hostname that is gone, and chromium refuses to start FOREVER: "the
-    profile appears to be in use by another Chromium process on another
-    computer".
-
-    It presents as a browser that dies instantly with no error anyone sees. The
-    same persistence that keeps sign-ins is what makes this permanent, so the
-    lock is cleared whenever nothing is actually listening on the debug port.
-    """
-    if alive(DEBUG_PORT):
-        return  # A real browser is running; its lock is legitimate.
-    for name in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
-        p = os.path.join(PROFILE_DIR, name)
-        try:
-            if os.path.islink(p) or os.path.exists(p):
-                os.remove(p)
-        except OSError:
-            pass
-
-
-def spawn_chromium(headless=True):
-    """Start chromium as a CHILD of this process, and hand back the handle.
-
-    Deliberately not detached. A chromium orphaned to PID 1 becomes a zombie
-    when it exits, because PID 1 in this computer is the exec daemon and does
-    not reap anyone — measured, after a handful of sessions, as ~14 dead
-    process entries each. They hold no memory but they do hold PIDs. The
-    watchdog owns the process instead, and waits on it.
-    """
-    exe = shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")
-    if not exe:
-        die("no chromium on PATH in this sandbox")
-    os.makedirs(PROFILE_DIR, exist_ok=True)
-    clear_profile_lock()
-    args = [
-        exe,
-        "--headless=new" if headless else "",
-        "--no-sandbox",
-        "--disable-dev-shm-usage",
-        # The profile lives on the sandbox's persistent volume, so sign-ins
-        # outlive the browser and the container.
-        f"--user-data-dir={PROFILE_DIR}",
-        f"--remote-debugging-port={DEBUG_PORT}",
-        "--window-size=1280,800",
-        "--disable-blink-features=AutomationControlled",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "about:blank",
-    ]
-    return subprocess.Popen([a for a in args if a],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-
-def wait_for_port(seconds=LAUNCH_TIMEOUT):
-    end = time.time() + seconds
-    while time.time() < end:
-        if alive(DEBUG_PORT):
-            return True
-        time.sleep(0.4)
-    return False
-
-
-# --------------------------------------------------------------- watchdog
-
-IDLE_LIMIT = 30 * 60          # seconds a browser may sit unused
-CLOSE_GRACE = 15              # how long to wait for a graceful close
-WATCH_TICK = 30               # how often the watchdog looks
-
-
-def close_browser(state, reason):
-    """Shut the browser down without losing what it learned.
-
-    Chromium batches its cookie writes, so killing the process throws away
-    exactly the sign-in someone just completed — measured, not theorised. So
-    ask it to close, wait, and only then insist.
-    """
-    port = state.get("port", DEBUG_PORT)
-    try:
-        c = CDP(page_ws_url(port), timeout=10)
-        try:
-            c.call("Browser.close")
-        finally:
-            c.close()
-    except Exception:
-        pass
-    for _ in range(CLOSE_GRACE * 2):
-        if not alive(port):
-            break
-        time.sleep(0.5)
-    if alive(port):
-        # It ignored us. Losing recent cookies beats leaking a gigabyte, but
-        # this is the unhappy path and it is deliberately last.
-        subprocess.run(["pkill", "-f", f"user-data-dir={PROFILE_DIR}"], check=False)
-        time.sleep(2)
-    unregister(state)
-    clear_state()
-    return reason
-
-
-def become_subreaper():
-    """Adopt the browser's whole process tree, not just its root.
-
-    Chromium is a dozen processes — a zygote, a GPU process, one per renderer —
-    and they are children of the one we start, not of us. When it exits they
-    are re-parented to PID 1, which in this computer is the exec daemon and
-    reaps nobody, so each session left a handful of dead entries behind.
-    Becoming a subreaper makes them ours to bury instead.
-    """
-    try:
-        import ctypes
-
-        PR_SET_CHILD_SUBREAPER = 36
-        ctypes.CDLL("libc.so.6", use_errno=True).prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0)
-    except Exception:
-        # Not fatal, and not worth failing a browser over: without it the only
-        # cost is a few dead process entries per session.
-        pass
-
-
-def reap_orphans():
-    while True:
-        try:
-            pid, _ = os.waitpid(-1, os.WNOHANG)
-        except ChildProcessError:
-            return
-        except Exception:
-            return
-        if pid == 0:
-            return
-
-
-def watchdog(headless=True):
-    """Own the browser: start it, outlive it, and close it when it is forgotten.
-
-    This process is the browser's parent for its whole life. That is what keeps
-    it from becoming a zombie, and it is also the only thing that can close it
-    gracefully — MiniOmni can forget a session, but only something inside this
-    computer can ask Chromium to flush its cookies and stop.
-    """
-    become_subreaper()
-    started = time.time()
-    proc = spawn_chromium(headless)
-    if not wait_for_port():
-        proc.kill()
-        return
-    # Stamp lastUsedAt as this browser starts. Without it the watchdog would
-    # inherit whatever a previous session left in the file and could judge a
-    # brand-new browser idle before anyone has touched it — observed: the
-    # browser was reaped seconds after opening, and the pane sat on "waiting"
-    # forever while chromium was still running.
-    merge_state(provider="local", port=DEBUG_PORT, lastUsedAt=int(time.time()))
-
-    try:
-        while True:
-            time.sleep(WATCH_TICK)
-            # Renderers come and go all session; bury each as it exits rather
-            # than letting them pile up while the browser is still open.
-            reap_orphans()
-            if proc.poll() is not None:
-                # It went on its own — a crash, or someone closed it directly.
-                clear_state()
-                return
-            state = read_state()
-            if not state:
-                break
-            # Never idle before it has had a chance to be used: a stale
-            # timestamp from a previous session must not condemn this browser.
-            last = max(state.get("lastUsedAt", 0), started)
-            if time.time() - last >= IDLE_LIMIT:
-                close_browser(state, "idle")
-                break
-    finally:
-        # Waiting is the point: an unwaited child left behind by this process
-        # is exactly the zombie this structure exists to avoid.
-        try:
-            proc.wait(timeout=CLOSE_GRACE)
-        except Exception:
-            proc.kill()
-            try:
-                proc.wait(timeout=5)
-            except Exception:
-                pass
-        # Chromium's helpers land here once it is gone, having been inherited
-        # rather than orphaned. Give them a moment to exit, then bury them.
-        for _ in range(10):
-            reap_orphans()
-            time.sleep(0.3)
-
-
-def start_watchdog(headless=True):
-    subprocess.Popen(
-        [sys.executable, os.path.abspath(__file__), "watch"] + ([] if headless else ["--headful"]),
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
-    )
+        die(f"The browser that was open has gone ({str(e)[:80]}). Run: browser.py open")
 
 
 # ------------------------------------------------------------------- verbs
@@ -986,26 +647,19 @@ KEYS = {
 
 def main():
     p = argparse.ArgumentParser(prog="browser.py", add_help=True)
-    # Set by MiniOmni when it relays what a person did in the pane. Their input must
-    # not be refused by the check that stops the agent driving while they hold
-    # the wheel — they ARE the wheel.
-    p.add_argument("--from-pane", action="store_true", help=argparse.SUPPRESS)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    po = sub.add_parser("open", help="start or reattach to a browser")
-    po.add_argument("--force-built-in", action="store_true",
-                    help="use the built-in browser even when another was chosen")
+    po = sub.add_parser("open", help="attach to the person's Chrome, or reattach")
     pp = sub.add_parser("pane", help="show a browser you started elsewhere in the person's pane")
     pp.add_argument("--provider", default="", help="the provider id, as named by BROWSE_PROVIDER")
     pp.add_argument("--session", default="", help="that provider's session id")
     pp.add_argument("--url", default="", help="the provider's viewer URL — never the CDP URL")
     pp.add_argument("--minutes", type=int, default=30, help="how long the pane should expect it to live")
     pp.add_argument("--end", action="store_true", help="take it out of the pane again")
-    po.add_argument("--headful", action="store_true")
     # Drive a browser that is already running somewhere else, given its CDP
     # endpoint. Every verb behaves identically against it — a CDP URL is plain
     # protocol, not a vendor concept, which is what keeps this surface honest.
-    po.add_argument("--cdp", help="attach to an existing browser instead of starting one")
+    po.add_argument("--cdp", help="attach to an existing browser given its CDP endpoint")
 
     pg = sub.add_parser("go"); pg.add_argument("url")
     ps = sub.add_parser("snapshot"); ps.add_argument("--max", type=int, default=60)
@@ -1013,27 +667,18 @@ def main():
     pr.add_argument("--selector"); pr.add_argument("--max", type=int, default=6000)
     pc = sub.add_parser("click")
     pc.add_argument("ref", nargs="?", type=int); pc.add_argument("--selector")
-    # Viewport coordinates, for a click a person made in the pane. Refs are for
-    # the agent, which can see the snapshot; a person clicks a picture.
     pc.add_argument("--at", help="X,Y in page coordinates")
     pt = sub.add_parser("type")
     pt.add_argument("text", nargs="?"); pt.add_argument("--into", type=int)
     pt.add_argument("--into-selector"); pt.add_argument("--enter", action="store_true")
-    # What a person typed in the pane arrives base64-encoded so it never has to
-    # survive a shell. Their keystrokes are arbitrary text; interpolating that
-    # into a command line is how a password with a quote in it becomes an
+    # Base64 so arbitrary text never has to survive a shell — interpolating a
+    # password with a quote in it into a command line is how it becomes an
     # injection.
     pt.add_argument("--text-b64")
     pk = sub.add_parser("key"); pk.add_argument("name")
     psc = sub.add_parser("scroll")
     psc.add_argument("--by", type=int, default=600); psc.add_argument("--to")
     psh = sub.add_parser("screenshot"); psh.add_argument("--path", default="/tmp/page.jpg")
-    pf = sub.add_parser("frame", help="one JPEG plus its viewport size, as JSON on stdout")
-    # Sized for the pane, which renders about 730px wide. Measured on a real
-    # article: 800px/q55 is 42 KB, where full resolution is 87 KB for detail
-    # that is scaled away before anyone sees it.
-    pf.add_argument("--quality", type=int, default=55)
-    pf.add_argument("--width", type=int, default=800)
     sub.add_parser("status")
     pdl = sub.add_parser("download", help="save a file into the workspace without downloading it in the browser")
     pdl.add_argument("url", nargs="?", default="")
@@ -1057,17 +702,15 @@ def main():
     pn.add_argument("--for", dest="seconds", type=float, default=60.0, help="how many seconds to watch")
     pn.add_argument("--bodies", action="store_true", help="also capture response bodies (e.g. a login token)")
     sub.add_parser("close")
-    pw = sub.add_parser("watch", help=argparse.SUPPRESS)
-    pw.add_argument("--headful", action="store_true")
 
     a = p.parse_args()
 
     # ------------------------------------------------------------ open
     if a.cmd == "pane":
-        # A browser running on someone else's hardware cannot be streamed, but
-        # it can still be shown: the pane embeds the provider's own viewer.
-        # Without this the person is handed a bare link in the conversation and
-        # has to leave the app to watch their own browser work.
+        # A hosted browser runs on someone else's hardware; it is shown by
+        # embedding the provider's own viewer. Without this the person is handed
+        # a bare link in the conversation and has to leave the app to watch
+        # their own browser work.
         if a.end:
             if not a.session:
                 die("Say which session to remove: pane --end --session ID")
@@ -1088,6 +731,10 @@ def main():
         if not (status and 200 <= status < 300):
             die(f"MiniOmni did not accept it ({status}): {(payload or {}).get('message', 'no reason given')}\n"
                 "Browsing still works — say the pane is unavailable and give them the viewer link instead.")
+        state = read_state() or {}
+        state["sessionId"] = a.session
+        state["registered"] = True
+        write_state(state)
         print("Showing in the pane. They can watch it and take control there.")
         return
 
@@ -1095,17 +742,15 @@ def main():
         # The person's own Chrome, chosen in the app, is not a hosted provider
         # with a doc and a create step: the extension is already running it and
         # the relay is already reachable. Resolve it to a --cdp attach BEFORE
-        # anything else, so plain `open` just works — and before the local
-        # launch path below, which is the bug that sent it to the sandbox
-        # browser instead.
-        chosen = "" if a.force_built_in else os.environ.get("BROWSE_PROVIDER", "").strip()
+        # anything else, so plain `open` just works.
+        chosen = os.environ.get("BROWSE_PROVIDER", "").strip()
         via_extension = chosen == "extension" and not a.cdp
         if via_extension:
             relay = os.environ.get("QM_RELAY_URL", "").strip()
             if not relay:
                 die("This person chose their own Chrome, but no relay URL reached this turn.\n"
                     "Their extension may not be connected. Tell them to open the MiniOmni Browser Bridge\n"
-                    "extension and share a tab, or run: open --force-built-in to use the built-in one.")
+                    "extension and share a tab, then run: open")
             a.cdp = relay
 
         if a.cdp:
@@ -1121,87 +766,37 @@ def main():
                     f"({str(e)[:80]}).\n"
                     "Ask them to open the MiniOmni Browser Bridge extension and press Share this tab,\n"
                     "then run: open\n"
-                    "Do NOT quietly switch to the built-in browser: it has none of their sign-ins, "
+                    "Do NOT quietly attach to a different browser: it has none of their sign-ins, "
                     "and a task aimed at their own browser will fail in a way that looks like your "
-                    "mistake rather than a disconnected extension.\n"
-                    "If they would rather use the built-in browser anyway, they can say so and you "
-                    "run: open --force-built-in")
+                    "mistake rather than a disconnected extension.")
             c.close()
-            write_state({"provider": "remote", "cdpUrl": a.cdp,
-                         "startedAt": int(time.time()), "lastUsedAt": int(time.time())})
+            write_state({"provider": "remote", "cdpUrl": a.cdp, "startedAt": int(time.time())})
             print("Attached to the browser you pointed at. Every verb works the same.")
             return
 
-        # A hosted provider is different: it needs its own doc
-        # and a create step first. Saying so here is the only reliable place —
-        # a doc read top-down gets acted on before its later sections, and by
-        # then the built-in browser is already running.
-        if chosen and chosen != "built-in" and re.fullmatch(r"[a-z][a-z0-9-]*", chosen):
-            die(f"This person chose the {chosen} browser, not the built-in one.\n"
+        # No extension relay and no --cdp endpoint: there is nothing to attach
+        # to. Say how to connect one rather than launching anything, because
+        # there is nothing to launch.
+        if chosen and chosen != "extension" and re.fullmatch(r"[a-z][a-z0-9-]*", chosen):
+            die(f"This person chose the {chosen} browser.\n"
                 f"Read skills/browse/providers/{chosen}.md, create the browser it describes,\n"
-                f"then come back and run: open --cdp \"$CDP_URL\".\n"
-                "To use the built-in browser anyway (say why), run: open --force-built-in")
-
-        # Under the lock, because two turns opening at once each used to start
-        # their own browser and then reap each other's.
-        with OpenLock():
-            state = read_state()
-            if state and state.get("cdpUrl") and a.force_built_in:
-                stale = state.get("cdpUrl", "")
-                clear_state()
-                state = None
-                if stale and stale != os.environ.get("QM_RELAY_URL", "").strip():
-                    print("Let go of the browser that was open elsewhere. It is still running and "
-                          "billing until its own timeout — follow your provider doc's Clean up step.")
-            if state and (state.get("cdpUrl") or alive(state.get("port", DEBUG_PORT))):
-                touch(state)
-                print(f"A browser is already open (provider={state.get('provider')}). Reusing it.")
-                return
-            # Claim first, launch second. A browser costs about a gigabyte, and
-            # being told "no room" after spending it helps nobody.
-            write_state({"provider": "local", "startedAt": int(time.time()),
-                         "lastUsedAt": int(time.time())})
-            state = read_state() or {}
-            outcome, why = register(state)
-            if outcome == "full":
-                clear_state()
-                die(f"No browser was opened: {why}\n"
-                    "Nothing is broken and nothing is lost — say so, and offer to try again shortly.")
-
-            # The watchdog starts the browser and stays its parent for life. It
-            # records the port itself once chromium is listening, so nothing here
-            # writes the whole file again — that race cost a deploy cycle.
-            start_watchdog(headless=not a.headful)
-            if not wait_for_port():
-                clear_state()
-                die(f"chromium did not start within {LAUNCH_TIMEOUT}s")
-            merge_state(lastUsedAt=int(time.time()))
-
-        print(f"Browser open (local chromium, profile {PROFILE_DIR}).")
-        print("Sign-ins here persist between sessions.")
-        print("The person can see it in the pane below the conversation, and take control."
-              if outcome == "ok" else
-              # Worth saying rather than swallowing: the browser works, but
-              # nobody can watch it, so "press Take control" is not advice to give.
-              "MiniOmni did not accept the session, so there is no pane — the person cannot watch "
-              "or take over. Browsing still works; say so if a sign-in comes up.")
-        return
-
-    if a.cmd == "watch":
-        watchdog(headless=not a.headful)
-        return
+                "then come back and run: open --cdp \"$CDP_URL\".")
+        die("No browser is connected for this person.\n"
+            "Their own Chrome: ask them to open the MiniOmni Browser Bridge extension and share a tab,\n"
+            "then run: open.\n"
+            "A hosted browser: read its provider doc under skills/browse/providers/, create it,\n"
+            "then run: open --cdp \"$CDP_URL\".")
 
     # ------------------------------------------------------------ status
     if a.cmd == "status":
         state = read_state()
-        if not state or not (state.get("cdpUrl") or alive(state.get("port", DEBUG_PORT))):
+        if not state or not state.get("cdpUrl"):
             print("No browser is open.")
             return
         c, _ = connect()
         try:
             info = json.loads(c.eval("JSON.stringify({url: location.href, title: document.title})"))
-            idle = int(time.time()) - state.get("lastUsedAt", 0)
-            print(f"open (provider={state.get('provider')}, idle {idle}s) — "
+            print(f"open (provider={state.get('provider')}) — "
                   f"{info['title'][:60]} ({info['url'][:120]})")
         finally:
             c.close()
@@ -1308,8 +903,7 @@ def main():
     if a.cmd in ("tabs", "tab"):
         state = read_state()
         if not state or not state.get("cdpUrl"):
-            die("Moving between tabs is for the person's own Chrome, through the extension.\n"
-                "The built-in browser has one page and `go` is how you move it.")
+            die("Moving between tabs is for the person's own Chrome, through the extension.")
         c, _ = connect()
         try:
             if a.cmd == "tabs":
@@ -1335,25 +929,15 @@ def main():
     # ------------------------------------------------------------ close
     if a.cmd == "close":
         state = read_state()
-        if not state:
-            print("Nothing to close.")
-            return
-        if state.get("cdpUrl"):
-            # Not ours to shut down, and pretending otherwise would leave a
-            # browser running somewhere while the person believes it stopped.
-            unregister(state)
-            clear_state()
-            print("Detached. That browser is running somewhere else — follow your provider "
-                  "doc's Clean up step to actually stop it, or it bills until its own timeout.")
-            return
-        if not alive(state.get("port", DEBUG_PORT)):
+        if not state or not state.get("cdpUrl"):
             clear_state()
             print("Nothing to close.")
             return
-        # Graceful, not a kill: chromium batches cookie writes, so a SIGKILL
-        # here discards the sign-in someone just completed.
-        close_browser(state, "asked")
-        print("Browser closed. Sign-ins were saved.")
+        # Not ours to shut down, and pretending otherwise would leave a
+        # browser running somewhere while the person believes it stopped.
+        clear_state()
+        print("Detached. That browser is running somewhere else — follow your provider "
+              "doc's Clean up step to actually stop it, or it bills until its own timeout.")
         return
 
     c, state = connect()
@@ -1361,7 +945,7 @@ def main():
     # Two writers in one browser is how a half-finished sign-in gets clicked
     # away underneath someone. One check per call is all this needs — the calls
     # are short, so there is no long action to interrupt and nothing to park.
-    if a.cmd in ("go", "click", "type", "key", "scroll") and not a.from_pane:
+    if a.cmd in ("go", "click", "type", "key", "scroll"):
         if control_mode(state) == "human_control":
             c.close()
             die("The person has taken control of this browser. Wait for them to hand it back "
@@ -1460,32 +1044,6 @@ def main():
                 f.write(raw)
             print(f"{a.path} ({len(raw) // 1024} KB)")
 
-        elif a.cmd == "frame":
-            # For the pane, not for the agent. The viewport size travels with
-            # the image because the pane scales it to fit, and a click has to
-            # be mapped back to page coordinates — guessing that from the JPEG
-            # alone puts every click in the wrong place.
-            size = json.loads(c.eval(
-                "JSON.stringify({w: innerWidth, h: innerHeight, url: location.href,"
-                " title: document.title, sx: scrollX, sy: scrollY})"))
-            # Downscale on the way out. The pane shows this in a box a few
-            # hundred pixels wide, so sending full-resolution pixels spends
-            # bandwidth on detail that is thrown away before anyone sees it.
-            scale = min(1.0, a.width / size["w"]) if size["w"] else 1.0
-            # The clip is in PAGE coordinates, not viewport ones, so it has to
-            # follow the scroll. Clipping at the document origin while the
-            # viewport sits further down captures an unpainted region: the pane
-            # went white the moment anyone scrolled, and a real screenshot of
-            # 43KB collapsed to 2KB of blank.
-            r = c.call("Page.captureScreenshot", format="jpeg", quality=a.quality,
-                       optimizeForSpeed=True,
-                       clip={"x": size["sx"], "y": size["sy"],
-                             "width": size["w"], "height": size["h"],
-                             "scale": round(scale, 4)})
-            sys.stdout.write(json.dumps({
-                "w": size["w"], "h": size["h"], "url": size["url"],
-                "title": size["title"], "jpeg": r["data"],
-            }))
         elif a.cmd == "cookies":
             urls = [a.url] if a.url else None
             cookies = c.cookies(urls)

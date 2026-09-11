@@ -268,8 +268,8 @@ const FAMILIES: AgentApiFamily[] = [
       (p === "/v1/browser-sessions" && m === "POST") ||
       (p === "/v1/browser-sessions/current" && m === "GET") ||
       (/^\/v1\/browser-sessions\/[^/]+$/.test(p) && m === "DELETE") ||
-      (/^\/v1\/browser-sessions\/[^/]+\/(state|frame)$/.test(p) && m === "GET") ||
-      (/^\/v1\/browser-sessions\/[^/]+\/(handoff|input)$/.test(p) && m === "POST"),
+      (/^\/v1\/browser-sessions\/[^/]+\/state$/.test(p) && m === "GET") ||
+      (/^\/v1\/browser-sessions\/[^/]+\/handoff$/.test(p) && m === "POST"),
     guidance:
       "The browser a person has open. It is logged into their real accounts, so it is addressable only by its owner and never by naming someone else. Registering and reading are yours; handing control over is the person's decision, and a trigger-fired turn may not change anything here at all.",
     routes: [
@@ -277,7 +277,7 @@ const FAMILIES: AgentApiFamily[] = [
         method: "POST",
         path: "/v1/browser-sessions",
         summary:
-          "record a browser you just opened with {provider,sessionId,expiresAt} and either viewer:'iframe' with a liveViewUrl or viewer:'stream' with none — never the CDP URL, which carries the provider key",
+          "record a browser you just opened with {provider,sessionId,expiresAt} and viewer:'iframe' with a liveViewUrl — never the CDP URL, which carries the provider key",
       },
       { method: "GET", path: "/v1/browser-sessions/current", summary: "the asking person's open browser, if any" },
       { method: "GET", path: "/v1/browser-sessions/:id/state", summary: "who is driving, and until when" },
@@ -285,12 +285,6 @@ const FAMILIES: AgentApiFamily[] = [
         method: "POST",
         path: "/v1/browser-sessions/:id/handoff",
         summary: "hand the wheel to the person, or take it back once they give it up",
-      },
-      { method: "GET", path: "/v1/browser-sessions/:id/frame", summary: "the latest frame of a streamed browser" },
-      {
-        method: "POST",
-        path: "/v1/browser-sessions/:id/input",
-        summary: "drive a streamed browser with {kind:'click'|'type'|'key'|'scroll'} and that kind's fields",
       },
       { method: "DELETE", path: "/v1/browser-sessions/:id", summary: "end the session" },
     ],

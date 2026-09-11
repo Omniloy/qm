@@ -7,7 +7,7 @@ import {
   type GrantMode,
 } from "../../credentials/keychain.ts";
 import { parseScopeId, personalScope } from "../../types.ts";
-import { BUILT_IN_BROWSER_ID, EXTENSION_BROWSER_ID, browserProviderIds } from "../../connectors/browser-providers.ts";
+import { EXTENSION_BROWSER_ID, browserProviderIds } from "../../connectors/browser-providers.ts";
 import { principalDestination } from "../../reach/reach.ts";
 import { samePerson } from "../../directory/person.ts";
 import { sendJson } from "../http.ts";
@@ -217,8 +217,8 @@ async function handleKeychain(ctx: ApiCtx): Promise<void> {
           ...(sharedTab ? { sharedTabTitle: sharedTab } : {}),
         });
       }
-      const activeBrowser =
-        (await deps.config?.getBrowserProviderDurable(personalScope(actorId))) ?? BUILT_IN_BROWSER_ID;
+      const stored = await deps.config?.getBrowserProviderDurable(personalScope(actorId));
+      const activeBrowser = stored && stored !== "built-in" ? stored : null;
       return sendJson(res, 200, {
         credentials,
         connectorCredentials,
@@ -241,6 +241,17 @@ async function handleKeychain(ctx: ApiCtx): Promise<void> {
 
     if (method === "POST" && pathname === "/v1/keychain/browser") {
       const wanted = (body as { provider?: unknown }).provider;
+      if (wanted === "") {
+        if (!deps.config) return sendJson(res, 404, { error: "not_found" });
+        deps.config.setBrowserProvider(personalScope(actorId), null);
+        audit(deps, {
+          principalId: actorId,
+          action: "keychain.browser",
+          resource: "org-default",
+          scopeLabel: capability.scopeId,
+        });
+        return sendJson(res, 200, { ok: true, activeBrowser: null });
+      }
       const allowed = browserProviderIds(deps.browserProviders ?? [], Boolean(deps.relayPublicUrl));
       if (typeof wanted !== "string" || !allowed.includes(wanted)) {
         return sendJson(res, 400, {
@@ -263,9 +274,7 @@ async function handleKeychain(ctx: ApiCtx): Promise<void> {
           });
         }
       }
-      // Built-in is the absence of a choice, so it clears rather than stores —
-      // otherwise a person could never fall back to an org default again.
-      deps.config.setBrowserProvider(personalScope(actorId), wanted === BUILT_IN_BROWSER_ID ? null : wanted);
+      deps.config.setBrowserProvider(personalScope(actorId), wanted);
       audit(deps, {
         principalId: actorId,
         action: "keychain.browser",
