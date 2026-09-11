@@ -972,6 +972,32 @@
         margin-left: 8px;
         vertical-align: middle;
       }
+      #model-catalog-rows tr.catalog-group td {
+        font-weight: 600;
+        padding-top: 16px;
+        border-bottom: 1px solid var(--line);
+      }
+      #model-catalog-rows tr.catalog-group .muted {
+        font-weight: 400;
+        margin-left: 8px;
+      }
+      #model-catalog-rows .picker-cell {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+      #model-catalog-rows .catalog-reorder {
+        display: inline-flex;
+        gap: 2px;
+      }
+      #model-catalog-rows .catalog-reorder button {
+        padding: 0 6px;
+        line-height: 1.5;
+      }
+      #model-catalog-rows tr.catalog-search input {
+        width: 100%;
+        box-sizing: border-box;
+      }
       .history-empty-scopes {
         display: flex;
         flex-wrap: wrap;
@@ -7558,6 +7584,8 @@
       let webuiConfiguredIds = [];
       let webuiDefaultIds = [];
       const modelDiscovery = {};
+      const catalogSearch = {};
+      let activeCatalogSearch = null;
       const modelStatusOf = (id) => modelClassifications[id] || "active";
       const providerLabelFor = (provider) =>
         MODEL_PROVIDER_LABELS[provider] || connectorName(provider);
@@ -7634,6 +7662,31 @@
         );
         $("custom-provider-save").scrollIntoView({ behavior: "smooth", block: "center" });
       }
+      function catalogProviderOf(id) {
+        const found = modelCatalogEntries.find((model) => model.id === id);
+        return found ? found.provider : undefined;
+      }
+      async function reorderWebuiModel(id, direction) {
+        const base = pickerBaseIds();
+        const provider = catalogProviderOf(id);
+        const sameProvider = base.filter((other) => catalogProviderOf(other) === provider);
+        const pos = sameProvider.indexOf(id);
+        const neighbor = direction === "up" ? sameProvider[pos - 1] : sameProvider[pos + 1];
+        if (!neighbor) return;
+        const next = [...base];
+        const from = next.indexOf(id);
+        const to = next.indexOf(neighbor);
+        [next[from], next[to]] = [next[to], next[from]];
+        setStatus("st-model-catalog", "Reordering…", "saving", true);
+        const r = await api("PUT", "/api/scopes/" + encodeURIComponent(orgScope()) + "/webui-models", { ids: next });
+        if (!r.ok) {
+          setStatus("st-model-catalog", r.data?.message || "Could not reorder the picker.", "err", true);
+          await loadModelCatalog();
+          return;
+        }
+        await loadModelCatalog();
+        setStatus("st-model-catalog", "Order saved.", "ok");
+      }
       function renderModelCatalog() {
         const rows = $("model-catalog-rows");
         rows.textContent = "";
@@ -7647,9 +7700,11 @@
               newModels.set(model.id, { ...model, provider: result.provider });
           });
         });
-        const pickerIds = new Set(pickerBaseIds());
+        const base = pickerBaseIds();
+        const pickerRank = new Map(base.map((id, index) => [id, index]));
+        const pickerIds = new Set(base);
         $("model-catalog-empty").hidden = modelCatalogEntries.length + newModels.size > 0;
-        modelCatalogEntries.forEach((model) => {
+        const rowFor = (model, reorder) => {
           const status = modelStatusOf(model.id);
           const tr = document.createElement("tr");
           if (status === "hidden" || status === "deprecated") tr.className = "retired";
@@ -7673,11 +7728,33 @@
           srcTd.textContent = BUILTIN_MODEL_PROVIDERS.includes(model.provider) ? "Built-in" : "Custom";
           tr.appendChild(srcTd);
           const pickerTd = document.createElement("td");
+          const pickerCell = document.createElement("span");
+          pickerCell.className = "picker-cell";
           const check = document.createElement("input");
           check.type = "checkbox";
           check.checked = pickerIds.has(model.id);
           check.onchange = () => void toggleWebuiModel(model.id, check.checked);
-          pickerTd.appendChild(check);
+          pickerCell.appendChild(check);
+          if (reorder && (reorder.up || reorder.down)) {
+            const controls = document.createElement("span");
+            controls.className = "catalog-reorder";
+            const up = document.createElement("button");
+            up.type = "button";
+            up.textContent = "↑";
+            up.title = "Move up";
+            up.disabled = !reorder.up;
+            up.onclick = () => void reorderWebuiModel(model.id, "up");
+            const down = document.createElement("button");
+            down.type = "button";
+            down.textContent = "↓";
+            down.title = "Move down";
+            down.disabled = !reorder.down;
+            down.onclick = () => void reorderWebuiModel(model.id, "down");
+            controls.appendChild(up);
+            controls.appendChild(down);
+            pickerCell.appendChild(controls);
+          }
+          pickerTd.appendChild(pickerCell);
           tr.appendChild(pickerTd);
           const classTd = document.createElement("td");
           const select = document.createElement("select");
@@ -7714,7 +7791,78 @@
             actionTd.appendChild(edit);
           }
           tr.appendChild(actionTd);
-          rows.appendChild(tr);
+          return tr;
+        };
+        const groupHeader = (provider, pickedCount, availableCount, collapsed) => {
+          const tr = document.createElement("tr");
+          tr.className = "catalog-group";
+          const td = document.createElement("td");
+          td.colSpan = 7;
+          td.textContent = providerLabelFor(provider).split(" —")[0];
+          const note = document.createElement("span");
+          note.className = "muted";
+          note.textContent =
+            pickedCount + " in picker" + (collapsed ? " · " + availableCount + " more available" : "");
+          td.appendChild(note);
+          tr.appendChild(td);
+          return tr;
+        };
+        const providers = [];
+        const seenProviders = new Set();
+        modelCatalogEntries.forEach((model) => {
+          if (!seenProviders.has(model.provider)) {
+            seenProviders.add(model.provider);
+            providers.push(model.provider);
+          }
+        });
+        const providerRank = (provider) =>
+          BUILTIN_MODEL_PROVIDERS.includes(provider)
+            ? BUILTIN_MODEL_PROVIDERS.indexOf(provider)
+            : BUILTIN_MODEL_PROVIDERS.length;
+        providers.sort((a, b) => providerRank(a) - providerRank(b) || String(a).localeCompare(String(b)));
+        providers.forEach((provider) => {
+          const groupModels = modelCatalogEntries.filter((model) => model.provider === provider);
+          const picked = groupModels
+            .filter((model) => pickerIds.has(model.id))
+            .sort((a, b) => pickerRank.get(a.id) - pickerRank.get(b.id));
+          const unpicked = groupModels.filter((model) => !pickerIds.has(model.id));
+          const collapsed = provider === "openrouter";
+          rows.appendChild(groupHeader(provider, picked.length, unpicked.length, collapsed));
+          picked.forEach((model, index) =>
+            rows.appendChild(rowFor(model, { up: index > 0, down: index < picked.length - 1 })),
+          );
+          if (collapsed) {
+            const searchTr = document.createElement("tr");
+            searchTr.className = "catalog-search";
+            const searchTd = document.createElement("td");
+            searchTd.colSpan = 7;
+            const input = document.createElement("input");
+            input.type = "search";
+            input.placeholder =
+              "Search " + unpicked.length + " more " + providerLabelFor(provider).split(" —")[0] + " models to add…";
+            input.value = catalogSearch[provider] || "";
+            input.dataset.searchProvider = provider;
+            input.oninput = () => {
+              catalogSearch[provider] = input.value;
+              activeCatalogSearch = provider;
+              renderModelCatalog();
+            };
+            searchTd.appendChild(input);
+            searchTr.appendChild(searchTd);
+            rows.appendChild(searchTr);
+            const query = (catalogSearch[provider] || "").trim().toLowerCase();
+            if (query) {
+              unpicked
+                .filter(
+                  (model) =>
+                    model.id.toLowerCase().includes(query) || (model.name || "").toLowerCase().includes(query),
+                )
+                .slice(0, 25)
+                .forEach((model) => rows.appendChild(rowFor(model, null)));
+            }
+          } else {
+            unpicked.forEach((model) => rows.appendChild(rowFor(model, null)));
+          }
         });
         newModels.forEach((model) => {
           const tr = document.createElement("tr");
@@ -7747,6 +7895,14 @@
           tr.appendChild(actionTd);
           rows.appendChild(tr);
         });
+        if (activeCatalogSearch) {
+          const focused = rows.querySelector('input[data-search-provider="' + activeCatalogSearch + '"]');
+          activeCatalogSearch = null;
+          if (focused) {
+            focused.focus();
+            focused.setSelectionRange(focused.value.length, focused.value.length);
+          }
+        }
       }
       async function discoverProviderModels(provider) {
         const button = document.querySelector('[data-discover="' + provider + '"]');
