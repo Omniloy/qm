@@ -945,6 +945,126 @@ test("manifest: in the owner's personal scope their own credentials need no gran
   assert.match(channel, /no grant for this conversation/);
 });
 
+describe("fill-only browser credentials", () => {
+  const saveFill = (k: Keychain, owner = "U1", origin = "https://app.example.com/login") =>
+    k.save({ ownerId: owner, service: "example", secret: "hunter2", origin, fill: true });
+
+  it("a fill credential never reaches the per-turn env (materializeOwn), and carries no env key", async () => {
+    const k = kc();
+    const meta = await saveFill(k);
+    assert.equal(meta.managed, "fill");
+    assert.equal(meta.origin, "https://app.example.com/login");
+    assert.equal(meta.envKey, undefined, "a fill credential must never be given an env key");
+
+    const env = await k.materializeOwn("U1");
+    assert.equal(env.length, 0, "the headline invariant: fill creds are excluded from the bulk per-turn env");
+    assert.ok(!JSON.stringify(env).includes("hunter2"));
+
+    const standing = await k.materializeStanding("personal:U1");
+    assert.ok(!JSON.stringify(standing).includes("hunter2"), "and from standing env injection");
+    const files = await k.materializeOwnFiles("U1");
+    assert.ok(!JSON.stringify(files).includes("hunter2"), "and from file materialization");
+  });
+
+  it("a fill credential is visible and deletable in the owner's keychain list", async () => {
+    const k = kc();
+    const meta = await saveFill(k);
+    const listed = await k.listByOwner("U1");
+    assert.ok(
+      listed.some((c) => c.id === meta.id),
+      "fill creds appear in listByOwner so the person can manage them",
+    );
+    assert.ok(!JSON.stringify(listed).includes("hunter2"), "list is metadata only");
+    assert.ok((await k.listAllMetadata()).some((c) => c.id === meta.id));
+    assert.equal(await k.remove("U1", meta.id), true, "the owner can delete a fill credential");
+    assert.equal((await k.listByOwner("U1")).length, 0);
+  });
+
+  it("a fill credential is not grantable and cannot be asked for", async () => {
+    const k = kc();
+    const meta = await saveFill(k);
+    await assert.rejects(
+      k.createGrant({
+        credentialId: meta.id,
+        ownerId: "U1",
+        audienceScopeId: "channel:C1",
+        mode: "once",
+        purpose: "x",
+      }),
+      (e: KeychainError) => e.status === 403,
+      "fill creds are owner-fill-only and never grantable",
+    );
+    await assert.rejects(
+      k.createAsk({ credentialId: meta.id, requesterId: "U2", requesterScopeId: "channel:C1", purpose: "x" }),
+      (e: KeychainError) => e.status === 403,
+      "fill creds cannot be asked for",
+    );
+  });
+
+  it("a fill credential cannot be pulled into env by id via materializeOwnById", async () => {
+    const k = kc();
+    const meta = await saveFill(k);
+    await assert.rejects(
+      k.materializeOwnById("U1", meta.id, "personal:U1"),
+      (e: KeychainError) => e.status === 403,
+      "the own-use env path must refuse a fill credential",
+    );
+  });
+
+  it("materializeFill returns the value and pinned origin for the owner in their personal conversation", async () => {
+    const k = kc();
+    const meta = await saveFill(k);
+    const filled = await k.materializeFill("U1", meta.id, "personal:U1");
+    assert.deepEqual(filled, { value: "hunter2", origin: "https://app.example.com/login" });
+
+    await assert.rejects(
+      k.materializeFill("U1", meta.id, "channel:C1"),
+      (e: KeychainError) => e.status === 403,
+      "fill only in the owner's own personal conversation",
+    );
+    await assert.rejects(
+      k.materializeFill("U2", meta.id, "personal:U2"),
+      (e: KeychainError) => e.status === 404,
+      "someone else's fill credential reads as unknown",
+    );
+  });
+
+  it("materializeFill refuses an ordinary (non-fill) credential", async () => {
+    const k = kc();
+    const cred = await k.save({ ownerId: "U1", service: "npm", secret: "npm_tok", envKey: "NPM_TOKEN" });
+    await assert.rejects(
+      k.materializeFill("U1", cred.id, "personal:U1"),
+      (e: KeychainError) => e.status === 403,
+      "the fill endpoint can never dump an arbitrary env secret",
+    );
+  });
+
+  it("materializeFill refuses an expired fill credential", async () => {
+    const k = kc();
+    const meta = await k.save({
+      ownerId: "U1",
+      service: "example",
+      secret: "hunter2",
+      origin: "https://app.example.com/login",
+      fill: true,
+      expiresAt: Date.now() - 1,
+    });
+    await assert.rejects(k.materializeFill("U1", meta.id, "personal:U1"), (e: KeychainError) => e.status === 410);
+  });
+
+  it("save refuses a fill credential without a valid http(s) origin", async () => {
+    const k = kc();
+    await assert.rejects(
+      k.save({ ownerId: "U1", service: "example", secret: "x", fill: true }),
+      (e: KeychainError) => e.status === 400,
+    );
+    await assert.rejects(
+      k.save({ ownerId: "U1", service: "example", secret: "x", origin: "ftp://nope", fill: true }),
+      (e: KeychainError) => e.status === 400,
+    );
+  });
+});
+
 const SECRET = "keychain-route-secret".repeat(3);
 
 describe("/v1/keychain routes (capability-authed)", () => {
@@ -1329,6 +1449,87 @@ describe("/v1/keychain routes (capability-authed)", () => {
     const script = await used.text();
     assert.match(script, /export GLAB_CONFIG_DIR="\$__kc_dir\/.config\/glab-cli"/);
     assert.ok(!script.includes("glpat_own"), "raw file contents stay base64-encoded in the sourceable script");
+  });
+
+  describe("POST /v1/keychain/fill", () => {
+    const ORIGIN = "https://portal.example.com/login";
+    const fillCredFor = async (owner: string) =>
+      (
+        await built.keychain!.save({
+          ownerId: owner,
+          service: "portal",
+          secret: "s3kret-pw",
+          origin: ORIGIN,
+          fill: true,
+        })
+      ).id;
+
+    it("returns the value and pinned origin for the owner on a live personal-DM turn, without auditing the value", async () => {
+      const id = await fillCredFor("U_FILL");
+      const res = await post("/v1/keychain/fill", { credentialId: id }, await liveOwn("U_FILL"));
+      assert.equal(res.status, 200);
+      assert.deepEqual(await res.json(), { value: "s3kret-pw", origin: ORIGIN });
+
+      const events = await built.auditLog.events();
+      const fillEvents = events.filter((e) => e.action === "keychain.fill");
+      assert.ok(fillEvents.length >= 1, "the fill is audited");
+      assert.ok(
+        fillEvents.some((e) => e.resource.includes(ORIGIN)),
+        "the audit row carries the origin",
+      );
+      assert.ok(!JSON.stringify(events).includes("s3kret-pw"), "no audit row ever carries the value");
+    });
+
+    it("refuses a triggered turn", async () => {
+      const id = await fillCredFor("U_FILL_TRIG");
+      const res = await post(
+        "/v1/keychain/fill",
+        { credentialId: id },
+        await capFor("U_FILL_TRIG", scopeId("personal", "U_FILL_TRIG"), { triggered: true }),
+      );
+      assert.equal(res.status, 403);
+      assert.ok(!JSON.stringify(await res.json()).includes("s3kret-pw"));
+    });
+
+    it("refuses a non-live (unprompted/ambient) turn even in the owner's own DM", async () => {
+      const id = await fillCredFor("U_FILL_AMBIENT");
+      const res = await post("/v1/keychain/fill", { credentialId: id }, await capFor("U_FILL_AMBIENT"));
+      assert.equal(res.status, 403, "no live human present — a stored password must not be filled");
+      assert.ok(!JSON.stringify(await res.json()).includes("s3kret-pw"));
+    });
+
+    it("refuses a non-owner and a channel scope", async () => {
+      const id = await fillCredFor("U_FILL_OWNER");
+      assert.equal(
+        (await post("/v1/keychain/fill", { credentialId: id }, await liveOwn("U_FILL_STRANGER"))).status,
+        404,
+        "a non-owner sees the credential as unknown",
+      );
+      assert.equal(
+        (
+          await post(
+            "/v1/keychain/fill",
+            { credentialId: id },
+            await capFor("U_FILL_OWNER", scopeId("channel", "C_FILL"), { liveActor: true }),
+          )
+        ).status,
+        403,
+        "fill never crosses out of the owner's personal conversation",
+      );
+    });
+
+    it("refuses a non-fill credential, so it can never dump an arbitrary env secret", async () => {
+      const { credential } = (await (
+        await post(
+          "/v1/keychain/credentials",
+          { service: "aws", secret: "AKIA_secret", envKey: "AWS_TOKEN" },
+          await capFor("U_FILL_ENV"),
+        )
+      ).json()) as any;
+      const res = await post("/v1/keychain/fill", { credentialId: credential.id }, await capFor("U_FILL_ENV"));
+      assert.equal(res.status, 403);
+      assert.ok(!JSON.stringify(await res.json()).includes("AKIA_secret"));
+    });
   });
 
   describe("naming the audience instead of inheriting it", () => {

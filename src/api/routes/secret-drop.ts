@@ -38,6 +38,16 @@ const PAGE_STYLE = 'style="font-family:system-ui;max-width:32rem;margin:4rem aut
 const MAX_DROP_FIELDS = 8;
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+function isHttpOrigin(origin: string | undefined): origin is string {
+  if (!origin) return false;
+  try {
+    const u = new URL(origin);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 function parseDropFields(raw: unknown): SecretDropField[] | undefined | "invalid" {
   if (raw === undefined) return undefined;
   if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_DROP_FIELDS) return "invalid";
@@ -141,15 +151,34 @@ async function mintDrop(ctx: ApiCtx): Promise<void> {
     purpose?: unknown;
     grantMode?: unknown;
     fields?: unknown;
+    fill?: unknown;
+    origin?: unknown;
   };
   if (typeof b.service !== "string" || !b.service.trim() || typeof b.purpose !== "string" || !b.purpose.trim()) {
     return sendJson(res, 400, {
       error: "bad_request",
-      message: "expected { service, purpose, envKey?, host?, grantMode?, fields? }",
+      message: "expected { service, purpose, envKey?, host?, grantMode?, fields?, fill?, origin? }",
     });
   }
   if (b.grantMode !== undefined && b.grantMode !== "once" && b.grantMode !== "standing") {
     return sendJson(res, 400, { error: "bad_request", message: 'grantMode must be "once" or "standing"' });
+  }
+  const wantsFill = b.fill === true;
+  let fillOrigin: string | undefined;
+  if (wantsFill) {
+    fillOrigin = typeof b.origin === "string" ? b.origin.trim() : "";
+    if (!isHttpOrigin(fillOrigin)) {
+      return sendJson(res, 400, {
+        error: "bad_request",
+        message: "a fill drop requires a valid http(s) origin (the site's login URL)",
+      });
+    }
+    if (b.envKey !== undefined || b.fields !== undefined || b.host !== undefined || b.grantMode !== undefined) {
+      return sendJson(res, 400, {
+        error: "bad_request",
+        message: "a fill drop is a single password pinned to its origin — no envKey, host, fields, or grantMode",
+      });
+    }
   }
   const fields = parseDropFields(b.fields);
   if (fields === "invalid") {
@@ -159,7 +188,7 @@ async function mintDrop(ctx: ApiCtx): Promise<void> {
     });
   }
   const scope = parseScopeId(capability.scopeId);
-  const wantsGrant = scope.kind === "channel" || scope.kind === "group";
+  const wantsGrant = !wantsFill && (scope.kind === "channel" || scope.kind === "group");
   const dest = resolveCapabilityDestination(capability, undefined);
   const { dropId } = await deps.secretDrops.mint({
     ownerId: capability.actorId,
@@ -168,6 +197,7 @@ async function mintDrop(ctx: ApiCtx): Promise<void> {
     ...(typeof b.envKey === "string" && b.envKey.trim() ? { envKey: b.envKey.trim() } : {}),
     ...(typeof b.host === "string" && b.host.trim() ? { host: b.host.trim() } : {}),
     ...(fields ? { fields } : {}),
+    ...(wantsFill ? { fill: true, origin: fillOrigin } : {}),
     purpose: b.purpose.trim(),
     requestedBy: capability.actorId,
     audienceScopeId: capability.scopeId,
@@ -284,9 +314,13 @@ async function redeemDrop(ctx: ApiCtx): Promise<void> {
       ownerId: drop.ownerId,
       service: drop.service,
       ...(saveFields ? { fields: saveFields } : { secret: secret as string }),
-      ...(!saveFields && drop.envKey ? { envKey: drop.envKey } : {}),
-      ...(drop.host ? { host: drop.host } : {}),
-      origin: "secret-drop",
+      ...(drop.fill
+        ? { fill: true, origin: drop.origin }
+        : {
+            ...(!saveFields && drop.envKey ? { envKey: drop.envKey } : {}),
+            ...(drop.host ? { host: drop.host } : {}),
+            origin: "secret-drop",
+          }),
     });
     // Best effort: a browser that works without its profile is worth more than
     // one that failed to connect because naming the profile went wrong.

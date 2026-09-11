@@ -433,7 +433,8 @@ const FAMILIES: AgentApiFamily[] = [
       (m === "POST" && p.startsWith("/v1/keychain/asks/") && p.endsWith("/decline")) ||
       (m === "POST" && p === "/v1/keychain/drops") ||
       (m === "POST" && p === "/v1/keychain/browser") ||
-      (m === "POST" && p === "/v1/keychain/use"),
+      (m === "POST" && p === "/v1/keychain/use") ||
+      (m === "POST" && p === "/v1/keychain/fill"),
     guidance: "The keychain ask→approve→use protocol is documented in your keychain manifest when one renders.",
     routes: [
       {
@@ -478,6 +479,12 @@ const FAMILIES: AgentApiFamily[] = [
         path: "/v1/keychain/use",
         summary:
           "materialize an approved grant ({grant}) — or, in the owner's personal conversation, their own credential ({credential}) — into env vars for this turn",
+      },
+      {
+        method: "POST",
+        path: "/v1/keychain/fill",
+        summary:
+          "fill a browser fill-credential the owner stored for a site ({credentialId}) — returns the value plus its pinned origin for the browse skill's type-secret verb, owner + own personal conversation only, and only on a live turn the owner themself sent (never a trigger-fired or unprompted turn); the value is never granted and never materialized into env, and the audit log records only the credential id and origin, never the value",
       },
     ],
   },

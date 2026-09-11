@@ -615,13 +615,27 @@ def press_key(c, name):
            windowsVirtualKeyCode=code, nativeVirtualKeyCode=code)
 
 
-def do_type(c, text, into_ref, into_sel, enter):
+def focus_field(c, into_ref, into_sel):
     if into_ref is not None or into_sel:
         b = box_of(c, into_ref, into_sel)
         for typ in ("mousePressed", "mouseReleased"):
             c.call("Input.dispatchMouseEvent", type=typ, x=b["x"], y=b["y"],
                    button="left", clickCount=1)
         time.sleep(0.15)
+
+
+def same_origin(a, b):
+    def parts(url):
+        u = urllib.parse.urlparse(url or "")
+        scheme = (u.scheme or "").lower()
+        port = u.port or {"https": 443, "http": 80}.get(scheme)
+        return scheme, (u.hostname or "").lower(), port
+    pa, pb = parts(a), parts(b)
+    return pa[1] != "" and pa == pb
+
+
+def do_type(c, text, into_ref, into_sel, enter):
+    focus_field(c, into_ref, into_sel)
     # insertText goes through the real input pipeline in one shot; per-character
     # key events are slower and no more faithful for plain text.
     c.call("Input.insertText", text=text)
@@ -675,6 +689,10 @@ def main():
     # password with a quote in it into a command line is how it becomes an
     # injection.
     pt.add_argument("--text-b64")
+    pts = sub.add_parser("type-secret",
+                         help="fill a stored password into a field without ever handling the literal")
+    pts.add_argument("--keychain", required=True, help="the fill-credential id from the keychain")
+    pts.add_argument("--into", type=int); pts.add_argument("--into-selector")
     pk = sub.add_parser("key"); pk.add_argument("name")
     psc = sub.add_parser("scroll")
     psc.add_argument("--by", type=int, default=600); psc.add_argument("--to")
@@ -945,7 +963,7 @@ def main():
     # Two writers in one browser is how a half-finished sign-in gets clicked
     # away underneath someone. One check per call is all this needs — the calls
     # are short, so there is no long action to interrupt and nothing to park.
-    if a.cmd in ("go", "click", "type", "key", "scroll"):
+    if a.cmd in ("go", "click", "type", "type-secret", "key", "scroll"):
         if control_mode(state) == "human_control":
             c.close()
             die("The person has taken control of this browser. Wait for them to hand it back "
@@ -1018,6 +1036,29 @@ def main():
             if text is None:
                 die("give the text to type, or --text-b64")
             do_type(c, text, a.into, a.into_selector, a.enter)
+
+        elif a.cmd == "type-secret":
+            status, payload = core_call_status("POST", "/v1/keychain/fill", {"credentialId": a.keychain})
+            if status != 200 or not isinstance(payload, dict) or "value" not in payload:
+                msg = payload.get("message") if isinstance(payload, dict) else None
+                die("Could not fetch the stored password"
+                    + (f": {msg}" if msg else "")
+                    + ".\nIt fills only from the owner's own DM, on a turn they sent, and only for a "
+                      "credential they stored as a browser fill-credential.")
+            origin = payload.get("origin", "")
+
+            def on_pinned_site():
+                here = json.loads(c.eval("JSON.stringify({url: location.href})"))["url"]
+                if not same_origin(here, origin):
+                    die(f"Refusing to fill: this page ({here}) is not the site this password is "
+                        f"pinned to ({origin}).\nThe stored password is only ever typed on its own "
+                        "site — navigate there first, or check the URL for a look-alike.")
+
+            on_pinned_site()
+            focus_field(c, a.into, a.into_selector)
+            on_pinned_site()
+            c.call("Input.insertText", text=payload["value"])
+            print(f"Filled the stored password into the focused field on {origin}.")
 
         elif a.cmd == "key":
             if a.name not in KEYS:

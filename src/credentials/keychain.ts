@@ -69,7 +69,7 @@ export interface KeychainCredential {
   fields?: CredentialFieldMeta[];
   broker?: BrokerDelivery;
   refresh?: CredentialRefresh;
-  managed?: "connector";
+  managed?: "connector" | "fill";
   secretEnc: string;
   fingerprint: string;
   origin?: string;
@@ -246,6 +246,7 @@ interface SaveCredentialInput {
   host?: string;
   accountLabel?: string;
   origin?: string;
+  fill?: boolean;
   expiresAt?: number;
 }
 
@@ -352,6 +353,7 @@ export interface Keychain extends ServiceCredentialStore, ConnectorTokenStore {
 
   materialize(grantId: string, scopeId: ScopeId, usedBy: string): Promise<MaterializedCred>;
   materializeOwnById(ownerId: string, credentialId: string, scopeId: ScopeId): Promise<MaterializedCred>;
+  materializeFill(ownerId: string, credentialId: string, scopeId: ScopeId): Promise<{ value: string; origin: string }>;
   materializeOwn(ownerId: string): Promise<MaterializedEnvCred[]>;
   materializeOwnFiles(ownerId: string): Promise<MaterializedFileCred[]>;
 
@@ -400,6 +402,20 @@ function credExpired(rec: { kind: CredentialKind; expiresAt?: number }, now: num
 function toMeta(rec: KeychainCredential): KeychainCredentialMeta {
   const { secretEnc: _, ...meta } = rec;
   return meta;
+}
+
+function isValidOrigin(origin: string | undefined): origin is string {
+  if (!origin) return false;
+  try {
+    const u = new URL(origin);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function personVisible(c: KeychainCredential): boolean {
+  return c.kind !== "broker" && (!c.managed || c.managed === "fill");
 }
 
 function bucketByOwner<T>(
@@ -716,6 +732,12 @@ export function createKeychain(deps: {
   async function saveCredential(input: SaveCredentialInput): Promise<KeychainCredentialMeta> {
     const service = input.service.trim().toLowerCase();
     if (!service) throw new KeychainError(400, "service required");
+    if (input.fill) {
+      if (!isValidOrigin(input.origin))
+        throw new KeychainError(400, "a fill credential requires a pinned http(s) origin");
+      if (input.files?.length || input.fields?.length || input.target)
+        throw new KeychainError(400, "a fill credential is a single secret with no env key, files, or fields");
+    }
     let files: CredentialFile[] | undefined;
     if (input.files?.length) {
       files = input.files.map((f) => ({ ...f, path: keychainFilePath(f.path) }));
@@ -744,13 +766,14 @@ export function createKeychain(deps: {
     if (files) secret = JSON.stringify(files);
     else if (fields) secret = JSON.stringify(Object.fromEntries(fields.map((f) => [f.envKey, f.value])));
     if (!secret || !secret.trim()) throw new KeychainError(400, "empty secret");
-    const envKey = kind === "env" && !fields ? input.envKey?.trim() || defaultEnvKey(service) : undefined;
+    const envKey =
+      kind === "env" && !fields && !input.fill ? input.envKey?.trim() || defaultEnvKey(service) : undefined;
     if (envKey && !ENV_KEY_RE.test(envKey))
       throw new KeychainError(400, "envKey must be a valid environment-variable name");
     const fieldsMeta = fields?.map((f) => ({ envKey: f.envKey, secret: f.secret }));
     const targets = files?.map((f) => f.path);
     const t = now();
-    let slot = `env:${envKey}`;
+    let slot = input.fill ? `fill:${input.origin}` : `env:${envKey}`;
     if (kind === "file") slot = "file";
     else if (fields)
       slot = `env:${fields
@@ -768,6 +791,7 @@ export function createKeychain(deps: {
       ...(envKey ? { envKey } : {}),
       ...(fieldsMeta ? { fields: fieldsMeta } : {}),
       ...(targets ? { targets } : {}),
+      ...(input.fill ? { managed: "fill" as const } : {}),
       ...(input.host ? { host: input.host } : {}),
       ...(input.accountLabel ? { accountLabel: input.accountLabel } : {}),
       secretEnc: encryptSecret(secret, deps.key),
@@ -837,6 +861,9 @@ export function createKeychain(deps: {
     if (cred.kind === "broker") {
       throw new KeychainError(400, "broker credentials are org-owned and used via the credential broker, not grants");
     }
+    if (cred.managed === "fill") {
+      throw new KeychainError(403, "a browser fill credential is owner-fill-only and cannot be granted to any scope");
+    }
     if (!samePerson(cred.ownerId, input.ownerId)) {
       throw new KeychainError(
         403,
@@ -877,17 +904,15 @@ export function createKeychain(deps: {
     save: saveCredential,
 
     async listAllMetadata() {
-      return (await deps.creds.all()).filter((c) => !c.managed && c.kind !== "broker").map(toMeta);
+      return (await deps.creds.all()).filter(personVisible).map(toMeta);
     },
 
     async listByOwner(ownerId) {
-      return (await deps.creds.all())
-        .filter((c) => samePerson(c.ownerId, ownerId) && !c.managed && c.kind !== "broker")
-        .map(toMeta);
+      return (await deps.creds.all()).filter((c) => samePerson(c.ownerId, ownerId) && personVisible(c)).map(toMeta);
     },
 
     async listByOwners(ownerIds) {
-      return bucketByOwner(await deps.creds.all(), ownerIds, (c) => !c.managed && c.kind !== "broker", toMeta);
+      return bucketByOwner(await deps.creds.all(), ownerIds, personVisible, toMeta);
     },
 
     async getCredential(id) {
@@ -898,7 +923,7 @@ export function createKeychain(deps: {
     async remove(ownerId, id) {
       const rec = await getOwned(ownerId, id);
       if (!rec) return false;
-      if (rec.managed || rec.kind === "broker") return false;
+      if (!personVisible(rec)) return false;
       await deleteCredential(id);
       return true;
     },
@@ -956,6 +981,9 @@ export function createKeychain(deps: {
       if (!purpose) throw new KeychainError(400, "purpose required — record the requester's words verbatim");
       const cred = await deps.creds.get(input.credentialId);
       if (!cred || cred.kind === "broker") throw new KeychainError(404, "unknown credential");
+      if (cred.managed === "fill") {
+        throw new KeychainError(403, "a browser fill credential is owner-fill-only and cannot be asked for");
+      }
       const t = now();
       if (!cred.managed && credExpired(cred, t))
         throw new KeychainError(410, "credential is expired — its owner must re-auth before it can be asked for");
@@ -1189,6 +1217,12 @@ export function createKeychain(deps: {
       if (cred.kind === "broker") {
         throw new KeychainError(403, "broker credentials are not grantable — they are used via the credential broker");
       }
+      if (cred.managed === "fill") {
+        throw new KeychainError(
+          403,
+          "a browser fill credential is filled via /v1/keychain/fill, never materialized into env",
+        );
+      }
       const extra = { grantId: grant.id, purpose: grant.purpose };
       if (cred.managed === "connector") {
         const m = await materializeConnectorEnv(cred, extra);
@@ -1213,9 +1247,31 @@ export function createKeychain(deps: {
       if (cred.kind === "broker") {
         throw new KeychainError(403, "broker credentials are used via the credential broker, never materialized");
       }
+      if (cred.managed === "fill") {
+        throw new KeychainError(
+          403,
+          "a browser fill credential is filled via /v1/keychain/fill, never materialized into env",
+        );
+      }
       if (cred.managed === "connector") return materializeConnectorEnv(cred);
       if (credExpired(cred, now())) throw new KeychainError(410, "credential is expired");
       return materializeDecrypted(cred);
+    },
+
+    async materializeFill(ownerId, credentialId, scopeId) {
+      if (scopeId !== toScopeId("personal", ownerId)) {
+        throw new KeychainError(403, "a browser fill credential fills only in its owner's own personal conversation");
+      }
+      const cred = await deps.creds.get(credentialId);
+      if (!cred || !samePerson(cred.ownerId, ownerId)) throw new KeychainError(404, "unknown credential");
+      if (cred.managed !== "fill") {
+        throw new KeychainError(403, "not a browser fill credential — this endpoint fills only fill-only credentials");
+      }
+      if (!isValidOrigin(cred.origin)) throw new KeychainError(422, "fill credential is missing its pinned origin");
+      if (credExpired(cred, now())) throw new KeychainError(410, "credential is expired");
+      const value = tryDecrypt(cred, (c) => decryptSecret(c.secretEnc, deps.key));
+      if (value === null) throw new KeychainError(422, "credential does not decrypt under the current key");
+      return { value, origin: cred.origin };
     },
 
     async materializeOwn(ownerId) {
@@ -1383,7 +1439,9 @@ function credLine(
 ): string {
   const who = owner.displayName ? `${owner.displayName} (${owner.id})` : owner.id;
   let slot = `files ${(c.targets ?? [c.target]).filter(Boolean).join(", ")}`;
-  if (c.kind === "env") {
+  if (c.managed === "fill") {
+    slot = `browser fill-credential for ${c.origin} — fill it with \`type-secret --keychain ${c.id}\` in the browse skill (never materialized into env, never grantable)`;
+  } else if (c.kind === "env") {
     slot = c.fields ? c.fields.map((f) => `\`${f.envKey}\``).join(" + ") : `\`${c.envKey}\``;
   }
   const label = c.accountLabel ? `, account ${c.accountLabel}` : "";
@@ -1424,6 +1482,7 @@ export function renderKeychainManifest(input: KeychainManifestInput, now: number
   for (const member of input.members) {
     const own = ownPersonal && member.id === input.actorId;
     for (const c of input.entriesByOwner.get(member.id) ?? []) {
+      if (c.managed === "fill" && !own) continue;
       memberLines.push(credLine(member, c, own ? OWN_NOTE : grantNoteFor(c.id), now, own));
       hasOwn ||= own;
     }
