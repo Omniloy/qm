@@ -534,6 +534,43 @@ async function handleKeychain(ctx: ApiCtx): Promise<void> {
       return sendJson(res, 200, { ask });
     }
 
+    if (method === "POST" && pathname === "/v1/keychain/fill") {
+      if (capability.liveActor !== true) {
+        return sendJson(res, 403, {
+          error: "forbidden",
+          message:
+            "filling a stored password is implied only on a turn its owner themself sent live — this turn wasn't",
+        });
+      }
+      const b = body as { credentialId?: unknown };
+      if (typeof b.credentialId !== "string" || !b.credentialId.trim()) {
+        return sendJson(res, 400, { error: "bad_request", message: "expected { credentialId }" });
+      }
+      try {
+        const { value, origin } = await kc.materializeFill(actorId, b.credentialId.trim(), capability.scopeId);
+        audit(deps, {
+          principalId: actorId,
+          action: "keychain.fill",
+          resource: `${b.credentialId.trim()} @ ${origin}`,
+          scopeLabel: capability.scopeId,
+          status: "ok",
+        });
+        return sendJson(res, 200, { value, origin });
+      } catch (e) {
+        if (e instanceof KeychainError) {
+          audit(deps, {
+            principalId: actorId,
+            action: "keychain.fill",
+            resource: b.credentialId.trim(),
+            scopeLabel: capability.scopeId,
+            status: `denied:${e.status}`,
+          });
+          return sendJson(res, e.status, { error: "keychain", message: e.message });
+        }
+        throw e;
+      }
+    }
+
     if (method === "POST" && pathname === "/v1/keychain/use") {
       const b = body as { grant?: unknown; credential?: unknown };
       if (typeof b.grant !== "string" && typeof b.credential !== "string") {
@@ -592,4 +629,5 @@ export const keychainRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/keychain/asks", auth: "either", handle: handleKeychain },
   { method: "POST", path: "/v1/keychain/asks/:id/decline", auth: "either", handle: handleKeychain },
   { method: "POST", path: "/v1/keychain/use", auth: "either", handle: handleKeychain },
+  { method: "POST", path: "/v1/keychain/fill", auth: "either", handle: handleKeychain },
 ];

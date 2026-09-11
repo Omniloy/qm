@@ -124,7 +124,8 @@ test("a CDP failure reads as a message, not a traceback", () => {
 test("the agent is refused while a person holds the wheel", () => {
   // The calls are short, so a single check before each one is enough and there
   // is no long action to interrupt.
-  const guard = /if a\.cmd in \("go", "click", "type", "key", "scroll"\)[\s\S]{0,500}/.exec(CLI)?.[0] ?? "";
+  const guard =
+    /if a\.cmd in \("go", "click", "type", "type-secret", "key", "scroll"\)[\s\S]{0,500}/.exec(CLI)?.[0] ?? "";
   assert.match(guard, /human_control/);
   assert.match(guard, /Wait for them to hand it back/);
 });
@@ -160,6 +161,47 @@ test("the person types their own password, always", () => {
 test("a sign-in is only ever routed to the site that was asked for", () => {
   // Page content can prompt-inject a login URL for somewhere else entirely.
   assert.match(SKILL, /never start a sign-in for a domain the person did not ask for/i);
+});
+
+const typeSecretParser = (): string =>
+  /pts = sub\.add_parser\("type-secret"[\s\S]*?pk = sub\.add_parser\("key"\)/.exec(CLI)?.[0] ?? "";
+const typeSecretBlock = (): string => /elif a\.cmd == "type-secret":[\s\S]*?elif a\.cmd == "key":/.exec(CLI)?.[0] ?? "";
+
+test("type-secret takes a keychain id and no literal-password argument", () => {
+  // The whole point: the agent never handles the literal, so the verb must not
+  // accept one as text.
+  const parser = typeSecretParser();
+  assert.ok(parser.length > 0, "the type-secret parser exists");
+  assert.match(parser, /--keychain", required=True/);
+  assert.doesNotMatch(parser, /add_argument\("text"/, "type-secret must not take a positional password");
+  assert.doesNotMatch(parser, /--text-b64/, "and no base64 password argument either");
+});
+
+test("type-secret fetches the value from the fill endpoint and refuses an origin mismatch", () => {
+  const block = typeSecretBlock();
+  assert.match(block, /\/v1\/keychain\/fill/);
+  assert.match(block, /"credentialId": a\.keychain/);
+  assert.match(block, /same_origin\(here, origin\)/);
+  assert.match(block, /Refusing to fill/);
+  const checks = block.match(/on_pinned_site\(\)/g) ?? [];
+  assert.ok(checks.length >= 2, "origin is re-checked after the field is focused, closing the fetch/type gap");
+});
+
+test("type-secret never prints or echoes the value — only an ok/fail line", () => {
+  const block = typeSecretBlock();
+  // The value only ever flows into the input pipeline, never to stdout.
+  assert.match(block, /Input\.insertText", text=payload\["value"\]/);
+  assert.doesNotMatch(block, /print\([^)]*payload\[/, "the value must never be printed");
+  assert.doesNotMatch(block, /print\([^)]*value/, "no variable named value reaches a print");
+});
+
+test("the skill warns the value is observable and gates the fill on the person's yes", () => {
+  assert.match(SKILL, /type-secret --keychain/);
+  assert.match(SKILL, /best-effort, not model-blind/);
+  assert.match(SKILL, /environment can observe the value/i);
+  assert.match(SKILL, /proceed only after they say yes/i);
+  // The everyone-else rule survives untouched.
+  assert.match(SKILL, /never type or ask\s+for it yourself/i);
 });
 
 test("profiles stay out of shared rooms", () => {

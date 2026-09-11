@@ -314,6 +314,56 @@ describe("/v1/keychain/drops — mint, form, redeem", async () => {
     );
   });
 
+  it("a fill drop requires a valid http(s) origin", async () => {
+    const noOrigin = await post(
+      "/v1/keychain/drops",
+      { service: "portal", purpose: "sign me in", fill: true },
+      await capFor("U_FILL"),
+    );
+    assert.equal(noOrigin.status, 400);
+    const badOrigin = await post(
+      "/v1/keychain/drops",
+      { service: "portal", purpose: "sign me in", fill: true, origin: "ftp://portal.example.com" },
+      await capFor("U_FILL"),
+    );
+    assert.equal(badOrigin.status, 400);
+    const withEnvKey = await post(
+      "/v1/keychain/drops",
+      { service: "portal", purpose: "sign me in", fill: true, origin: "https://portal.example.com/login", envKey: "X" },
+      await capFor("U_FILL"),
+    );
+    assert.equal(withEnvKey.status, 400, "a fill drop must not also carry an env key");
+  });
+
+  it("a fill drop redeems into a fill-only credential with a pinned origin and no env key", async () => {
+    const ORIGIN = "https://portal.example.com/login";
+    const minted = await post(
+      "/v1/keychain/drops",
+      { service: "portal", purpose: "sign me in to the portal", fill: true, origin: ORIGIN },
+      await capFor("U_FILL2"),
+    );
+    assert.equal(minted.status, 200);
+    const { dropId, formPath } = (await minted.json()) as { dropId: string; formPath: string };
+    const redeemRes = await redeem(dropId, { secret: "portal-pw" }, "U_FILL2", linkToken(formPath));
+    assert.equal(redeemRes.status, 200);
+    const { credential } = (await redeemRes.json()) as {
+      credential: { id: string; managed?: string; envKey?: string };
+    };
+    assert.equal(credential.managed, "fill");
+    assert.equal(credential.envKey, undefined, "a fill credential never gets an env key");
+
+    const owned = await built.keychain!.listByOwner("U_FILL2");
+    const stored = owned.find((c) => c.id === credential.id);
+    assert.ok(stored, "the fill credential is visible in the owner's keychain");
+    assert.equal(stored!.origin, ORIGIN);
+
+    const env = await built.keychain!.materializeOwn("U_FILL2");
+    assert.equal(env.length, 0, "a fill credential is never in the per-turn env");
+    assert.equal((await built.keychain!.listGrants({ ownerId: "U_FILL2" })).length, 0, "a fill drop grants nothing");
+    const filled = await built.keychain!.materializeFill("U_FILL2", credential.id, scopeId("personal", "U_FILL2"));
+    assert.deepEqual(filled, { value: "portal-pw", origin: ORIGIN });
+  });
+
   it("a Project roster change invalidates an unredeemed drop", async () => {
     await built.app.upsertDirectory([
       { principalId: "U_PROJECT_OWNER", displayName: "Owner", type: "internal" },

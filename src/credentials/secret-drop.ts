@@ -16,6 +16,8 @@ export interface SecretDropRecord {
   envKey?: string;
   host?: string;
   fields?: SecretDropField[];
+  fill?: boolean;
+  origin?: string;
   purpose: string;
   requestedBy: string;
   audienceScopeId?: ScopeId;
