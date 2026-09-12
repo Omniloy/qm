@@ -86,6 +86,7 @@ export const localContainerName = (scopeId: string): string => `qm-sbx-${localSl
 export const localVolumeName = (scopeId: string): string => `qm-home-${localSlug(scopeId)}`;
 export const localNetworkName = (containerName: string): string =>
   `qm-net-${containerName.replace(/^qm-(sbx|scratch)-/, "")}`;
+const localVolumeFromContainer = (containerName: string): string => containerName.replace(/^qm-sbx-/, "qm-home-");
 const localScratchName = (key: string): string => `qm-scratch-${localSlug(key)}`;
 
 function localSlug(id: string): string {
@@ -104,6 +105,7 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
   const homeDir = opts.homeDir ?? HOME_DIR;
   const workspaceDir = `${homeDir}/${WORKSPACE_BASENAME}`;
   const provisionQueue = createKeyedQueue<string>();
+  const recoverQueue = createKeyedQueue<string>();
 
   const portByName = new Map<string, number>();
   const scopeByContainer = new Map<string, string>();
@@ -226,7 +228,31 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
   async function startContainer(name: string): Promise<void> {
     portByName.delete(name);
     const r = await dexec(["start", name]);
-    if (r.code !== 0) throw new Error(`docker start ${name} failed: ${r.stderr.trim()}`);
+    if (r.code !== 0) {
+      if (!/could not attach to network|network [^ ]* not found/i.test(r.stderr)) {
+        throw new Error(`docker start ${name} failed: ${r.stderr.trim()}`);
+      }
+      const stderr = r.stderr.trim();
+      await recoverQueue(name, async () => {
+        const current = await containerState(name);
+        if (current?.running) return;
+        if (current) await dexec(["rm", "-f", name]);
+        try {
+          await runContainer(name, scopeByContainer.get(name), name.startsWith("qm-sbx-"));
+        } catch (e) {
+          if (!/already in use/i.test(errMessage(e))) throw e;
+          await attachCore(localNetworkName(name));
+          await waitDaemon(name);
+        }
+        opts.onError?.({
+          category: "sandbox_recover",
+          code: "network_missing",
+          message: stderr,
+          scopeLabel: scopeByContainer.get(name),
+        });
+      });
+      return;
+    }
     // Core may have restarted since this sandbox was built, dropping its
     // endpoint on the sandbox network.
     await attachCore(localNetworkName(name));
@@ -287,7 +313,7 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
       "agent_env=dev",
       "--network",
       net,
-      ...(withVolume && scope ? ["-v", `${localVolumeName(scope)}:${homeDir}`] : []),
+      ...(withVolume ? ["-v", `${localVolumeFromContainer(name)}:${homeDir}`] : []),
       "-p",
       `127.0.0.1:0:${AGENT_PORT}`,
       "--add-host=host.docker.internal:host-gateway",

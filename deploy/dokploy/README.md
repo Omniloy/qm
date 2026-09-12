@@ -70,8 +70,12 @@ the whole stack down. Do not remove them.
 running container is using — including this one, since a sandbox container only
 exists while an agent is working. It also removes unused _volumes_, which would
 take a stopped deployed app's data with it. Cleanup is instead a host cron
-(`/usr/local/bin/qm-docker-cleanup.sh`) that prunes only untagged layers, old
-build cache and long-idle networks. The `sandbox-keepalive` service in the
+(`/usr/local/bin/qm-docker-cleanup.sh`) that prunes only untagged layers and old
+build cache. It must NOT prune networks: `docker network prune` has no name
+filter, so it would delete the per-scope `qm-net-<scope>` networks that a
+stopped-but-reused sandbox container reattaches to via `docker start`, and the
+container then cannot start ("network not found") — which fails that scope's
+turns and crons. The `sandbox-keepalive` service in the
 Compose file is a second line of defence: it holds a container open on the image
 so even an aggressive prune spares it.
 

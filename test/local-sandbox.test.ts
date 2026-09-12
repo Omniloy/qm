@@ -148,6 +148,61 @@ test("a stale-image container is recreated while its home volume survives", asyn
   assert.equal(h2.coldStart, false, "existing volume means a warm home");
 });
 
+test("a pruned sandbox network self-heals on restart: fresh network, same home volume, data preserved", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const recovered: Array<{ category: string; code: string }> = [];
+  const sb = makeSandbox(fake, { onError: (e: { category: string; code: string }) => recovered.push(e) });
+  const scope = scopeId("personal", "U_NET");
+  const h1 = await sb.provision(rw(scope));
+  const volume = fake.containers.get(h1.id)!.volume!;
+  const net = localNetworkName(h1.id);
+  await sb.teardown(h1);
+  assert.equal(fake.containers.get(h1.id)!.running, false);
+
+  fake.networks.delete(net);
+
+  const h2 = await sb.provision(rw(scope));
+  assert.equal(h2.id, h1.id, "same scope, same container id");
+  assert.equal(fake.runCount, 2, "the stale container was recreated");
+  assert.equal(fake.networks.has(net), true, "a fresh network is back");
+  assert.equal(fake.volumes.has(volume), true, "the same home volume survived — no data loss");
+  assert.equal(fake.containers.get(h2.id)!.volume, volume, "the recreated container re-mounts the same home volume");
+  assert.ok(
+    recovered.some((e) => e.category === "sandbox_recover"),
+    "the self-heal is recorded in the durable error store",
+  );
+});
+
+test("run() self-heals when the sandbox network was pruned while the box was parked", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const recovered: Array<{ category: string }> = [];
+  const sb = makeSandbox(fake, { onError: (e: { category: string }) => recovered.push(e) });
+  const scope = scopeId("personal", "U_NET3");
+  const h = await sb.provision(rw(scope));
+  const net = localNetworkName(h.id);
+  fake.containers.get(h.id)!.running = false;
+  fake.networks.delete(net);
+  const r = await sb.run(h, "echo ok");
+  assert.equal(r.code, 0);
+  assert.equal(r.stdout.trim(), "ok");
+  assert.equal(fake.networks.has(net), true, "the network was restored by the run()-path self-heal");
+  assert.ok(
+    recovered.some((e) => e.category === "sandbox_recover"),
+    "self-heal via the run() path is recorded",
+  );
+});
+
+test("a non-network start failure still fails loudly and does not recreate the container", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const sb = makeSandbox(fake);
+  const scope = scopeId("personal", "U_NET2");
+  const h1 = await sb.provision(rw(scope));
+  await sb.teardown(h1);
+  fake.startFail = "Error response from daemon: driver failed programming external connectivity";
+  await assert.rejects(sb.provision(rw(scope)), /docker start .* failed/);
+  assert.equal(fake.runCount, 1, "a non-network failure must not trigger a recreate");
+});
+
 test("a scratch box has no volume and is removed on teardown", async () => {
   const fake = installFakeDocker(daemonPort);
   const sb = makeSandbox(fake);
