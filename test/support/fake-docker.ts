@@ -6,6 +6,7 @@ export interface FakeContainer {
   running: boolean;
   labels: Record<string, string>;
   volume?: string;
+  network?: string;
 }
 
 export interface FakeDocker {
@@ -18,6 +19,7 @@ export interface FakeDocker {
   imageMissing: boolean;
   imageId: string;
   imageFingerprint: string;
+  startFail?: string;
 }
 
 export function installFakeDocker(daemonPort: number): FakeDocker {
@@ -48,6 +50,7 @@ export function installFakeDocker(daemonPort: number): FakeDocker {
         const [k = "", v = ""] = args[++i]!.split("=");
         c.labels[k] = v;
       } else if (a === "-v") c.volume = args[++i]!.split(":")[0]!;
+      else if (a === "--network") c.network = args[++i]!;
       else if (a === "-p" || a === "--cpus" || a === "--memory") i++;
     }
     return c;
@@ -105,6 +108,12 @@ export function installFakeDocker(daemonPort: number): FakeDocker {
       case "start": {
         const c = containers.get(rest[0]!);
         if (!c) return fail("Error: No such container");
+        if (self.startFail) return fail(self.startFail);
+        if (c.network && !networks.has(c.network)) {
+          return fail(
+            `Error response from daemon: Could not attach to network ${c.network}: network ${c.network} not found`,
+          );
+        }
         c.running = true;
         return ok(rest[0]!);
       }
