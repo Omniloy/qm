@@ -53,6 +53,7 @@ test("operator token fallback can model per-user credentials and host-wide servi
 
 test("envKey: the host-wide form keeps its documented shape; per-user keys never collide across principals", () => {
   assert.equal(envKey("gmail.googleapis.com"), "VAULT_TOKEN_GMAIL_GOOGLEAPIS_COM");
+  assert.equal(envKey("graph.microsoft.com"), "VAULT_TOKEN_GRAPH_MICROSOFT_COM");
   assert.notEqual(envKey("gmail.googleapis.com", "a.b@c.com"), envKey("gmail.googleapis.com", "a-b@c.com"));
   assert.notEqual(envKey("gmail.googleapis.com", "a.b@c.com"), envKey("gmail.googleapis.com", "a_b@c.com"));
   assert.equal(envKey("gmail.googleapis.com", "a.b@c.com"), envKey("gmail.googleapis.com", "a.b@c.com"));

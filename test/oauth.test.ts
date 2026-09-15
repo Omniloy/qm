@@ -27,6 +27,8 @@ const env = {
   GITHUB_OAUTH_CLIENT_SECRET: "ghsecret",
   X_OAUTH_CLIENT_ID: "xid",
   X_OAUTH_CLIENT_SECRET: "xsecret",
+  MICROSOFT_OAUTH_CLIENT_ID: "msid",
+  MICROSOFT_OAUTH_CLIENT_SECRET: "mssecret",
 } as NodeJS.ProcessEnv;
 
 const resolve = createSecretClientResolver(createEnvSecretSource(env));
@@ -383,9 +385,10 @@ test("authorizeUrl adds code_challenge + S256 only when a challenge is supplied"
   assert.equal(without.searchParams.get("code_challenge_method"), null);
 });
 
-test("only X opts into PKCE; the other providers leave the seam inert (regression guard)", () => {
+test("only X and Microsoft opt into PKCE; the other providers leave the seam inert (regression guard)", () => {
+  const pkceProviders = new Set(["x", "microsoft"]);
   for (const [name, p] of Object.entries(PROVIDERS)) {
-    if (name === "x") assert.equal(p.pkce, true, "X requires PKCE");
+    if (pkceProviders.has(name)) assert.equal(p.pkce, true, `${name} requires PKCE`);
     else assert.notEqual(p.pkce, true, `${name} must not enable PKCE`);
   }
 });
@@ -481,4 +484,104 @@ test("X refresh captures the ROTATED refresh token (single-use) — the connecti
   assert.equal(fresh.accessToken, "xat2");
   assert.equal(fresh.refreshToken, "new-rt", "the rotated refresh token replaces the old one");
   assert.equal(fresh.expiresAt, 5_000 + 7200_000);
+});
+
+test("Microsoft is registered with the Graph host, 16 delegated scopes, PKCE, and default token adapters", () => {
+  const p = PROVIDERS.microsoft!;
+  assert.deepEqual(p.hosts, ["graph.microsoft.com"]);
+  assert.deepEqual(p.scopes, [
+    "offline_access",
+    "openid",
+    "email",
+    "profile",
+    "User.Read",
+    "Mail.ReadWrite",
+    "Mail.Send",
+    "Calendars.ReadWrite",
+    "Files.ReadWrite.All",
+    "Sites.Read.All",
+    "Team.ReadBasic.All",
+    "Channel.ReadBasic.All",
+    "ChannelMessage.Read.All",
+    "ChannelMessage.Send",
+    "Chat.ReadWrite",
+    "ChatMessage.Send",
+  ]);
+  assert.equal(p.pkce, true);
+  assert.equal(p.redirectPath, "microsoft/callback");
+  assert.equal(p.authParams?.prompt, "consent");
+  assert.ok(p.egressRule.includes("graph.microsoft.com"));
+  assert.ok(p.egressRule.includes("login.microsoftonline.com"));
+  assert.ok(p.egressRule.includes("sharepoint.com"), "download redirects to <tenant>.sharepoint.com");
+  assert.ok(p.egressRule.includes("1drv.com"), "personal OneDrive download redirects to *.dm.files.1drv.com");
+  assert.equal(p.exchange, undefined, "microsoft uses the default authorization_code adapter");
+  assert.equal(p.refresh, undefined, "microsoft uses the default refresh_token adapter");
+});
+
+test("Microsoft authorize URL defaults the tenant authority to 'organizations' (never 'common') when unset", async () => {
+  const u = new URL(
+    authorizeUrl("microsoft", {
+      redirectUri: "https://app/cb",
+      state: "st-ms",
+      client: await resolve("microsoft", {}),
+      codeChallenge: "MS-CHAL",
+    }),
+  );
+  assert.equal(u.origin + u.pathname, "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize");
+  assert.doesNotMatch(u.pathname, /common/);
+  assert.equal(u.searchParams.get("client_id"), "msid");
+  assert.equal(u.searchParams.get("response_type"), "code");
+  assert.equal(u.searchParams.get("state"), "st-ms");
+  assert.equal(u.searchParams.get("prompt"), "consent");
+  assert.equal(u.searchParams.get("code_challenge"), "MS-CHAL");
+  assert.equal(u.searchParams.get("code_challenge_method"), "S256");
+  assert.equal(u.searchParams.get("scope"), PROVIDERS.microsoft!.scopes.join(" "));
+});
+
+test("Microsoft pins the authority to MICROSOFT_TENANT_ID on authorize and token exchange", async () => {
+  const r = createSecretClientResolver(createEnvSecretSource({ ...env, MICROSOFT_TENANT_ID: "TENANT-GUID" }));
+  const client = await r("microsoft", {});
+  const u = new URL(authorizeUrl("microsoft", { redirectUri: "https://app/cb", state: "s", client }));
+  assert.equal(u.origin + u.pathname, "https://login.microsoftonline.com/TENANT-GUID/oauth2/v2.0/authorize");
+
+  let seen: { url: string; body: string } | null = null;
+  const fetchImpl: FetchLike = async (url, init) => {
+    seen = { url, body: init.body };
+    return { ok: true, status: 200, json: async () => ({ access_token: "ms-at", refresh_token: "ms-rt" }) };
+  };
+  await exchangeCode("microsoft", "code-ms", "https://app/cb", { client, fetchImpl, codeVerifier: "ms-verif" });
+  assert.equal(seen!.url, "https://login.microsoftonline.com/TENANT-GUID/oauth2/v2.0/token");
+  assert.match(seen!.body, /grant_type=authorization_code/);
+  assert.match(seen!.body, /client_secret=mssecret/);
+  assert.match(seen!.body, /code_verifier=ms-verif/);
+});
+
+test("Microsoft refresh routes graph.microsoft.com to the tenant-substituted token endpoint", async () => {
+  const r = createSecretClientResolver(createEnvSecretSource({ ...env, MICROSOFT_TENANT_ID: "TENANT-GUID" }));
+  let seen: { url: string; body: string } | null = null;
+  const fetchImpl: FetchLike = async (url, init) => {
+    seen = { url, body: init.body };
+    return { ok: true, status: 200, json: async () => ({ access_token: "ms-at2", expires_in: 3600 }) };
+  };
+  const fresh = await makeRefresh({ resolveClient: r, fetchImpl, now: () => 9_000 })("graph.microsoft.com", {
+    accessToken: "old",
+    refreshToken: "ms-rt",
+  });
+  assert.equal(seen!.url, "https://login.microsoftonline.com/TENANT-GUID/oauth2/v2.0/token");
+  assert.match(seen!.body, /grant_type=refresh_token/);
+  assert.equal(fresh.accessToken, "ms-at2");
+});
+
+test("applyTenant is inert for providers without the {tenant} placeholder even when a tenant is resolved", async () => {
+  const r = createSecretClientResolver(createEnvSecretSource({ ...env, MICROSOFT_TENANT_ID: "TENANT-GUID" }));
+  const googleUrl = authorizeUrl("google", {
+    redirectUri: "https://app/cb",
+    state: "s",
+    client: await r("google", {}),
+  });
+  assert.equal(new URL(googleUrl).origin + new URL(googleUrl).pathname, PROVIDERS.google!.authUrl);
+  assert.doesNotMatch(googleUrl, /\{tenant\}/);
+  const slackUrl = authorizeUrl("slack", { redirectUri: "https://app/cb", state: "s", client: await r("slack", {}) });
+  assert.equal(new URL(slackUrl).origin + new URL(slackUrl).pathname, PROVIDERS.slack!.authUrl);
+  assert.doesNotMatch(slackUrl, /\{tenant\}/);
 });
