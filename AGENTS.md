@@ -1,6 +1,22 @@
 # qm
 
-To run and test, see [`README.md`](./README.md).
+Node runs the TypeScript directly — there is no build step, and `tsc` only typechecks.
+
+|                       |                                                                                |
+| --------------------- | ------------------------------------------------------------------------------ |
+| Every root test       | `npm test`                                                                     |
+| One test file         | `node --experimental-test-module-mocks --test test/pi-models.test.ts`          |
+| Postgres-backed tests | `npm run test:pg` (needs `DATABASE_URL`)                                       |
+| Typecheck             | `npm run typecheck`                                                            |
+| Lint and format       | `npm run lint`, `npm run lint:ox`, `npm run lint:knip`, `npm run format:check` |
+| A live instance       | `npm run dev-instance` (or the `/dev-instance` skill)                          |
+
+CI shards the root suite across five runners and gives each plugin its own job, so a
+green local run of the affected files plus typecheck and lint is the bar before pushing.
+
+[`src/wiring.ts`](./src/wiring.ts) is where every substrate — harness, session store,
+sandbox, memory — is bound to an implementation; read it first to find what a subsystem
+actually talks to. [`README.md`](./README.md) has the architecture in prose.
 
 ## Working on the code
 

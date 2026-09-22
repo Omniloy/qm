@@ -6,6 +6,7 @@ import {
   defaultModelForHarness,
   isHarnessId,
   modelProviderAvailabilityFor,
+  modelSelectableForHarness,
   modelSupportedByHarness,
   resolveModel,
   serviceableModelIds,
@@ -1341,17 +1342,16 @@ async function runtimeConfigBody(ctx: ApiCtx, scope: ScopeId): Promise<Record<st
   const classifications = await config.getModelClassificationsDurable(org);
   const modelsByHarness = Object.fromEntries(
     approvedHarnesses.map((harnessId) => {
-      const ids = allowlist?.length
-        ? allowlist.filter((id) => modelSupportedByHarness(id, harnessId))
-        : selectableCatalogForHarness(catalog, harnessId).map((model) => model.id);
-      for (const choice of selected) {
-        if (
-          choice.harnessId === harnessId &&
-          modelSupportedByHarness(choice.modelId, harnessId) &&
-          !ids.includes(choice.modelId)
-        )
-          ids.push(choice.modelId);
-      }
+      const ids = (
+        allowlist?.length ? allowlist : selectableCatalogForHarness(catalog, harnessId).map((model) => model.id)
+      ).filter((id) => modelSelectableForHarness(id, harnessId));
+      if (
+        effective &&
+        effective.harnessId === harnessId &&
+        modelSupportedByHarness(effective.modelId, harnessId) &&
+        !ids.includes(effective.modelId)
+      )
+        ids.push(effective.modelId);
       return [harnessId, serviceableModelIds(dropHidden(ids, classifications, selectedIds), providersFor(harnessId))];
     }),
   );

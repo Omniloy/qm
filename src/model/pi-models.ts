@@ -215,6 +215,16 @@ export function modelSupportedByHarness(id: string | undefined, harness: string)
   return false;
 }
 
+function servedByAnthropic(id: string): boolean {
+  const model = resolveModel(id);
+  return model?.provider === "anthropic" || model?.api === "anthropic-messages";
+}
+
+export function modelSelectableForHarness(id: string | undefined, harness: string): boolean {
+  if (!id || !modelSupportedByHarness(id, harness)) return false;
+  return harness !== "pi" || !servedByAnthropic(id);
+}
+
 export function defaultModelForHarness(
   harness: string,
   configured?: string,
