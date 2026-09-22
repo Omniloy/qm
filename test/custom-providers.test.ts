@@ -9,7 +9,12 @@ import {
 } from "../src/model/custom-providers.ts";
 import { builtInModelCatalog } from "../src/model/model-catalog.ts";
 import { createCustomProviderStore } from "../src/model/custom-provider-store.ts";
-import { modelSupportedByHarness, modelServiceable, resolveModel } from "../src/model/pi-models.ts";
+import {
+  modelSelectableForHarness,
+  modelSupportedByHarness,
+  modelServiceable,
+  resolveModel,
+} from "../src/model/pi-models.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import type { StoredCustomProvider } from "../src/model/custom-provider-store.ts";
 
@@ -189,4 +194,24 @@ test("catalog cache invalidates immediately when the custom registry changes", a
   }
   const cleared = await selectableModelCatalog(fetcher);
   assert.ok(!cleared.some((m) => m.id === "fresh-model"), "removal visible immediately too");
+});
+
+test("an Anthropic-protocol custom provider is not offered for pi, an OpenAI-protocol one is", () => {
+  setCustomProviders([
+    {
+      id: "anthropic-direct",
+      name: "Anthropic Direct",
+      protocol: "anthropic" as const,
+      baseUrl: "https://api.anthropic.com/v1",
+      models: [{ id: "claude-custom" }],
+    },
+    GATEWAY,
+  ]);
+  assert.equal(
+    modelSupportedByHarness("claude-custom", "pi"),
+    true,
+    "pi can still run it, so an org already pointed at it keeps working",
+  );
+  assert.equal(modelSelectableForHarness("claude-custom", "pi"), false);
+  assert.equal(modelSelectableForHarness("acme-large", "pi"), true);
 });

@@ -229,3 +229,21 @@ test("the classification route validates the model id, the status, the scope, an
     await srv.close();
   }
 });
+
+test("a scope's chat picker grandfathers only the pairing it runs, not one it merely inherits", async () => {
+  const srv = startAnthropic();
+  try {
+    srv.built.config.setRuntimeSelection("org:default-org", { harnessId: "pi", modelId: "claude-opus-5" });
+    srv.built.config.setRuntimeSelection("personal:alice", { harnessId: "pi", modelId: "claude-sonnet-5" });
+    const runtime = await fetch(`${srv.base}/v1/runtime-config?principalId=alice&scopeId=personal%3Aalice`);
+    const pi = ((await runtime.json()) as { modelsByHarness: Record<string, string[]> }).modelsByHarness.pi!;
+    assert.ok(pi.includes("claude-sonnet-5"), "the scope keeps seeing what it is actually running");
+    assert.equal(
+      pi.includes("claude-opus-5"),
+      false,
+      "the org default it does not run must not become a second Anthropic option in its chat menu",
+    );
+  } finally {
+    await srv.close();
+  }
+});

@@ -6,6 +6,7 @@ import {
   defaultModelForHarness,
   defaultModelForProvider,
   modelServiceable,
+  modelSelectableForHarness,
   modelSupportedByHarness,
   onlyProvider,
   resolveModel,
@@ -46,6 +47,29 @@ test("native harnesses reject cross-provider pins and choose their own defaults"
   assert.equal(modelSupportedByHarness("claude-future-9", "claude"), true);
   assert.equal(modelSupportedByHarness("gpt-future-9", "codex"), true);
   assert.equal(defaultModelForHarness("codex", "claude-opus-4-8"), "gpt-5.6-sol");
+});
+
+test("pi is offered OpenAI, the Claude harness is offered Anthropic, and neither crosses", () => {
+  for (const claudeModel of ["claude-sonnet-5", "claude-opus-5", "claude-opus-4-8", "claude-fable-5-1"]) {
+    assert.equal(modelSelectableForHarness(claudeModel, "pi"), false, `${claudeModel} must not be offered for pi`);
+    assert.equal(modelSelectableForHarness(claudeModel, "claude"), true, `${claudeModel} belongs to claude`);
+  }
+  for (const openaiModel of ["gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.6-luna"]) {
+    assert.equal(modelSelectableForHarness(openaiModel, "pi"), true, `${openaiModel} must be offered for pi`);
+    assert.equal(modelSelectableForHarness(openaiModel, "claude"), false, `${openaiModel} is not a claude model`);
+  }
+  assert.equal(modelSelectableForHarness("openrouter/auto", "pi"), true, "pi keeps its OpenRouter route");
+  assert.equal(modelSelectableForHarness("claude-sonnet-5", "opencode"), true, "only pi is repointed");
+  assert.equal(modelSelectableForHarness(undefined, "pi"), false);
+});
+
+test("narrowing what may be picked never narrows what a harness can run", () => {
+  assert.equal(
+    modelSupportedByHarness("claude-opus-5", "pi"),
+    true,
+    "resolution is untouched, so a deployment already pointed at it keeps working",
+  );
+  assert.equal(defaultModelForHarness("pi"), "claude-opus-5", "and the shipped default does not move");
 });
 
 test("the default base model follows the providers a deployment can actually bill", () => {

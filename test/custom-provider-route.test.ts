@@ -119,34 +119,73 @@ test("a rejected key blocks registration unless validate:false", async () => {
   }
 });
 
+async function registerAndOffer(
+  base: string,
+  slug: string,
+  spec: Record<string, unknown>,
+  modelId: string,
+): Promise<string[]> {
+  const added = await fetch(`${base}/v1/admin/custom-providers/${slug}`, {
+    method: "PUT",
+    headers: ADMIN,
+    body: JSON.stringify({ ...spec, validate: false }),
+  });
+  assert.equal(added.status, 200);
+  const enabled = await fetch(`${base}/v1/admin/scopes/org%3Adefault-org/webui-models`, {
+    method: "PUT",
+    headers: ADMIN,
+    body: JSON.stringify({ ids: [modelId] }),
+  });
+  assert.equal(enabled.status, 200);
+  const runtime = await fetch(`${base}/v1/runtime-config?principalId=alice&scopeId=personal%3Aalice`);
+  assert.equal(runtime.status, 200);
+  return ((await runtime.json()) as { modelsByHarness: Record<string, string[]> }).modelsByHarness.pi!;
+}
+
 test("a discovered model added as a custom provider resolves and becomes selectable in the picker", async () => {
   const srv = start();
   try {
-    const added = await fetch(`${srv.base}/v1/admin/custom-providers/anthropic-direct`, {
-      method: "PUT",
-      headers: ADMIN,
-      body: JSON.stringify({
+    const models = await registerAndOffer(
+      srv.base,
+      "acme-discovered",
+      {
+        name: "Acme Discovered",
+        protocol: "openai",
+        baseUrl: "https://llm.acme.internal/v1",
+        models: [{ id: "acme-discovered-1", name: "Acme Discovered 1" }],
+      },
+      "acme-discovered-1",
+    );
+    assert.equal(String(resolveModel("acme-discovered-1")?.provider), "acme-discovered");
+    assert.ok(models.includes("acme-discovered-1"));
+  } finally {
+    await srv.close();
+  }
+});
+
+test("a custom provider fronting Anthropic resolves, but is not offered for pi", async () => {
+  const srv = start();
+  try {
+    const models = await registerAndOffer(
+      srv.base,
+      "anthropic-direct",
+      {
         name: "Anthropic Direct",
         protocol: "anthropic",
         baseUrl: "https://api.anthropic.com/v1",
         models: [{ id: "claude-discovered-1", name: "Claude Discovered 1" }],
-        validate: false,
-      }),
-    });
-    assert.equal(added.status, 200);
-    assert.equal(String(resolveModel("claude-discovered-1")?.provider), "anthropic-direct");
-
-    const enabled = await fetch(`${srv.base}/v1/admin/scopes/org%3Adefault-org/webui-models`, {
-      method: "PUT",
-      headers: ADMIN,
-      body: JSON.stringify({ ids: ["claude-discovered-1"] }),
-    });
-    assert.equal(enabled.status, 200);
-
-    const runtime = await fetch(`${srv.base}/v1/runtime-config?principalId=alice&scopeId=personal%3Aalice`);
-    assert.equal(runtime.status, 200);
-    const models = ((await runtime.json()) as { modelsByHarness: Record<string, string[]> }).modelsByHarness.pi!;
-    assert.ok(models.includes("claude-discovered-1"));
+      },
+      "claude-discovered-1",
+    );
+    assert.equal(
+      String(resolveModel("claude-discovered-1")?.provider),
+      "anthropic-direct",
+      "it still resolves, so a scope already pointed at it keeps running",
+    );
+    assert.ok(
+      !models.includes("claude-discovered-1"),
+      "the slug is the org's own, so the wire protocol is what gives it away",
+    );
   } finally {
     await srv.close();
   }
