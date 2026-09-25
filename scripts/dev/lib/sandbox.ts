@@ -5,7 +5,6 @@ import { writePidFile } from "./lease.ts";
 import { run } from "./proc.ts";
 import { ensureDockerDaemon } from "./postgres.ts";
 import { bestEffortValue, sleep } from "./util.ts";
-import { localNetworkName } from "../../../src/sandbox/local-sandbox.ts";
 
 export interface SandboxResolution {
   backend: "local" | "sprites";
@@ -142,6 +141,10 @@ export async function destroyLocalDevSandboxes(log: (msg: string) => void): Prom
   log(
     `sandbox: removing ${names.length} parked local dev sandbox container(s) (volumes kept; running boxes untouched)`,
   );
+  const networks = await run("docker", ["inspect", "--format", "{{.HostConfig.NetworkMode}}", ...names], {
+    timeoutMs: 30_000,
+  });
   await run("docker", ["rm", "-f", ...names], { timeoutMs: 60_000 });
-  await run("docker", ["network", "rm", ...new Set(names.map(localNetworkName))], { timeoutMs: 60_000 });
+  const scopeNets = new Set((networks.stdout ?? "").split("\n").filter((n) => n.startsWith("qm-net-")));
+  if (scopeNets.size) await run("docker", ["network", "rm", ...scopeNets], { timeoutMs: 60_000 });
 }
