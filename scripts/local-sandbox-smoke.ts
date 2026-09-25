@@ -4,7 +4,12 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createLocalSandbox, localContainerName, localVolumeName } from "../src/sandbox/local-sandbox.ts";
+import {
+  createLocalSandbox,
+  localContainerName,
+  localNetworkName,
+  localVolumeName,
+} from "../src/sandbox/local-sandbox.ts";
 import { createLocalWorkspaceStore } from "../src/workspace/workspace-store.ts";
 import { scopeId } from "../src/types.ts";
 
@@ -20,6 +25,7 @@ async function main(): Promise<void> {
   const sandbox = createLocalSandbox(ws, {});
   const scope = scopeId("personal", `smoke-${Date.now()}`);
   const layers = [{ scopeId: scope, mountPath: "", mode: "rw" as const }];
+  const boxes = [localContainerName(scope)];
 
   try {
     log("provision #1 (fresh container + volume)...");
@@ -55,6 +61,7 @@ async function main(): Promise<void> {
 
     log("scratch box...");
     const hs = await sandbox.provision(layers, { scratch: { key: `smoke-${Date.now()}` } });
+    boxes.push(hs.id);
     assert.equal(hs.scratch, true);
     assert.equal((await sandbox.run(hs, "echo scratch-ok")).stdout.trim(), "scratch-ok");
     await sandbox.teardown(hs);
@@ -65,7 +72,10 @@ async function main(): Promise<void> {
 
     log("\n=== ALL LIVE ASSERTIONS PASSED ===");
   } finally {
-    spawnSync("docker", ["rm", "-f", localContainerName(scope)], { stdio: "ignore" });
+    for (const box of boxes) {
+      spawnSync("docker", ["rm", "-f", box], { stdio: "ignore" });
+      spawnSync("docker", ["network", "rm", localNetworkName(box)], { stdio: "ignore" });
+    }
     spawnSync("docker", ["volume", "rm", localVolumeName(scope)], { stdio: "ignore" });
     log("cleanup done");
   }

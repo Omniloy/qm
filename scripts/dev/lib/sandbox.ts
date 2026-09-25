@@ -5,6 +5,7 @@ import { writePidFile } from "./lease.ts";
 import { run } from "./proc.ts";
 import { ensureDockerDaemon } from "./postgres.ts";
 import { bestEffortValue, sleep } from "./util.ts";
+import { localNetworkName } from "../../../src/sandbox/local-sandbox.ts";
 
 export interface SandboxResolution {
   backend: "local" | "sprites";
@@ -119,7 +120,9 @@ export async function destroyLocalDevSandboxes(log: (msg: string) => void): Prom
     "docker",
     [
       "ps",
-      "-aq",
+      "-a",
+      "--format",
+      "{{.Names}}",
       "--filter",
       "label=qm.sandbox=1",
       "--filter",
@@ -131,11 +134,14 @@ export async function destroyLocalDevSandboxes(log: (msg: string) => void): Prom
     ],
     { timeoutMs: 30_000 },
   );
-  const ids = (list.stdout ?? "")
+  const names = (list.stdout ?? "")
     .split("\n")
     .map((s) => s.trim())
     .filter(Boolean);
-  if (!ids.length) return;
-  log(`sandbox: removing ${ids.length} parked local dev sandbox container(s) (volumes kept; running boxes untouched)`);
-  await run("docker", ["rm", "-f", ...ids], { timeoutMs: 60_000 });
+  if (!names.length) return;
+  log(
+    `sandbox: removing ${names.length} parked local dev sandbox container(s) (volumes kept; running boxes untouched)`,
+  );
+  await run("docker", ["rm", "-f", ...names], { timeoutMs: 60_000 });
+  await run("docker", ["network", "rm", ...new Set(names.map(localNetworkName))], { timeoutMs: 60_000 });
 }

@@ -34,21 +34,16 @@ const AGENT_PORT = 8080;
 const RO_LAYERS_TAR = ".ro-layers.tar";
 const FINGERPRINT_LABEL = "qm.sandbox-fingerprint";
 const BUILD_HINT = "run `npm run sandbox:local:build`";
+const DEFAULT_NETWORK_POOL = "198.18.0.0/16";
+const MAX_SUBNET_PROBES = 64;
 
 export type { DockerExec };
 
 export interface LocalSandboxOptions {
   image?: string;
   dockerBin?: string;
-  /**
-   * Container name or id core itself runs as, when core is containerised rather
-   * than running on the Docker host.
-   *
-   * The agent port is published to the host's loopback, which only core-on-the-
-   * host can dial. Set this and core instead joins each sandbox's own network
-   * and reaches the daemon at the container's name — no host port involved.
-   */
   coreContainer?: string;
+  networkPool?: string;
   cpus?: number;
   memoryMb?: number;
   defaultTimeoutSec?: number;
@@ -84,8 +79,7 @@ export async function computeSandboxImageFingerprint(repoRoot: string): Promise<
 
 export const localContainerName = (scopeId: string): string => `qm-sbx-${localSlug(scopeId)}`;
 export const localVolumeName = (scopeId: string): string => `qm-home-${localSlug(scopeId)}`;
-export const localNetworkName = (containerName: string): string =>
-  `qm-net-${containerName.replace(/^qm-(sbx|scratch)-/, "")}`;
+export const localNetworkName = (containerName: string): string => `qm-net-${containerName.replace(/^qm-(sbx-)?/, "")}`;
 const localVolumeFromContainer = (containerName: string): string => containerName.replace(/^qm-sbx-/, "qm-home-");
 const localScratchName = (key: string): string => `qm-scratch-${localSlug(key)}`;
 
@@ -97,6 +91,20 @@ function localSlug(id: string): string {
   return `${cleaned.slice(0, 40).replace(/-+$/, "") || "scope"}-${shortHash(id)}`;
 }
 
+function parseNetworkPool(cidr: string): { base: number; slots: number } {
+  const m = cidr.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/);
+  const octets = m ? m.slice(1, 5).map(Number) : [];
+  const prefix = Number(m?.[5]);
+  if (!m || octets.some((o) => o > 255) || prefix < 8 || prefix > 28) {
+    throw new Error(`local sandbox network pool ${cidr} must be an IPv4 CIDR between /8 and /28`);
+  }
+  const addr = octets.reduce((acc, o) => acc * 256 + o, 0);
+  const size = 2 ** (32 - prefix);
+  return { base: addr - (addr % size), slots: 2 ** (28 - prefix) };
+}
+
+const dottedQuad = (n: number): string => [24, 16, 8, 0].map((shift) => (n >>> shift) & 255).join(".");
+
 export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandboxOptions = {}): Sandbox {
   const image = opts.image ?? DEFAULT_LOCAL_SANDBOX_IMAGE;
   const dexec = opts.dockerExec ?? spawnDockerExec(opts.dockerBin ?? "docker");
@@ -104,6 +112,8 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
   const defaultTimeoutSec = opts.defaultTimeoutSec ?? 600;
   const homeDir = opts.homeDir ?? HOME_DIR;
   const workspaceDir = `${homeDir}/${WORKSPACE_BASENAME}`;
+  const networkPool = opts.networkPool ?? DEFAULT_NETWORK_POOL;
+  const { base: poolBase, slots: poolSlots } = parseNetworkPool(networkPool);
   const provisionQueue = createKeyedQueue<string>();
   const recoverQueue = createKeyedQueue<string>();
 
@@ -168,8 +178,6 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
     return port;
   }
 
-  // Core on the host dials the published loopback port; containerised core is
-  // on the sandbox's own network and dials the container directly.
   async function daemonOrigin(name: string): Promise<string> {
     if (opts.coreContainer) return `http://${name}:${AGENT_PORT}`;
     return `http://127.0.0.1:${await resolvePort(name)}`;
@@ -183,13 +191,19 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
     }
   }
 
-  async function detachCore(net: string): Promise<void> {
-    if (!opts.coreContainer) return;
-    // Without this the network still has an endpoint and `network rm` fails,
-    // leaking a network per sandbox.
-    await dexec(["network", "disconnect", "-f", net, opts.coreContainer]).catch(
-      swallowAs("local-sandbox: core network disconnect", undefined),
-    );
+  async function removeContainer(name: string, scopeLabel?: string): Promise<void> {
+    await dexec(["rm", "-f", name]);
+    const net = localNetworkName(name);
+    if (opts.coreContainer) await dexec(["network", "disconnect", "-f", net, opts.coreContainer]);
+    const r = await dexec(["network", "rm", net]);
+    if (r.code !== 0 && !/not found|no such network/i.test(r.stderr)) {
+      opts.onError?.({
+        category: "sandbox_network",
+        code: "network_rm_failed",
+        message: r.stderr.trim(),
+        ...(scopeLabel ? { scopeLabel } : {}),
+      });
+    }
   }
 
   async function daemon(
@@ -235,15 +249,17 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
       const stderr = r.stderr.trim();
       await recoverQueue(name, async () => {
         const current = await containerState(name);
-        if (current?.running) return;
-        if (current) await dexec(["rm", "-f", name]);
-        try {
-          await runContainer(name, scopeByContainer.get(name), name.startsWith("qm-sbx-"));
-        } catch (e) {
-          if (!/already in use/i.test(errMessage(e))) throw e;
-          await attachCore(localNetworkName(name));
-          await waitDaemon(name);
+        if (!current) throw new Error(`local sandbox container ${name} is gone`);
+        if (current.running) return;
+        const net = await ensureNetwork(name);
+        await dexec(["network", "disconnect", "-f", net, name]);
+        const connected = await dexec(["network", "connect", net, name]);
+        if (connected.code !== 0 && !/already exists|already connected/i.test(connected.stderr)) {
+          await dexec(["rm", "-f", name]);
+          throw new Error(`docker network connect ${net} ${name} failed: ${connected.stderr.trim()}`);
         }
+        const started = await dexec(["start", name]);
+        if (started.code !== 0) throw new Error(`docker start ${name} failed: ${started.stderr.trim()}`);
         opts.onError?.({
           category: "sandbox_recover",
           code: "network_missing",
@@ -251,10 +267,7 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
           scopeLabel: scopeByContainer.get(name),
         });
       });
-      return;
     }
-    // Core may have restarted since this sandbox was built, dropping its
-    // endpoint on the sandbox network.
     await attachCore(localNetworkName(name));
     await waitDaemon(name);
   }
@@ -288,13 +301,26 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
 
   async function ensureNetwork(name: string): Promise<string> {
     const net = localNetworkName(name);
-    if ((await dexec(["network", "inspect", net])).code !== 0) {
-      const r = await dexec(["network", "create", net]);
-      if (r.code !== 0 && !/already exists/i.test(r.stderr)) {
-        throw new Error(`docker network create ${net} failed: ${r.stderr.trim()}`);
-      }
+    if ((await dexec(["network", "inspect", net])).code === 0) return net;
+    const start = parseInt(shortHash(net), 16) % poolSlots;
+    const probes = Math.min(poolSlots, MAX_SUBNET_PROBES);
+    for (let i = 0; i < probes; i++) {
+      const subnet = `${dottedQuad(poolBase + ((start + i) % poolSlots) * 16)}/28`;
+      const r = await dexec([
+        "network",
+        "create",
+        "--subnet",
+        subnet,
+        "--label",
+        "qm.sandbox=1",
+        "--label",
+        `qm.org=${configOrgId()}`,
+        net,
+      ]);
+      if (r.code === 0 || /already exists/i.test(r.stderr)) return net;
+      if (!/overlap/i.test(r.stderr)) throw new Error(`docker network create ${net} failed: ${r.stderr.trim()}`);
     }
-    return net;
+    throw new Error(`docker network create ${net}: no free /28 in ${networkPool} after ${probes} probes`);
   }
 
   async function runContainer(name: string, scope: string | undefined, withVolume: boolean): Promise<void> {
@@ -322,10 +348,18 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
       image,
     ];
     const r = await dexec(args, 120_000);
-    if (r.code !== 0) throw new Error(`docker run ${name} failed: ${r.stderr.trim()}`);
+    if (r.code !== 0) {
+      if (!/already in use/i.test(r.stderr)) await removeContainer(name, scope);
+      throw new Error(`docker run ${name} failed: ${r.stderr.trim()}`);
+    }
     portByName.delete(name);
-    await attachCore(net);
-    await waitDaemon(name);
+    try {
+      await attachCore(net);
+      await waitDaemon(name);
+    } catch (e) {
+      await removeContainer(name, scope);
+      throw e;
+    }
   }
 
   async function ensureContainer(scope: string): Promise<{ name: string; coldStart: boolean }> {
@@ -335,7 +369,8 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
       scopeByContainer.set(name, scope);
       const state = await containerState(name);
       if (state && state.imageId === imageId) {
-        if (!state.running) await startContainer(name);
+        if (state.running) await attachCore(localNetworkName(name));
+        else await startContainer(name);
         activeByContainer.set(name, (activeByContainer.get(name) ?? 0) + 1);
         return { name, coldStart: false };
       }
@@ -358,11 +393,11 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
       const name = localScratchName(key);
       scratchByKey.set(key, name);
       const state = await containerState(name);
-      if (state) {
-        if (!state.running) await startContainer(name);
+      if (state?.running && activeByContainer.has(name)) {
         activeByContainer.set(name, (activeByContainer.get(name) ?? 0) + 1);
         return { name, coldStart: false };
       }
+      if (state) await dexec(["rm", "-f", name]);
       await runContainer(name, undefined, false);
       activeByContainer.set(name, (activeByContainer.get(name) ?? 0) + 1);
       return { name, coldStart: true };
@@ -516,12 +551,7 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
 
         if (handle.scratch) {
           for (const [k, name] of scratchByKey) if (name === handle.id) scratchByKey.delete(k);
-          if (tdOpts?.destroy) await dexec(["rm", "-f", handle.id]);
-          else await dexec(["rm", "-f", handle.id]).catch(swallowAs("local-sandbox: scratch rm", undefined));
-          await detachCore(localNetworkName(handle.id));
-          await dexec(["network", "rm", localNetworkName(handle.id)]).catch(
-            swallowAs("local-sandbox: scratch network rm", undefined),
-          );
+          await removeContainer(handle.id);
           portByName.delete(handle.id);
           return;
         }
@@ -529,16 +559,9 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
         if (tdOpts?.keepWarm) return;
 
         if (tdOpts?.destroy) {
-          await dexec(["rm", "-f", handle.id]).catch(swallowAs("local-sandbox: destroy rm", undefined));
-          await detachCore(localNetworkName(handle.id));
-          await dexec(["network", "rm", localNetworkName(handle.id)]).catch(
-            swallowAs("local-sandbox: destroy network rm", undefined),
-          );
           const scope = scopeByContainer.get(handle.id);
-          if (scope)
-            await dexec(["volume", "rm", localVolumeName(scope)]).catch(
-              swallowAs("local-sandbox: destroy volume rm", undefined),
-            );
+          await removeContainer(handle.id, scope);
+          if (scope) await dexec(["volume", "rm", localVolumeName(scope)]);
           scopeByContainer.delete(handle.id);
           portByName.delete(handle.id);
           return;

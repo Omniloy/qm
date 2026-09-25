@@ -26,7 +26,7 @@ agent installs whatever else it needs on the resident disk, the way a colleague 
 
 ## When to use which sandbox
 
-- **docker** (default) — container, **open egress** (default bridge). Local dev + most prod.
+- **docker** (default) — container, **open egress** (a per-scope bridge network). Local dev + most prod.
 - **local** — host `child_process`, fast, **not isolated**. Dev/tests only.
 - **fly** — persistent microVM, warm state. **Open egress.**
 

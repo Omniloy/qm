@@ -72,12 +72,47 @@ exists while an agent is working. It also removes unused _volumes_, which would
 take a stopped deployed app's data with it. Cleanup is instead a host cron
 (`/usr/local/bin/qm-docker-cleanup.sh`) that prunes only untagged layers and old
 build cache. It must NOT prune networks: `docker network prune` has no name
-filter, so it would delete the per-scope `qm-net-<scope>` networks that a
-stopped-but-reused sandbox container reattaches to via `docker start`, and the
-container then cannot start ("network not found") — which fails that scope's
-turns and crons. The `sandbox-keepalive` service in the
-Compose file is a second line of defence: it holds a container open on the image
-so even an aggressive prune spares it.
+filter, so it deletes the per-scope `qm-net-<scope>` networks that parked sandbox
+containers still reference. The next `docker start` of such a box fails with
+"network not found"; core now repairs that in place (it recreates the network under
+the same name and reconnects the same container, keeping its disk and home volume),
+so a prune costs a slower start and a `sandbox_recover` entry in the error log
+rather than a broken scope — but it is still churn with no benefit. The
+`sandbox-keepalive` service in the Compose file is a second line of defence: it
+holds a container open on the image so even an aggressive prune spares it.
+
+**Scope networks are `/28`s carved from `LOCAL_SANDBOX_NETWORK_POOL`** (default
+`198.18.0.0/16`, room for 4096 scopes). That range sits outside Docker's default
+address pools, swarm's `10.0.0.0/8` overlay pool and Tailscale's `100.64.0.0/10`, so
+sandboxes never compete with other stacks on the host for a default pool. Docker
+rejects overlaps with its own networks but not with host routes, so if a host route
+or VPN on this box uses `198.18.0.0/15`, override the pool with another private range
+between `/8` and `/28`. Each scope keeps its own bridge: that bridge is what stops
+one sandbox reaching another's unauthenticated exec daemon.
+
+**`docker network inspect <net>` is not an "is this network unused" test.** Its
+`.Containers` lists only running endpoints, so a network whose only member is a
+parked sandbox looks empty. Check `docker ps -a --filter network=<net>` instead.
+
+**One-time migration of networks created before the `/28` pool.** Older `qm-net-*`
+networks each hold a whole default pool. A network with a running `qm-sbx-*` box on it
+keeps it until that box parks. A leftover `qm-scratch-*` box holds no state and is
+replaced on its scope's next scratch turn; `docker rm -f` it to free its network now.
+Remove every other network, detaching core first; core is usually not attached
+after a redeploy, so the disconnect may fail and the removal must not depend on it:
+
+```bash
+for net in $(docker network ls --filter name=qm-net- --format '{{.Name}}'); do
+  docker network inspect -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}' "$net" | grep -q '/28$' && continue
+  docker ps --filter network="$net" --format '{{.Names}}' | grep -qv '^qm-omniloy-core$' && continue
+  docker network disconnect -f "$net" qm-omniloy-core 2>/dev/null
+  docker network rm "$net"
+done
+```
+
+The sandbox's next turn repairs it onto a `/28`. Never disconnect the sandbox
+container itself: a container with no networks at all starts "successfully" with no
+network, skips the repair, and then fails with `exec daemon never became reachable`.
 
 ## The containerised-core constraint
 
@@ -131,18 +166,19 @@ docker exec qm-omniloy-core printenv | grep YOUR_KEY
 
 ### Identity and URLs
 
-| Key                        | Value                                                                          |
-| -------------------------- | ------------------------------------------------------------------------------ |
-| `ORG_ID`                   | org slug, e.g. `omniloy`                                                       |
-| `PUBLIC_URL`               | portal origin, e.g. `https://qm.example.com` — no trailing slash               |
-| `PUBLIC_HOST`              | the same host without the scheme; Traefik's router rule                        |
-| `HARNESS`                  | `pi`, `claude`, `codex`, or `opencode`                                         |
-| `RELAY_HOST`               | optional; host for the browser-extension relay, e.g. `relay.qm.example.com`    |
-| `RELAY_PUBLIC_URL`         | optional; the same host as a URL, e.g. `https://relay.qm.example.com`          |
-| `HARNESS_SECURITY_POSTURE` | `strict`, `auto`, or `dangerous`                                               |
-| `LOCAL_SANDBOX_IMAGE`      | `qm-sandbox-local:latest`                                                      |
-| `DATA_HOST_DIR`            | host path for core's data, e.g. `/opt/qm/data`; it _is_ `DATA_DIR` — see above |
-| `ADMIN_GRANTS`             | `someone@example.com:org_admin`, comma-separated                               |
+| Key                          | Value                                                                               |
+| ---------------------------- | ----------------------------------------------------------------------------------- |
+| `ORG_ID`                     | org slug, e.g. `omniloy`                                                            |
+| `PUBLIC_URL`                 | portal origin, e.g. `https://qm.example.com` — no trailing slash                    |
+| `PUBLIC_HOST`                | the same host without the scheme; Traefik's router rule                             |
+| `HARNESS`                    | `pi`, `claude`, `codex`, or `opencode`                                              |
+| `RELAY_HOST`                 | optional; host for the browser-extension relay, e.g. `relay.qm.example.com`         |
+| `RELAY_PUBLIC_URL`           | optional; the same host as a URL, e.g. `https://relay.qm.example.com`               |
+| `HARNESS_SECURITY_POSTURE`   | `strict`, `auto`, or `dangerous`                                                    |
+| `LOCAL_SANDBOX_IMAGE`        | `qm-sandbox-local:latest`                                                           |
+| `LOCAL_SANDBOX_NETWORK_POOL` | optional; IPv4 CIDR the per-scope `/28` networks come from, default `198.18.0.0/16` |
+| `DATA_HOST_DIR`              | host path for core's data, e.g. `/opt/qm/data`; it _is_ `DATA_DIR` — see above      |
+| `ADMIN_GRANTS`               | `someone@example.com:org_admin`, comma-separated                                    |
 
 `ADMIN_GRANTS` is the only source of admin identity. `org_admin` is the sole accepted
 role, and the principal is whatever `OIDC_PRINCIPAL_CLAIM` yields — the lowercased
@@ -541,7 +577,8 @@ In order, because each step depends on the last:
 
    Note the `qm-` prefix is fixed in `src/sandbox/local-sandbox.ts` and is unrelated to
    `appName`: sandbox containers are `qm-sbx-<slug>`, their home volumes `qm-home-<slug>`
-   and their networks `qm-net-<slug>`.
+   and their networks `qm-net-<slug>`, each a `/28` from `LOCAL_SANDBOX_NETWORK_POOL`
+   (scratch boxes use `qm-net-scratch-<slug>`).
 
    No container plus `exec daemon never became reachable` means `CORE_CONTAINER` is unset
    or does not match `container_name`. A container that starts and dies usually means the

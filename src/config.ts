@@ -260,12 +260,14 @@ interface LocalSandboxEnv {
   cpus?: number;
   memoryMb?: number;
   defaultTimeoutSec?: number;
+  networkPool?: string;
 }
 
 function localSandboxEnv(env: NodeJS.ProcessEnv): LocalSandboxEnv {
   return {
     ...(env.LOCAL_SANDBOX_IMAGE ? { image: env.LOCAL_SANDBOX_IMAGE } : {}),
     ...(env.LOCAL_SANDBOX_DOCKER_BIN ? { dockerBin: env.LOCAL_SANDBOX_DOCKER_BIN } : {}),
+    ...(env.LOCAL_SANDBOX_NETWORK_POOL ? { networkPool: env.LOCAL_SANDBOX_NETWORK_POOL } : {}),
     ...(numEnvStrict("LOCAL_SANDBOX_CPUS", env.LOCAL_SANDBOX_CPUS) !== undefined
       ? { cpus: numEnvStrict("LOCAL_SANDBOX_CPUS", env.LOCAL_SANDBOX_CPUS) }
       : {}),
