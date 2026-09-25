@@ -119,7 +119,9 @@ export async function destroyLocalDevSandboxes(log: (msg: string) => void): Prom
     "docker",
     [
       "ps",
-      "-aq",
+      "-a",
+      "--format",
+      "{{.Names}}",
       "--filter",
       "label=qm.sandbox=1",
       "--filter",
@@ -131,11 +133,18 @@ export async function destroyLocalDevSandboxes(log: (msg: string) => void): Prom
     ],
     { timeoutMs: 30_000 },
   );
-  const ids = (list.stdout ?? "")
+  const names = (list.stdout ?? "")
     .split("\n")
     .map((s) => s.trim())
     .filter(Boolean);
-  if (!ids.length) return;
-  log(`sandbox: removing ${ids.length} parked local dev sandbox container(s) (volumes kept; running boxes untouched)`);
-  await run("docker", ["rm", "-f", ...ids], { timeoutMs: 60_000 });
+  if (!names.length) return;
+  log(
+    `sandbox: removing ${names.length} parked local dev sandbox container(s) (volumes kept; running boxes untouched)`,
+  );
+  const networks = await run("docker", ["inspect", "--format", "{{.HostConfig.NetworkMode}}", ...names], {
+    timeoutMs: 30_000,
+  });
+  await run("docker", ["rm", "-f", ...names], { timeoutMs: 60_000 });
+  const scopeNets = new Set((networks.stdout ?? "").split("\n").filter((n) => n.startsWith("qm-net-")));
+  if (scopeNets.size) await run("docker", ["network", "rm", ...scopeNets], { timeoutMs: 60_000 });
 }

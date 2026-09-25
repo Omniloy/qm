@@ -427,3 +427,8 @@ test("PUBLIC_SHARE_LINKS defaults on, and only an explicit falsey value turns it
   // the building.
   assert.throws(() => loadConfig({ PUBLIC_SHARE_LINKS: "maybe" }), /PUBLIC_SHARE_LINKS/);
 });
+
+test("LOCAL_SANDBOX_NETWORK_POOL lands in the local sandbox options", () => {
+  assert.equal(loadConfig({}).localSandbox.networkPool, undefined);
+  assert.equal(loadConfig({ LOCAL_SANDBOX_NETWORK_POOL: "10.201.0.0/16" }).localSandbox.networkPool, "10.201.0.0/16");
+});
