@@ -10,7 +10,7 @@ import { createServer as createHttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createServer } from "../src/api/server.ts";
 import { buildApp } from "../src/wiring.ts";
-import { signedHeaders } from "../plugins/chassis/src/core-client.ts";
+import { signedHeaders, withSourceAuthNonce } from "../plugins/chassis/src/core-client.ts";
 import { CONTROL_PLANE_AUD, mintCapabilityToken, verifyCapabilityToken } from "../src/auth/capability-token.ts";
 import { BROWSER_RELAY_AUD } from "../src/browser-relay/server.ts";
 import { CAPABILITY_HEADER } from "../src/api/contract.ts";
@@ -39,8 +39,8 @@ after(async () => {
   await built.runtime.stop();
 });
 
-const portal = (user: string) => ({
-  [PORTAL_IDENTITY_HEADER]: mintPortalIdentity({ p: user, exp: Date.now() + 60_000 }, SECRET),
+const portal = (user: string, imp?: string) => ({
+  [PORTAL_IDENTITY_HEADER]: mintPortalIdentity({ p: user, ...(imp ? { imp } : {}), exp: Date.now() + 60_000 }, SECRET),
 });
 
 async function capabilityPairing(token: string): Promise<number> {
@@ -76,6 +76,16 @@ test("the person's portal identity mints their own pairing token", async () => {
   const minted = await verifyCapabilityToken(((await r.json()) as { token: string }).token, TEST_CAPABILITY_SECRET);
   assert.equal(minted?.aud, BROWSER_RELAY_AUD);
   assert.equal(minted?.actorId, "U1");
+});
+
+test("an admin impersonating the person cannot mint their pairing token", async () => {
+  const path = withSourceAuthNonce(PAIRING, SECRET);
+  const r = await fetch(`${coreBase}${path}`, {
+    method: "POST",
+    headers: { ...signedHeaders(SECRET, "POST", path, "{}"), ...portal("U1", "U2") },
+    body: "{}",
+  });
+  assert.equal(r.status, 403);
 });
 
 test("the web UI's pairing button mints the signed-in person's pairing token", async () => {

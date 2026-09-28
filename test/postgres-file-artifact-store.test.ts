@@ -233,6 +233,50 @@ test(
   },
 );
 
+test("pg bytes stored for an upload that never publishes are reclaimed by the sweep", { skip }, async () => {
+  const bytes = createMemoryDurableByteStore();
+  const store = createPostgresFileArtifactStore(URL!, bytes);
+  await store.delete("ghost");
+  await assert.rejects(store.put(put({ id: "ghost", data: Buffer.from("never published") })), /deleted/);
+  assert.equal(await store.sweepOrphanedBlobs(), 0, "inside the grace nothing is reclaimed");
+  assert.equal(await store.sweepOrphanedBlobs(Date.now() + ORPHANED_BLOB_GRACE_MS + 1), 1);
+});
+
+test("pg uploads in flight hold no pooled connection while their bytes transfer", { skip }, async () => {
+  const bytes = createMemoryDurableByteStore();
+  let release!: () => void;
+  const transferring = new Promise<void>((resolve) => (release = resolve));
+  let reserved = 0;
+  const store = createPostgresFileArtifactStore(URL!, {
+    ...bytes,
+    put: (source, opts) =>
+      bytes.put(source, {
+        ...opts,
+        beforeCommit: async (blobKey) => {
+          await opts?.beforeCommit?.(blobKey);
+          reserved += 1;
+          await transferring;
+        },
+      }),
+  });
+  const uploads = Array.from({ length: 12 }, (_, i) =>
+    store.put(put({ id: `slow-${i}`, path: `p/slow-${i}`, data: Buffer.from(`slow ${i}`) })),
+  );
+  try {
+    for (let waited = 0; reserved < uploads.length && waited < 3000; waited += 10)
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(reserved, uploads.length, "every upload reaches its byte transfer at once");
+    const unrelated = await Promise.race([
+      store.get("missing").then(() => "answered"),
+      new Promise((resolve) => setTimeout(() => resolve("starved"), 3000)),
+    ]);
+    assert.equal(unrelated, "answered");
+  } finally {
+    release();
+  }
+  assert.ok((await Promise.all(uploads)).every((result) => result.created));
+});
+
 test("pg rows survive across store instances (no per-process cache to diverge)", { skip }, async () => {
   const writer = createPostgresFileArtifactStore(URL!, createMemoryDurableByteStore());
   await writer.put(put({ id: "across", path: "p/across", data: Buffer.from("x"), createdAt: 5 }));

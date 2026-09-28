@@ -147,10 +147,38 @@ export function createPostgresFileArtifactStore(
     await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`blob:${blobKey}`]);
   }
 
-  async function publishIn(client: PoolClient, input: PublishFileInput) {
+  async function recordOrphan(client: PoolClient, blobKey: string): Promise<void> {
+    await client.query(
+      `INSERT INTO file_blob_orphans(blob_key, orphaned_at)
+       SELECT $1, $2 WHERE NOT EXISTS (SELECT 1 FROM file_artifacts WHERE blob_key = $1)
+       ON CONFLICT (blob_key) DO UPDATE SET orphaned_at = EXCLUDED.orphaned_at`,
+      [blobKey, Date.now()],
+    );
+  }
+
+  async function reserveBlob(blobKey: string): Promise<void> {
+    await withPgTransaction(await pool(), async (client) => {
+      await lockBlob(client, blobKey);
+      await recordOrphan(client, blobKey);
+    });
+  }
+
+  async function publish(input: PublishFileInput) {
+    return withPgTransaction(await pool(), async (client) => {
+      await lockBlob(client, input.blobKey);
+      const published = await insertIn(client, input);
+      await client.query(
+        `DELETE FROM file_blob_orphans o
+          WHERE blob_key = $1 AND EXISTS (SELECT 1 FROM file_artifacts f WHERE f.blob_key = o.blob_key)`,
+        [input.blobKey],
+      );
+      return published;
+    });
+  }
+
+  async function insertIn(client: PoolClient, input: PublishFileInput) {
     const { blobKey, sizeBytes, sha256 } = input;
     const at = input.createdAt ?? Date.now();
-    if (blobKey) await lockBlob(client, blobKey);
     if (input.reuseExistingPath) {
       await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
         `file-path:${input.ownerScopeId}:${input.path}`,
@@ -194,18 +222,14 @@ export function createPostgresFileArtifactStore(
       const existing = await getRow(input.id);
       if (existing) return { artifact: existing, created: false };
 
-      return withPgTransaction(await pool(), async (client) => {
-        const bytes = await byteStore.put(input.data, {
-          ...(input.maxBytes != null ? { maxBytes: input.maxBytes } : {}),
-          beforeCommit: (blobKey) => lockBlob(client, blobKey),
-        });
-        return publishIn(client, { ...input, ...bytes });
+      const bytes = await byteStore.put(input.data, {
+        ...(input.maxBytes != null ? { maxBytes: input.maxBytes } : {}),
+        beforeCommit: reserveBlob,
       });
+      return publish({ ...input, ...bytes });
     },
 
-    async publish(input) {
-      return withPgTransaction(await pool(), (client) => publishIn(client, input));
-    },
+    publish,
 
     async get(id, opts) {
       const r = await getRow(id);
@@ -260,13 +284,7 @@ export function createPostgresFileArtifactStore(
         );
         const removed = await client.query("DELETE FROM file_artifacts WHERE id=$1 RETURNING blob_key", [id]);
         const blobKey = removed.rows[0]?.blob_key as string | null | undefined;
-        if (!blobKey) return;
-        await client.query(
-          `INSERT INTO file_blob_orphans(blob_key, orphaned_at)
-           SELECT $1, $2 WHERE NOT EXISTS (SELECT 1 FROM file_artifacts WHERE blob_key = $1)
-           ON CONFLICT (blob_key) DO UPDATE SET orphaned_at = EXCLUDED.orphaned_at`,
-          [blobKey, Date.now()],
-        );
+        if (blobKey) await recordOrphan(client, blobKey);
       });
     },
 

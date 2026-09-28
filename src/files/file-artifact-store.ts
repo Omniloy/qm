@@ -151,9 +151,16 @@ export function createMemoryFileArtifactStore(byteStore: DurableByteStore): File
   const deleted = new Set<string>();
   const orphanedBlobs = new Map<string, number>();
   const blobQueue = createKeyedQueue();
-  const holdBlob = (blobKey: string): Promise<() => void> =>
-    new Promise((acquired) => void blobQueue(blobKey, () => new Promise<void>((release) => acquired(release))));
   const referenced = (blobKey: string): boolean => [...rows.values()].some((r) => r.blobKey === blobKey);
+  const recordOrphan = (blobKey: string): void => {
+    if (!referenced(blobKey)) orphanedBlobs.set(blobKey, Date.now());
+  };
+  const publish = (input: PublishFileInput) =>
+    blobQueue(input.blobKey, async () => {
+      const published = publishRow(input);
+      if (referenced(input.blobKey)) orphanedBlobs.delete(input.blobKey);
+      return published;
+    });
 
   async function listFiles(
     scopes: readonly ScopeId[],
@@ -232,26 +239,14 @@ export function createMemoryFileArtifactStore(byteStore: DurableByteStore): File
     async put(input) {
       const existing = rows.get(input.id);
       if (existing) return { artifact: existing, created: false };
-      const releases: Array<() => void> = [];
-      try {
-        const bytes = await byteStore.put(input.data, {
-          ...(input.maxBytes != null ? { maxBytes: input.maxBytes } : {}),
-          beforeCommit: async (blobKey) => void releases.push(await holdBlob(blobKey)),
-        });
-        return publishRow({ ...input, ...bytes });
-      } finally {
-        for (const release of releases) release();
-      }
+      const bytes = await byteStore.put(input.data, {
+        ...(input.maxBytes != null ? { maxBytes: input.maxBytes } : {}),
+        beforeCommit: (blobKey) => blobQueue(blobKey, async () => recordOrphan(blobKey)),
+      });
+      return publish({ ...input, ...bytes });
     },
 
-    async publish(input) {
-      const release = input.blobKey ? await holdBlob(input.blobKey) : undefined;
-      try {
-        return publishRow(input);
-      } finally {
-        release?.();
-      }
-    },
+    publish,
 
     async get(id, opts) {
       const r = rows.get(id);
@@ -292,22 +287,23 @@ export function createMemoryFileArtifactStore(byteStore: DurableByteStore): File
       deleted.add(id);
       const gone = rows.get(id);
       rows.delete(id);
-      if (gone?.blobKey && !referenced(gone.blobKey)) orphanedBlobs.set(gone.blobKey, Date.now());
+      if (gone?.blobKey) recordOrphan(gone.blobKey);
     },
 
     async sweepOrphanedBlobs(now = Date.now()) {
       let swept = 0;
-      for (const [blobKey, orphanedAt] of orphanedBlobs) {
-        if (orphanedAt > now - ORPHANED_BLOB_GRACE_MS) continue;
-        const release = await holdBlob(blobKey);
-        try {
+      const due = (blobKey: string): boolean =>
+        (orphanedBlobs.get(blobKey) ?? Infinity) <= now - ORPHANED_BLOB_GRACE_MS;
+      for (const blobKey of orphanedBlobs.keys()) {
+        if (!due(blobKey)) continue;
+        const reclaimed = await blobQueue(blobKey, async () => {
+          if (!due(blobKey)) return false;
           orphanedBlobs.delete(blobKey);
-          if (referenced(blobKey)) continue;
+          if (referenced(blobKey)) return false;
           await byteStore.delete(blobKey);
-          swept += 1;
-        } finally {
-          release();
-        }
+          return true;
+        });
+        if (reclaimed) swept += 1;
       }
       return swept;
     },

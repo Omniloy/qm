@@ -243,6 +243,15 @@ test("an identical upload racing a delete keeps its bytes", async () => {
   assert.deepEqual(await drain(store, "again"), PNG, "the new row is never left dangling");
 });
 
+test("bytes stored for an upload that never publishes are reclaimed by the sweep", async () => {
+  const bytes = createMemoryDurableByteStore();
+  const store = createMemoryFileArtifactStore(bytes);
+  await store.delete("ghost");
+  await assert.rejects(store.put(put({ id: "ghost", data: Buffer.from("never published") })), /deleted/);
+  assert.equal(await store.sweepOrphanedBlobs(), 0, "inside the grace nothing is reclaimed");
+  assert.equal(await store.sweepOrphanedBlobs(Date.now() + ORPHANED_BLOB_GRACE_MS + 1), 1);
+});
+
 test("deleting a row with no stored bytes is not an error", async () => {
   const store = createMemoryFileArtifactStore(createMemoryDurableByteStore());
   await store.delete("never-existed");

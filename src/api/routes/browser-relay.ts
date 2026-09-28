@@ -15,7 +15,7 @@ async function mintRelayPairing(ctx: ApiCtx): Promise<void> {
   const { res, deps } = ctx;
   const secret = deps.capabilitySecret;
   if (!secret) return sendJson(res, 503, { error: "unavailable", message: "the relay is not configured" });
-  const principalId = ctx.actor?.p;
+  const principalId = ctx.actor?.imp ? undefined : ctx.actor?.p;
   if (!principalId)
     return sendJson(res, 403, {
       error: "forbidden",
