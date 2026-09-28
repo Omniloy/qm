@@ -137,7 +137,8 @@ export async function whoami(ctx: ApiCtx): Promise<void> {
   if (!actor || !(await activePrincipal(deps, actor.id)))
     return sendJson(res, 200, { isAdmin: false, permissions: [] });
   const status = await deps.admin.adminStatusOf(actor);
-  const permissions = status.isAdmin ? ["admin"] : [];
+  const promotes = !status.isAdmin && (await deps.config?.getSkillSharingPolicy())?.org === "everyone";
+  const permissions = [...(status.isAdmin ? ["admin"] : []), ...(promotes ? ["promote-skills"] : [])];
   audit(deps, {
     principalId: actor.id,
     action: "admin.whoami",
@@ -285,6 +286,7 @@ const SETTINGS_RESOURCES = {
   ],
   credentials: [],
   connectors: ["connectors"],
+  skills: ["skillSharing"],
   onboarding: ["baseModel", "runtime"],
 } satisfies Record<string, string[]>;
 
@@ -467,7 +469,7 @@ export async function getScopeConfig(ctx: ApiCtx): Promise<void> {
   const view = requestedView as SettingsView | null;
   const includes = (...views: SettingsView[]) => view === null || views.includes(view);
   const needsModels = includes("models", "governance", "onboarding");
-  const needsConfig = view !== "credentials" && view !== "connectors";
+  const needsConfig = view === null || !["credentials", "connectors", "skills"].includes(view);
   await Promise.all([
     needsConfig ? read("config", () => deps.config!.refreshScope(targetScope)) : undefined,
     needsModels ? read("modelRegistry", () => deps.refreshModels?.()) : undefined,
@@ -490,7 +492,9 @@ export async function getScopeConfig(ctx: ApiCtx): Promise<void> {
       resources.map(async (r) => [r.readKey!, await read(r.readKey!, () => r.get!(deps, targetScope))] as const),
     ),
     view === "connectors" ? {} : read("environment", () => scopeEnvironmentMetadata(deps, targetScope)),
-    includes("credentials") ? read("credentials", () => scopeServiceCredentials(deps, targetScope)) : undefined,
+    includes("credentials", "connectors")
+      ? read("credentials", () => scopeServiceCredentials(deps, targetScope))
+      : undefined,
     includes("credentials") && parseScopeId(targetScope).kind === "org"
       ? read("people", () => deps.directory?.list())
       : undefined,
@@ -525,6 +529,7 @@ export async function getScopeConfig(ctx: ApiCtx): Promise<void> {
     ...(includes("customize")
       ? { soulVersion: deps.config.soulVersion(targetScope), soulHistory: deps.config.soulHistory(targetScope) }
       : {}),
+    ...(includes("connectors") ? { serviceCredentials } : {}),
     ...(includes("credentials")
       ? { serviceCredentials, directoryMembers: directoryMembers ?? [], directoryChannels: directoryChannels ?? [] }
       : {}),

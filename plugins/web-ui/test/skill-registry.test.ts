@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { SkillItem } from "../src/composer.ts";
-import { filterSkillGroups, filterSkills, groupSkills, skillEmptyState, statusCounts } from "../src/skill-registry.ts";
+import {
+  filterSkillGroups,
+  filterSkills,
+  groupSkills,
+  otherHomes,
+  skillEmptyState,
+  skillHomeLabel,
+  statusCounts,
+} from "../src/skill-registry.ts";
 
 function skill(overrides: Partial<SkillItem> = {}): SkillItem {
   return {
@@ -92,4 +100,68 @@ test("empty-state decisions distinguish loading, a filtered miss, and a truly em
   assert.equal(skillEmptyState(4, 0, false), "filtered");
   assert.equal(skillEmptyState(0, 0, false), "empty");
   assert.equal(skillEmptyState(4, 2, false), "none");
+});
+
+function catalog(): SkillItem[] {
+  const rows: SkillItem[] = [];
+  const add = (count: number, scope: string, scopeId: string, prefix: string) => {
+    for (let i = 0; i < count; i++) rows.push(skill({ id: `${prefix}-${i}`, name: `${prefix}-${i}`, scope, scopeId }));
+  };
+  add(26, "org", "org:acme", "org");
+  add(8, "personal", "personal:me@acme.com", "mine");
+  add(4, "channel", "channel:C1", "sales");
+  add(1, "channel", "channel:C2", "ops");
+  add(8, "group", "group:web-project-1", "proj");
+  add(3, "personal", "personal:peer@acme.com", "peer");
+  rows.push(
+    skill({ id: "gone", name: "gone", scope: "personal", scopeId: "personal:me@acme.com", status: "archived" }),
+  );
+  return rows;
+}
+
+test("every visible skill is listed when no filter is chosen, and the tab counts match the list", () => {
+  const rows = catalog();
+  const filters = { query: "", scope: "all", source: "all", status: "active" as const };
+  const groups = filterSkillGroups(groupSkills(rows), filters);
+  assert.equal(groups.flatMap((group) => group.skills).length, 50);
+  assert.equal(groups.length, 50);
+  assert.deepEqual(statusCounts(rows), { active: 50, archived: 1, all: 51 });
+});
+
+test("a conversation's context filter keeps that context's skills and the org-wide ones", () => {
+  const rows = catalog();
+  const filters = { query: "", scope: "personal:me@acme.com", source: "all", status: "active" as const };
+  const visible = filterSkillGroups(groupSkills(rows), filters).flatMap((group) => group.skills);
+  assert.equal(visible.length, 34);
+  assert.ok(visible.every((row) => row.scope === "org" || row.scopeId === "personal:me@acme.com"));
+  const counted = filterSkillGroups(groupSkills(rows), { ...filters, status: "all" }).flatMap((group) => group.skills);
+  assert.deepEqual(statusCounts(counted), { active: 34, archived: 1, all: 35 });
+});
+
+test("a skill's home names where the copy lives", () => {
+  const title = (scopeId: string) => (scopeId === "channel:C1" ? "#sales" : `Project ${scopeId}`);
+  const home = (overrides: Partial<SkillItem>) => skillHomeLabel(skill(overrides), "me@acme.com", title);
+  assert.equal(home({ scope: "org", scopeId: "org:acme" }), "Org");
+  assert.equal(home({ scope: "personal", scopeId: "personal:me@acme.com" }), "Personal");
+  assert.equal(home({ scope: "personal", scopeId: "personal:peer@acme.com" }), "Shared by peer@acme.com");
+  assert.equal(home({ scope: "channel", scopeId: "channel:C1" }), "#sales");
+  assert.equal(home({ scope: "group", scopeId: "group:p" }), "Project group:p");
+  assert.equal(home({ scope: "team", scopeId: "team:t" }), "Team");
+});
+
+test("other homes list the active copies of the same skill elsewhere", () => {
+  const org = skill({ id: "org", scope: "org", scopeId: "org:acme" });
+  const mine = skill({ id: "mine", scope: "personal", scopeId: "personal:me@acme.com" });
+  const channel = skill({ id: "chan", scope: "channel", scopeId: "channel:C1" });
+  const archived = skill({ id: "old", scope: "group", scopeId: "group:p", status: "archived" });
+  const variants = [mine, channel, org, archived];
+  assert.deepEqual(
+    otherHomes(mine, variants).map((row) => row.id),
+    ["chan", "org"],
+  );
+  assert.deepEqual(
+    otherHomes(archived, variants).map((row) => row.id),
+    ["mine", "chan", "org"],
+  );
+  assert.deepEqual(otherHomes(org, [org]), []);
 });

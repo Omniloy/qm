@@ -3088,7 +3088,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       "Grant access to an artifact you own while keeping it in its current home. Only the owner can share; grantees cannot reshare.";
     if (move)
       description =
-        "Transfer the artifact to another context. Moving an app transfers ownership; existing shares survive. Moving a skill to the org requires an org admin in a user-started turn.";
+        "Transfer the artifact to another context. Moving an app transfers ownership; existing shares survive. Moving a skill to the org requires a user-started turn by an org admin, unless the org's skill sharing setting lets everyone.";
     else if (type === "deploy")
       description =
         "Change access to an app you own while keeping it in its current home. Set public to true or false for anonymous link access, or use toScope/email for authenticated access (external emails are view-only). Only the owner can share; grantees cannot reshare.";

@@ -453,6 +453,7 @@ export interface App {
   ): Promise<OpenedWorkspaceFile | "not_found" | "too_large" | "forbidden" | "unavailable">;
   grant(g: Grant): Promise<void>;
   revokeGrant(ownerScopeId: ScopeId, ref: string, granteeScopeId: ScopeId, revokedBy: string): Promise<void>;
+  skillSharingAllows(actorId: string, audience: "contexts" | "org"): Promise<boolean>;
   promoteSkill(id: string, targetScopeId: ScopeId, actorId: string, liveActor: boolean): Promise<Skill>;
   /** The inverse of promoteSkill: take an org-wide skill back out of circulation. */
   demoteSkill(id: string, actorId: string, liveActor: boolean): Promise<void>;

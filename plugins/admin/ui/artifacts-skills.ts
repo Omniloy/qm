@@ -1,6 +1,7 @@
 import { html, nothing } from "lit";
 import { ifDefined } from "lit/directives/if-defined.js";
 import { card, table, renderer } from "./shared.ts";
+import { choiceGroup } from "./setting-controls.ts";
 import type { Context, Data } from "./artifacts.ts";
 const badge = (text: unknown, tone = "muted", title = "") =>
   html`<span class=${"badge " + tone} title=${ifDefined(title || undefined)}>${text}</span>`;
@@ -125,6 +126,89 @@ export async function skillDetail(root: HTMLElement, rep: Data, group: Data[], c
     ),
   );
   root.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+type Audience = "everyone" | "admins";
+type SharingPolicy = { contexts: Audience; org: Audience };
+export async function mountSharing(root: HTMLElement, c: Context) {
+  const path = "/api/scopes/" + encodeURIComponent("org:" + c.orgId);
+  const response = await c.api("GET", path + "?view=skills");
+  if (!root.isConnected || !response.ok || !response.data?.skillSharing) return;
+  const paint = renderer(root);
+  let saved: SharingPolicy = response.data.skillSharing;
+  let draft: SharingPolicy = { ...saved };
+  let saving = false,
+    message = "",
+    tone = "";
+  const dirty = () => draft.contexts !== saved.contexts || draft.org !== saved.org;
+  const pick = (key: keyof SharingPolicy) => (e: Event) => {
+    draft = { ...draft, [key]: (e.target as HTMLInputElement).value as Audience };
+    message = dirty() ? "Unsaved changes" : "";
+    tone = dirty() ? "dirty" : "";
+    draw();
+  };
+  const save = async () => {
+    if (saving || !dirty()) return;
+    const body = { ...draft };
+    saving = true;
+    message = "Saving…";
+    tone = "saving";
+    draw();
+    try {
+      const result = await c.api("PUT", path + "/skill-sharing", body);
+      if (result.ok) {
+        saved = body;
+        message = "Saved";
+        tone = "ok";
+      } else {
+        message = result.data?.message || "Save failed.";
+        tone = "err";
+      }
+    } catch {
+      message = "Save failed.";
+      tone = "err";
+    } finally {
+      saving = false;
+      draw();
+    }
+  };
+  const draw = () =>
+    paint(
+      html`<section class="card" id="card-skill-sharing">
+        <div class="head">
+          <h2>Skill sharing</h2>
+          <p>
+            Who may hand a skill they manage to other people. Applies org-wide and is enforced on every share, from the
+            web UI or an agent.
+          </p>
+        </div>
+        <div class="body">
+          <h3>Other conversations and teammates</h3>
+          ${choiceGroup({ name: "skill-sharing-contexts", value: draft.contexts, onChange: pick("contexts") }, [
+            [
+              "everyone",
+              "Everyone",
+              "Default. Anyone who manages a skill can share or move it into a conversation, channel, or teammate they're in.",
+            ],
+            ["admins", "Org admins only", "Members keep their skills to themselves; an admin shares them on request."],
+          ])}
+          <h3>The whole organization</h3>
+          ${choiceGroup({ name: "skill-sharing-org", value: draft.org, onChange: pick("org") }, [
+            ["admins", "Org admins only", "Default. Only an admin can give a skill to everyone or take one back."],
+            [
+              "everyone",
+              "Everyone",
+              "Any member can give a skill they manage to the whole organization and take back their own. Only an admin can replace or remove someone else's.",
+            ],
+          ])}
+        </div>
+        <div class="foot">
+          <button class=${"primary" + (dirty() ? " dirty" : "")} ?disabled=${!dirty() || saving} @click=${save}>
+            Save</button
+          ><span class=${"status" + (tone ? " " + tone : "")} id="st-skill-sharing">${message}</span>
+        </div>
+      </section>`,
+    );
+  draw();
 }
 export async function mountPacks(root: HTMLElement, c: Context) {
   const response = await c.api("GET", "/api/skill-packs");

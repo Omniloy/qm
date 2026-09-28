@@ -5215,6 +5215,16 @@ a.connector-widget:focus-visible {
   justify-content: flex-end;
   gap: 6px;
 }
+.skill-variant-state:has(.session-menu-popover) {
+  z-index: 2;
+}
+.skill-home,
+.skill-also {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .skill-empty {
   display: flex;
   align-items: center;
@@ -13247,6 +13257,7 @@ button.workspace-row {
   flex-direction: column;
   gap: 14px;
   max-height: min(76vh, 640px);
+  max-height: min(76dvh, 640px);
   border-color: var(--border);
 }
 .drive-picker-head {
@@ -13355,6 +13366,10 @@ button.workspace-row {
 .row-menu .session-menu-btn {
   opacity: 1;
 }
+.row-menu .session-menu-popover {
+  width: max-content;
+  max-width: min(320px, calc(100vw - 32px));
+}
 .browser-pane {
   display: flex;
   flex-direction: column;
@@ -13430,6 +13445,9 @@ img.browser-pane-view.drivable:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .context-choice {
   display: flex;

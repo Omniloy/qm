@@ -48,6 +48,7 @@ import {
   PERSONAL_MODEL_PROVIDERS,
   type ModelAccountModes,
   type PersonalModelProvider,
+  type SkillSharingPolicy,
 } from "../../resolution/config-store.ts";
 import { parseEgressPolicy } from "../../resolution/egress-policy.ts";
 import { DEVICE_FLOW_CUTOVER_MODES, type DeviceFlowCutoverMode } from "../../credentials/device-flow-cutover.ts";
@@ -579,6 +580,27 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
         return { value: modes as ModelAccountModes };
       },
       (deps, _scope, modes) => deps.config!.setModelAccountModes(modes),
+    ),
+  },
+  {
+    id: "skill-sharing",
+    kind: "custom",
+    target: "org",
+    label:
+      "Who may share skills: contexts is who may share or move a skill they manage into another conversation, channel, or teammate; org is who may give a skill to the whole organization. admins limits it to org admins.",
+    readKey: "skillSharing",
+    get: (deps, scope) => (parseScopeId(scope).kind === "org" ? deps.config!.getSkillSharingPolicy() : undefined),
+    apply: generic<SkillSharingPolicy>(
+      (body, { scope }) => {
+        const bad = orgOnly(scope, "skill sharing is org-wide");
+        if (bad) return bad;
+        const policy = (body ?? {}) as Partial<Record<keyof SkillSharingPolicy, unknown>>;
+        const valid = (audience: unknown) => audience === "everyone" || audience === "admins";
+        if (!valid(policy.contexts) || !valid(policy.org))
+          return { error: 'skill-sharing requires { contexts: "everyone" | "admins", org: "everyone" | "admins" }' };
+        return { value: policy as SkillSharingPolicy };
+      },
+      (deps, _scope, policy) => deps.config!.setSkillSharingPolicy(policy),
     ),
   },
   {

@@ -382,7 +382,7 @@ const FAMILIES: AgentApiFamily[] = [
         method: "POST",
         path: "/v1/share",
         summary:
-          'share or move one of YOUR artifacts to another context — body {type:"file"|"skill"|"deploy"|"cron", id, toScope:"org"|<scope id>|a teammate\'s name, permission?:"read"(default)|"write", move?:false}. For app sharing only, `email` may replace `toScope` to grant view access to an exact email outside the directory. Default (share) adds a grant — the artifact keeps its home and creator. move:true changes its home scope instead (skills only today). Frictionless into any context you belong to; allowed for anyone who manages the artifact\'s home (its owner, or a current member of its private-channel/group home), from any conversation; ceding a skill to the org is admin-gated (a live org admin only).',
+          'share or move one of YOUR artifacts to another context — body {type:"file"|"skill"|"deploy"|"cron", id, toScope:"org"|<scope id>|a teammate\'s name, permission?:"read"(default)|"write", move?:false}. For app sharing only, `email` may replace `toScope` to grant view access to an exact email outside the directory. Default (share) adds a grant — the artifact keeps its home and creator. move:true changes its home scope instead (skills only today). Frictionless into any context you belong to; allowed for anyone who manages the artifact\'s home (its owner, or a current member of its private-channel/group home), from any conversation; ceding a skill to the org takes a live person who is an org admin, unless the org skill sharing setting lets everyone; that setting can also limit sharing skills into other contexts to org admins.',
       },
     ],
   },

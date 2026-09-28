@@ -904,6 +904,13 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
           message: `only the ${req.type}'s owner (or a member of its shared home) can share or move it`,
         };
       }
+      if (req.type === "skill" && !orgSkillCede && !(await app.skillSharingAllows(capability.actorId, "contexts"))) {
+        return {
+          ok: false,
+          code: "forbidden",
+          message: "only an org admin can share or move a skill into another context in this organization",
+        };
+      }
       if (
         (toKind === "channel" || toKind === "group" || toKind === "team") &&
         !(await app.belongsToScope(capability.actorId, toScope))

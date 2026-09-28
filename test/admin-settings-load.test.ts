@@ -38,16 +38,19 @@ test("settings projections preserve values while excluding unrelated payloads", 
     "credentials",
     "connectors",
     "slack-settings",
+    "skills",
     "onboarding",
   ]) {
     const response = await fetch(srv.base + scopePath + "?view=" + view, { headers: ADMIN });
     assert.equal(response.status, 200, view);
     const projected = (await response.json()) as Record<string, unknown> & { branding: { selfLabel: string } };
     for (const [key, value] of Object.entries(projected)) assert.deepEqual(value, full[key], view + ":" + key);
-    if (view !== "credentials") assert.equal("serviceCredentials" in projected, false, view);
+    if (view === "connectors") assert.deepEqual(projected.serviceCredentials, []);
+    else if (view !== "credentials") assert.equal("serviceCredentials" in projected, false, view);
     else assert.deepEqual(projected.directoryChannels, [{ channelId: "C-settings", name: "settings-test" }]);
     assert.match(response.headers.get("server-timing") ?? "", /authorize;dur=/);
-    if (["customize", "credentials", "connectors"].includes(view))
+    if (view === "skills") assert.deepEqual(Object.keys(projected).sort(), ["scopeId", "skillSharing"]);
+    if (["customize", "credentials", "connectors", "skills"].includes(view))
       assert.equal("modelsByHarness" in projected, false, view);
     if (view === "slack-settings") {
       for (const key of ["externalSlackParticipants", "internalMemberOverrides", "channelHeaderPinDefault", "ackEmoji"])

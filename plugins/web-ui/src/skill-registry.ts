@@ -32,7 +32,7 @@ export function filterSkills(skills: readonly SkillItem[], filters: SkillRegistr
   const query = filters.query.trim().toLowerCase();
   return skills.filter((skill) => {
     if (filters.status !== "all" && (isArchivedSkill(skill) ? "archived" : "active") !== filters.status) return false;
-    if (filters.scope !== "all" && skill.scope !== filters.scope) return false;
+    if (!inScope(skill, filters.scope)) return false;
     if (filters.source === "overrides" ? !skill.shadowed : filters.source !== "all" && skill.source !== filters.source)
       return false;
     if (!query) return true;
@@ -42,6 +42,27 @@ export function filterSkills(skills: readonly SkillItem[], filters: SkillRegistr
       .toLowerCase()
       .includes(query);
   });
+}
+
+function inScope(skill: SkillItem, scope: string): boolean {
+  if (scope === "all") return true;
+  if (scope.includes(":")) return skill.scopeId === scope || skill.scope === "org";
+  return skill.scope === scope;
+}
+
+export function skillHomeLabel(skill: SkillItem, me: string | null, titleFor: (scopeId: string) => string): string {
+  if (skill.scope === "personal") {
+    const owner = skill.scopeId?.slice("personal:".length);
+    return !owner || owner === me ? "Personal" : `Shared by ${owner}`;
+  }
+  if ((skill.scope === "channel" || skill.scope === "group") && skill.scopeId) return titleFor(skill.scopeId);
+  return skill.scope === "org" ? "Org" : skill.scope.charAt(0).toUpperCase() + skill.scope.slice(1);
+}
+
+export function otherHomes(skill: SkillItem, variants: readonly SkillItem[]): SkillItem[] {
+  return variants.filter(
+    (variant) => variant !== skill && !isArchivedSkill(variant) && variant.scopeId !== skill.scopeId,
+  );
 }
 
 export function groupSkills(skills: readonly SkillItem[]): SkillGroup[] {

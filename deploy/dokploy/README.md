@@ -367,6 +367,25 @@ it, so every surface serves it as `/favicon.svg`. `ORG_BRAND_MARK_URL` points th
 and admin badge at that same public `/favicon.svg`; it must be an absolute `https://` URL,
 so it names the public host.
 
+## MCP servers, Composio and skill sharing
+
+None of these need a Dokploy env var or a redeploy. An org admin sets each one in the
+admin console at `https://<host>/admin`, and core stores it in Postgres:
+
+- **MCP servers**: **Connectors** → **MCP servers** → **+ Add MCP server**. Enter an ID,
+  the server's streamable-HTTP URL, and its auth (none, bearer token, or OAuth client
+  credentials). Saving calls `tools/list` on the server and refuses a server it cannot
+  reach. With **Per person**, each call uses the caller's own connected account for the
+  host you name, which needs `CONNECTOR_SECRET_KEY` (already a required secret). See
+  [`docs/mcp-connectors.md`](../../docs/mcp-connectors.md).
+- **Composio**: **Connectors** → **Composio**. Paste the Composio project API key. Core
+  stores it as the org credential `composio` (env key `COMPOSIO_API_KEY`), and it stays in
+  the backend. Before production use, set the Composio project's callback verifier URL to
+  `https://<host>/api/composio/callback`. See [`docs/composio.md`](../../docs/composio.md).
+- **Skill sharing**: **Skills** (with the organization scope selected) → **Skill sharing**.
+  Choose who may share a skill into other conversations and teammates (default:
+  everyone), and who may give a skill to the whole organization (default: org admins).
+
 ## Compose notes
 
 Rationale that the compose file does not carry inline:

@@ -34,7 +34,9 @@ import {
   filterSkillGroups,
   groupSkills,
   isArchivedSkill,
+  otherHomes,
   skillEmptyState,
+  skillHomeLabel,
   statusCounts,
   type SkillStatusFilter,
 } from "./skill-registry";
@@ -51,6 +53,7 @@ let skillRows: SkillItem[] = [];
 let skillsNotice = "";
 let skillSearch = "";
 let scopeFilter = "all";
+let filterContext: string | null = null;
 let sourceFilter = "all";
 let statusFilter: SkillStatusFilter = "active";
 let createScopes: Array<{ scopeId: string; name: string }> = [];
@@ -125,10 +128,6 @@ export function routeSkillsHistory(skillId: string | null): void {
   const skill = skillId ? skillRows.find((candidate) => candidate.id === skillId) : undefined;
   if (skill) openSkill(skill);
   else drawSkills();
-}
-
-function scopeLabel(scope: string): string {
-  return scope ? scope.charAt(0).toUpperCase() + scope.slice(1) : "";
 }
 
 function editAudience(scopeId: string | undefined): string {
@@ -224,18 +223,18 @@ function startCreate(): void {
   queueMicrotask(() => document.querySelector<HTMLInputElement>("#skill-create-name")?.focus());
 }
 
-function skillScopeTitle(s: SkillItem): string {
-  if (s.scopeId && (s.scope === "personal" || s.scope === "channel" || s.scope === "group")) {
-    return scopeTitle(s.scopeId);
-  }
-  return scopeLabel(s.scope);
+function skillHome(s: SkillItem): string {
+  return skillHomeLabel(s, appState.me?.user ?? null, (scopeId) =>
+    scopeTitle(scopeId, shareScopes.find((scope) => scope.scopeId === scopeId)?.name),
+  );
 }
 
-function skillVariant(s: SkillItem, hasScopeVariants: boolean): TemplateResult {
+function skillVariant(s: SkillItem, variants: readonly SkillItem[]): TemplateResult {
   const actions = skillActions(s);
   const archived = isArchivedSkill(s);
+  const also = [...new Set(otherHomes(s, variants).map(skillHome))];
   const busy = deleting === s.id || (shareBusy && sharing?.skill.id === s.id);
-  const menu = skillShareActions(s, { isAdmin: can("admin"), archived }).map((a) =>
+  const menu = skillShareActions(s, { isAdmin: can("admin"), canPromote: can("promote-skills"), archived }).map((a) =>
     busy ? { ...a, disabled: true, reason: "Working…" } : a,
   );
   return html`
@@ -254,8 +253,9 @@ function skillVariant(s: SkillItem, hasScopeVariants: boolean): TemplateResult {
         <span class="skill-variant-description" ${tip(s.description)}>${s.description}</span>
       </a>
       <div class="skill-variant-state">
+        <span class="badge skill-home" ${tip(`Lives in ${skillHome(s)}`)}>${skillHome(s)}</span>
+        ${also.length ? html`<span class="badge skill-also" ${tip(`Also in ${also.join(", ")}`)}>also in ${also.join(", ")}</span>` : nothing}
         ${archived ? html`<span class="badge">Archived</span>` : nothing}
-        ${!archived && hasScopeVariants ? html`<span class="badge">Scope variant</span>` : nothing}
         ${actions.edit && !archived ? html`<button class="btn skill-edit-trigger" data-skill-id=${s.id ?? ""} type="button" ?disabled=${busy} @click=${() => void startEdit(s)}>Edit</button>` : nothing}
         ${
           menu.length
@@ -295,7 +295,7 @@ function openSkill(s: SkillItem, opts: { push?: boolean } = {}): void {
       </div>
       <div class="field">
         <label>Scope</label>
-        <div class="value">${skillScopeTitle(s)}</div>
+        <div class="value">${skillHome(s)}</div>
       </div>
       <div class="field">
         <label>Version</label>
@@ -319,11 +319,9 @@ function openSkill(s: SkillItem, opts: { push?: boolean } = {}): void {
   appState.mainEl.replaceChildren(host);
 }
 
-function skillGroup(skills: SkillItem[]): TemplateResult {
-  const activeVariants = skills.filter((skill) => !isArchivedSkill(skill)).length;
-  const hasScopeVariants = activeVariants > 1;
+function skillGroup(skills: SkillItem[], variants: readonly SkillItem[]): TemplateResult {
   return html`<section class="skill-group" aria-label=${`/${skills[0]?.name ?? "skill"}`}>
-    ${skills.map((skill) => skillVariant(skill, hasScopeVariants))}
+    ${skills.map((skill) => skillVariant(skill, variants))}
   </section>`;
 }
 
@@ -573,20 +571,19 @@ function drawSkills(loading = false): void {
     render(creating ? creatorPane() : editorPane(), skillsPageHost);
     return;
   }
-  const filters = { query: skillSearch, scope: scopeFilter, source: sourceFilter, status: statusFilter };
   const scopedScope = scopedSession.active?.scopeId ?? null;
+  if (scopedScope !== filterContext) {
+    filterContext = scopedScope;
+    scopeFilter = scopedScope ?? "all";
+  }
   skillsPageHost.classList.toggle("scoped-view", Boolean(scopedScope));
-  let groups = filterSkillGroups(groupSkills(skillRows), filters);
-  if (scopedScope)
-    groups = groups
-      .map((group) => ({
-        ...group,
-        skills: group.skills.filter((skill) => skill.scopeId === scopedScope),
-      }))
-      .filter((group) => group.skills.length > 0);
+  const filters = { query: skillSearch, scope: scopeFilter, source: sourceFilter, status: statusFilter };
+  const allGroups = groupSkills(skillRows);
+  const variantsByName = new Map(allGroups.map((group) => [group.name, group.skills]));
+  const groups = filterSkillGroups(allGroups, filters);
   const filtered = groups.flatMap((group) => group.skills);
-  const counts = statusCounts(skillRows);
-  const rows: TemplateResult[] = groups.map((group) => skillGroup(group.skills));
+  const counts = statusCounts(filterSkillGroups(allGroups, { ...filters, status: "all" }).flatMap((g) => g.skills));
+  const rows: TemplateResult[] = groups.map((group) => skillGroup(group.skills, variantsByName.get(group.name) ?? []));
   const clearFilters = () => {
     skillSearch = "";
     scopeFilter = "all";
@@ -595,7 +592,7 @@ function drawSkills(loading = false): void {
     drawSkills();
   };
   const emptyState = skillEmptyState(skillRows.length, filtered.length, loading);
-  let empty: string | TemplateResult = scopedScope ? "No skills in this context." : "No skills available yet.";
+  let empty: string | TemplateResult = "No skills available yet.";
   if (emptyState === "filtered") {
     empty = html`<div class="skill-empty">
       <span>No skills match these filters.</span
@@ -651,6 +648,9 @@ function drawSkills(loading = false): void {
                 },
                 options: [
                   html`<option value="all">All scopes</option>`,
+                  ...(scopedScope
+                    ? [html`<option value=${scopedScope}>${scopeTitle(scopedScope)} and org-wide</option>`]
+                    : []),
                   html`<option value="personal">Personal</option>`,
                   html`<option value="channel">Channel</option>`,
                   html`<option value="group">Project / group</option>`,

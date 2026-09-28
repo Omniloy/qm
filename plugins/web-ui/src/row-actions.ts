@@ -1,6 +1,7 @@
 import { html, nothing, type TemplateResult } from "lit";
+import { ref } from "lit/directives/ref.js";
 import { MoreHorizontal } from "lucide";
-import { icon } from "./ui";
+import { icon } from "./ui.ts";
 import type { RowActionSpec } from "./drive-mount";
 
 let openMenu: { key: string; rerender: () => void } | null = null;
@@ -10,6 +11,20 @@ export function closeRowMenu(target: Element | null): void {
   const { rerender } = openMenu;
   openMenu = null;
   if (document.querySelector(".row-menu .session-menu-popover")) rerender();
+}
+
+export function placeMenuPopover(el?: Element): void {
+  if (!(el instanceof HTMLElement)) return;
+  el.classList.remove("drop-up");
+  const margin = 8;
+  const scrollport = el.closest(".list, .pane")?.getBoundingClientRect();
+  const bottomLimit = Math.min(window.innerHeight, scrollport?.bottom ?? Infinity) - margin;
+  const topLimit = Math.max(0, scrollport?.top ?? 0) + margin;
+  const rect = el.getBoundingClientRect();
+  const anchorTop = el.parentElement?.getBoundingClientRect().top ?? rect.top;
+  if (rect.bottom > bottomLimit && anchorTop - 4 - rect.height >= topLimit) {
+    el.classList.add("drop-up");
+  }
 }
 
 export function resetRowMenus(): void {
@@ -41,7 +56,12 @@ export function rowMenuTpl(
     </button>
     ${
       open
-        ? html`<div class="session-menu-popover" role="menu" @click=${(event: Event) => event.stopPropagation()}>
+        ? html`<div
+            class="session-menu-popover"
+            role="menu"
+            ${ref((el) => queueMicrotask(() => placeMenuPopover(el)))}
+            @click=${(event: Event) => event.stopPropagation()}
+          >
             ${actions.map(
               (a) =>
                 html`<button

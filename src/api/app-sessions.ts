@@ -28,6 +28,7 @@ import { grantSharedContextRead, MAX_ATTACHMENT_BYTES, mimeFromName, safeAttachm
 import { projectIdFromGroupRef, projectScopeId } from "../projects/project-store.ts";
 
 import type { App, AppDeps } from "./app-types.ts";
+import type { SkillSharingPolicy } from "../resolution/config-store.ts";
 import {
   MAX_WORKSPACE_FILE_BYTES,
   MAX_WORKSPACE_PATHS,
@@ -121,6 +122,7 @@ export function createSessionMethods(
   | "forkSession"
   | "grant"
   | "revokeGrant"
+  | "skillSharingAllows"
   | "promoteSkill"
   | "demoteSkill"
   | "listSkillGrants"
@@ -153,6 +155,12 @@ export function createSessionMethods(
     principalManagesArtifactHome,
     artifactAuthor,
   } = h;
+  const isOrgAdmin = async (actorId: string) => {
+    if (!deps.admin) throw new Error("org skill sharing requires an admin service");
+    return (await deps.admin.adminStatusOf({ id: actorId, type: "internal" })).isAdmin;
+  };
+  const skillSharingAllows = async (actorId: string, audience: keyof SkillSharingPolicy) =>
+    (await deps.config.getSkillSharingPolicy())[audience] === "everyone" || (await isOrgAdmin(actorId));
   const transcripts = createTranscriptSource(deps.sessions);
   const pinView = (
     rec: { id: string; text?: string; entrySeq?: number; addedBy: string; createdAt: number },
@@ -1208,6 +1216,8 @@ export function createSessionMethods(
         scopeLabel: granteeScopeId,
       });
     },
+    skillSharingAllows,
+
     async promoteSkill(id, targetScopeId, actorId, liveActor) {
       if (parseScopeId(targetScopeId).kind !== "org")
         throw new Error("promote targets the org scope — use share or move for anything narrower");
@@ -1216,9 +1226,25 @@ export function createSessionMethods(
           403,
           `promoting a skill org-wide takes a live person the platform can attest is present — ${UNATTESTED_TURN_CAUSE}`,
         );
-      if (!deps.admin) throw new Error("org promotion requires an admin service");
-      const status = await deps.admin.adminStatusOf({ id: actorId, type: "internal" });
-      if (!status.isAdmin) throw new AdminError(403, "only an org admin can promote a skill org-wide");
+      if (!(await isOrgAdmin(actorId))) {
+        if (!(await skillSharingAllows(actorId, "org")))
+          throw new AdminError(403, "only an org admin can promote a skill org-wide");
+        const skill = await deps.skills.get(id);
+        if (!skill || !(await principalManagesArtifactHome(skill.scopeId, skill.createdBy, actorId)))
+          throw new AdminError(403, "that skill isn't yours to share");
+        const taken = (await deps.skills.list()).find(
+          (s) =>
+            s.scopeId === targetScopeId &&
+            s.status === "published" &&
+            s.manifest.name === skill.manifest.name &&
+            s.createdBy !== actorId,
+        );
+        if (taken)
+          throw new AdminError(
+            403,
+            `the organization already has a /${skill.manifest.name} skill — only an org admin can replace it`,
+          );
+      }
       const promoted = await deps.skills.promote(id, targetScopeId);
       deps.auditLog.record({
         at: Date.now(),
@@ -1240,9 +1266,9 @@ export function createSessionMethods(
           403,
           `taking a skill back from the org takes a live person the platform can attest is present — ${UNATTESTED_TURN_CAUSE}`,
         );
-      if (!deps.admin) throw new Error("org demotion requires an admin service");
-      const status = await deps.admin.adminStatusOf({ id: actorId, type: "internal" });
-      if (!status.isAdmin) throw new AdminError(403, "only an org admin can take a skill back from the org");
+      const ownPromotion = skill.createdBy === actorId && (await skillSharingAllows(actorId, "org"));
+      if (!ownPromotion && !(await isOrgAdmin(actorId)))
+        throw new AdminError(403, "only an org admin can take a skill back from the org");
       await deps.skills.archive(id);
       deps.auditLog.record({
         at: Date.now(),

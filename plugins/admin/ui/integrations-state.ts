@@ -79,9 +79,18 @@ export type Connector = {
   scopes?: string[];
   setupGuide?: { url: string; console: string; steps: string[] };
 };
+export type ServiceCredential = {
+  slug: string;
+  delivery: string;
+  envKey?: string;
+  enabled: boolean;
+  hasSecret: boolean;
+  updatedAt: number;
+};
 export class ConnectorsState {
   catalog: Connector[] = [];
   list: Connector[] = [];
+  serviceCredentials: ServiceCredential[] | undefined;
   editor = false;
   editing = "";
   draft = { provider: "", clientId: "", clientSecret: "", enabled: true };
@@ -144,6 +153,7 @@ export class ConnectorsState {
         "err",
       );
     this.list = result.data.connectors || [];
+    this.serviceCredentials = result.data.serviceCredentials || [];
     if (!this.editor) this.draft.provider = this.catalog[0]?.provider || "";
     this.render();
   }

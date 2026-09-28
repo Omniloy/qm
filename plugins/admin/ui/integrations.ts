@@ -17,11 +17,14 @@ export {
 } from "./integrations-state.ts";
 import { loadScope as loadSettings } from "./integrations-state.ts";
 import { brandLabel } from "./shared.ts";
+import { mcp, mcpCard } from "./mcp-servers.ts";
+import { composio, composioCard } from "./composio.ts";
+export { mcp, composio };
 export function loadScope(data: any, scope: string) {
   loadSettings(data, scope);
   if (states.get("ack-emoji")!.available) void emoji.load();
 }
-export const loadConnectors = () => connectors.load();
+export const loadConnectors = () => Promise.all([connectors.load(), mcp.load()]);
 export const loadSlackInstallation = () => installation.load();
 const cards: Record<string, () => ReturnType<typeof html>> = {};
 cards["card-external-slack"] = () => {
@@ -269,6 +272,8 @@ cards["card-connectors"] = () => {
     </div>
   </section>`;
 };
+cards["card-mcp-servers"] = mcpCard;
+cards["card-composio"] = composioCard;
 cards["card-slack-installation"] = () => {
   const s = installation,
     d = s.data;
@@ -595,7 +600,14 @@ export function mountCards() {
     if (!placeholder) continue;
     const fragment = document.createDocumentFragment();
     const draw = () => render(template(), fragment);
-    if (id === "card-connectors") connectors.render = draw;
+    if (id === "card-connectors" || id === "card-composio") {
+      const previous = connectors.render;
+      connectors.render = () => {
+        previous();
+        draw();
+      };
+      if (id === "card-composio") composio.render = draw;
+    } else if (id === "card-mcp-servers") mcp.render = draw;
     else if (id === "card-slack-installation") installation.render = draw;
     else {
       const key = (

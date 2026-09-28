@@ -71,6 +71,18 @@ export interface PersistedModelAccountModes {
   modes: ModelAccountModes;
 }
 
+type SkillSharingAudience = "everyone" | "admins";
+export interface SkillSharingPolicy {
+  contexts: SkillSharingAudience;
+  org: SkillSharingAudience;
+}
+const DEFAULT_SKILL_SHARING_POLICY: SkillSharingPolicy = { contexts: "everyone", org: "admins" };
+
+export interface PersistedSkillSharingPolicy {
+  scopeId: ScopeId;
+  policy: SkillSharingPolicy;
+}
+
 export interface PersistedModelAccount extends PersistedScopedFlag {
   provider?: "anthropic" | "openai";
 }
@@ -261,6 +273,8 @@ export interface ScopedConfigStore {
   getModelAccountDurable(principalId: string): Promise<ModelAccount>;
   getModelAccountModesDurable(): Promise<ModelAccountModes>;
   setModelAccountModes(modes: ModelAccountModes): Promise<void>;
+  getSkillSharingPolicy(): Promise<SkillSharingPolicy>;
+  setSkillSharingPolicy(policy: SkillSharingPolicy): Promise<void>;
   getBaseModelOwnDurable(id: ScopeId): Promise<string | null>;
   getWebuiModels(id: ScopeId): string[] | null;
   setWebuiModels(id: ScopeId, ids: string[] | null): void;
@@ -321,6 +335,7 @@ export function createMemoryConfigStore(
     interactiveFastMode?: DurableMap<PersistedScopedFlag>;
     individualModelAuth?: DurableMap<PersistedModelAccount>;
     modelAccountModes?: DurableMap<PersistedModelAccountModes>;
+    skillSharing?: DurableMap<PersistedSkillSharingPolicy>;
     webuiModels?: DurableMap<PersistedWebuiModels>;
     modelClassifications?: DurableMap<PersistedModelClassification>;
     peopleDirectoryUrls?: DurableMap<PersistedPeopleDirectoryUrl>;
@@ -384,6 +399,7 @@ export function createMemoryConfigStore(
   const individualModelAuthStore = opts.individualModelAuth ?? createMemoryMap<PersistedModelAccount>();
   const modelAccountModesStore = opts.modelAccountModes ?? createMemoryMap<PersistedModelAccountModes>();
   const modelAccountModes = async () => (await modelAccountModesStore.get(org))?.modes ?? DEFAULT_MODEL_ACCOUNT_MODES;
+  const skillSharingStore = opts.skillSharing ?? createMemoryMap<PersistedSkillSharingPolicy>();
   const personalModelProviders = async () => {
     const modes = await modelAccountModes();
     return PERSONAL_MODEL_PROVIDERS.filter((provider) => modes[provider] === "personal");
@@ -1053,6 +1069,13 @@ export function createMemoryConfigStore(
         scopeId: org,
         modes: { anthropic: modes.anthropic, openai: modes.openai },
       });
+    },
+    getSkillSharingPolicy: async () => ({
+      ...DEFAULT_SKILL_SHARING_POLICY,
+      ...(await skillSharingStore.get(org))?.policy,
+    }),
+    async setSkillSharingPolicy(policy) {
+      await skillSharingStore.put(org, { scopeId: org, policy: { contexts: policy.contexts, org: policy.org } });
     },
     async setPersonalModelAuth(principalId, on, provider) {
       const id = scopeId("personal", principalId);

@@ -73,6 +73,9 @@ function fakeApp(state: FakeState): App {
         throw new Error(`moving a ${type}'s home isn't supported — share it instead (add a grant)`);
       state.moves.push({ type, id, toScope, movedBy });
     },
+    async skillSharingAllows() {
+      return true;
+    },
     async promoteSkill(id: string, targetScopeId: ScopeId, actorId: string, liveActor: boolean) {
       if (liveActor !== true)
         throw new AdminError(
