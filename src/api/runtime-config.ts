@@ -50,10 +50,10 @@ export function runtimeFallback(ctx: { deps: RuntimeDeps }): { harnessId: Harnes
   return { harnessId, modelId: ctx.deps.baseModelDefault ?? defaultModelForHarness(harnessId, undefined, providers) };
 }
 
-export async function userRuntimeConfigBody(ctx: { deps: RuntimeDeps }, scope: ScopeId, actorId: string) {
+async function personalRuntimeConfig(ctx: { deps: RuntimeDeps }, scope: ScopeId, actorId: string) {
   const account = await ctx.deps.config?.getModelAccountDurable(actorId);
   const store = ctx.deps.userModelCredentials;
-  if (!store || !account || account === "company") return runtimeConfigBody(ctx, scope);
+  if (!store || !account || account === "company") return undefined;
   const access = await loadPersonalModelAccess(ctx.deps.config, store, actorId, account);
   const company = access.orgServed.size ? await runtimeConfigBody(ctx, scope) : undefined;
   const snapshot = await runtimeConfigBody(ctx, scope, async (choice) => {
@@ -66,25 +66,43 @@ export async function userRuntimeConfigBody(ctx: { deps: RuntimeDeps }, scope: S
   });
   const route = routePersonalModelAccess(access, snapshot.effective.modelId, snapshot.effective.harnessId);
   if (route === "org" || !route?.model || !snapshot.modelsByHarness[route.harness]?.includes(route.model))
-    return snapshot;
+    return { access, snapshot };
   const { unavailableReason: _, ...available } = snapshot;
   return {
-    ...available,
-    effective: {
-      ...snapshot.effective,
-      harnessId: route.harness,
-      modelId: route.model,
-      effortLevel: thinkingLevelsForHarness(route.harness, route.model).includes(
-        snapshot.effective.effortLevel ?? "auto",
-      )
-        ? snapshot.effective.effortLevel
-        : "auto",
-      fastMode:
-        snapshot.effective.fastMode === true &&
-        harnessSupportsFastMode(route.harness) &&
-        fastModeModelIds().includes(route.model),
+    access,
+    snapshot: {
+      ...available,
+      effective: {
+        ...snapshot.effective,
+        harnessId: route.harness,
+        modelId: route.model,
+        effortLevel: thinkingLevelsForHarness(route.harness, route.model).includes(
+          snapshot.effective.effortLevel ?? "auto",
+        )
+          ? snapshot.effective.effortLevel
+          : "auto",
+        fastMode:
+          snapshot.effective.fastMode === true &&
+          harnessSupportsFastMode(route.harness) &&
+          fastModeModelIds().includes(route.model),
+      },
     },
   };
+}
+
+export async function userRuntimeConfigBody(ctx: { deps: RuntimeDeps }, scope: ScopeId, actorId: string) {
+  return (await personalRuntimeConfig(ctx, scope, actorId))?.snapshot ?? runtimeConfigBody(ctx, scope);
+}
+
+export async function userPickerRuntimeConfig(ctx: { deps: RuntimeDeps }, scope: ScopeId, actorId: string) {
+  const personal = await personalRuntimeConfig(ctx, scope, actorId);
+  if (!personal) return pickerRuntimeConfig(ctx, await runtimeConfigBody(ctx, scope));
+  return pickerRuntimeConfig(
+    ctx,
+    personal.snapshot,
+    (id, harnessId) =>
+      routePersonalModelAccess(personal.access, id, harnessId) !== "org" || modelSelectableForHarness(id, harnessId),
+  );
 }
 
 export async function runtimeConfigBody(
@@ -231,13 +249,17 @@ export async function pickerRuntimeConfig<
     Awaited<ReturnType<typeof runtimeConfigBody>>,
     "modelsByHarness" | "modelCatalog" | "orgDefault" | "scopeOverride" | "effective"
   >,
->(ctx: { deps: RuntimeDeps }, snapshot: T): Promise<T> {
+>(
+  ctx: { deps: RuntimeDeps },
+  snapshot: T,
+  selectable: (id: string, harnessId: string) => boolean = modelSelectableForHarness,
+): Promise<T> {
   const classifications = await ctx.deps.config!.getModelClassificationsDurable(orgScope());
   const selected = [snapshot.orgDefault, snapshot.scopeOverride, snapshot.effective];
   const modelsByHarness = Object.fromEntries(
     Object.entries(snapshot.modelsByHarness).map(([harnessId, ids]) => {
       const pinned = selected.flatMap((choice) => (choice?.harnessId === harnessId ? [choice.modelId] : []));
-      const offered = ids.filter((id) => pinned.includes(id) || modelSelectableForHarness(id, harnessId));
+      const offered = ids.filter((id) => pinned.includes(id) || selectable(id, harnessId));
       return [harnessId, dropHidden(offered, classifications, pinned)];
     }),
   );

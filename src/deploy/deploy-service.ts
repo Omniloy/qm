@@ -90,6 +90,7 @@ export interface DeployService {
 
   keepAlwaysOnWarm(): Promise<number>;
   reachDeployment(idOrName: string, principalId: string, opts?: ReachOptions): Promise<Reach>;
+  invalidateDeploymentEndpoint(id: string): void;
   /** Recent app output (entrypoint stdout+stderr) for a deployment, newest last; null when the provider keeps none. */
   deploymentLogs(idOrName: string, opts: { tailLines: number }): Promise<string | null>;
   gitRepoPath(idOrName: string): Promise<string | null>;
@@ -651,6 +652,10 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
       if (!endpoint) return { status: "not_found" };
       await deps.deployStore.touch(d.id, Date.now()).catch((e) => swallow("deploy reach touch", e));
       return { status: "ok", id: d.id, endpoint };
+    },
+
+    invalidateDeploymentEndpoint(id) {
+      deps.provider.invalidateEndpoint?.(id);
     },
 
     async deploymentLogs(idOrName, opts): Promise<string | null> {

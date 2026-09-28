@@ -142,25 +142,18 @@ async function claims(c: Partial<CapabilityClaims>): Promise<CapabilityClaims> {
   return (await verifyCapabilityToken(await mint(c), SECRET))!;
 }
 
-test("pairing is minted for the person themselves, never from another turn's token", async () => {
+test("pairing is minted only for a portal identity, never from any capability token", async () => {
   const portal = pairingCtx({ actor: { p: ALICE } });
   await pair.handle(portal.ctx);
   assert.equal(portal.out.status, 200);
   const minted = await verifyCapabilityToken((portal.out.body as { token: string }).token, SECRET);
   assert.equal(minted?.aud, BROWSER_RELAY_AUD);
   assert.equal(minted?.actorId, ALICE);
-
-  for (const allowed of [{ liveActor: true }, { aud: CONTROL_PLANE_AUD, liveActor: true }]) {
-    const c = pairingCtx({ capability: await claims(allowed) });
-    await pair.handle(c.ctx);
-    assert.equal(c.out.status, 200, JSON.stringify(allowed));
-  }
+  assert.equal(pair.auth, "source");
 
   const refused: Record<string, Partial<CapabilityClaims>> = {
-    "a channel turn": { aud: CONTROL_PLANE_AUD, liveActor: true, scopeId: "channel:C1" as ScopeId },
-    "a cron turn": { aud: CONTROL_PLANE_AUD, liveActor: true, triggered: true },
-    "a non-live turn": { aud: CONTROL_PLANE_AUD },
-    "a deployed app": { aud: CONTROL_PLANE_AUD, liveActor: true, deployment: "app1" },
+    "the agent's own live personal turn": { aud: CONTROL_PLANE_AUD, liveActor: true },
+    "a web session capability": { liveActor: true },
   };
   for (const [label, c] of Object.entries(refused)) {
     const r = pairingCtx({ capability: await claims(c) });

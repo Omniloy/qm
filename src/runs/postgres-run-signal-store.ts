@@ -45,7 +45,7 @@ export function createPostgresRunSignalStore(connectionString: string): RunSigna
       ],
     },
     {
-      id: "runs/signals/0003",
+      id: "runs/signals/fork-0001",
       statements: [`CREATE INDEX IF NOT EXISTS idx_run_signals_aborts ON run_signals(created_at) WHERE kind = 'abort'`],
     },
   ]);

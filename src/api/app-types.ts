@@ -618,6 +618,7 @@ export interface App {
   setDeploymentPublic(idOrName: string, isPublic: boolean, actor: { createdBy: string }): Promise<Deployment>;
   keepAlwaysOnWarm(): Promise<number>;
   reachDeployment(id: string, principalId: string, opts?: ReachOptions): Promise<Reach>;
+  invalidateDeploymentEndpoint(id: string): void;
   deploymentLogsFor(
     id: string,
     principalId: string,

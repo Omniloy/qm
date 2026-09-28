@@ -1,5 +1,5 @@
 import { mintCapabilityToken } from "../../auth/capability-token.ts";
-import { BROWSER_RELAY_AUD, isLivePersonalClaim } from "../../browser-relay/server.ts";
+import { BROWSER_RELAY_AUD } from "../../browser-relay/server.ts";
 import { personalScope } from "../../types.ts";
 import { sendJson } from "../http.ts";
 import type { ApiCtx, Route } from "./route.ts";
@@ -11,20 +11,15 @@ function callerOf(ctx: ApiCtx): string | null {
   return ctx.capability?.actorId ?? ctx.actor?.p ?? null;
 }
 
-function pairingCallerOf(ctx: ApiCtx): string | null {
-  if (!ctx.capability) return ctx.actor?.p ?? null;
-  return isLivePersonalClaim(ctx.capability) ? ctx.capability.actorId : null;
-}
-
 async function mintRelayPairing(ctx: ApiCtx): Promise<void> {
   const { res, deps } = ctx;
   const secret = deps.capabilitySecret;
   if (!secret) return sendJson(res, 503, { error: "unavailable", message: "the relay is not configured" });
-  const principalId = pairingCallerOf(ctx);
+  const principalId = ctx.actor?.p;
   if (!principalId)
     return sendJson(res, 403, {
       error: "forbidden",
-      message: "pairing is only available to the person themselves, live, in their own conversation",
+      message: "pairing is only available to the person themselves, from their own web session",
     });
   const expiresAt = Date.now() + PAIRING_TTL_MS;
   const token = await mintCapabilityToken(
@@ -67,6 +62,6 @@ async function relayStatus(ctx: ApiCtx): Promise<void> {
 }
 
 export const browserRelayRoutes: Route[] = [
-  { method: "POST", path: "/v1/browser-relay/pairing", auth: "either", handle: mintRelayPairing },
+  { method: "POST", path: "/v1/browser-relay/pairing", auth: "source", handle: mintRelayPairing },
   { method: "GET", path: "/v1/browser-relay/status", auth: "either", handle: relayStatus },
 ];

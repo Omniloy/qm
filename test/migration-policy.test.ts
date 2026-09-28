@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { createPostgresDirectoryStore } from "../src/directory/postgres-directory-store.ts";
+import { createMemoryDurableByteStore } from "../src/files/durable-byte-store.ts";
+import { createPostgresFileArtifactStore } from "../src/files/postgres-file-artifact-store.ts";
+import { registeredPgMigrations } from "../src/persistence/pg-pool.ts";
+import { createPostgresRunSignalStore } from "../src/runs/postgres-run-signal-store.ts";
 import { createPostgresRunStore } from "../src/runs/postgres-run-store.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
 
@@ -30,4 +34,19 @@ test("released directory migrations still match their pinned source checksums", 
 
 test("released run migrations still match their pinned source checksums", () => {
   assert.doesNotThrow(() => createPostgresRunStore("postgres://migration-pin.invalid"));
+});
+
+test("fork-only migrations use the fork- namespace, so an upstream NNNN id can never collide with them", () => {
+  const url = "postgres://fork-migrations.invalid";
+  createPostgresRunSignalStore(url);
+  createPostgresFileArtifactStore(url, createMemoryDurableByteStore());
+  const ids = registeredPgMigrations(url).map((migration) => migration.id);
+  assert.deepEqual(ids, [
+    "files/artifacts/0001",
+    "files/artifacts/0002",
+    "files/artifacts/fork-0001",
+    "runs/signals/0001",
+    "runs/signals/0002",
+    "runs/signals/fork-0001",
+  ]);
 });

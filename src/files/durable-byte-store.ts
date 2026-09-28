@@ -33,6 +33,7 @@ interface OpenBytes {
 
 interface PutBytesOptions {
   maxBytes?: number;
+  beforeCommit?: (blobKey: string) => Promise<void>;
 }
 
 export interface DurableByteStore {
@@ -64,6 +65,7 @@ export function createMemoryDurableByteStore(): DurableByteStore {
     async put(source, opts) {
       const { data, sha256 } = await collect(source, opts?.maxBytes);
       const blobKey = keyFor(sha256);
+      await opts?.beforeCommit?.(blobKey);
       if (!blobs.has(blobKey)) blobs.set(blobKey, data);
       return { blobKey, sizeBytes: data.length, sha256 };
     },
@@ -89,6 +91,7 @@ export function createLocalDurableByteStore(dir: string): DurableByteStore {
       const partPath = join(base, `${randomUUID()}.part`);
       try {
         const { sha256, sizeBytes } = await spoolBytes(source, partPath, opts?.maxBytes);
+        await opts?.beforeCommit?.(keyFor(sha256));
         await rename(partPath, join(base, sha256));
         return { blobKey: keyFor(sha256), sizeBytes, sha256 };
       } finally {
@@ -141,6 +144,7 @@ export function createS3DurableByteStore(options: S3DurableByteOptions): Durable
       try {
         const { sha256, sizeBytes } = await spoolBytes(source, path, opts?.maxBytes);
         const blobKey = keyFor(sha256);
+        await opts?.beforeCommit?.(blobKey);
         Key = s3Key(blobKey);
         if (sizeBytes === 0) {
           await client.send(new PutObjectCommand({ Bucket: bucket, Key, Body: Buffer.alloc(0) }));

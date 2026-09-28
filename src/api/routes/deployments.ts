@@ -352,7 +352,10 @@ function proxyReachHttp2(
         code === "ERR_HTTP2_GOAWAY_SESSION" ||
         code === "ERR_HTTP2_OUT_OF_STREAMS" ||
         code === "ERR_HTTP2_INVALID_SESSION";
-      if (sessionFailed) retireDeploymentHttp2Connection(origin, connection);
+      if (sessionFailed) {
+        retireDeploymentHttp2Connection(origin, connection);
+        ctx.app.invalidateDeploymentEndpoint(endpoint.id);
+      }
       if (replaySafe && !retried && sessionFailed && !res.headersSent && !res.destroyed && !res.writableEnded)
         return start(true);
       if (res.destroyed || res.writableEnded) return;
@@ -373,7 +376,10 @@ function proxyReachHttp2(
         code === "ECONNRESET" ||
         code === "ERR_HTTP2_SESSION_ERROR" ||
         code === "ERR_HTTP2_INVALID_SESSION";
-      if (sessionFailed) retireDeploymentHttp2Connection(origin, connection);
+      if (sessionFailed) {
+        retireDeploymentHttp2Connection(origin, connection);
+        ctx.app.invalidateDeploymentEndpoint(endpoint.id);
+      }
       const moved = deploymentHttp2Sessions.get(origin) !== connection;
       if (
         !responseStarted &&
@@ -603,6 +609,7 @@ async function proxyReach(
     up.destroy();
   });
   up.on("error", () => {
+    ctx.app.invalidateDeploymentEndpoint(reach.id);
     if (htmlNav && !res.headersSent) sendWarmingPage(res);
     else if (!res.headersSent) sendJson(res, 502, { error: "bad_gateway", message: "deployment unreachable" });
     else res.end();

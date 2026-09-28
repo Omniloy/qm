@@ -64,6 +64,24 @@ test("personal API-key picker works without company keys and saves model, effort
   }
 });
 
+test("personal Anthropic API-key picker offers Claude on pi, the only harness that key routes to", async () => {
+  const s = await setup();
+  try {
+    await s.built.userModelCredentials.setApiKey("U1", "anthropic", "synthetic-anthropic");
+    await s.built.config.setModelAccountModes({ anthropic: "personal", openai: "personal" });
+    await s.built.config.setPersonalModelAuth("U1", true, "anthropic");
+    const config = await s.get();
+    assert.ok(config.modelsByHarness.pi!.includes("claude-sonnet-5"));
+    assert.ok(config.modelCatalog["claude-sonnet-5"]);
+    assert.deepEqual(config.modelsByHarness.claude, []);
+    assert.equal(config.effective.harnessId, "pi");
+    assert.ok(config.modelsByHarness.pi!.includes(config.effective.modelId));
+    assert.equal((await s.put({ harnessId: "pi", modelId: "claude-sonnet-5" })).status, 200);
+  } finally {
+    await s.close();
+  }
+});
+
 for (const provider of ["anthropic", "openai"] as const) {
   test(`personal ${provider} OAuth picker advertises only compatible runtimes`, async () => {
     const s = await setup();

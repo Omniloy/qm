@@ -535,18 +535,9 @@ const FAMILIES: AgentApiFamily[] = [
     ],
   },
   {
-    match: (m, p) =>
-      (p === "/v1/browser-relay/pairing" && m === "POST") || (p === "/v1/browser-relay/status" && m === "GET"),
+    match: onPath("GET", "/v1/browser-relay/status"),
     when: (v) => isLivePersonalClaim(v.claims),
-    guidance:
-      "Pairing lets someone point their own Chrome at this instance through the extension. The token it returns drives a browser signed into everything they are, and lasts thirty days, so mint one only when the person asked to pair and hand it to them directly — never into a channel.",
     routes: [
-      {
-        method: "POST",
-        path: "/v1/browser-relay/pairing",
-        summary:
-          "mint the asking person's pairing token and the address their extension dials; always for the caller, never for anyone they name",
-      },
       { method: "GET", path: "/v1/browser-relay/status", summary: "whether their extension is connected right now" },
     ],
   },

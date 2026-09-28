@@ -4,6 +4,7 @@ import {
   pickerRuntimeConfig,
   runtimeFallback,
   runtimeConfigBody,
+  userPickerRuntimeConfig,
   userRuntimeConfigBody,
   webuiModelEnabled,
 } from "../runtime-config.ts";
@@ -1393,12 +1394,9 @@ async function getRuntimeConfig(ctx: ApiCtx): Promise<void> {
   return sendJson(
     ctx.res,
     200,
-    await pickerRuntimeConfig(
-      ctx,
-      ctx.url.searchParams.get("account") === "company"
-        ? await runtimeConfigBody(ctx, target.scope)
-        : await userRuntimeConfigBody(ctx, target.scope, target.actorId),
-    ),
+    ctx.url.searchParams.get("account") === "company"
+      ? await pickerRuntimeConfig(ctx, await runtimeConfigBody(ctx, target.scope))
+      : await userPickerRuntimeConfig(ctx, target.scope, target.actorId),
   );
 }
 
@@ -1456,11 +1454,7 @@ async function putRuntimeConfig(ctx: ApiCtx): Promise<void> {
     resource: "runtime-config",
     scopeLabel: target.scope,
   });
-  return sendJson(
-    ctx.res,
-    200,
-    await pickerRuntimeConfig(ctx, await userRuntimeConfigBody(ctx, target.scope, target.actorId)),
-  );
+  return sendJson(ctx.res, 200, await userPickerRuntimeConfig(ctx, target.scope, target.actorId));
 }
 
 async function getChannelHeaderPin(ctx: ApiCtx): Promise<void> {

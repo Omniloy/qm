@@ -2386,7 +2386,7 @@ const apiRoutes: readonly WebRoute[] = [
       try {
         const names = readdirSync(EXTENSION_DIR).filter((n) => !n.startsWith("."));
         const entries = names.map((name) => ({ name, data: readFileSync(join(EXTENSION_DIR, name)) }));
-        const pairing = await coreFetchCap("POST", "/v1/browser-relay/pairing", "{}");
+        const pairing = await coreFetch("POST", "/v1/browser-relay/pairing", "{}");
         if (pairing.status >= 200 && pairing.status < 300) {
           try {
             const p = JSON.parse(pairing.text) as { token?: string; relayUrl?: string };
@@ -2420,7 +2420,7 @@ const apiRoutes: readonly WebRoute[] = [
   {
     method: "POST",
     path: "/api/browser-relay/pairing",
-    handle: async (c) => relayCap(c.res, "POST", "/v1/browser-relay/pairing", "{}"),
+    handle: async (c) => relayCore(c.res, "POST", "/v1/browser-relay/pairing", "{}"),
   },
   {
     method: "DELETE",

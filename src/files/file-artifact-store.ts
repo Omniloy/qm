@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { Readable } from "node:stream";
 import type { ScopeId } from "../types.ts";
 import type { ByteSource, DurableByteStore } from "./durable-byte-store.ts";
+import { createKeyedQueue } from "../util/async.ts";
 
 function idOrderDesc(a: string, b: string): number {
   if (a < b) return 1;
@@ -45,7 +46,7 @@ export interface PutFileInput {
   reuseExistingPath?: boolean;
 }
 
-type PublishFileInput = Omit<PutFileInput, "data" | "maxBytes"> & {
+export type PublishFileInput = Omit<PutFileInput, "data" | "maxBytes"> & {
   blobKey: string;
   sizeBytes: number;
   sha256: string | null;
@@ -149,6 +150,9 @@ export function createMemoryFileArtifactStore(byteStore: DurableByteStore): File
   const rows = new Map<string, FileArtifact>();
   const deleted = new Set<string>();
   const orphanedBlobs = new Map<string, number>();
+  const blobQueue = createKeyedQueue();
+  const holdBlob = (blobKey: string): Promise<() => void> =>
+    new Promise((acquired) => void blobQueue(blobKey, () => new Promise<void>((release) => acquired(release))));
   const referenced = (blobKey: string): boolean => [...rows.values()].some((r) => r.blobKey === blobKey);
 
   async function listFiles(
@@ -191,48 +195,62 @@ export function createMemoryFileArtifactStore(byteStore: DurableByteStore): File
     return { files, ...(nextCursor ? { nextCursor } : {}) };
   }
 
+  function publishRow(input: PublishFileInput): { artifact: FileArtifact; created: boolean } {
+    if (input.reuseExistingPath) {
+      const existing = [...rows.values()].find(
+        (row) => row.enabled && row.ownerScopeId === input.ownerScopeId && row.path === input.path,
+      );
+      if (existing) return { artifact: existing, created: false };
+    }
+    if (deleted.has(input.id)) throw new FileArtifactDeletedError();
+    const existing = rows.get(input.id);
+    if (existing) return { artifact: existing, created: false };
+    const { blobKey, sizeBytes, sha256 } = input;
+    const at = input.createdAt ?? Date.now();
+    const artifact: FileArtifact = {
+      id: input.id,
+      ownerScopeId: input.ownerScopeId,
+      createdBy: input.createdBy,
+      name: input.name,
+      path: input.path,
+      mimetype: input.mimetype,
+      sizeBytes,
+      blobKey,
+      sha256,
+      direction: input.direction,
+      source: "live",
+      ...(input.createdInScope ? { createdInScope: input.createdInScope } : {}),
+      createdAt: at,
+      updatedAt: at,
+      enabled: true,
+    };
+    rows.set(artifact.id, artifact);
+    return { artifact, created: true };
+  }
+
   return {
     async put(input) {
       const existing = rows.get(input.id);
       if (existing) return { artifact: existing, created: false };
-      const { blobKey, sizeBytes, sha256 } = await byteStore.put(
-        input.data,
-        input.maxBytes != null ? { maxBytes: input.maxBytes } : {},
-      );
-      return this.publish({ ...input, blobKey, sizeBytes, sha256 });
+      const releases: Array<() => void> = [];
+      try {
+        const bytes = await byteStore.put(input.data, {
+          ...(input.maxBytes != null ? { maxBytes: input.maxBytes } : {}),
+          beforeCommit: async (blobKey) => void releases.push(await holdBlob(blobKey)),
+        });
+        return publishRow({ ...input, ...bytes });
+      } finally {
+        for (const release of releases) release();
+      }
     },
 
     async publish(input) {
-      if (input.reuseExistingPath) {
-        const existing = [...rows.values()].find(
-          (row) => row.enabled && row.ownerScopeId === input.ownerScopeId && row.path === input.path,
-        );
-        if (existing) return { artifact: existing, created: false };
+      const release = input.blobKey ? await holdBlob(input.blobKey) : undefined;
+      try {
+        return publishRow(input);
+      } finally {
+        release?.();
       }
-      if (deleted.has(input.id)) throw new FileArtifactDeletedError();
-      const existing = rows.get(input.id);
-      if (existing) return { artifact: existing, created: false };
-      const { blobKey, sizeBytes, sha256 } = input;
-      const at = input.createdAt ?? Date.now();
-      const artifact: FileArtifact = {
-        id: input.id,
-        ownerScopeId: input.ownerScopeId,
-        createdBy: input.createdBy,
-        name: input.name,
-        path: input.path,
-        mimetype: input.mimetype,
-        sizeBytes,
-        blobKey,
-        sha256,
-        direction: input.direction,
-        source: "live",
-        ...(input.createdInScope ? { createdInScope: input.createdInScope } : {}),
-        createdAt: at,
-        updatedAt: at,
-        enabled: true,
-      };
-      rows.set(artifact.id, artifact);
-      return { artifact, created: true };
     },
 
     async get(id, opts) {
@@ -281,10 +299,15 @@ export function createMemoryFileArtifactStore(byteStore: DurableByteStore): File
       let swept = 0;
       for (const [blobKey, orphanedAt] of orphanedBlobs) {
         if (orphanedAt > now - ORPHANED_BLOB_GRACE_MS) continue;
-        orphanedBlobs.delete(blobKey);
-        if (referenced(blobKey)) continue;
-        await byteStore.delete(blobKey);
-        swept += 1;
+        const release = await holdBlob(blobKey);
+        try {
+          orphanedBlobs.delete(blobKey);
+          if (referenced(blobKey)) continue;
+          await byteStore.delete(blobKey);
+          swept += 1;
+        } finally {
+          release();
+        }
       }
       return swept;
     },

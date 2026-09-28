@@ -36,6 +36,7 @@ export function createDeploymentMethods(
   | "setDeploymentPublic"
   | "keepAlwaysOnWarm"
   | "reachDeployment"
+  | "invalidateDeploymentEndpoint"
   | "deploymentLogsFor"
   | "deploymentGitRepoPath"
   | "runDeploymentGitPush"
@@ -169,6 +170,9 @@ export function createDeploymentMethods(
       if (!deployment) return { status: "not_found" };
       if (!(await principalCanReadDeployment(deployment, principalId))) return { status: "denied" };
       return deps.deploy.reachDeployment(id, principalId, { bypassAcl: true });
+    },
+    invalidateDeploymentEndpoint(id) {
+      deps.deploy.invalidateDeploymentEndpoint(id);
     },
     async deploymentLogsFor(
       id,

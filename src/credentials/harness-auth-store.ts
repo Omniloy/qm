@@ -89,7 +89,8 @@ export async function claudeHarnessAuthEnv(
     .resolve("claude")
     .catch(swallowAs("harness auth: claude", { kind: "unset" } as HarnessAuthResolution));
   if (saved.kind === "token") return { ...fallbackEnv, CLAUDE_CODE_OAUTH_TOKEN: saved.token };
-  if (saved.kind === "disabled") return { ...fallbackEnv, CLAUDE_CODE_OAUTH_TOKEN: undefined };
+  if (saved.kind === "disabled")
+    return { ...fallbackEnv, CLAUDE_CODE_OAUTH_TOKEN: undefined, ANTHROPIC_AUTH_TOKEN: undefined };
   return fallbackEnv;
 }
 

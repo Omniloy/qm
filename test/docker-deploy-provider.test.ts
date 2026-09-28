@@ -229,3 +229,29 @@ test("Docker deployment networks come from a configured pool, and a failed netwo
     [["deploy_network", "network_rm_failed", deployment.ownerScopeId]],
   );
 });
+
+test("an invalidated Docker endpoint is re-resolved instead of served from the cache", async () => {
+  let running = true;
+  const dockerExec: DockerExec = async (args) => {
+    if (args[0] === "inspect" && args[1] === "-f") return { code: 0, stdout: `${running} 0`, stderr: "" };
+    if (args[0] === "port") return { code: 0, stdout: "127.0.0.1:9200\n", stderr: "" };
+    if (args[0] === "inspect") return { code: 0, stdout: "{}", stderr: "" };
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  const store = createDeployStore();
+  const deployment = await store.create({
+    ownerScopeId: scopeId("personal", "U1"),
+    createdBy: "U1",
+    entrypoint: "node server.js",
+    snapshotDir: "/snap/cached",
+  });
+  await store.setEndpoint(deployment.id, { host: "127.0.0.1", port: 9200 });
+  const d = (await store.get(deployment.id))!;
+  const provider = createDockerDeployProvider({ dockerExec });
+
+  assert.ok(await provider.resolveEndpoint!(d, d.versions[0]!));
+  running = false;
+  assert.ok(await provider.resolveEndpoint!(d, d.versions[0]!), "inside the TTL the cached endpoint is served");
+  provider.invalidateEndpoint!(d.id);
+  assert.equal(await provider.resolveEndpoint!(d, d.versions[0]!), null, "the stopped container is seen at once");
+});

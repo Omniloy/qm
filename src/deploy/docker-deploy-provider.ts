@@ -257,6 +257,10 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
       return `${r.stdout}${r.stderr}`;
     },
 
+    invalidateEndpoint(deploymentId: string): void {
+      liveEndpoints.delete(deploymentId);
+    },
+
     async destroy(d: Deployment): Promise<void> {
       liveEndpoints.delete(d.id);
       await dexec(["rm", "-f", name(d)]);

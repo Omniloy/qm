@@ -64,10 +64,12 @@ test("the Claude harness env prefers the saved token, and a disconnect strips ev
   const disconnected = await claudeHarnessAuthEnv(auth, fallback);
   assert.ok("CLAUDE_CODE_OAUTH_TOKEN" in disconnected);
   assert.equal(disconnected.CLAUDE_CODE_OAUTH_TOKEN, undefined);
-  const bootEnv = { CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-boot", PATH: "/bin" };
+  assert.ok("ANTHROPIC_AUTH_TOKEN" in disconnected);
+  assert.equal(disconnected.ANTHROPIC_AUTH_TOKEN, undefined);
+  const bootEnv = { CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-boot", ANTHROPIC_AUTH_TOKEN: "boot-auth", PATH: "/bin" };
   const child = claudeChildEnv({ ...bootEnv, ...disconnected }, "/jail");
   assert.equal(child.CLAUDE_CODE_OAUTH_TOKEN, undefined);
-  assert.equal(child.ANTHROPIC_AUTH_TOKEN, "auth");
+  assert.equal(child.ANTHROPIC_AUTH_TOKEN, undefined);
 });
 
 test("a Console API key is refused with the command that makes the right token", () => {

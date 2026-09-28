@@ -203,6 +203,36 @@ test(
   },
 );
 
+test(
+  "pg: an identical upload landing while the sweep deletes that blob waits for it and keeps its bytes",
+  { skip },
+  async () => {
+    const bytes = createMemoryDurableByteStore();
+    let deleteStarted!: () => void;
+    const started = new Promise<void>((resolve) => (deleteStarted = resolve));
+    let finishDelete!: () => void;
+    const gate = new Promise<void>((resolve) => (finishDelete = resolve));
+    const store = createPostgresFileArtifactStore(URL!, {
+      ...bytes,
+      delete: async (blobKey) => {
+        deleteStarted();
+        await gate;
+        await bytes.delete(blobKey);
+      },
+    });
+    await store.put(put({ id: "first", path: "p/first" }));
+    await store.delete("first");
+    const sweep = store.sweepOrphanedBlobs(Date.now() + ORPHANED_BLOB_GRACE_MS + 1);
+    await started;
+    const again = store.put(put({ id: "again", path: "p/again" }));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    finishDelete();
+    assert.equal(await sweep, 1);
+    await again;
+    assert.ok(await store.open("again"), "the new row is never left dangling");
+  },
+);
+
 test("pg rows survive across store instances (no per-process cache to diverge)", { skip }, async () => {
   const writer = createPostgresFileArtifactStore(URL!, createMemoryDurableByteStore());
   await writer.put(put({ id: "across", path: "p/across", data: Buffer.from("x"), createdAt: 5 }));

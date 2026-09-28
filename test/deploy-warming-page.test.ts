@@ -6,7 +6,10 @@ import { createInsecureTestServer } from "../src/api/server.ts";
 import type { App } from "../src/api/app.ts";
 
 function appWith(endpoint: Record<string, unknown>): App {
-  return { reachDeployment: async () => ({ status: "ok", endpoint }) } as unknown as App;
+  return {
+    reachDeployment: async () => ({ status: "ok", id: "some-id", endpoint }),
+    invalidateDeploymentEndpoint: () => undefined,
+  } as unknown as App;
 }
 
 test("/d/ proxy serves the warming page to a browser navigation when the deployment hangs", async () => {
@@ -52,6 +55,29 @@ test("/d/ proxy serves the warming page to a browser navigation when the deploym
     const res = await fetch(`${base}/d/some-id/`, { headers: { accept: "text/html" } });
     assert.equal(res.status, 503);
     assert.match(await res.text(), /starting up/i);
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+  }
+});
+
+test("/d/ proxy drops the cached endpoint when the deployment refuses connections", async () => {
+  const upstream = createHttpServer(() => {});
+  upstream.listen(0);
+  const upstreamPort = (upstream.address() as AddressInfo).port;
+  await new Promise<void>((r) => upstream.close(() => r()));
+
+  const invalidated: string[] = [];
+  const app = {
+    reachDeployment: async () => ({ status: "ok", id: "dep-1", endpoint: { host: "127.0.0.1", port: upstreamPort } }),
+    invalidateDeploymentEndpoint: (id: string) => invalidated.push(id),
+  } as unknown as App;
+  const server = createInsecureTestServer(app);
+  server.listen(0);
+  const base = `http://localhost:${(server.address() as AddressInfo).port}`;
+  try {
+    const res = await fetch(`${base}/d/dep-1/api`, { headers: { accept: "application/json" } });
+    assert.equal(res.status, 502);
+    assert.deepEqual(invalidated, ["dep-1"]);
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
   }
