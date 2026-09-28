@@ -1,6 +1,6 @@
 import { orgId as configOrgId } from "../../config.ts";
 import { codeChallengeS256, generateCodeVerifier } from "../../connectors/oauth.ts";
-import { PORTAL_IDENTITY_HEADER, verifyPortalIdentity } from "../../auth/portal-identity.ts";
+import { PORTAL_IDENTITY_HEADER, verifyPortalIdentity, type PortalIdentity } from "../../auth/portal-identity.ts";
 import { samePerson } from "../../directory/person.ts";
 import {
   authorizeUrl,
@@ -10,14 +10,14 @@ import {
   McpOAuthError,
   registerClient,
   revokeToken,
-  sameIssuer,
   type McpOAuthRegistration,
 } from "../../mcp/mcp-oauth.ts";
 import { clientRefFor } from "../../mcp/mcp-oauth-store.ts";
 import type { McpServer } from "../../mcp/mcp-server-store.ts";
 import { errMessage, swallow } from "../../util/errors.ts";
+import { hostOf } from "../../util/network.ts";
 import type { ServerDeps } from "../deps.ts";
-import { sendJson, sendRedirect } from "../http.ts";
+import { localPath, sendJson, sendRedirect } from "../http.ts";
 import type { ApiCtx, BaseCtx } from "./route.ts";
 import { audit } from "./shared.ts";
 
@@ -28,14 +28,6 @@ const mcpProviderName = (serverId: string): string => `${PROVIDER_PREFIX}${serve
 
 function mcpRedirectUri(publicUrl: string, serverId: string): string {
   return `${publicUrl.replace(/\/$/, "")}/v1/connectors/oauth/${mcpProviderName(serverId)}/callback`;
-}
-
-function hostOf(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    return url;
-  }
 }
 
 export async function mcpOAuthServer(deps: ServerDeps, provider: string): Promise<McpServer | null> {
@@ -57,6 +49,11 @@ export async function mcpOAuthStart(ctx: ApiCtx, server: McpServer, returnTo: st
   if (!principalId || !redirectUri)
     return sendJson(res, 400, { error: "bad_request", message: "principalId and redirectUri required" });
   if (!server.enabled) return sendJson(res, 404, { error: "not_found", message: `${server.name} is disabled` });
+  if (ctx.actor?.imp)
+    return sendJson(res, 403, {
+      error: "browser_identity_required",
+      message: "sign-in can't be started while impersonating someone",
+    });
   if (!deps.oauthFlows || !deps.mcpOAuth)
     return sendJson(res, 501, { error: "oauth_not_configured", message: "MCP sign-in is not configured" });
   const registration = await currentRegistration(deps, server);
@@ -93,12 +90,12 @@ export async function mcpOAuthStart(ctx: ApiCtx, server: McpServer, returnTo: st
   });
 }
 
-async function browserPrincipal(ctx: BaseCtx): Promise<string | null> {
+async function browserIdentity(ctx: BaseCtx): Promise<PortalIdentity | null> {
   const psecret = ctx.deps.portalIdentitySecret ?? ctx.secret;
   const raw = ctx.req.headers[PORTAL_IDENTITY_HEADER];
   const token = Array.isArray(raw) ? raw[0] : raw;
   if (!token || !psecret) return null;
-  return (await verifyPortalIdentity(token, psecret, Date.now()))?.p ?? null;
+  return verifyPortalIdentity(token, psecret, Date.now());
 }
 
 export async function mcpOAuthCallback(ctx: BaseCtx, server: McpServer): Promise<void> {
@@ -119,19 +116,17 @@ export async function mcpOAuthCallback(ctx: BaseCtx, server: McpServer): Promise
     });
   }
   const finish = (status: "connected" | "error") => {
-    if (!flow.returnTo) {
-      return status === "connected"
-        ? sendJson(res, 200, { ok: true, provider, principalId: flow.principalId })
-        : sendJson(res, 400, { error: "oauth_callback_failed", message: `${server.name} sign-in failed` });
-    }
-    const dest = new URL(flow.returnTo, "http://localhost");
-    dest.searchParams.set("connector", provider);
-    dest.searchParams.set("status", status);
-    return sendRedirect(res, `${dest.pathname}${dest.search}${dest.hash}`);
+    const dest = localPath(flow.returnTo, { connector: provider, status });
+    if (dest) return sendRedirect(res, dest);
+    return status === "connected"
+      ? sendJson(res, 200, { ok: true, provider, principalId: flow.principalId })
+      : sendJson(res, 400, { error: "oauth_callback_failed", message: `${server.name} sign-in failed` });
   };
   try {
-    const browser = await browserPrincipal(ctx);
-    if ((browser || deps.requireSignedPortalIdentity || deps.production) && !samePerson(browser, flow.principalId)) {
+    if (!server.enabled) throw new McpOAuthError(`${server.name} is disabled`);
+    const browser = await browserIdentity(ctx);
+    if (browser?.imp) throw new McpOAuthError("sign-in can't finish while impersonating someone");
+    if ((browser || deps.requireSignedPortalIdentity || deps.production) && !samePerson(browser?.p, flow.principalId)) {
       throw new McpOAuthError("sign-in must finish in the browser session of the person who started it");
     }
     const denied = url.searchParams.get("error");
@@ -143,7 +138,7 @@ export async function mcpOAuthCallback(ctx: BaseCtx, server: McpServer): Promise
       throw new McpOAuthError("the sign-in registration changed; start again");
     }
     const iss = url.searchParams.get("iss");
-    if ((registration.issParameterSupported && !iss) || (iss !== null && !sameIssuer(iss, registration.issuer))) {
+    if ((registration.issParameterSupported && !iss) || (iss !== null && iss !== registration.issuer)) {
       throw new McpOAuthError("authorization response came from an unexpected issuer");
     }
     const tokens = await exchangeCode(registration, { code, codeVerifier: flow.codeVerifier }, deps.mcpOAuth.net);
@@ -181,6 +176,7 @@ export async function mcpConnectorStatus(deps: ServerDeps, principalId: string):
         oauth.tokens.status(server.id, principalId),
         currentRegistration(deps, server),
       ]);
+      if (status.connected) deps.mcpToolService?.retryMissingCatalog(server.id, principalId);
       return [
         mcpProviderName(server.id),
         {
@@ -225,9 +221,9 @@ export async function mcpOAuthRevoke(ctx: ApiCtx, server: McpServer, principalId
 
 export async function purgeMcpOAuth(deps: ServerDeps, serverId: string): Promise<void> {
   if (!deps.mcpOAuth) return;
+  await deps.mcpOAuth.clients.delete(serverId);
   await deps.mcpOAuth.tokens.deleteAllForServer(serverId);
   await deps.mcpOAuth.catalogs.delete(serverId);
-  await deps.mcpOAuth.clients.delete(serverId);
 }
 
 export type McpRegistrationResult =

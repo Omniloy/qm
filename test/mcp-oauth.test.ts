@@ -171,11 +171,22 @@ test("discovery rejects a PRM resource from another origin", async () => {
   await assert.rejects(discover(SERVER, net), /resource does not match/);
 });
 
-test("discovery rejects an issuer mismatch", async () => {
-  const { net } = fakeNet(
-    granolaRoutes({ [`GET ${AS_META_URL}`]: () => json({ ...AS_META, issuer: "https://other.example" }) }),
-  );
-  await assert.rejects(discover(SERVER, net), /issuer does not match/);
+test("discovery matches the PRM resource by whole path segments", async () => {
+  for (const resource of ["https://mcp.granola.ai/mc", "https://mcp.granola.ai/mcp/v2"]) {
+    const { net } = fakeNet(granolaRoutes({ [`GET ${PRM_URL}`]: () => json({ ...PRM, resource }) }));
+    await assert.rejects(discover(SERVER, net), /resource does not match/, resource);
+  }
+  for (const resource of ["https://mcp.granola.ai", "https://mcp.granola.ai/mcp/"]) {
+    const { net } = fakeNet(granolaRoutes({ [`GET ${PRM_URL}`]: () => json({ ...PRM, resource }) }));
+    assert.equal((await discover(SERVER, net)).resource, resource);
+  }
+});
+
+test("discovery rejects an issuer mismatch, including a trailing-slash variant", async () => {
+  for (const issuer of ["https://other.example", `${AS}/`]) {
+    const { net } = fakeNet(granolaRoutes({ [`GET ${AS_META_URL}`]: () => json({ ...AS_META, issuer }) }));
+    await assert.rejects(discover(SERVER, net), /issuer does not match/, issuer);
+  }
 });
 
 test("discovery refuses an authorization server without PKCE S256", async () => {
@@ -358,4 +369,22 @@ test("token failures surface only the OAuth error fields and classify permanence
 
   const notBearer = fakeNet({ [`POST ${tokenUrl}`]: () => json({ access_token: "at", token_type: "mac" }) });
   await assert.rejects(exchangeCode(registration(), { code: "c", codeVerifier: "v" }, notBearer.net), /bearer/);
+});
+
+test("only grant and client rejections are permanent; throttling, timeouts and bare 4xx are transient", async () => {
+  const tokenUrl = `${AS}/oauth2/token`;
+  const failure = async (res: () => Response) =>
+    refreshAccessToken(registration(), "rt", fakeNet({ [`POST ${tokenUrl}`]: res }).net).catch((e: unknown) => e);
+  for (const code of ["invalid_grant", "invalid_client", "unauthorized_client"]) {
+    assert.equal(
+      isPermanentOAuthFailure(await failure(() => json({ error: code }, code === "invalid_client" ? 401 : 400))),
+      true,
+      code,
+    );
+  }
+  for (const status of [400, 401, 408, 429]) {
+    assert.equal(isPermanentOAuthFailure(await failure(() => new Response("", { status }))), false, String(status));
+  }
+  assert.equal(isPermanentOAuthFailure(await failure(() => json({ error: "slow_down" }, 429))), false);
+  assert.equal(isPermanentOAuthFailure(await failure(() => json({ error: "invalid_scope" }, 400))), false);
 });

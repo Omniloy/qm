@@ -69,7 +69,7 @@ export interface McpUserTokenStore {
   deleteAllForServer(serverId: string): Promise<void>;
   accessToken(serverId: string, principalId: string): Promise<string | null>;
   forceRefresh(serverId: string, principalId: string): Promise<string | null>;
-  markNeedsReconnect(serverId: string, principalId: string, reason: string): Promise<void>;
+  markNeedsReconnect(serverId: string, principalId: string, rejectedToken: string, reason: string): Promise<void>;
 }
 
 export interface McpCatalogStore {
@@ -89,6 +89,8 @@ export function clientRefFor(registration: Pick<McpOAuthRegistration, "serverId"
   return `mcp:${registration.serverId}:${registration.clientId}`;
 }
 
+const fingerprintOf = (accessToken: string): string => hashId([accessToken]);
+
 function storedError(e: unknown): string {
   const msg = errMessage(e).replace(/\s+/g, " ").trim();
   return msg.length > MAX_REFRESH_ERROR_CHARS ? `${msg.slice(0, MAX_REFRESH_ERROR_CHARS - 3)}...` : msg;
@@ -105,6 +107,8 @@ export function createMcpOAuthStores(deps: {
 }): McpOAuthStores {
   const now = deps.now ?? Date.now;
   const net = deps.net ?? {};
+  const update = deps.tokens.update?.bind(deps.tokens);
+  if (!update) throw new Error("MCP sign-in tokens need a store with atomic updates");
   const inflight = new Map<string, Promise<string | null>>();
   const tokenId = (serverId: string, principalId: string) => hashId([serverId, personKey(principalId)]);
   const decrypt = (enc: string, what: string): string | null => {
@@ -161,7 +165,7 @@ export function createMcpOAuthStores(deps: {
       ...(tokens.refreshToken ? { refreshTokenEnc: encryptSecret(tokens.refreshToken, deps.key) } : {}),
       ...(tokens.expiresAt !== undefined ? { expiresAt: tokens.expiresAt } : {}),
       ...(tokens.scope ? { scope: tokens.scope } : {}),
-      fingerprint: hashId([tokens.accessToken]),
+      fingerprint: fingerprintOf(tokens.accessToken),
       connectedAt: prior?.connectedAt ?? t,
       updatedAt: t,
     };
@@ -170,29 +174,50 @@ export function createMcpOAuthStores(deps: {
   const expired = (rec: McpUserToken) => rec.expiresAt !== undefined && now() >= rec.expiresAt - REFRESH_SKEW_MS;
   const usable = (rec: McpUserToken | null, client: McpOAuthRegistration): rec is McpUserToken =>
     !!rec && rec.clientId === client.clientId && rec.refreshFailedAt === undefined;
+  const sameVersion = (a: McpUserToken, b: McpUserToken) =>
+    a.fingerprint === b.fingerprint && a.updatedAt === b.updatedAt;
+  const replaceIfUnchanged = (id: string, seen: McpUserToken, next: (current: McpUserToken) => McpUserToken) =>
+    update(id, (current) => (sameVersion(current, seen) ? next(current) : current));
 
   async function rotate(id: string, stale: McpUserToken, client: McpOAuthRegistration): Promise<string | null> {
     return deps.lock.withLock(`mcp-token:${id}`, async () => {
       const current = await deps.tokens.get(id);
       if (!usable(current, client)) return null;
-      if (current.fingerprint !== stale.fingerprint || current.updatedAt !== stale.updatedAt) {
-        return expired(current) ? null : decrypt(current.accessTokenEnc, `token ${id}`);
-      }
+      if (!sameVersion(current, stale)) return currentAccessToken(id, current, client);
       const refreshToken = current.refreshTokenEnc ? decrypt(current.refreshTokenEnc, `refresh ${id}`) : null;
       if (!refreshToken) return null;
+      let fresh: McpTokenSet;
       try {
-        const fresh = await refreshAccessToken(client, refreshToken, net);
-        await deps.tokens.put(
-          id,
-          record(current.serverId, current.principalId, { refreshToken, ...fresh }, current.clientId, current),
-        );
-        return fresh.accessToken;
+        fresh = await refreshAccessToken(client, refreshToken, net);
       } catch (e) {
         if (!isPermanentOAuthFailure(e)) throw e;
-        await deps.tokens.merge(id, { refreshFailedAt: now(), refreshError: storedError(e) });
-        return null;
+        const failed = { ...current, refreshFailedAt: now(), refreshError: storedError(e) };
+        return settled(id, await replaceIfUnchanged(id, current, () => failed), failed, null, client);
       }
+      const rotated = record(
+        current.serverId,
+        current.principalId,
+        { refreshToken, ...fresh },
+        current.clientId,
+        current,
+      );
+      return settled(id, await replaceIfUnchanged(id, current, () => rotated), rotated, fresh.accessToken, client);
     });
+  }
+
+  function settled(
+    id: string,
+    stored: McpUserToken | null,
+    written: McpUserToken,
+    result: string | null,
+    client: McpOAuthRegistration,
+  ): string | null {
+    if (!stored) return null;
+    return stored === written ? result : currentAccessToken(id, stored, client);
+  }
+
+  function currentAccessToken(id: string, rec: McpUserToken, client: McpOAuthRegistration): string | null {
+    return usable(rec, client) && !expired(rec) ? decrypt(rec.accessTokenEnc, `token ${id}`) : null;
   }
 
   function refreshOnce(id: string, stale: McpUserToken, client: McpOAuthRegistration): Promise<string | null> {
@@ -264,11 +289,11 @@ export function createMcpOAuthStores(deps: {
       if (!client || !usable(rec, client) || !rec.refreshTokenEnc) return null;
       return refreshOnce(id, rec, client);
     },
-    async markNeedsReconnect(serverId, principalId, reason) {
-      await deps.tokens.merge(tokenId(serverId, principalId), {
-        refreshFailedAt: now(),
-        refreshError: storedError(reason),
-      });
+    async markNeedsReconnect(serverId, principalId, rejectedToken, reason) {
+      const rejected = fingerprintOf(rejectedToken);
+      await update(tokenId(serverId, principalId), (rec) =>
+        rec.fingerprint === rejected ? { ...rec, refreshFailedAt: now(), refreshError: storedError(reason) } : rec,
+      );
     },
   };
 

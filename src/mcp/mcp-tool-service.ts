@@ -27,6 +27,7 @@ const REFRESH_INTERVAL_MS = 5 * 60_000;
 const CATALOG_SYNC_INTERVAL_MS = 60_000;
 const CATALOG_MAX_AGE_MS = 24 * 60 * 60_000;
 const CATALOG_CAPTURE_TIMEOUT_MS = 10_000;
+const CATALOG_RETRY_INTERVAL_MS = 5 * 60_000;
 const MAX_TOOLS_PER_SERVER = 64;
 const MAX_RESULT_CHARS = 60_000;
 
@@ -59,6 +60,7 @@ export interface McpToolService {
   /** Probe a server config without persisting it. Returns its tool names. */
   probe(server: McpServer): Promise<string[]>;
   captureCatalog(serverId: string, principalId: string): Promise<number>;
+  retryMissingCatalog(serverId: string, principalId: string): void;
   close(): void;
 }
 
@@ -87,6 +89,7 @@ export function createMcpToolService(opts: {
   const clients = new Map<string, { client: McpClient; server: McpServer }>();
   const oauthClients = new LRUCache<string, McpClient>({ max: 500 });
   const catalogFetchedAt = new Map<string, number>();
+  const catalogRetriedAt = new Map<string, number>();
   let byServer = new Map<string, McpToolDescriptor[]>();
   let snapshot: McpToolDescriptor[] = [];
   let closed = false;
@@ -242,7 +245,12 @@ export function createMcpToolService(opts: {
         result = await client.callTool(remoteName, args);
       } catch (retryError) {
         if (!unauthorized(retryError)) throw retryError;
-        await oauth.tokens.markNeedsReconnect(server.id, principalId, "the MCP server rejected the access token");
+        await oauth.tokens.markNeedsReconnect(
+          server.id,
+          principalId,
+          fresh ?? token,
+          "the MCP server rejected the access token",
+        );
         throw connectRequired();
       }
     }
@@ -253,6 +261,15 @@ export function createMcpToolService(opts: {
       );
     }
     return result;
+  }
+
+  async function captureCatalog(serverId: string, principalId: string): Promise<number> {
+    const server = await opts.servers.get(serverId);
+    if (!server || server.auth !== "oauth" || !opts.oauth)
+      throw new Error(`MCP server ${serverId} does not use sign-in`);
+    const token = await opts.oauth.tokens.accessToken(serverId, principalId);
+    if (!token) throw new McpConnectRequiredError(server, opts.connectUrl?.(serverId));
+    return storeCatalog(server, oauthClient(server, token), principalId);
   }
 
   const unsubscribe = opts.servers.onChange(() => {
@@ -302,13 +319,18 @@ export function createMcpToolService(opts: {
       const tools = await client.listTools();
       return tools.map((t) => t.name);
     },
-    async captureCatalog(serverId, principalId) {
-      const server = await opts.servers.get(serverId);
-      if (!server || server.auth !== "oauth" || !opts.oauth)
-        throw new Error(`MCP server ${serverId} does not use sign-in`);
-      const token = await opts.oauth.tokens.accessToken(serverId, principalId);
-      if (!token) throw new McpConnectRequiredError(server, opts.connectUrl?.(serverId));
-      return storeCatalog(server, oauthClient(server, token), principalId);
+    captureCatalog,
+    retryMissingCatalog(serverId, principalId) {
+      if (
+        catalogFetchedAt.has(serverId) ||
+        now() - (catalogRetriedAt.get(serverId) ?? -Infinity) < CATALOG_RETRY_INTERVAL_MS
+      )
+        return;
+      catalogRetriedAt.set(serverId, now());
+      void (async () => {
+        if (await opts.oauth?.catalogs.get(serverId)) return;
+        await captureCatalog(serverId, principalId);
+      })().catch((e: unknown) => swallow(`mcp catalog retry ${serverId}`, e));
     },
     close() {
       closed = true;

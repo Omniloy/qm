@@ -9,6 +9,8 @@
 // policy. See mcp-tool-service.ts for the layer that turns registered
 // servers into agent tools.
 
+import { hostOf } from "../util/network.ts";
+
 const TOKEN_SKEW_MS = 60_000;
 const MCP_ACCEPT = "application/json, text/event-stream";
 export const MCP_PROTOCOL_VERSION = "2025-06-18";
@@ -29,6 +31,7 @@ interface McpHttpResponse {
   status: number;
   text(): Promise<string>;
   headers?: { get(name: string): string | null };
+  body?: { cancel(): Promise<void> } | null;
 }
 
 export type McpFetch = (
@@ -45,14 +48,6 @@ interface McpSession {
 
 function baseUrl(mcpUrl: string): string {
   return mcpUrl.replace(/\/+$/g, "").replace(/\/mcp$/g, "");
-}
-
-function hostOf(base: string): string {
-  try {
-    return new URL(base).host;
-  } catch {
-    return base;
-  }
 }
 
 function safeJson(text: string): unknown {
@@ -219,6 +214,7 @@ export function createMcpClient(opts: {
       ...(id ? { id } : {}),
     };
     const ack = await post({ jsonrpc: "2.0", method: "notifications/initialized" }, sessionHeaders(next));
+    await ack.body?.cancel().catch(() => undefined);
     if (!ack.ok) throw new McpHttpError("notifications/initialized", ack.status, ack.headers?.get("www-authenticate"));
     return next;
   }

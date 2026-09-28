@@ -211,6 +211,105 @@ test("delete returns the removed tokens and server-wide deletion clears every us
   assert.equal(await stores.tokens.delete("granola", "internal:alice"), null);
   await stores.tokens.deleteAllForServer("granola");
   assert.equal((await s.maps.tokens.entries()).length, 1);
-  await stores.tokens.markNeedsReconnect("other", "internal:bob", "rejected");
+  await stores.tokens.markNeedsReconnect("other", "internal:bob", "o1", "rejected");
   assert.equal((await stores.tokens.status("other", "internal:bob")).connected, false);
+});
+
+function gated(response: () => Response) {
+  let release!: () => void;
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  return {
+    respond: async () => {
+      await gate;
+      return response();
+    },
+    release,
+  };
+}
+
+const settle = () => new Promise((r) => setTimeout(r, 10));
+
+test("a disconnect while a refresh is in flight stays disconnected", async () => {
+  const g = gated(() => ok("access-2", "refresh-2"));
+  const s = setup(g.respond);
+  const stores = s.make();
+  await stores.clients.put(registration());
+  await stores.tokens.set(
+    "granola",
+    "internal:alice",
+    { accessToken: "a1", refreshToken: "r1", expiresAt: s.now() + 1_000 },
+    "client-1",
+  );
+  const pending = stores.tokens.accessToken("granola", "internal:alice");
+  await settle();
+  assert.ok(await stores.tokens.delete("granola", "internal:alice"));
+  g.release();
+  assert.equal(await pending, null);
+  assert.deepEqual(await stores.tokens.status("granola", "internal:alice"), { connected: false });
+  assert.equal((await s.maps.tokens.entries()).length, 0);
+});
+
+test("a reconnect while a refresh is in flight keeps the reconnected token", async () => {
+  const g = gated(() => ok("access-2", "refresh-2"));
+  const s = setup(g.respond);
+  const stores = s.make();
+  await stores.clients.put(registration());
+  await stores.tokens.set(
+    "granola",
+    "internal:alice",
+    { accessToken: "a1", refreshToken: "r1", expiresAt: s.now() + 1_000 },
+    "client-1",
+  );
+  const pending = stores.tokens.accessToken("granola", "internal:alice");
+  await settle();
+  s.advance(1);
+  await stores.tokens.set(
+    "granola",
+    "internal:alice",
+    { accessToken: "fresh", refreshToken: "fresh-r", expiresAt: s.now() + 3_600_000 },
+    "client-1",
+  );
+  g.release();
+  assert.equal(await pending, "fresh");
+  assert.equal(await stores.tokens.accessToken("granola", "internal:alice"), "fresh");
+});
+
+test("a permanent refresh failure does not flag a token reconnected meanwhile", async () => {
+  const g = gated(
+    () =>
+      new Response(JSON.stringify({ error: "invalid_grant" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      }),
+  );
+  const s = setup(g.respond);
+  const stores = s.make();
+  await stores.clients.put(registration());
+  await stores.tokens.set(
+    "granola",
+    "internal:alice",
+    { accessToken: "a1", refreshToken: "r1", expiresAt: s.now() + 1_000 },
+    "client-1",
+  );
+  const pending = stores.tokens.accessToken("granola", "internal:alice");
+  await settle();
+  s.advance(1);
+  await stores.tokens.set("granola", "internal:alice", { accessToken: "fresh" }, "client-1");
+  g.release();
+  assert.equal(await pending, "fresh");
+  assert.equal((await stores.tokens.status("granola", "internal:alice")).connected, true);
+});
+
+test("a 401 on an old token does not flag the token the person just reconnected with", async () => {
+  const s = setup(() => ok("unused"));
+  const stores = s.make();
+  await stores.clients.put(registration());
+  await stores.tokens.set("granola", "internal:alice", { accessToken: "a1" }, "client-1");
+  await stores.tokens.set("granola", "internal:alice", { accessToken: "fresh" }, "client-1");
+  await stores.tokens.markNeedsReconnect("granola", "internal:alice", "a1", "rejected");
+  assert.equal((await stores.tokens.status("granola", "internal:alice")).connected, true);
+  await stores.tokens.markNeedsReconnect("granola", "internal:alice", "fresh", "rejected");
+  assert.equal((await stores.tokens.status("granola", "internal:alice")).needsReconnect, true);
 });

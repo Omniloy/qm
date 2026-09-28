@@ -1,4 +1,7 @@
+import { lookup as dnsLookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
+
+export type HostLookup = (host: string) => Promise<string[]>;
 
 const PRIVATE_NETWORKS = new BlockList();
 
@@ -45,4 +48,34 @@ export function isPrivateNetworkIp(raw: string): boolean {
   const value = normalizedIp(raw);
   if (!value) return false;
   return PRIVATE_NETWORKS.check(value, isIP(value) === 4 ? "ipv4" : "ipv6");
+}
+
+export function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+export function bareHostname(url: URL): string {
+  return url.hostname.toLowerCase().replace(/^\[(.*)\]$/, "$1");
+}
+
+export const lookupAddresses: HostLookup = (host) =>
+  isIP(host)
+    ? Promise.resolve([host])
+    : dnsLookup(host, { all: true, verbatim: true }).then((results) => results.map((r) => r.address));
+
+export async function publicAddresses(
+  host: string,
+  lookup: HostLookup = lookupAddresses,
+): Promise<string[] | "unresolvable" | "private"> {
+  let addresses: string[];
+  try {
+    addresses = isIP(host) ? [host] : await lookup(host);
+  } catch {
+    return "unresolvable";
+  }
+  return addresses.length && !addresses.some((a) => isPrivateNetworkIp(a)) ? addresses : "private";
 }

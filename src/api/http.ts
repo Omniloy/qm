@@ -126,6 +126,21 @@ export function pipeToResponse(
   stream.pipe(res);
 }
 
+const LOCAL_PATH_BASE = "http://local-path.invalid";
+
+export function localPath(value: string | null | undefined, params: Record<string, string> = {}): string | undefined {
+  if (!value?.startsWith("/")) return undefined;
+  let dest: URL;
+  try {
+    dest = new URL(value, LOCAL_PATH_BASE);
+  } catch {
+    return undefined;
+  }
+  if (dest.origin !== LOCAL_PATH_BASE || dest.pathname.startsWith("//")) return undefined;
+  for (const [key, val] of Object.entries(params)) dest.searchParams.set(key, val);
+  return `${dest.pathname}${dest.search}${dest.hash}`;
+}
+
 export function sendRedirect(res: ServerResponse, location: string): void {
   res.writeHead(302, { location });
   res.end();

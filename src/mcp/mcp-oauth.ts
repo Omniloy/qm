@@ -1,6 +1,4 @@
-import { lookup as dnsLookup } from "node:dns/promises";
-import { isIP } from "node:net";
-import { isPrivateNetworkIp } from "../util/network.ts";
+import { bareHostname, publicAddresses, type HostLookup } from "../util/network.ts";
 import { MCP_PROTOCOL_VERSION } from "./mcp-client.ts";
 
 const TIMEOUT_MS = 10_000;
@@ -13,7 +11,7 @@ type McpTokenEndpointAuthMethod = (typeof AUTH_METHOD_PREFERENCE)[number];
 
 export interface McpOAuthNet {
   fetchImpl?: typeof fetch;
-  lookup?: (host: string) => Promise<string[]>;
+  lookup?: HostLookup;
   allowLoopbackHttp?: boolean;
   now?: () => number;
 }
@@ -79,10 +77,10 @@ export class McpOAuthError extends Error {
   }
 }
 
+const PERMANENT_OAUTH_ERRORS = new Set(["invalid_grant", "invalid_client", "unauthorized_client"]);
+
 export function isPermanentOAuthFailure(e: unknown): boolean {
-  if (!(e instanceof McpOAuthError)) return false;
-  if (e.code === "invalid_grant") return true;
-  return e.status !== undefined && e.status >= 400 && e.status < 500;
+  return e instanceof McpOAuthError && e.code !== undefined && PERMANENT_OAUTH_ERRORS.has(e.code);
 }
 
 interface SafeResponse {
@@ -92,15 +90,8 @@ interface SafeResponse {
   body: string;
 }
 
-const defaultLookup = (host: string): Promise<string[]> =>
-  dnsLookup(host, { all: true, verbatim: true }).then((results) => results.map((r) => r.address));
-
-function bareHost(url: URL): string {
-  return url.hostname.toLowerCase().replace(/^\[(.*)\]$/, "$1");
-}
-
 function isLoopbackAllowed(url: URL, net: McpOAuthNet): boolean {
-  return net.allowLoopbackHttp === true && LOOPBACK_HOSTS.has(bareHost(url));
+  return net.allowLoopbackHttp === true && LOOPBACK_HOSTS.has(bareHostname(url));
 }
 
 function assertSafeUrl(raw: string, net: McpOAuthNet, label: string): URL {
@@ -117,16 +108,9 @@ function assertSafeUrl(raw: string, net: McpOAuthNet, label: string): URL {
 
 async function assertPublicHost(url: URL, net: McpOAuthNet): Promise<void> {
   if (isLoopbackAllowed(url, net)) return;
-  const host = bareHost(url);
-  let addresses: string[];
-  try {
-    addresses = isIP(host) ? [host] : await (net.lookup ?? defaultLookup)(host);
-  } catch {
-    throw new McpOAuthError(`${url.host} could not be resolved`);
-  }
-  if (!addresses.length || addresses.some((a) => isPrivateNetworkIp(a))) {
-    throw new McpOAuthError(`${url.host} must resolve to a public network address`);
-  }
+  const addresses = await publicAddresses(bareHostname(url), net.lookup);
+  if (addresses === "unresolvable") throw new McpOAuthError(`${url.host} could not be resolved`);
+  if (addresses === "private") throw new McpOAuthError(`${url.host} must resolve to a public network address`);
 }
 
 async function readCapped(res: Response): Promise<string> {
@@ -189,8 +173,14 @@ const stringsOf = (v: unknown): string[] | undefined =>
   Array.isArray(v) ? v.filter((s): s is string => typeof s === "string" && !!s) : undefined;
 const trimSlash = (s: string): string => s.replace(/\/+$/, "");
 
-export function sameIssuer(a: string, b: string): boolean {
-  return trimSlash(a) === trimSlash(b);
+function pathSegments(url: URL): string[] {
+  return url.pathname.split("/").filter(Boolean);
+}
+
+function resourceCovers(resource: URL, server: URL): boolean {
+  const scope = pathSegments(resource);
+  const target = pathSegments(server);
+  return resource.origin === server.origin && scope.length <= target.length && scope.every((s, i) => s === target[i]);
 }
 
 export function parseBearerChallenge(header: string | null): { resourceMetadata?: string; scope?: string } {
@@ -255,7 +245,7 @@ async function authServerMetadata(issuerUrl: string, net: McpOAuthNet): Promise<
   const meta = await firstJson(candidates, net, "authorization server metadata");
   if (!meta) throw new McpOAuthError(`${issuer.host} does not publish authorization server metadata`);
   const advertised = stringOf(meta.issuer);
-  if (!advertised || !sameIssuer(advertised, issuerUrl)) {
+  if (advertised !== issuerUrl) {
     throw new McpOAuthError("authorization server metadata issuer does not match the authorization server URL");
   }
   if (!stringsOf(meta.code_challenge_methods_supported)?.includes("S256")) {
@@ -313,7 +303,7 @@ export async function discover(serverUrl: string, net: McpOAuthNet): Promise<Mcp
   } catch {
     throw new McpOAuthError("protected resource metadata resource is not a valid URL");
   }
-  if (resourceUrl.origin !== server.origin || !trimSlash(serverUrl).startsWith(trimSlash(resource))) {
+  if (!resourceCovers(resourceUrl, server)) {
     throw new McpOAuthError("protected resource metadata resource does not match the MCP server URL");
   }
   const issuer = stringsOf(prm.authorization_servers)?.[0];

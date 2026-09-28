@@ -237,3 +237,14 @@ test("MCP sign-in accounts render by server name and host and never offer Give a
   assert.match(connectorsSource, /const first = meta\.grantable/);
   assert.match(shellSource, /focusConnector\(connect\)/);
 });
+
+test("the disconnect dialog and the sign-in return notice name MCP servers by their server name", () => {
+  assert.match(connectorsSource, /title: `Disconnect \$\{connectorName\(provider\)\}\?`/);
+  assert.match(
+    connectorsSource,
+    /function connectorName\(id: string\): string \{\n\s+return connectorCardMeta\(id, connectorProviders\[id\]/,
+  );
+  const loaded = connectorsSource.slice(connectorsSource.indexOf("connectorProviders = Object.fromEntries("));
+  assert.ok(loaded.indexOf("applyConnectorResult();") < loaded.indexOf("drawConnectors();"));
+  assert.doesNotMatch(connectorsSource, /CONNECTOR_LABELS\[provider\]\?\.name \?\? provider/);
+});

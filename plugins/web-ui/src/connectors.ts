@@ -118,6 +118,7 @@ interface KeychainAsk {
 }
 
 let connectorProviders: Record<string, ConnectorProvider> = {};
+let pendingConnectorResult: { provider: string; status: string } | null = null;
 let focusedConnector = "";
 let focusScrollPending = false;
 let keychainCredentials: KeychainCredential[] = [];
@@ -167,6 +168,7 @@ export function resetKeychainState(): void {
   relayChecking = false;
   browserConnect = null;
   connectorNotice = "";
+  pendingConnectorResult = null;
   loadNotice = "";
   connectorsLoading = false;
   keysLoading = false;
@@ -900,8 +902,19 @@ export function focusConnector(provider: string): void {
   focusScrollPending = true;
 }
 
+function connectorName(id: string): string {
+  return connectorCardMeta(id, connectorProviders[id] ?? {}, CONNECTOR_LABELS[id]).name;
+}
+
 export function noteConnectorResult(provider: string, status: string): void {
-  const name = CONNECTOR_LABELS[provider]?.name ?? connectorProviders[provider]?.name ?? provider;
+  pendingConnectorResult = { provider, status };
+}
+
+function applyConnectorResult(): void {
+  if (!pendingConnectorResult) return;
+  const { provider, status } = pendingConnectorResult;
+  pendingConnectorResult = null;
+  const name = connectorName(provider);
   connectorNotice = status === "connected" ? `${name}: connected.` : `${name}: connection failed.`;
 }
 
@@ -1127,6 +1140,7 @@ export async function renderConnectors(): Promise<void> {
       );
       connectorsEverLoaded = true;
       connectorsLoading = false;
+      applyConnectorResult();
       applyNotices();
       drawConnectors();
     },
@@ -1134,6 +1148,7 @@ export async function renderConnectors(): Promise<void> {
       if (!fresh()) return;
       notices.push(errMessage(reason, "Failed to load connectors."));
       connectorsLoading = false;
+      applyConnectorResult();
       applyNotices();
       drawConnectors();
     },
@@ -1341,7 +1356,7 @@ async function revokeConnector(provider: string): Promise<void> {
     : "";
   confirmationOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   confirmation = {
-    title: `Disconnect ${CONNECTOR_LABELS[provider]?.name ?? provider}?`,
+    title: `Disconnect ${connectorName(provider)}?`,
     body: `${impact} Automations using this account may stop working.`.trim(),
     action: "Disconnect account",
     run: async () => {

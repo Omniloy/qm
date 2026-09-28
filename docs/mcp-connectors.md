@@ -111,9 +111,11 @@ sandbox. Only core reads them, for that person's tool calls.
 
 Tools: the first successful sign-in lists the server's tools with that person's
 token and stores the shared catalog in `fork_mcp_catalogs`. Until someone connects,
-the server has no tools, so an admin should connect first. Every instance re-reads
-the catalog each minute; a catalog older than a day is re-listed in the background
-after a successful call. The catalog must be the same for everyone, as above.
+the server has no tools, so an admin should connect first. If that listing fails,
+the catalog is retried in the background when a connected person opens Keychain
+(at most every five minutes per instance), or right away when someone reconnects.
+Every instance re-reads the catalog each minute; a catalog older than a day is
+re-listed in the background after a successful call. The catalog must be the same for everyone, as above.
 
 Calls use the caller's token only. An unconnected caller gets an error telling the
 agent to have the person connect at `${PUBLIC_WEB_URL}/keychain?connect=mcp-<id>`.

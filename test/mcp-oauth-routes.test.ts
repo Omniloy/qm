@@ -154,17 +154,27 @@ async function start(opts: { strict?: boolean } = {}) {
   server.listen(0);
   const base = `http://localhost:${(server.address() as AddressInfo).port}`;
 
-  async function startFlow(principalId = "internal:alice", redirectUri = REDIRECT, provider = "mcp-granola") {
-    const path = `/v1/connectors/oauth/${provider}/start?principalId=${encodeURIComponent(principalId)}&redirectUri=${encodeURIComponent(redirectUri)}&returnTo=%2Fkeychain`;
+  async function startFlow(
+    principalId = "internal:alice",
+    redirectUri = REDIRECT,
+    provider = "mcp-granola",
+    returnTo = "/keychain",
+  ) {
+    const path = `/v1/connectors/oauth/${provider}/start?principalId=${encodeURIComponent(principalId)}&redirectUri=${encodeURIComponent(redirectUri)}&returnTo=${encodeURIComponent(returnTo)}`;
     return fetch(`${base}${path}`, {
       headers: { ...sign("GET", path), ...(opts.strict ? await identity(principalId) : {}) },
     });
   }
-  async function stateFor(principalId = "internal:alice", provider = "mcp-granola"): Promise<string> {
+  async function stateFor(
+    principalId = "internal:alice",
+    provider = "mcp-granola",
+    returnTo?: string,
+  ): Promise<string> {
     const res = await startFlow(
       principalId,
       provider === "mcp-granola" ? REDIRECT : `${PUBLIC}/v1/connectors/oauth/${provider}/callback`,
       provider,
+      returnTo,
     );
     assert.equal(res.status, 200);
     const url = new URL(((await res.json()) as { authorizeUrl: string }).authorizeUrl);
@@ -322,9 +332,15 @@ test("once state is valid, issuer mix-up, a re-registered client, or a denial re
     );
     assert.equal(mixUp.headers.get("location"), "/keychain?connector=mcp-granola&status=error");
 
+    const slashed = await srv.stateFor();
+    const nearMiss = await srv.callback(
+      `code=c&state=${encodeURIComponent(slashed)}&iss=${encodeURIComponent("https://auth.example.com/")}`,
+    );
+    assert.equal(nearMiss.headers.get("location"), "/keychain?connector=mcp-granola&status=error");
+
     const matching = await srv.stateFor();
     const fine = await srv.callback(
-      `code=c&state=${encodeURIComponent(matching)}&iss=${encodeURIComponent("https://auth.example.com/")}`,
+      `code=c&state=${encodeURIComponent(matching)}&iss=${encodeURIComponent("https://auth.example.com")}`,
     );
     assert.equal(fine.headers.get("location"), "/keychain?connector=mcp-granola&status=connected");
 
@@ -386,6 +402,84 @@ test("mcp- providers that are not OAuth MCP servers fall through to the built-in
     const res = await srv.startFlow("internal:alice", REDIRECT, "mcp-plain");
     assert.equal(res.status, 404);
     assert.equal((await srv.startFlow("internal:alice", REDIRECT, "mcp-missing")).status, 404);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("a returnTo that normalizes to another origin is dropped instead of becoming an open redirect", async () => {
+  const srv = await start();
+  try {
+    for (const returnTo of ["/.//evil.com", "/a/..//evil.com", "/\\evil.com", "//evil.com"]) {
+      const state = await srv.stateFor("internal:alice", "mcp-granola", returnTo);
+      const res = await srv.callback(`code=c&state=${encodeURIComponent(state)}`);
+      assert.equal(res.status, 200, returnTo);
+      assert.equal(res.headers.get("location"), null, returnTo);
+    }
+    const state = await srv.stateFor("internal:alice", "mcp-granola", "/a/../keychain?tab=x");
+    const res = await srv.callback(`code=c&state=${encodeURIComponent(state)}`);
+    assert.equal(res.headers.get("location"), "/keychain?tab=x&connector=mcp-granola&status=connected");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("sign-in can neither start nor finish under an impersonated identity", async () => {
+  const srv = await start({ strict: true });
+  try {
+    const impersonated = {
+      [PORTAL_IDENTITY_HEADER]: await mintPortalIdentity(
+        { p: "internal:alice", imp: "internal:admin", exp: Date.now() + 60_000 },
+        PORTAL_SECRET,
+      ),
+    };
+    const path = `/v1/connectors/oauth/mcp-granola/start?principalId=internal%3Aalice&redirectUri=${encodeURIComponent(REDIRECT)}`;
+    const refused = await fetch(`${srv.base}${path}`, { headers: { ...sign("GET", path), ...impersonated } });
+    assert.equal(refused.status, 403);
+    assert.equal(((await refused.json()) as { error: string }).error, "browser_identity_required");
+
+    const state = await srv.stateFor();
+    const finished = await srv.callback(`code=c&state=${encodeURIComponent(state)}`, impersonated);
+    assert.equal(finished.headers.get("location"), "/keychain?connector=mcp-granola&status=error");
+    assert.equal(srv.tokenBodies.length, 0);
+    assert.equal(await srv.oauth.tokens.accessToken("granola", "internal:alice"), null);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("a callback for a server disabled after the flow started stores no token", async () => {
+  const srv = await start();
+  try {
+    const state = await srv.stateFor();
+    await srv.servers.put(mcpServer("granola", { enabled: false }));
+    const res = await srv.callback(`code=c&state=${encodeURIComponent(state)}`);
+    assert.equal(res.headers.get("location"), "/keychain?connector=mcp-granola&status=error");
+    assert.equal(srv.tokenBodies.length, 0);
+    assert.equal(await srv.oauth.tokens.accessToken("granola", "internal:alice"), null);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("a connected person's status read retries a catalog capture that failed at sign-in", async () => {
+  const srv = await start();
+  try {
+    await srv.oauth.tokens.set("granola", "internal:alice", { accessToken: "granola-at" }, "client-1");
+    assert.equal(await srv.oauth.catalogs.get("granola"), null);
+    const statusPath = "/v1/connectors/oauth/status?principalId=internal%3Aalice";
+    const status = await fetch(`${srv.base}${statusPath}`, { headers: sign("GET", statusPath) });
+    assert.equal(status.status, 200);
+    for (let i = 0; i < 50 && !(await srv.oauth.catalogs.get("granola")); i++)
+      await new Promise((r) => setTimeout(r, 10));
+    assert.deepEqual(
+      (await srv.oauth.catalogs.get("granola"))?.tools.map((t) => t.name),
+      ["list_meetings"],
+    );
+    assert.deepEqual(
+      srv.toolService.toolDefs().map((d) => d.name),
+      ["granola_list_meetings"],
+    );
   } finally {
     await srv.close();
   }

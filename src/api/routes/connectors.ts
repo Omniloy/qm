@@ -20,7 +20,7 @@ import type { ServerDeps } from "../deps.ts";
 import { personKey, samePerson } from "../../directory/person.ts";
 import { errMessage } from "../../util/errors.ts";
 import { normalizeInboundExpiresAt } from "../expiry.ts";
-import { sendJson, sendRedirect } from "../http.ts";
+import { localPath, sendJson, sendRedirect } from "../http.ts";
 import { audit } from "./shared.ts";
 import type { ApiCtx, BaseCtx, Route } from "./route.ts";
 import { mcpConnectorStatus, mcpOAuthCallback, mcpOAuthRevoke, mcpOAuthServer, mcpOAuthStart } from "./mcp-oauth.ts";
@@ -72,11 +72,6 @@ function parseOAuthRoute(pathname: string): { provider: string; action: "start" 
   const [provider, action] = parts;
   if (!provider || (action !== "start" && action !== "callback")) return null;
   return { provider: decodeURIComponent(provider), action };
-}
-
-function safeReturnTo(value: string | null): string | undefined {
-  if (!value || !value.startsWith("/") || value.startsWith("//")) return undefined;
-  return value;
 }
 
 type HostStatus = OAuthTokenStatus & { host: string };
@@ -182,12 +177,8 @@ async function oauthCallback(ctx: BaseCtx): Promise<void> {
     if (state.consentLinkId && deps.consentLinks) {
       await deps.consentLinks.redeem(state.consentLinkId).catch(() => null);
     }
-    if (state.returnTo) {
-      const dest = new URL(state.returnTo, "http://localhost");
-      dest.searchParams.set("connector", oauthRoute.provider);
-      dest.searchParams.set("status", "connected");
-      return sendRedirect(res, `${dest.pathname}${dest.search}${dest.hash}`);
-    }
+    const dest = localPath(state.returnTo, { connector: oauthRoute.provider, status: "connected" });
+    if (dest) return sendRedirect(res, dest);
     return sendJson(res, 200, { ok: true, provider: oauthRoute.provider, principalId: state.principalId, hosts });
   } catch (e) {
     return sendJson(res, 400, { error: "oauth_callback_failed", message: errMessage(e) });
@@ -244,7 +235,7 @@ async function consentRedeem(ctx: ApiCtx): Promise<void> {
         message: "redirectUri is not registered for this client",
       });
     }
-    const returnTo = safeReturnTo(url.searchParams.get("returnTo")) ?? rec.returnTo;
+    const returnTo = localPath(url.searchParams.get("returnTo")) ?? rec.returnTo;
     const codeVerifier = PROVIDERS[rec.provider]?.pkce ? generateCodeVerifier() : undefined;
     const state = await beginOAuthFlow(deps, secret, {
       provider: rec.provider,
@@ -331,7 +322,7 @@ async function consentMint(ctx: ApiCtx): Promise<void> {
     });
   }
   const returnTo =
-    safeReturnTo(typeof b.returnTo === "string" ? b.returnTo : null) ?? (deps.portalUrl ? "/connectors" : undefined);
+    localPath(typeof b.returnTo === "string" ? b.returnTo : null) ?? (deps.portalUrl ? "/connectors" : undefined);
   const { linkId } = await deps.consentLinks.mint({
     principalId: capability.actorId,
     orgId: configOrgId(),
@@ -360,8 +351,9 @@ async function oauthStart(ctx: ApiCtx): Promise<void> {
   const oauthRoute = parseOAuthRoute(pathname)!;
   if (!deps.connectorTokens)
     return sendJson(res, 501, { error: "not_configured", message: "connector token store not wired" });
+  const returnTo = localPath(url.searchParams.get("returnTo"));
   const mcpServer = await mcpOAuthServer(deps, oauthRoute.provider);
-  if (mcpServer) return mcpOAuthStart(ctx, mcpServer, safeReturnTo(url.searchParams.get("returnTo")));
+  if (mcpServer) return mcpOAuthStart(ctx, mcpServer, returnTo);
   const provider = PROVIDERS[oauthRoute.provider];
   if (!provider)
     return sendJson(res, 404, { error: "not_found", message: `unknown OAuth provider: ${oauthRoute.provider}` });
@@ -386,9 +378,7 @@ async function oauthStart(ctx: ApiCtx): Promise<void> {
       orgId: configOrgId(),
       ...(accountType !== "default" ? { accountType } : {}),
       clientRef: client.clientRef,
-      ...(safeReturnTo(url.searchParams.get("returnTo"))
-        ? { returnTo: safeReturnTo(url.searchParams.get("returnTo")) }
-        : {}),
+      ...(returnTo ? { returnTo } : {}),
       ...(codeVerifier ? { codeVerifier } : {}),
     });
     const consentUrl = authorizeUrl(oauthRoute.provider, {

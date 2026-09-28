@@ -283,6 +283,7 @@ function rpcResponse(body: unknown, status = 200, headers: Record<string, string
 function sessionServer(opts: { accept?: string[]; sse?: boolean } = {}) {
   const log: Array<{ url: string; method: string; headers: Record<string, string> }> = [];
   let sessions = 0;
+  let acksReleased = 0;
   let live = "";
   const fetch: McpFetch = async (url, init) => {
     const msg = JSON.parse(init.body) as { id?: number; method: string; params?: { name?: string } };
@@ -301,7 +302,16 @@ function sessionServer(opts: { accept?: string[]; sse?: boolean } = {}) {
         : rpcResponse(envelope, 200, { "mcp-session-id": live });
     }
     if (init.headers["mcp-session-id"] !== live) return rpcResponse({ error: "unknown session" }, 404);
-    if (msg.method === "notifications/initialized") return rpcResponse("", 202);
+    if (msg.method === "notifications/initialized") {
+      return {
+        ...rpcResponse("", 202),
+        body: {
+          cancel: async () => {
+            acksReleased++;
+          },
+        },
+      };
+    }
     const result =
       msg.method === "tools/list"
         ? { tools: TOOLS }
@@ -311,6 +321,7 @@ function sessionServer(opts: { accept?: string[]; sse?: boolean } = {}) {
   return {
     fetch,
     log,
+    acksReleased: () => acksReleased,
     expire: () => {
       live = "expired";
     },
@@ -332,6 +343,7 @@ test("session mode runs the streamable-HTTP handshake once and reuses the sessio
       srv.log.map((e) => e.method),
       ["initialize", "notifications/initialized", "tools/list", "tools/call"],
     );
+    assert.equal(srv.acksReleased(), 1);
     assert.ok(srv.log.every((e) => e.url === "https://mcp.example.com/v2/endpoint"));
     assert.equal(srv.log[0]!.headers["mcp-session-id"], undefined);
     assert.equal(srv.log[0]!.headers["mcp-protocol-version"], undefined);
@@ -353,6 +365,7 @@ test("session mode re-initializes once when the server forgets the session", asy
   await client.listTools();
   srv.expire();
   assert.equal((await client.listTools()).length, 2);
+  assert.equal(srv.acksReleased(), 2);
   assert.deepEqual(
     srv.log.map((e) => e.method),
     [
@@ -484,6 +497,21 @@ test("a 401 from an OAuth server refreshes once and retries, then asks to reconn
   await assert.rejects(stuck.service.call("granola_query", {}, "internal:alice"), /isn't connected for you/);
   assert.equal(stuck.tokenRequests(), 1);
   assert.equal((await stuck.oauth.tokens.status("granola", "internal:alice")).needsReconnect, true);
+});
+
+test("a missing catalog is retried for a connected person at most once per interval", async (t) => {
+  const h = await oauthHarness();
+  t.after(() => h.service.close());
+  await h.oauth.tokens.set("granola", "internal:alice", { accessToken: "alice-at" }, "client-1");
+  h.service.retryMissingCatalog("granola", "internal:alice");
+  h.service.retryMissingCatalog("granola", "internal:alice");
+  for (let i = 0; i < 50 && !(await h.oauth.catalogs.get("granola")); i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal((await h.oauth.catalogs.get("granola"))?.fetchedBy, "internal:alice");
+  assert.equal(h.srv.log.filter((e) => e.method === "tools/list").length, 1);
+  await h.oauth.catalogs.delete("granola");
+  h.service.retryMissingCatalog("granola", "internal:alice");
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(h.srv.log.filter((e) => e.method === "tools/list").length, 1);
 });
 
 test("capturing a catalog lists with the connecting user's token and publishes it", async (t) => {

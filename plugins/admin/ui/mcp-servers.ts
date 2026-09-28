@@ -221,7 +221,7 @@ function rows() {
           <div class="credential-title"><strong>${s.name}</strong><span class="credential-slug">${s.id}</span></div>
           <div class="hint">${s.url}${s.updatedBy ? " · by " + s.updatedBy : ""}</div>
           <div class="credential-badges">
-            ${badge(s.enabled ? "Enabled" : "Disabled", s.enabled ? "ok" : "warn")}${badge(AUTH_LABELS[s.auth], "info")}${badge(s.credentialScope === "per-user" ? "Each person's account" : "Shared identity", "muted")}${badge(tools + " tool" + (tools === 1 ? "" : "s"), tools ? "ok" : "muted")}${s.readOnly ? badge("Read-only", "muted") : nothing}${secretMissing ? badge("Secret missing", "err") : nothing}${s.auth === "oauth" && s.oauth ? badge(hostOf(s.oauth.issuer), "muted") : nothing}${s.auth === "oauth" && !s.oauth ? badge("Not registered", "err") : nothing}${s.auth === "oauth" && !s.hasCatalog ? badge("No tools yet — connect an account", "warn") : nothing}
+            ${badge(s.enabled ? "Enabled" : "Disabled", s.enabled ? "ok" : "warn")}${badge(AUTH_LABELS[s.auth], "info")}${badge(s.credentialScope === "per-user" ? "Each person's account" : "Shared identity", "muted")}${badge(tools + " tool" + (tools === 1 ? "" : "s"), tools ? "ok" : "muted")}${s.readOnly ? badge("Read-only", "muted") : nothing}${secretMissing ? badge("Secret missing", "err") : nothing}${s.auth === "oauth" && s.oauth ? badge(hostOf(s.oauth.issuer), "muted") : nothing}${s.auth === "oauth" && !s.oauth ? badge("Not registered", "err") : nothing}${s.auth === "oauth" && !s.hasCatalog ? badge("No tools yet — connect or reconnect an account", "warn") : nothing}
           </div>
         </div>
         <div class="credential-actions">
