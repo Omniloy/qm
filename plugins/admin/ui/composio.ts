@@ -92,8 +92,9 @@ export function composioCard() {
           }}
       /></label>
       <p class="field-hint">
-        From the Composio dashboard, Settings → API keys. Before production use, set the project's callback verifier URL
-        to <code>${location.origin}/api/composio/callback</code>.
+        Create the key in the Composio dashboard under Project Settings → API Keys. Then, under Project Settings →
+        General → Configuration → OAuth user verification, set <code>${location.origin}/api/composio/callback</code>.
+        While it is set, connections started from the Composio dashboard won't complete; people connect from here.
       </p>
       ${c ? html`<p class="field-hint">Stored as the <code>${c.slug}</code> credential under Credentials.</p>` : nothing}
     </div>
