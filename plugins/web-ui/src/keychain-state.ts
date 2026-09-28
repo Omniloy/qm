@@ -10,6 +10,25 @@ export interface KeychainCredentialState {
   expiresAt?: number;
 }
 
+export interface ConnectorCardSource {
+  name?: string;
+  kind?: string;
+  hosts?: Array<{ host?: string } | string>;
+}
+
+export function connectorCardMeta(
+  id: string,
+  provider: ConnectorCardSource,
+  known?: { name: string; hosts: string },
+): { name: string; hosts: string; grantable: boolean } {
+  const grantable = provider.kind !== "mcp";
+  if (known) return { ...known, grantable };
+  const host = (provider.hosts ?? []).map((entry) => (typeof entry === "string" ? entry : entry.host)).find(Boolean);
+  const name = provider.name || id;
+  if (provider.kind === "mcp") return { name, hosts: host ? `MCP server · ${host}` : "MCP server", grantable };
+  return { name, hosts: "", grantable };
+}
+
 export function isExpiredCredential(credential: KeychainCredentialState, at = Date.now()): boolean {
   return (
     credential.kind !== "file" &&

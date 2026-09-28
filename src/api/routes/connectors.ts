@@ -23,6 +23,7 @@ import { normalizeInboundExpiresAt } from "../expiry.ts";
 import { sendJson, sendRedirect } from "../http.ts";
 import { audit } from "./shared.ts";
 import type { ApiCtx, BaseCtx, Route } from "./route.ts";
+import { mcpConnectorStatus, mcpOAuthCallback, mcpOAuthRevoke, mcpOAuthServer, mcpOAuthStart } from "./mcp-oauth.ts";
 
 const OAUTH_STATE_MAX_AGE_MS = 10 * 60_000;
 function oauthStateSecret(deps: ServerDeps, signingSecret: string | undefined): string {
@@ -140,6 +141,8 @@ async function oauthCallback(ctx: BaseCtx): Promise<void> {
   const oauthRoute = parseOAuthRoute(pathname)!;
   if (!deps.connectorTokens)
     return sendJson(res, 501, { error: "not_configured", message: "connector token store not wired" });
+  const mcpServer = await mcpOAuthServer(deps, oauthRoute.provider);
+  if (mcpServer) return mcpOAuthCallback(ctx, mcpServer);
   const code = url.searchParams.get("code") ?? "";
   const stateParam = url.searchParams.get("state") ?? "";
   const providerError = url.searchParams.get("error");
@@ -357,6 +360,8 @@ async function oauthStart(ctx: ApiCtx): Promise<void> {
   const oauthRoute = parseOAuthRoute(pathname)!;
   if (!deps.connectorTokens)
     return sendJson(res, 501, { error: "not_configured", message: "connector token store not wired" });
+  const mcpServer = await mcpOAuthServer(deps, oauthRoute.provider);
+  if (mcpServer) return mcpOAuthStart(ctx, mcpServer, safeReturnTo(url.searchParams.get("returnTo")));
   const provider = PROVIDERS[oauthRoute.provider];
   if (!provider)
     return sendJson(res, 404, { error: "not_found", message: `unknown OAuth provider: ${oauthRoute.provider}` });
@@ -418,7 +423,11 @@ async function oauthStatus(ctx: ApiCtx): Promise<void> {
   const principalId = url.searchParams.get("principalId") ?? "";
   if (!principalId) return sendJson(res, 400, { error: "bad_request", message: "principalId required" });
   audit(deps, { principalId, action: "connector.oauth.status", resource: "connectors", scopeLabel: principalId });
-  return sendJson(res, 200, { principalId, providers: await connectorProviderStatus(deps, principalId) });
+  const [providers, mcpProviders] = await Promise.all([
+    connectorProviderStatus(deps, principalId),
+    mcpConnectorStatus(deps, principalId),
+  ]);
+  return sendJson(res, 200, { principalId, providers: { ...providers, ...mcpProviders } });
 }
 
 export async function oauthRevoke(ctx: ApiCtx): Promise<void> {
@@ -445,6 +454,8 @@ export async function oauthRevoke(ctx: ApiCtx): Promise<void> {
     return sendJson(res, 400, { error: "bad_request", message: "principalId and provider or host required" });
   }
   if (providerName) {
+    const mcpServer = await mcpOAuthServer(deps, providerName);
+    if (mcpServer) return mcpOAuthRevoke(ctx, mcpServer, principalId);
     const provider = PROVIDERS[providerName];
     if (!provider)
       return sendJson(res, 404, { error: "not_found", message: `unknown OAuth provider: ${providerName}` });

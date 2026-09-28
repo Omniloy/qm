@@ -39,6 +39,7 @@ for (const p of [
   "/v1/admin/deployments",
   "/v1/admin/skills",
   "/v1/connectors/oauth/github/start",
+  "/v1/connectors/oauth/mcp-granola/start",
 ])
   PATHS.add(p);
 
@@ -74,6 +75,7 @@ test("raw routes keep their declared auth contracts (they self-enforce, so the d
   const pins: Array<[string, string, RouteAuth]> = [
     ["GET", "/healthz", "public"],
     ["GET", "/readyz", "public"],
+    ["GET", "/v1/connectors/oauth/mcp-granola/callback", "public"],
     ["GET", "/v1/credentials/git/gitlab/acme/repo.git/info/refs", { aud: CREDENTIAL_BROKER_AUD }],
     ["POST", "/v1/credentials/git/gitlab/acme/repo.git/git-upload-pack", { aud: CREDENTIAL_BROKER_AUD }],
   ];

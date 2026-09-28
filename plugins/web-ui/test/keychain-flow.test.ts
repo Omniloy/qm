@@ -1,7 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { isActiveGrant, isExpiredCredential, KeychainOperations, keychainSummary } from "../src/keychain-state.ts";
+import {
+  connectorCardMeta,
+  isActiveGrant,
+  isExpiredCredential,
+  KeychainOperations,
+  keychainSummary,
+} from "../src/keychain-state.ts";
 
 const connectorsSource = readFileSync(new URL("../src/connectors.ts", import.meta.url), "utf8");
 const shellSource = readFileSync(new URL("../src/shell.ts", import.meta.url), "utf8");
@@ -211,4 +217,23 @@ test("resetting keychain state drops an open grant dialog and its contexts", () 
   ]) {
     assert.ok(body.includes(cleared), cleared);
   }
+});
+
+test("MCP sign-in accounts render by server name and host and never offer Give access", () => {
+  assert.deepEqual(
+    connectorCardMeta("mcp-granola", { kind: "mcp", name: "Granola", hosts: [{ host: "mcp.granola.ai" }] }),
+    { name: "Granola", hosts: "MCP server · mcp.granola.ai", grantable: false },
+  );
+  assert.deepEqual(connectorCardMeta("mcp-x", { kind: "mcp" }), {
+    name: "mcp-x",
+    hosts: "MCP server",
+    grantable: false,
+  });
+  assert.deepEqual(connectorCardMeta("google", {}, { name: "Google Workspace", hosts: "Gmail" }), {
+    name: "Google Workspace",
+    hosts: "Gmail",
+    grantable: true,
+  });
+  assert.match(connectorsSource, /const first = meta\.grantable/);
+  assert.match(shellSource, /focusConnector\(connect\)/);
 });

@@ -21,6 +21,7 @@ import type { UserModelCredentialStore } from "../model/user-model-credential-st
 import type { CustomProviderStore } from "../model/custom-provider-store.ts";
 import type { McpServerStore } from "../mcp/mcp-server-store.ts";
 import type { McpToolService } from "../mcp/mcp-tool-service.ts";
+import type { McpOAuthStores } from "../mcp/mcp-oauth-store.ts";
 import type { ReplayDedupe } from "../auth/replay-dedupe.ts";
 import type { FetchLike, OAuthClientResolver } from "../connectors/oauth.ts";
 import type { ConsentLinkStore } from "../connectors/consent-link.ts";
@@ -141,6 +142,7 @@ export interface ServerDeps {
   userModelCredentials?: UserModelCredentialStore;
   mcpServers?: McpServerStore;
   mcpToolService?: McpToolService;
+  mcpOAuth?: McpOAuthStores;
   modelCredentialFetch?: typeof fetch;
   modelRegistry?: ModelOverlayStore;
   modelVerifier?: ModelVerifier;

@@ -5337,6 +5337,9 @@ a.connector-widget:focus-visible {
 .kc-resource:last-child {
   border-bottom: 0;
 }
+.kc-resource.is-focused {
+  background: color-mix(in srgb, var(--accent) 14%, var(--background));
+}
 .kc-resource-main {
   display: flex;
   align-items: flex-start;

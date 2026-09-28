@@ -319,6 +319,46 @@ test("the provider callback still passes through publicly with NO session/cookie
   assert.equal(cbb.cookie, null);
 });
 
+test("the provider callback carries a short-lived portal identity only for a signed-in browser, never a forwarded one", async () => {
+  const { verifyPortalIdentity } = await import("../../chassis/src/portal-identity.ts");
+  const path = "/v1/connectors/oauth/mcp-granola/callback?code=c&state=s";
+  const anonymous = await fetch(`${base}${path}`, { headers: { "x-portal-identity": "forged" }, redirect: "manual" });
+  assert.equal(
+    ((await anonymous.json()) as { headers: Record<string, string> }).headers["x-portal-identity"],
+    undefined,
+  );
+
+  const signedIn = await fetch(`${base}${path}`, {
+    headers: { cookie: sessionCookie("U1"), "x-portal-identity": "forged" },
+    redirect: "manual",
+  });
+  const forwarded = (await signedIn.json()) as { url: string; headers: Record<string, string> };
+  assert.equal(forwarded.url, path);
+  const claims = verifyPortalIdentity(
+    forwarded.headers["x-portal-identity"] ?? "",
+    "router-test-core-secret",
+    Date.now(),
+  );
+  assert.equal(claims?.p, "U1");
+  assert.ok(claims!.exp <= Date.now() + 60_000);
+
+  const start = await fetch(`${base}/auth/impersonate?target=alice@acme`, {
+    method: "POST",
+    headers: { cookie: sessionCookie("U-admin"), origin: PUBLIC, accept: "application/json" },
+  });
+  const imp = (start.headers.get("set-cookie") ?? "").match(/portal_impersonate=([^;]+)/);
+  assert.ok(imp);
+  const impersonating = await fetch(`${base}${path}`, {
+    headers: { cookie: `${sessionCookie("U-admin")}; portal_impersonate=${imp[1]}` },
+    redirect: "manual",
+  });
+  const impHeaders = ((await impersonating.json()) as { headers: Record<string, string> }).headers;
+  assert.equal(
+    verifyPortalIdentity(impHeaders["x-portal-identity"] ?? "", "router-test-core-secret", Date.now())?.p,
+    "alice@acme",
+  );
+});
+
 test("the legacy /v1 browser-leg aliases are gone: the portal no longer serves them, /v1 stays private", async () => {
   assert.equal(
     (await fetch(`${base}/v1/connectors/oauth/consent/redeem/abc?p=google`, { redirect: "manual" })).status,

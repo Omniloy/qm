@@ -7,7 +7,7 @@ import { connectorLogo } from "./connector-logo";
 import { appState, replacePanePreservingFocus } from "./shell";
 import { scopedSession, scopedViewTopbar } from "./session-scope";
 import { focusDialogCancel, restoreDialogFocus, trapDialogFocus } from "./dialog-focus";
-import { isActiveGrant, isExpiredCredential, KeychainOperations } from "./keychain-state";
+import { connectorCardMeta, isActiveGrant, isExpiredCredential, KeychainOperations } from "./keychain-state";
 import { listPageTpl } from "./list-page";
 import {
   grantBlockedReason,
@@ -35,6 +35,8 @@ import {
 } from "./browser-picker-state";
 
 interface ConnectorProvider {
+  name?: string;
+  kind?: string;
   connected?: boolean;
   needsReconnect?: boolean;
   refreshError?: string;
@@ -116,6 +118,8 @@ interface KeychainAsk {
 }
 
 let connectorProviders: Record<string, ConnectorProvider> = {};
+let focusedConnector = "";
+let focusScrollPending = false;
 let keychainCredentials: KeychainCredential[] = [];
 let keychainConnectorCredentials: KeychainConnectorCredential[] = [];
 let keychainGrants: KeychainGrant[] = [];
@@ -891,8 +895,13 @@ export function clearConnectorNotice(): void {
   connectorNotice = "";
 }
 
+export function focusConnector(provider: string): void {
+  focusedConnector = provider;
+  focusScrollPending = true;
+}
+
 export function noteConnectorResult(provider: string, status: string): void {
-  const name = CONNECTOR_LABELS[provider]?.name ?? provider;
+  const name = CONNECTOR_LABELS[provider]?.name ?? connectorProviders[provider]?.name ?? provider;
   connectorNotice = status === "connected" ? `${name}: connected.` : `${name}: connection failed.`;
 }
 
@@ -907,7 +916,7 @@ function drawConnectors(): void {
   const loading = accountsLoading || keysLoadingFresh;
   const entries = Object.entries(connectorProviders);
   const connectorCards = entries.map(([id, p]) => {
-    const meta = CONNECTOR_LABELS[id] ?? { name: id, hosts: "" };
+    const meta = connectorCardMeta(id, p, CONNECTOR_LABELS[id]);
     const connected = Boolean(p.connected);
     const needsReconnect = Boolean(p.needsReconnect);
     const available = Boolean(p.available);
@@ -921,7 +930,9 @@ function drawConnectors(): void {
       credentials.map((credential) => [credential.credentialId, { id: credential.credentialId, kind: "connector" }]),
     );
     const grants = keychainGrants.filter((grant) => isActiveGrant(grant, credentialsById.get(grant.credentialId)));
-    const first = credentials.find((credential) => credential.connected && !credential.needsReconnect);
+    const first = meta.grantable
+      ? credentials.find((credential) => credential.connected && !credential.needsReconnect)
+      : undefined;
     const grantable: KeychainCredential | null = first
       ? { id: first.credentialId, service: meta.name, kind: "connector" }
       : null;
@@ -932,7 +943,10 @@ function drawConnectors(): void {
     if (needsReconnect) connectionState = html`<span class="kc-state warning">Reconnect needed</span>`;
     else if (connected) connectionState = "";
     return html`
-      <article class="kc-resource kc-account">
+      <article
+        class=${focusedConnector === id ? "kc-resource kc-account is-focused" : "kc-resource kc-account"}
+        data-connector=${id}
+      >
         <div class="kc-resource-main">
           ${connectorLogo(id)}
           <div class="kc-resource-copy">
@@ -1081,6 +1095,13 @@ function drawConnectors(): void {
   );
   replacePanePreservingFocus(host);
   if (confirmation) focusDialogCancel(host);
+  const focused = focusScrollPending
+    ? host.querySelector<HTMLElement>(`[data-connector="${CSS.escape(focusedConnector)}"]`)
+    : null;
+  if (focused) {
+    focusScrollPending = false;
+    focused.scrollIntoView({ block: "center" });
+  }
 }
 
 export async function renderConnectors(): Promise<void> {

@@ -4,24 +4,53 @@
 // HTTP destination every scope's agents can call, so it is governed like a
 // model-provider credential, not like a personal connector.
 
+import type { McpOAuthRegistration } from "../../../mcp/mcp-oauth.ts";
 import { isValidMcpServerId, type McpServer, type McpServerAuthMode } from "../../../mcp/mcp-server-store.ts";
 import { sendJson } from "../../http.ts";
+import { mcpOAuthView, purgeMcpOAuth, registerMcpOAuthClient } from "../mcp-oauth.ts";
 import type { ApiCtx } from "../route.ts";
 import { audit, authorizeAdmin, orgScope } from "../shared.ts";
 
-const AUTH_MODES: McpServerAuthMode[] = ["none", "bearer", "client-credentials"];
+const AUTH_MODES: McpServerAuthMode[] = ["none", "bearer", "client-credentials", "oauth"];
+const SCOPE_TOKEN = /^[\x21\x23-\x5B\x5D-\x7E]+$/;
+const MAX_SCOPES = 20;
+
+function parseScopes(value: unknown): string[] | undefined | null {
+  if (value === undefined || value === null || value === "") return undefined;
+  const list = typeof value === "string" ? value.split(/[\s,]+/) : value;
+  if (!Array.isArray(list)) return null;
+  const scopes = [...new Set(list.map((s) => (typeof s === "string" ? s.trim() : "")).filter(Boolean))];
+  if (scopes.length > MAX_SCOPES || scopes.some((s) => !SCOPE_TOKEN.test(s))) return null;
+  return scopes.length ? scopes : undefined;
+}
 
 async function actor(ctx: ApiCtx) {
   const scope = orgScope(ctx.deps);
   return authorizeAdmin(ctx, scope);
 }
 
-function redact(server: McpServer): Omit<McpServer, "bearerToken" | "clientSecret"> & {
-  hasBearerToken: boolean;
-  hasClientSecret: boolean;
-} {
+function redact(server: McpServer, registration?: McpOAuthRegistration | null, hasCatalog?: boolean) {
   const { bearerToken, clientSecret, ...rest } = server;
-  return { ...rest, hasBearerToken: !!bearerToken, hasClientSecret: !!clientSecret };
+  return {
+    ...rest,
+    hasBearerToken: !!bearerToken,
+    hasClientSecret: !!clientSecret,
+    ...(server.auth === "oauth"
+      ? {
+          ...(registration && registration.serverUrl === server.url ? { oauth: mcpOAuthView(registration) } : {}),
+          hasCatalog: !!hasCatalog,
+        }
+      : {}),
+  };
+}
+
+async function redactWithOAuth(ctx: ApiCtx, server: McpServer) {
+  if (server.auth !== "oauth" || !ctx.deps.mcpOAuth) return redact(server);
+  const [registration, catalog] = await Promise.all([
+    ctx.deps.mcpOAuth.clients.get(server.id),
+    ctx.deps.mcpOAuth.catalogs.get(server.id),
+  ]);
+  return redact(server, registration, !!catalog);
 }
 
 export async function getMcpServers(ctx: ApiCtx): Promise<void> {
@@ -36,7 +65,7 @@ export async function getMcpServers(ctx: ApiCtx): Promise<void> {
   });
   const servers = await ctx.deps.mcpServers.list();
   return sendJson(ctx.res, 200, {
-    servers: servers.map(redact),
+    servers: await Promise.all(servers.map((server) => redactWithOAuth(ctx, server))),
     tools: ctx.deps.mcpToolService?.toolDefs().map(({ name, serverId, description, readOnly }) => ({
       name,
       serverId,
@@ -57,7 +86,13 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
       message: "id must be 2-40 chars: lowercase letters, digits, hyphens, starting with a letter",
     });
   }
-  const b = ctx.body as Partial<McpServer> & { validate?: boolean };
+  const b = ctx.body as Partial<Omit<McpServer, "oauthScopes">> & {
+    validate?: boolean;
+    reregister?: unknown;
+    oauthScopes?: unknown;
+    oauthClientId?: unknown;
+    oauthClientSecret?: unknown;
+  };
   const url = typeof b.url === "string" ? b.url.trim() : "";
   let parsed: URL;
   try {
@@ -79,7 +114,9 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
     return sendJson(ctx.res, 400, { error: "bad_request", message: `auth must be one of ${AUTH_MODES.join(", ")}` });
   }
   const existing = await ctx.deps.mcpServers.get(id);
-  const credentialScope = b.credentialScope ?? existing?.credentialScope ?? "shared";
+  const oauth = auth === "oauth";
+  const inheritedScope = existing?.auth === "oauth" ? undefined : existing?.credentialScope;
+  const credentialScope = oauth ? "per-user" : (b.credentialScope ?? inheritedScope ?? "shared");
   if (credentialScope !== "shared" && credentialScope !== "per-user") {
     return sendJson(ctx.res, 400, { error: "bad_request", message: "credentialScope must be shared or per-user" });
   }
@@ -93,6 +130,7 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
   }
   if (
     credentialScope === "per-user" &&
+    !oauth &&
     (typeof credentialHost !== "string" ||
       !credentialHost ||
       credentialHost !== credentialHost.trim() ||
@@ -111,13 +149,23 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
       message: "per-user credentials require HTTPS (except loopback)",
     });
   }
+  let oauthScopes: string[] | undefined | null;
+  if (oauth) oauthScopes = b.oauthScopes === undefined ? existing?.oauthScopes : parseScopes(b.oauthScopes);
+  if (oauthScopes === null) {
+    return sendJson(ctx.res, 400, { error: "bad_request", message: "oauthScopes must be up to 20 OAuth scope tokens" });
+  }
+  const manualClientId =
+    typeof b.oauthClientId === "string" && b.oauthClientId.trim() ? b.oauthClientId.trim() : undefined;
+  const manualClientSecret =
+    typeof b.oauthClientSecret === "string" && b.oauthClientSecret ? b.oauthClientSecret : undefined;
   const server: McpServer = {
     id,
     name: typeof b.name === "string" && b.name.trim() ? b.name.trim().slice(0, 80) : id,
     url,
     auth,
     credentialScope,
-    ...(credentialScope === "per-user" ? { credentialHost, credentialAccountType } : {}),
+    ...(credentialScope === "per-user" && !oauth ? { credentialHost, credentialAccountType } : {}),
+    ...(oauthScopes ? { oauthScopes } : {}),
     ...(auth === "bearer"
       ? { bearerToken: typeof b.bearerToken === "string" && b.bearerToken ? b.bearerToken : existing?.bearerToken }
       : {}),
@@ -141,6 +189,40 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
       message: "client-credentials auth requires clientId and clientSecret",
     });
   }
+  if (oauth) {
+    const result = await registerMcpOAuthClient(ctx.deps, {
+      server,
+      reregister: b.reregister === true,
+      ...(manualClientId ? { manualClientId } : {}),
+      ...(manualClientSecret ? { manualClientSecret } : {}),
+      actorId: authorized.id,
+    });
+    if (!result.ok) return sendJson(ctx.res, result.status, { error: "oauth_setup_failed", message: result.message });
+    if (result.registered || (existing && existing.url !== url)) await purgeMcpOAuth(ctx.deps, id);
+    await ctx.deps.mcpOAuth!.clients.put(result.registration);
+    await ctx.deps.mcpServers.put(server);
+    audit(ctx.deps, {
+      principalId: authorized.id,
+      action: "mcp-servers.update",
+      resource: id,
+      scopeLabel: orgScope(ctx.deps),
+    });
+    if (result.registered) {
+      audit(ctx.deps, {
+        principalId: authorized.id,
+        action: "mcp.oauth.register",
+        resource: id,
+        scopeLabel: orgScope(ctx.deps),
+        detail: `${result.registration.source} client at ${result.registration.issuer}`,
+      });
+    }
+    return sendJson(ctx.res, 200, {
+      ok: true,
+      server: redact(server, result.registration, !result.registered && !!(await ctx.deps.mcpOAuth!.catalogs.get(id))),
+      oauth: mcpOAuthView(result.registration),
+      signInRequired: true,
+    });
+  }
   let toolNames: string[] | undefined;
   if (b.validate !== false && ctx.deps.mcpToolService) {
     try {
@@ -152,6 +234,7 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
       });
     }
   }
+  if (existing?.auth === "oauth") await purgeMcpOAuth(ctx.deps, id);
   await ctx.deps.mcpServers.put(server);
   audit(ctx.deps, {
     principalId: authorized.id,
@@ -169,6 +252,7 @@ export async function deleteMcpServer(ctx: ApiCtx): Promise<void> {
   const id = ctx.params.id ?? "";
   if (!(await ctx.deps.mcpServers.get(id))) return sendJson(ctx.res, 404, { error: "not_found" });
   await ctx.deps.mcpServers.delete(id);
+  await purgeMcpOAuth(ctx.deps, id);
   audit(ctx.deps, {
     principalId: authorized.id,
     action: "mcp-servers.delete",

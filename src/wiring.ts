@@ -205,6 +205,13 @@ import { createPostgresMemoryService } from "./memory/postgres-memory-service.ts
 import { createMcpServerStore, type McpServer, type McpServerStore } from "./mcp/mcp-server-store.ts";
 import { createMcpToolService, type McpToolService } from "./mcp/mcp-tool-service.ts";
 import {
+  createMcpOAuthStores,
+  type McpCatalog,
+  type McpOAuthClient,
+  type McpOAuthStores,
+  type McpUserToken,
+} from "./mcp/mcp-oauth-store.ts";
+import {
   createLocalBlobTransferStore,
   createS3BlobTransferStore,
   type BlobTransferStore,
@@ -537,6 +544,7 @@ export interface BuiltApp {
   refreshCustomProviders: () => Promise<void>;
   mcpServers: McpServerStore;
   mcpToolService: McpToolService;
+  mcpOAuth?: McpOAuthStores;
   acl: AclStore;
   skills: SkillStore;
   skillBundles: SkillBundleStore;
@@ -1303,10 +1311,23 @@ export function buildApp(
   // every other personal credential.
   const userModelCredentials = createUserModelCredentialStore({ keychain: credentialStore });
   const keychain: Keychain | undefined = keychainKeyMaterial ? credentialStore : undefined;
+  const mcpOAuth: McpOAuthStores | undefined = keychainKeyMaterial
+    ? createMcpOAuthStores({
+        clients: artifactMap<McpOAuthClient>("fork_mcp_oauth_clients"),
+        tokens: artifactMap<McpUserToken>("fork_mcp_user_tokens"),
+        catalogs: artifactMap<McpCatalog>("fork_mcp_catalogs"),
+        key: credentialKey,
+        lock: advisoryLock,
+        net: { allowLoopbackHttp: !config.production },
+      })
+    : undefined;
   const mcpToolService = createMcpToolService({
     servers: mcpServers,
     audit: auditLog,
     ...(keychain ? { userTokens: keychain } : {}),
+    ...(mcpOAuth ? { oauth: mcpOAuth } : {}),
+    connectUrl: (serverId) =>
+      `${(config.publicUrl ?? "").replace(/\/$/, "")}/keychain?connect=${encodeURIComponent(`mcp-${serverId}`)}`,
   });
   const mcpTools = () => mcpToolService.toolDefs();
   const browserSessionStore: BrowserSessionStore | undefined = keychainKeyMaterial
@@ -2919,6 +2940,7 @@ export function buildApp(
     refreshCustomProviders,
     mcpServers,
     mcpToolService,
+    ...(mcpOAuth ? { mcpOAuth } : {}),
     acl,
     skills,
     skillBundles,
@@ -3036,6 +3058,7 @@ export function serverDeps(
     refreshCustomProviders: built.refreshCustomProviders,
     mcpServers: built.mcpServers,
     mcpToolService: built.mcpToolService,
+    ...(built.mcpOAuth ? { mcpOAuth: built.mcpOAuth } : {}),
     ...(config.brandingDefault ? { brandingDefault: config.brandingDefault } : {}),
     ...(carriedModelAuth ? { harnessCarriedModelAuth: carriedModelAuth } : {}),
     harnessId: config.harness,

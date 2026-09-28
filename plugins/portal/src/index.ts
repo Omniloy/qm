@@ -829,6 +829,13 @@ async function coreImpersonate(
   }
 }
 
+async function impersonatedTarget(req: IncomingMessage, session: SessionClaims): Promise<string | undefined> {
+  const imp = openImpersonation(readCookie(req.headers.cookie, "portal_impersonate"), impersonateKey, Date.now());
+  return imp && imp.actor === session.sub && imp.org === session.org && (await isAdmin(session.sub))
+    ? imp.target
+    : undefined;
+}
+
 function isOAuthPublicPassthrough(method: string, pathname: string): boolean {
   if (method !== "GET") return false;
   if (/^\/v1\/connectors\/oauth\/[^/]+\/callback$/.test(pathname)) return true;
@@ -1208,7 +1215,22 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   if (isOAuthPublicPassthrough(method, pathname)) {
-    return proxyToUpstream(req, res, { baseUrl: CORE, path: pathname, search: url.search }, FORWARD_OAUTH_HEADERS);
+    const identity: Record<string, string> =
+      session && !session.anon && PORTAL_IDENTITY_SECRET
+        ? {
+            [PORTAL_IDENTITY_HEADER]: mintPortalIdentity(
+              { p: (await impersonatedTarget(req, session)) ?? session.sub, exp: Date.now() + 60_000 },
+              PORTAL_IDENTITY_SECRET,
+            ),
+          }
+        : {};
+    return proxyToUpstream(
+      req,
+      res,
+      { baseUrl: CORE, path: pathname, search: url.search },
+      FORWARD_OAUTH_HEADERS,
+      identity,
+    );
   }
 
   const dropForm = /^\/drop\/([^/]+)\/form$/.exec(pathname);
@@ -1352,12 +1374,10 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
 
   let principal = session.sub;
   let impersonator: string | undefined;
-  if (key === "web-ui") {
-    const imp = openImpersonation(readCookie(req.headers.cookie, "portal_impersonate"), impersonateKey, Date.now());
-    if (imp && imp.actor === session.sub && imp.org === session.org && (await isAdmin(session.sub))) {
-      principal = imp.target;
-      impersonator = session.sub;
-    }
+  const target = key === "web-ui" ? await impersonatedTarget(req, session) : undefined;
+  if (target) {
+    principal = target;
+    impersonator = session.sub;
   }
 
   const forwardPath = key === "web-ui" ? pathname : pathname.slice(`/${key}`.length) || "/";
