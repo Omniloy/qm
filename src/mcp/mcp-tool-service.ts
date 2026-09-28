@@ -61,6 +61,7 @@ export interface McpToolService {
   probe(server: McpServer): Promise<string[]>;
   captureCatalog(serverId: string, principalId: string): Promise<number>;
   retryMissingCatalog(serverId: string, principalId: string): void;
+  signInContext(principalId: string): Promise<string>;
   close(): void;
 }
 
@@ -76,7 +77,7 @@ export function createMcpToolService(opts: {
   audit?: AuditLog;
   userTokens?: Pick<ConnectorTokenStore, "connectorAccessToken">;
   oauth?: {
-    tokens: Pick<McpUserTokenStore, "accessToken" | "forceRefresh" | "markNeedsReconnect">;
+    tokens: Pick<McpUserTokenStore, "accessToken" | "forceRefresh" | "markNeedsReconnect" | "status">;
     catalogs: McpCatalogStore;
   };
   connectUrl?: (serverId: string) => string;
@@ -320,6 +321,26 @@ export function createMcpToolService(opts: {
       return tools.map((t) => t.name);
     },
     captureCatalog,
+    async signInContext(principalId) {
+      const oauth = opts.oauth;
+      if (!oauth) return "";
+      const servers = (await enabledServers()).filter((server) => server.auth === "oauth");
+      if (!servers.length) return "";
+      const lines = await Promise.all(
+        servers.map(async (server) => {
+          const status = await oauth.tokens.status(server.id, principalId);
+          const link = opts.connectUrl?.(server.id) ?? "Keychain in the web app";
+          if (status.connected)
+            return `- ${server.name}: connected; its \`${server.id}_*\` tools act as this user. Switch accounts at ${link}`;
+          return `- ${server.name}: ${status.needsReconnect ? "needs reconnect" : "not connected"}. Connect at ${link}`;
+        }),
+      );
+      return [
+        "## Sign-in apps",
+        "These apps connect only through their Keychain sign-in link. When the user asks to connect one, give that link; never offer Composio, the connect-apps picker, or a consent link for it.",
+        ...lines,
+      ].join("\n");
+    },
     retryMissingCatalog(serverId, principalId) {
       if (
         catalogFetchedAt.has(serverId) ||

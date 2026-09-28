@@ -970,7 +970,8 @@ function drawConnectors(): void {
             ${meta.hosts ? html`<div class="kc-resource-meta">${meta.hosts}</div>` : ""}
           </div>
           <div class="kc-resource-actions">
-            ${available ? html`<button class="btn" type="button" @click=${() => void startConnector(id)}>${connected || needsReconnect ? "Reconnect" : "Connect account"}</button>` : ""}
+            ${available ? html`<button class="btn" type="button" ?disabled=${keychainOperations.mutationInFlight} @click=${() => void startConnector(id)}>${connected || needsReconnect ? "Reconnect" : "Connect account"}</button>` : ""}
+            ${available && p.kind === "mcp" ? html`<button class="kc-text-action" type="button" ?disabled=${keychainOperations.mutationInFlight} @click=${() => void startConnector(id, true)}>Use a different account</button>` : ""}
             ${
               connected && grantable && !grantableBlocked
                 ? html`<button
@@ -1314,24 +1315,37 @@ async function createDrop(): Promise<void> {
   }
 }
 
-async function startConnector(provider: string): Promise<void> {
-  const stateEpoch = keychainOperations.captureEpoch();
+async function startConnector(provider: string, switchAccount = false): Promise<void> {
+  const operation = beginKeychainMutation();
+  if (!operation) return;
   connectorNotice = "";
+  drawConnectors();
+  let navigating = false;
   try {
     const r = await api<{ authorizeUrl?: string }>(`/api/connectors/${encodeURIComponent(provider)}/start`, {
       method: "POST",
+      body: JSON.stringify({ switchAccount }),
     });
-    if (!keychainOperations.isCurrentEpoch(stateEpoch)) return;
+    if (!keychainOperations.isCurrentEpoch(operation.epoch)) return;
     if (r.authorizeUrl) {
+      navigating = true;
+      window.addEventListener(
+        "pagehide",
+        () => {
+          if (keychainOperations.finishMutation(operation)) drawConnectors();
+        },
+        { once: true },
+      );
       location.href = r.authorizeUrl;
       return;
     }
     connectorNotice = "No authorization URL was returned.";
   } catch (e) {
-    if (!keychainOperations.isCurrentEpoch(stateEpoch)) return;
-    connectorNotice = errMessage(e, "Could not start the connector.");
+    if (keychainOperations.isCurrentEpoch(operation.epoch))
+      connectorNotice = errMessage(e, "Could not start the connector.");
+  } finally {
+    if (!navigating && keychainOperations.finishMutation(operation)) drawConnectors();
   }
-  drawConnectors();
 }
 
 async function revokeConnector(provider: string): Promise<void> {

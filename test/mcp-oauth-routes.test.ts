@@ -159,8 +159,9 @@ async function start(opts: { strict?: boolean } = {}) {
     redirectUri = REDIRECT,
     provider = "mcp-granola",
     returnTo = "/keychain",
+    extraQuery = "",
   ) {
-    const path = `/v1/connectors/oauth/${provider}/start?principalId=${encodeURIComponent(principalId)}&redirectUri=${encodeURIComponent(redirectUri)}&returnTo=${encodeURIComponent(returnTo)}`;
+    const path = `/v1/connectors/oauth/${provider}/start?principalId=${encodeURIComponent(principalId)}&redirectUri=${encodeURIComponent(redirectUri)}&returnTo=${encodeURIComponent(returnTo)}${extraQuery}`;
     return fetch(`${base}${path}`, {
       headers: { ...sign("GET", path), ...(opts.strict ? await identity(principalId) : {}) },
     });
@@ -227,6 +228,23 @@ test("start returns a PKCE authorize URL with resource, bound to the registered 
     );
     assert.equal(foreign.status, 400);
     assert.equal(((await foreign.json()) as { error: string }).error, "redirect_not_allowed");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("start asks the authorization server for a fresh login only when switching accounts", async () => {
+  const srv = await start();
+  try {
+    const promptFor = async (extraQuery: string) => {
+      const res = await srv.startFlow("internal:alice", REDIRECT, "mcp-granola", "/keychain", extraQuery);
+      assert.equal(res.status, 200);
+      return new URL(((await res.json()) as { authorizeUrl: string }).authorizeUrl).searchParams.getAll("prompt");
+    };
+    assert.deepEqual(await promptFor(""), []);
+    assert.deepEqual(await promptFor("&switchAccount=true"), []);
+    assert.deepEqual(await promptFor("&prompt=consent"), []);
+    assert.deepEqual(await promptFor("&switchAccount=1"), ["login"]);
   } finally {
     await srv.close();
   }

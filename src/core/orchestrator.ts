@@ -1296,6 +1296,13 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         }
       }
 
+      if (!external && deps.mcp) {
+        const signInBlock = await deps.mcp
+          .signInContext(actor.id)
+          .catch(swallowAs("orchestrator: MCP sign-in status", ""));
+        if (signInBlock) turnContextBlocks.push(signInBlock);
+      }
+
       const timeBlock = turnTimezone ? currentTimeBlock(turnTimezone, Date.now()) : "";
       let memoryContext = "a channel";
       if (conversation.kind === "dm") memoryContext = "a direct message";

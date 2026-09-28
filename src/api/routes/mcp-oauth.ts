@@ -86,6 +86,7 @@ export async function mcpOAuthStart(ctx: ApiCtx, server: McpServer, returnTo: st
       state,
       codeChallenge: codeChallengeS256(codeVerifier),
       ...(server.oauthScopes ? { scopes: server.oauthScopes } : {}),
+      switchAccount: url.searchParams.get("switchAccount") === "1",
     }),
   });
 }

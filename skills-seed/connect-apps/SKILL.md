@@ -5,6 +5,8 @@ description: Connect an administrator-enabled SaaS app for a user with a one-tim
 
 ## Connecting SaaS apps
 
+An app listed under Sign-in apps in your turn context connects only through the Keychain link given there; give that link and skip the flows below for it.
+
 Check Composio availability through `GET /v1/composio/toolkits` on the authenticated QM API. When available, load the `composio` skill and use its discovery and consent flow instead
 of the direct OAuth flow below. An empty direct OAuth list or a native
 `oauth_not_configured` error does not describe Composio availability. Preserve explicit

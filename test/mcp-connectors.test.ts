@@ -480,6 +480,29 @@ test("OAuth calls use only the caller's token and send unconnected callers the c
   assert.ok(h.srv.log.every((e) => e.headers.authorization === "Bearer alice-at"));
 });
 
+test("sign-in context points each caller at the Keychain link for OAuth servers, never Composio", async (t) => {
+  const h = await oauthHarness();
+  t.after(() => h.service.close());
+  const link = "https://mo.example.com/keychain?connect=mcp-granola";
+  const bob = await h.service.signInContext("internal:bob");
+  assert.match(bob, /^## Sign-in apps$/m);
+  assert.match(bob, /never offer Composio, the connect-apps picker, or a consent link/);
+  assert.ok(bob.includes(`- Granola: not connected. Connect at ${link}`));
+  await h.oauth.tokens.set("granola", "internal:alice", { accessToken: "alice-at" }, "client-1");
+  const alice = await h.service.signInContext("internal:alice");
+  assert.ok(
+    alice.includes(`- Granola: connected; its \`granola_*\` tools act as this user. Switch accounts at ${link}`),
+  );
+  await h.oauth.tokens.markNeedsReconnect("granola", "internal:alice", "alice-at", "invalid_grant");
+  assert.ok(
+    (await h.service.signInContext("internal:alice")).includes(`- Granola: needs reconnect. Connect at ${link}`),
+  );
+  await h.store.put(
+    server({ id: "granola", name: "Granola", auth: "oauth", credentialScope: "per-user", enabled: false }),
+  );
+  assert.equal(await h.service.signInContext("internal:alice"), "");
+});
+
 test("a 401 from an OAuth server refreshes once and retries, then asks to reconnect", async (t) => {
   const h = await oauthHarness({ accept: ["Bearer alice-new"], refreshTo: "alice-new" });
   t.after(() => h.service.close());

@@ -396,7 +396,7 @@ export function manualRegistration(
 
 export function authorizeUrl(
   client: McpOAuthRegistration,
-  params: { state: string; codeChallenge: string; scopes?: string[] },
+  params: { state: string; codeChallenge: string; scopes?: string[]; switchAccount?: boolean },
 ): string {
   const url = new URL(client.authorizationEndpoint);
   url.searchParams.set("response_type", "code");
@@ -408,6 +408,7 @@ export function authorizeUrl(
   const scopes = params.scopes ?? client.scopes;
   if (scopes?.length) url.searchParams.set("scope", scopes.join(" "));
   url.searchParams.set("resource", client.resource);
+  if (params.switchAccount) url.searchParams.set("prompt", "login");
   return url.toString();
 }
 
