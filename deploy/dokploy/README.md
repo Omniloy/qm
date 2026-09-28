@@ -381,8 +381,12 @@ admin console at `https://<host>/admin`, and core stores it in Postgres:
 - **Composio**: **Connectors** → **Composio**. Paste the Composio project API key. Core
   stores it as the org credential `composio` (env key `COMPOSIO_API_KEY`), granted to the
   whole organization, and it stays in the backend. A narrower grant set under
-  **Credentials** limits who can connect apps, and the card flags it. Before production use, set the Composio project's callback verifier URL to
-  `https://<host>/api/composio/callback`. See [`docs/composio.md`](../../docs/composio.md).
+  **Credentials** limits who can connect apps, and the card flags it. Create the key in the
+  Composio dashboard under Project Settings → API Keys. Then, under Project Settings → General →
+  Configuration → **OAuth user verification**
+  (`https://dashboard.composio.dev/<workspace>/<project>/settings/general`), set
+  `https://<host>/api/composio/callback`. While it is set, connections started from the Composio
+  dashboard won't complete, because people connect from the instance. See [`docs/composio.md`](../../docs/composio.md).
 - **Skill sharing**: **Skills** (with the organization scope selected) → **Skill sharing**.
   Choose who may share a skill into other conversations and teammates (default:
   everyone), and who may give a skill to the whole organization (default: org admins).
