@@ -22,7 +22,6 @@ import { AdminError } from "../admin/admin-service.ts";
 import type { AdminService } from "../admin/admin-service.ts";
 import {
   livePersonCapability,
-  portalSessionCapability,
   resolveShareTarget,
   SHARED_SKILL_TRIGGER_REFUSAL,
   SKILL_CONTEXTS_ADMIN_ONLY,
@@ -931,7 +930,7 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
             toScope,
             capability.actorId,
             capability.liveActor === true,
-            portalSessionCapability(capability),
+            capability.portalSession === true,
           );
           return {
             ok: true,

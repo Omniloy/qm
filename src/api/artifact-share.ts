@@ -21,10 +21,6 @@ export function livePersonCapability(c: { liveActor?: boolean; liveAuthor?: bool
   return c?.liveAuthor === true || c?.liveActor === true;
 }
 
-export function portalSessionCapability(c: { liveActor?: boolean; aud?: string; sessionId?: string }): boolean {
-  return c.liveActor === true && c.aud === undefined && c.sessionId === undefined;
-}
-
 export const ARTIFACT_TYPES = ["file", "skill", "deploy", "cron"] as const;
 export type ArtifactType = (typeof ARTIFACT_TYPES)[number] & ResourceKind;
 

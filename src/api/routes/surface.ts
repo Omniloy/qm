@@ -804,6 +804,7 @@ async function sessionCapability(ctx: ApiCtx): Promise<void> {
       actorId: actor.p,
       scopeId: makeScopeId("personal", actor.p),
       liveActor: true,
+      ...(actor.imp ? {} : { portalSession: true }),
       exp: Date.now() + CAPABILITY_TTL_MS,
     },
     secret,
@@ -1028,7 +1029,12 @@ async function restoreSkill(ctx: ApiCtx): Promise<void> {
     return sendJson(ctx.res, 401, { error: "capability_required" });
   }
   if (!principalId) return sendJson(ctx.res, 400, { error: "bad_request", message: "principalId required" });
-  const restored = await ctx.app.restoreOwnedSkill(ctx.params.id!, principalId);
+  const liveActor = ctx.capability ? livePersonCapability(ctx.capability) : true;
+  const restored = await ctx.app.restoreOwnedSkill(ctx.params.id!, principalId, { liveActor });
+  if (restored === "trigger_blocked")
+    return sendJson(ctx.res, 403, { error: "forbidden", message: SHARED_SKILL_TRIGGER_REFUSAL });
+  if (restored === "forbidden")
+    return sendJson(ctx.res, 403, { error: "forbidden", message: SKILL_CONTEXTS_ADMIN_ONLY });
   return restored ? sendJson(ctx.res, 200, { ok: true }) : sendJson(ctx.res, 404, { error: "not_found" });
 }
 

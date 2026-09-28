@@ -43,6 +43,8 @@ async function publish(built: BuiltApp, owner: string, name: string, home = scop
 const live = (actorId: string): CapabilityClaims =>
   ({ actorId, scopeId: scopeId("personal", actorId), exp: 9_999_999_999, liveActor: true }) as CapabilityClaims;
 
+const webSession = (actorId: string): CapabilityClaims => ({ ...live(actorId), portalSession: true });
+
 const liveTurn = (actorId: string): CapabilityClaims => ({
   ...live(actorId),
   aud: CONTROL_PLANE_AUD,
@@ -170,7 +172,10 @@ test("a member's agent turn cannot give a skill to the org even when everyone ma
   const fromTurn = await promote(liveTurn("U1"));
   assert.equal(fromTurn.ok, false);
   assert.match((fromTurn as { message: string }).message, /in the web app/);
-  assert.equal((await promote(live("U1"))).ok, true);
+  const unclaimed = await promote(live("U1"));
+  assert.equal(unclaimed.ok, false);
+  assert.match((unclaimed as { message: string }).message, /in the web app/);
+  assert.equal((await promote(webSession("U1"))).ok, true);
 
   const theirs = await publish(built, "admin-alice", "triage");
   const adminTurn = await control.shareArtifact(

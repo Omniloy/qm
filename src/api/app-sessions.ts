@@ -1230,7 +1230,11 @@ export function createSessionMethods(
             "giving a skill to the whole organization takes you, in the web app — the agent can't do it for you",
           );
         const skill = await deps.skills.get(id);
-        if (!skill || !(await principalManagesArtifactHome(skill.scopeId, skill.createdBy, actorId)))
+        if (
+          !skill ||
+          !samePerson(skill.createdBy, actorId) ||
+          !(await principalManagesArtifactHome(skill.scopeId, skill.createdBy, actorId))
+        )
           throw new AdminError(403, "that skill isn't yours to share");
         const taken = (await deps.skills.list()).find(
           (s) =>
