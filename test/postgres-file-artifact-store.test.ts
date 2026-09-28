@@ -242,6 +242,45 @@ test("pg bytes stored for an upload that never publishes are reclaimed by the sw
   assert.equal(await store.sweepOrphanedBlobs(Date.now() + ORPHANED_BLOB_GRACE_MS + 1), 1);
 });
 
+test("pg re-uploading orphaned bytes refreshes the orphan so a sweep mid-upload keeps them", { skip }, async () => {
+  const bytes = createMemoryDurableByteStore();
+  let written!: () => void;
+  const paused = new Promise<void>((resolve) => (written = resolve));
+  let release!: () => void;
+  const publishing = new Promise<void>((resolve) => (release = resolve));
+  let gated = false;
+  const store = createPostgresFileArtifactStore(URL!, {
+    ...bytes,
+    put: async (source, opts) => {
+      const stored = await bytes.put(source, opts);
+      if (gated) {
+        written();
+        await publishing;
+      }
+      return stored;
+    },
+  });
+  await store.put(put({ id: "first", path: "p/first" }));
+  await store.delete("first");
+  const pg = (await import("pg")).default;
+  const p = new pg.Pool({ connectionString: URL });
+  try {
+    assert.equal((await p.query("UPDATE file_blob_orphans SET orphaned_at = 0")).rowCount, 1);
+  } finally {
+    await p.end();
+  }
+  gated = true;
+  const again = store.put(put({ id: "again", path: "p/again" }));
+  await paused;
+  try {
+    assert.equal(await store.sweepOrphanedBlobs(), 0, "a reserved upload's bytes are not due");
+  } finally {
+    release();
+  }
+  await again;
+  assert.ok(await store.open("again"), "the new row opens after publish");
+});
+
 test("pg uploads in flight hold no pooled connection while their bytes transfer", { skip }, async () => {
   const bytes = createMemoryDurableByteStore();
   let release!: () => void;

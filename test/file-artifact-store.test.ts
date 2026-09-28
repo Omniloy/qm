@@ -243,6 +243,44 @@ test("an identical upload racing a delete keeps its bytes", async () => {
   assert.deepEqual(await drain(store, "again"), PNG, "the new row is never left dangling");
 });
 
+test("re-uploading orphaned bytes refreshes the orphan so a sweep mid-upload keeps them", async () => {
+  const bytes = createMemoryDurableByteStore();
+  let written!: () => void;
+  const paused = new Promise<void>((resolve) => (written = resolve));
+  let release!: () => void;
+  const publishing = new Promise<void>((resolve) => (release = resolve));
+  let gated = false;
+  const store = createMemoryFileArtifactStore({
+    ...bytes,
+    put: async (source, opts) => {
+      const stored = await bytes.put(source, opts);
+      if (gated) {
+        written();
+        await publishing;
+      }
+      return stored;
+    },
+  });
+  await store.put(put({ id: "first", path: "p/first" }));
+  await store.delete("first");
+  const orphanedBy = Date.now();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  gated = true;
+  const again = store.put(put({ id: "again", path: "p/again" }));
+  await paused;
+  try {
+    assert.equal(
+      await store.sweepOrphanedBlobs(orphanedBy + ORPHANED_BLOB_GRACE_MS),
+      0,
+      "a reserved upload's bytes are not due",
+    );
+  } finally {
+    release();
+  }
+  await again;
+  assert.deepEqual(await drain(store, "again"), PNG, "the new row opens after publish");
+});
+
 test("bytes stored for an upload that never publishes are reclaimed by the sweep", async () => {
   const bytes = createMemoryDurableByteStore();
   const store = createMemoryFileArtifactStore(bytes);
