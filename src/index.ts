@@ -52,6 +52,8 @@ built.runtime.start();
 
 attachBrowserRelay(server, {
   hub: built.browserRelay,
+  authorizesScope: async (claims) =>
+    built.identity.classify(claims.actorId).type === "internal" && (await built.app.authorizesCapabilityScope(claims)),
   ...(config.capabilitySecret ? { capabilitySecret: config.capabilitySecret } : {}),
 });
 

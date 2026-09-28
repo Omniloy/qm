@@ -1,4 +1,5 @@
 import type { CapabilityClaims } from "../auth/capability-token.ts";
+import { isLivePersonalClaim } from "../browser-relay/server.ts";
 import { livePersonCapability } from "./artifact-share.ts";
 
 interface AgentApiRoute {
@@ -536,7 +537,7 @@ const FAMILIES: AgentApiFamily[] = [
   {
     match: (m, p) =>
       (p === "/v1/browser-relay/pairing" && m === "POST") || (p === "/v1/browser-relay/status" && m === "GET"),
-    when: (v) => v.claims.triggered !== true,
+    when: (v) => isLivePersonalClaim(v.claims),
     guidance:
       "Pairing lets someone point their own Chrome at this instance through the extension. The token it returns drives a browser signed into everything they are, and lasts thirty days, so mint one only when the person asked to pair and hand it to them directly — never into a channel.",
     routes: [

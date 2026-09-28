@@ -153,25 +153,17 @@ export async function runtimeConfigBody(
   const purposeDefault = purpose ? await config.getPurposeRuntimeDurable(purpose) : undefined;
   const selected = [orgDefault, scopeOverride, effective, purposeDefault].filter((choice) => choice != null);
   const allowlist = await config.getWebuiModelsDurable(org);
-  const classifications = await config.getModelClassificationsDurable(org);
-  const offerable = authorizeChoice ? modelSupportedByHarness : modelSelectableForHarness;
-  const pinned = new Set(
-    [orgDefault, scopeOverride, purposeDefault, requested ? undefined : effective].flatMap((choice) =>
-      choice ? [choice.modelId] : [],
-    ),
-  );
   const modelsByHarness = Object.fromEntries(
     approvedHarnesses.map((harnessId) => {
       const ids =
         allowlist != null
-          ? allowlist.filter((id) => offerable(id, harnessId))
+          ? allowlist.filter((id) => modelSupportedByHarness(id, harnessId))
           : selectableCatalogForHarness(catalog, harnessId)
-              .filter((model) => modelOfferedInWebui(model.id) && offerable(model.id, harnessId))
+              .filter((model) => modelOfferedInWebui(model.id))
               .map((model) => model.id);
       for (const choice of selected) {
         if (
           allowlist?.length !== 0 &&
-          (pinned.has(choice.modelId) || offerable(choice.modelId, harnessId)) &&
           (!authorizeChoice ||
             !allowlist ||
             choice.modelId === orgDefault.modelId ||
@@ -183,7 +175,7 @@ export async function runtimeConfigBody(
         )
           ids.push(choice.modelId);
       }
-      return [harnessId, serviceableModelIds(dropHidden(ids, classifications, pinned), providersFor(harnessId))];
+      return [harnessId, serviceableModelIds(ids, providersFor(harnessId))];
     }),
   );
   if (authorizeChoice) {
@@ -232,6 +224,26 @@ export async function runtimeConfigBody(
     fastModeModelIds: fastModeModelIds(),
     interactiveFastMode: await config.getInteractiveFastModeDurable(),
   };
+}
+
+export async function pickerRuntimeConfig<
+  T extends Pick<
+    Awaited<ReturnType<typeof runtimeConfigBody>>,
+    "modelsByHarness" | "modelCatalog" | "orgDefault" | "scopeOverride" | "effective"
+  >,
+>(ctx: { deps: RuntimeDeps }, snapshot: T): Promise<T> {
+  const classifications = await ctx.deps.config!.getModelClassificationsDurable(orgScope());
+  const selected = [snapshot.orgDefault, snapshot.scopeOverride, snapshot.effective];
+  const modelsByHarness = Object.fromEntries(
+    Object.entries(snapshot.modelsByHarness).map(([harnessId, ids]) => {
+      const pinned = selected.flatMap((choice) => (choice?.harnessId === harnessId ? [choice.modelId] : []));
+      const offered = ids.filter((id) => pinned.includes(id) || modelSelectableForHarness(id, harnessId));
+      return [harnessId, dropHidden(offered, classifications, pinned)];
+    }),
+  );
+  const advertised = new Set(Object.values(modelsByHarness).flat());
+  const modelCatalog = Object.fromEntries(Object.entries(snapshot.modelCatalog).filter(([id]) => advertised.has(id)));
+  return { ...snapshot, modelsByHarness, modelCatalog };
 }
 
 export function validateRuntimeChoice(choice: RuntimeChoice): string | null {

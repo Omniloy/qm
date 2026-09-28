@@ -12893,6 +12893,10 @@ body.app-edit-embed .custom-chat-shell.app-edit-chat > .chat-bottom-dock {
     opacity: 0.7;
   }
 }
+.readonly-run-error {
+  color: var(--destructive);
+  font-size: 12px;
+}
 .btn.readonly-stop {
   margin: 0;
   padding: 2px 10px;
@@ -13446,8 +13450,25 @@ img.browser-pane-view.drivable:focus-visible {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.file-row:has(> .file-row-link) {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
 .file-row-link {
-  display: contents;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
   color: inherit;
   text-decoration: none;
+  border-radius: 6px;
+}
+.file-row-link:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+@media (max-width: 700px) {
+  .file-row-link {
+    grid-template-columns: 22px minmax(0, 1fr);
+  }
 }

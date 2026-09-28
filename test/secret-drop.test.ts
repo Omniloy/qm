@@ -396,6 +396,10 @@ describe("/v1/keychain/drops — mint, form, redeem", async () => {
     );
     assert.equal(minted.status, 200);
     const { dropId, formPath } = (await minted.json()) as { dropId: string; formPath: string };
+    const form = await (await getForm(dropId, "U_FILL2", linkToken(formPath))).text();
+    assert.match(form, /Provide your password for <code>portal\.example\.com<\/code>/);
+    assert.match(form, /id="origin"[^]*<strong>https:\/\/portal\.example\.com<\/strong>/);
+    assert.match(form, /do not submit it/);
     const redeemRes = await redeem(dropId, { secret: "portal-pw" }, "U_FILL2", linkToken(formPath));
     assert.equal(redeemRes.status, 200);
     const { credential } = (await redeemRes.json()) as {

@@ -44,6 +44,10 @@ export function createPostgresRunSignalStore(connectionString: string): RunSigna
         `CREATE UNIQUE INDEX IF NOT EXISTS run_signals_by_dedupe_key ON run_signals(dedupe_key) WHERE dedupe_key IS NOT NULL`,
       ],
     },
+    {
+      id: "runs/signals/0003",
+      statements: [`CREATE INDEX IF NOT EXISTS idx_run_signals_aborts ON run_signals(created_at) WHERE kind = 'abort'`],
+    },
   ]);
   const q = pg.query;
 
@@ -132,6 +136,14 @@ export function createPostgresRunSignalStore(connectionString: string): RunSigna
 
     async pendingRunIds() {
       const { rows } = await q(`SELECT DISTINCT run_id FROM run_signals WHERE consumed_at IS NULL`);
+      return rows.map((r) => r.run_id as string);
+    },
+
+    async abortedRunIds(sentAfter, sentBefore) {
+      const { rows } = await q(
+        `SELECT DISTINCT run_id FROM run_signals WHERE kind = 'abort' AND created_at > $1 AND created_at <= $2`,
+        [sentAfter, sentBefore],
+      );
       return rows.map((r) => r.run_id as string);
     },
 

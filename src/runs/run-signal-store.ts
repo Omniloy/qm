@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { OrchestratorInput } from "../core/orchestrator/types.ts";
 import type { ClientToolResult, TurnRequest } from "../types.ts";
 import { swallowAs } from "../util/errors.ts";
+import { isTerminal, type RunStore } from "./run-store.ts";
 
 export type RunSignalKind = "abort" | "steer" | "client_result";
 
@@ -25,6 +26,7 @@ export interface RunSignalStore {
   takePending(runId: string): Promise<RunSignal[]>;
   steerAuthors(runId: string): Promise<string[]>;
   pendingRunIds(): Promise<string[]>;
+  abortedRunIds(sentAfter: number, sentBefore: number): Promise<string[]>;
   prune(olderThanMs: number): Promise<void>;
   onSignal(runId: string, cb: () => void): () => void;
   close?(): Promise<void>;
@@ -38,6 +40,7 @@ export function createMemoryRunSignalStore(): RunSignalStore {
   const authors = new Map<string, Array<{ at: number; author: string }>>();
   const listeners = new Map<string, Set<() => void>>();
   const dedupeKeys = new Set<string>();
+  const aborts = new Map<string, number>();
   return {
     async send(runId, signal) {
       if (signal.dedupeKey) {
@@ -50,6 +53,7 @@ export function createMemoryRunSignalStore(): RunSignalStore {
       receipts.set(signal, randomUUID());
       list.push(signal);
       pending.set(runId, list);
+      if (signal.kind === "abort" && !aborts.has(runId)) aborts.set(runId, Date.now());
       const author = signal.kind === "steer" ? signal.request?.actor?.externalId : undefined;
       if (author) authors.set(runId, [...(authors.get(runId) ?? []), { at: Date.now(), author }]);
       for (const cb of listeners.get(runId) ?? []) cb();
@@ -77,8 +81,12 @@ export function createMemoryRunSignalStore(): RunSignalStore {
     async pendingRunIds() {
       return [...pending.keys()];
     },
+    async abortedRunIds(sentAfter, sentBefore) {
+      return [...aborts].filter(([, at]) => at > sentAfter && at <= sentBefore).map(([runId]) => runId);
+    },
     async prune(olderThanMs) {
       const cutoff = Date.now() - olderThanMs;
+      for (const [runId, at] of aborts) if (at < cutoff) aborts.delete(runId);
       for (const [runId, list] of authors) {
         const kept = list.filter((a) => a.at >= cutoff);
         if (kept.length) authors.set(runId, kept);
@@ -95,6 +103,22 @@ export function createMemoryRunSignalStore(): RunSignalStore {
       };
     },
   };
+}
+
+export const ABORT_GRACE_MS = 20_000;
+const ABORT_LOOKBACK_MS = 24 * 60 * 60_000;
+
+export async function endIgnoredAborts(
+  runs: Pick<RunStore, "get" | "forceTerminal">,
+  signals: Pick<RunSignalStore, "abortedRunIds">,
+  now = Date.now(),
+): Promise<string[]> {
+  const ended: string[] = [];
+  for (const runId of await signals.abortedRunIds(now - ABORT_LOOKBACK_MS, now - ABORT_GRACE_MS)) {
+    const run = await runs.get(runId);
+    if (run && !isTerminal(run.status) && (await runs.forceTerminal(runId, "stopped"))) ended.push(runId);
+  }
+  return ended;
 }
 
 export function waitForClientResult(

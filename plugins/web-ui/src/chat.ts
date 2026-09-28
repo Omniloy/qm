@@ -395,6 +395,7 @@ export function createChatSurface(
   let readOnlyRun: { threadRef: string; runId: string; status?: string } | null = null;
   let readOnlyRunPoll: ReturnType<typeof setInterval> | null = null;
   let stoppingReadOnlyRun = false;
+  let readOnlyStopError = "";
   const READ_ONLY_RUN_POLL_MS = 2_000;
 
   function stopWatchingReadOnlyRun(): void {
@@ -403,6 +404,7 @@ export function createChatSurface(
     const wasShowing = readOnlyRun !== null;
     readOnlyRun = null;
     stoppingReadOnlyRun = false;
+    readOnlyStopError = "";
     if (wasShowing) readonlyRedraw?.();
   }
 
@@ -419,6 +421,7 @@ export function createChatSurface(
       if (readOnlyView?.threadRef !== threadRef) return stopWatchingReadOnlyRun();
       const next = active.runId ? { threadRef, runId: active.runId, status: active.run?.status } : null;
       if (next?.runId === readOnlyRun?.runId && next?.status === readOnlyRun?.status) return;
+      if (next?.runId !== readOnlyRun?.runId) readOnlyStopError = "";
       readOnlyRun = next;
       if (!next) stoppingReadOnlyRun = false;
       readonlyRedraw?.();
@@ -432,13 +435,14 @@ export function createChatSurface(
     const run = readOnlyRun;
     if (!run || stoppingReadOnlyRun) return;
     stoppingReadOnlyRun = true;
+    readOnlyStopError = "";
     readonlyRedraw?.();
     try {
       await abortRunById(run.runId);
-    } catch {
-      void 0;
+      if (readOnlyRun?.runId === run.runId) readOnlyRun = null;
+    } catch (e) {
+      if (readOnlyRun?.runId === run.runId) readOnlyStopError = errMessage(e, "Could not stop the run.");
     }
-    if (readOnlyRun?.runId === run.runId) readOnlyRun = null;
     stoppingReadOnlyRun = false;
     readonlyRedraw?.();
   }
@@ -457,6 +461,7 @@ export function createChatSurface(
       >
         ${stoppingReadOnlyRun ? "Stopping…" : "Stop"}
       </button>
+      ${readOnlyStopError ? html`<span class="readonly-run-error" role="alert">${readOnlyStopError}</span>` : nothing}
     </span>`;
   }
 

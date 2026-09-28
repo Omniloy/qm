@@ -141,9 +141,6 @@ test("keychain overview wires managed connector grants into account controls", (
 test("destructive controls settle duplicate attempts while a mutation is busy", () => {
   assert.match(connectorsSource, /\?disabled=\$\{keychainOperations\.mutationInFlight\}/);
   assert.match(connectorsSource, /connectorNotice = "Another keychain change is still in progress\."/);
-  // Revoke grant, disconnect connector, delete credential, switch browser. The
-  // count is the point: a new mutating control that skips the single-flight
-  // helper shows up here rather than as two concurrent writes in production.
   assert.equal(connectorsSource.match(/const operation = beginKeychainMutation\(\)/g)?.length, 4);
   assert.equal(
     connectorsSource.match(/if \(keychainOperations\.finishMutation\(operation\)\) drawConnectors\(\)/g)?.length,
@@ -200,4 +197,18 @@ test("keychain page renders loading placeholders instead of empty states while l
   );
   assert.doesNotMatch(connectorsSource, /drawConnectors\((true|false)\)/);
   assert.match(shellCssSource, /\.kc-loading \.spinner/);
+});
+
+test("resetting keychain state drops an open grant dialog and its contexts", () => {
+  const start = connectorsSource.indexOf("export function resetKeychainState(");
+  const body = connectorsSource.slice(start, connectorsSource.indexOf("\n}\n", start));
+  for (const cleared of [
+    "keychainContexts = [];",
+    "granting = null;",
+    "grantBusy = false;",
+    'grantError = "";',
+    "grantOpener = null;",
+  ]) {
+    assert.ok(body.includes(cleared), cleared);
+  }
 });

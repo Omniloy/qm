@@ -72,13 +72,10 @@ test("runtime rejects unsupported effort and fast mode instead of silently dropp
     ok: false,
     error: "effort_not_supported",
   });
-  assert.deepEqual(
-    await service(claims, active, { action: "set", harness: "claude", model: "claude-sonnet-5", fastMode: true }),
-    {
-      ok: false,
-      error: "fast_mode_not_supported",
-    },
-  );
+  assert.deepEqual(await service(claims, active, { action: "set", model: "claude-sonnet-5", fastMode: true }), {
+    ok: false,
+    error: "fast_mode_not_supported",
+  });
 });
 
 test("account preflight failure cannot change a scope default", async () => {

@@ -2357,7 +2357,7 @@ test("pg run store: forceTerminal parks a wedged run and frees its conversation"
     const wedged = (await runs.enqueue({ sessionId: "sForce", request: turn("wedges") })).run;
     const behind = (await runs.enqueue({ sessionId: "sForce", request: turn("queued behind") })).run;
     assert.ok(await runs.claimById(wedged.id, "w-wedged", 600_000));
-    assert.equal(await runs.claim("w-other", 5_000), null, "the session is held while it runs");
+    assert.equal(await runs.claimById(behind.id, "w-other", 5_000), null, "the session is held while it runs");
 
     assert.equal(await runs.forceTerminal(wedged.id, "stopped by a person"), true);
     const after = await runs.get(wedged.id);
@@ -2365,7 +2365,7 @@ test("pg run store: forceTerminal parks a wedged run and frees its conversation"
     assert.equal(after?.result?.reason, "stopped by a person");
     assert.equal(after?.leaseExpiresAt, null);
 
-    const next = await runs.claim("w-other", 5_000);
+    const next = await runs.claimById(behind.id, "w-other", 5_000);
     assert.equal(next?.id, behind.id, "the queued message runs once the wedged one is gone");
 
     assert.equal(await runs.forceTerminal(wedged.id, "again"), false, "already terminal");
@@ -2380,7 +2380,7 @@ test("pg run store: forceTerminal on a queued run stops it ever starting", { ski
     const queued = (await runs.enqueue({ sessionId: "sQueued", request: turn("never runs") })).run;
     assert.equal(await runs.forceTerminal(queued.id, "stopped by a person"), true);
     assert.equal((await runs.get(queued.id))?.status, "failed");
-    assert.equal(await runs.claim("w-any", 5_000), null, "a stopped queue entry is not claimable");
+    assert.equal(await runs.claimById(queued.id, "w-any", 5_000), null, "a stopped queue entry is not claimable");
   } finally {
     await close();
   }

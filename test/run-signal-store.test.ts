@@ -1,7 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createMemoryRunSignalStore, startSignalPoll, waitForClientResult } from "../src/runs/run-signal-store.ts";
+import {
+  ABORT_GRACE_MS,
+  createMemoryRunSignalStore,
+  endIgnoredAborts,
+  startSignalPoll,
+  waitForClientResult,
+} from "../src/runs/run-signal-store.ts";
 import { createPostgresRunSignalStore } from "../src/runs/postgres-run-signal-store.ts";
+import { createMemoryRunStore } from "../src/runs/memory-run-store.ts";
+import { createPostgresRunStore } from "../src/runs/postgres-run-store.ts";
+import type { OrchestratorInput } from "../src/core/orchestrator/types.ts";
 
 const URL = process.env.DATABASE_URL;
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the pg run-signal tests";
@@ -730,4 +739,53 @@ test("a queued steer remains durable until its native intake acknowledges it", a
   await acknowledge!();
   await stop();
   assert.deepEqual(await store.pending("intake"), []);
+});
+
+const wedgedRequest = (threadRef: string) =>
+  ({
+    actor: { externalId: "U1" },
+    conversation: { kind: "dm", threadRef, audience: [] },
+    origin: { kind: "direct" },
+    text: "wedges",
+  }) as unknown as OrchestratorInput;
+
+test("memory: a run that ignores its abort past the grace is ended as stopped, from the durable abort record", async () => {
+  const { runs } = createMemoryRunStore();
+  const signals = createMemoryRunSignalStore();
+  const { run: wedged } = await runs.enqueue({ sessionId: "t-wedged", request: wedgedRequest("t-wedged") });
+  const { run: done } = await runs.enqueue({ sessionId: "t-done", request: wedgedRequest("t-done") });
+  const claimed = await runs.claimById(done.id, "w-done", 60_000);
+  await runs.complete(done.id, claimed!.leaseToken!, { status: "ok", reply: "finished" });
+  assert.ok(await runs.claimById(wedged.id, "w-wedged", 60_000));
+  await signals.send(wedged.id, { kind: "abort" });
+  await signals.send(done.id, { kind: "abort" });
+
+  assert.deepEqual(await endIgnoredAborts(runs, signals), [], "still inside the grace");
+  assert.equal((await runs.get(wedged.id))?.status, "running");
+
+  assert.deepEqual(await endIgnoredAborts(runs, signals, Date.now() + ABORT_GRACE_MS + 1), [wedged.id]);
+  const after = await runs.get(wedged.id);
+  assert.equal(after?.status, "failed");
+  assert.equal(after?.result?.stopped, true, "reported as cancelled, not as a failure");
+  assert.equal((await runs.get(done.id))?.result?.status, "ok", "a finished run keeps its real result");
+  assert.deepEqual(await endIgnoredAborts(runs, signals, Date.now() + ABORT_GRACE_MS + 1), [], "idempotent");
+});
+
+test("pg: a run that ignores its abort past the grace is ended as stopped", { skip }, async () => {
+  const { runs, close } = createPostgresRunStore(URL!);
+  const signals = createPostgresRunSignalStore(URL!);
+  const threadRef = `t-ignored-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  try {
+    const { run } = await runs.enqueue({ sessionId: threadRef, request: wedgedRequest(threadRef) });
+    assert.ok(await runs.claimById(run.id, "w-wedged", 600_000));
+    await signals.send(run.id, { kind: "abort" });
+    assert.ok(!(await endIgnoredAborts(runs, signals)).includes(run.id), "still inside the grace");
+    assert.ok((await endIgnoredAborts(runs, signals, Date.now() + ABORT_GRACE_MS + 1)).includes(run.id));
+    const after = await runs.get(run.id);
+    assert.equal(after?.status, "failed");
+    assert.equal(after?.result?.stopped, true);
+  } finally {
+    await signals.close?.();
+    await close();
+  }
 });

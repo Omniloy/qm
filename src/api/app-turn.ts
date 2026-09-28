@@ -105,33 +105,6 @@ export function createTurnMethods(
     }
   }
 
-  const STOPPED_REASON = "stopped by a person";
-  const ABORT_GRACE_MS = 20_000;
-  const ABORT_POLL_MS = 1_000;
-
-  async function settleAbort(run: Run): Promise<void> {
-    const deadline = Date.now() + ABORT_GRACE_MS;
-    let settled = false;
-    while (Date.now() < deadline) {
-      const current = await deps.runs.get(run.id).catch(() => null);
-      if (!current || isTerminal(current.status)) {
-        settled = true;
-        break;
-      }
-      await sleep(ABORT_POLL_MS);
-    }
-    if (!settled) {
-      const forced = await deps.runs.forceTerminal(run.id, STOPPED_REASON).catch((e) => {
-        console.warn(`[signal] could not force run ${run.id} terminal after an abort: ${errMessage(e)}`);
-        return false;
-      });
-      if (forced) {
-        console.warn(`[signal] run ${run.id} ignored its abort for ${ABORT_GRACE_MS}ms and was ended outright`);
-      }
-    }
-    await noteAbortOnItsSurface(run);
-  }
-
   async function noteAbortOnItsSurface(run: Run): Promise<void> {
     const target = run.request.deliveryTarget;
     const surface = run.request.surface;
@@ -917,7 +890,7 @@ export function createTurnMethods(
       if (signal.kind === "abort") {
         const accepted = await stopRunTree(run);
         if (!accepted) return { accepted: false, reason: "terminal" };
-        void settleAbort(run);
+        await noteAbortOnItsSurface(run);
         return { accepted: true };
       }
       if (signal.kind === "client_result") {

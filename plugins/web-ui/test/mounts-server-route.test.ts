@@ -4,15 +4,6 @@ import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import { mintPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
 
-/**
- * The /api/mounts proxy forwards only the verbs the mount API actually has.
- *
- * That allowlist is a boundary, not a formality: this proxy rewrites any
- * /api/mounts* path straight onto /v1/mounts*, so a verb it forwards is a verb
- * anyone can reach on core. Widening it for PATCH is worth pinning, as is the
- * fact that it still refuses everything else.
- */
-
 interface Call {
   method: string;
   url: string;
@@ -50,9 +41,6 @@ test.after(() => {
 });
 
 test("a PATCH reaches core with its body intact", async () => {
-  // Turning a folder off is the only thing that needs this verb, and it
-  // carries the whole decision in its body — dropping it would silently
-  // turn every request into a no-op.
   const before = calls.length;
   const r = await fetch(`${base}/api/mounts/m1`, {
     method: "PATCH",

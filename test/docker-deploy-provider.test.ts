@@ -44,8 +44,12 @@ test("Docker deployments use isolated networks and remove them on destroy", asyn
 
   const firstName = `agent-deploy-${first.id.slice(0, 12)}`;
   const secondName = `agent-deploy-${second.id.slice(0, 12)}`;
-  assert.ok(calls.some((args) => args.join(" ") === `network create ${firstName}-net`));
-  assert.ok(calls.some((args) => args.join(" ") === `network create ${secondName}-net`));
+  const creates = calls.filter((args) => args[0] === "network" && args[1] === "create");
+  for (const net of [`${firstName}-net`, `${secondName}-net`]) {
+    const create = creates.find((args) => args.at(-1) === net);
+    assert.ok(create, `${net} was created`);
+    assert.match(create.join(" "), /--subnet 198\.18\.\d+\.\d+\/28 --label qm\.deploy=1 --label qm\.org=\S+ /);
+  }
   assert.ok(calls.some((args) => args.join(" ").includes(`--name ${firstName} --network ${firstName}-net`)));
   assert.ok(calls.some((args) => args.join(" ").includes(`--name ${secondName} --network ${secondName}-net`)));
   assert.ok(calls.some((args) => args.join(" ") === `network rm ${firstName}-net`));
@@ -190,4 +194,38 @@ test("the daemon probe reports a hung daemon as a timeout", async () => {
   const dockerExec: DockerExec = async () => ({ code: -1, stdout: "", stderr: "" });
 
   assert.equal(await dockerDaemonFailure({ dockerExec }), "no response within 10s");
+});
+
+test("Docker deployment networks come from a configured pool, and a failed network rm is reported", async () => {
+  const calls: string[][] = [];
+  const reported: Array<{ category: string; code: string; scopeLabel?: string }> = [];
+  const dockerExec: DockerExec = async (args) => {
+    calls.push(args);
+    const ready = serving(args);
+    if (ready) return ready;
+    if (args[0] === "network" && args[1] === "inspect") return { code: 1, stdout: "", stderr: "No such network" };
+    if (args[0] === "network" && args[1] === "rm") return { code: 1, stdout: "", stderr: "has active endpoints" };
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  const store = createDeployStore();
+  const deployment = await store.create({
+    ownerScopeId: scopeId("personal", "U1"),
+    createdBy: "U1",
+    entrypoint: "node server.js",
+    snapshotDir: "/snap/pool",
+  });
+  const provider = createDockerDeployProvider({
+    dockerExec,
+    networkPool: "10.77.0.0/24",
+    onError: (e) => reported.push(e),
+  });
+
+  await provider.apply(deployment, deployment.versions[0]!);
+  await provider.destroy(deployment);
+  const create = calls.find((args) => args[0] === "network" && args[1] === "create")!;
+  assert.match(create[create.indexOf("--subnet") + 1]!, /^10\.77\.0\.\d+\/28$/);
+  assert.deepEqual(
+    reported.map((e) => [e.category, e.code, e.scopeLabel]),
+    [["deploy_network", "network_rm_failed", deployment.ownerScopeId]],
+  );
 });

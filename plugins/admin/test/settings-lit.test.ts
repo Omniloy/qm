@@ -241,6 +241,26 @@ test("purpose runtime cards independently set and clear overrides using the runt
     dom.window.close();
   }
 });
+test("personal AI account card says which providers the org requirement applies to", () => {
+  const dom = setup();
+  try {
+    const doc = dom.window.document;
+    const note = () => doc.getElementById("model-account-requirement")?.textContent?.trim() ?? null;
+    const load = (data: unknown) =>
+      dom.window.eval("settingsUI.load(" + JSON.stringify(data) + ',"org:test","model-account-modes")');
+    load({ modelAccountModes: { anthropic: "personal", openai: "org" }, individualModelAuth: false });
+    assert.equal(note(), null);
+    load({ modelAccountModes: { anthropic: "personal", openai: "org" }, individualModelAuth: true });
+    assert.match(note()!, /applies only to Claude:/);
+    load({ modelAccountModes: { anthropic: "org", openai: "org" }, individualModelAuth: true });
+    assert.match(note()!, /no provider allows them, so the requirement has no effect/);
+    doc.querySelector<HTMLInputElement>('input[name="model-account-mode-openai"][value="personal"]')!.click();
+    assert.match(note()!, /applies only to ChatGPT:/);
+  } finally {
+    dom.window.close();
+  }
+});
+
 test("personal AI account card edits one mode per provider and stays org-only", () => {
   const dom = setup();
   try {

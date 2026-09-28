@@ -40,3 +40,7 @@ The extension opens a WebSocket to QM's relay and speaks the Chrome DevTools Pro
 it. QM pairs your extension with your agent by the identity inside your token, and relays the
 protocol between them. Your agent points its existing `open --cdp` at the relay, so every
 browse verb works against your tab unchanged.
+
+Only your own agent, working live in your DM with QM, can reach the tab. Each such turn gets
+its own short-lived relay key; channel, group, and scheduled turns never get one, so nothing
+other people start, and nothing that runs on a timer, can drive your browser.

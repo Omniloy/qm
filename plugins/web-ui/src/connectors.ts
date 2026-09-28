@@ -1,6 +1,6 @@
 import { html, render, type TemplateResult } from "lit";
 import { Globe, KeyRound, Link } from "lucide";
-import { api, type CoreContext } from "./core-bridge";
+import { api, type CoreContext, withBase } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
 import { brandName, fieldSelect, icon } from "./ui";
 import { connectorLogo } from "./connector-logo";
@@ -172,6 +172,11 @@ export function resetKeychainState(): void {
   secureDropUrl = null;
   confirmation = null;
   confirmationOpener = null;
+  keychainContexts = [];
+  granting = null;
+  grantBusy = false;
+  grantError = "";
+  grantOpener = null;
 }
 
 function fmtDate(ms?: number): string {
@@ -440,7 +445,7 @@ function extensionPanel(provider: BrowserProvider): TemplateResult {
                 <button class="btn" type="button" ?disabled=${relayChecking} @click=${() => void recheckExtension()}>
                   ${relayChecking ? "Checking…" : "Re-check"}
                 </button>
-                <a class="btn" href="/api/browser-relay/extension.zip" download="qm-browser-bridge.zip"
+                <a class="btn" href=${withBase("/api/browser-relay/extension.zip")} download="qm-browser-bridge.zip"
                   >Download again</a
                 >
               </div>
@@ -454,7 +459,7 @@ function extensionPanel(provider: BrowserProvider): TemplateResult {
           ? ""
           : html`<ol class="kc-ext-steps">
                 <li>
-                  <a class="btn" href="/api/browser-relay/extension.zip" download="qm-browser-bridge.zip"
+                  <a class="btn" href=${withBase("/api/browser-relay/extension.zip")} download="qm-browser-bridge.zip"
                     >Download the extension</a
                   >
                   and unzip it. It comes set up with your ${brandName()} address and a pairing token — nothing to paste.

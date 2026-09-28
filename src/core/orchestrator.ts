@@ -83,6 +83,7 @@ import {
   isValidCapabilityTimezone,
   type CapabilityClaims,
 } from "../auth/capability-token.ts";
+import { BROWSER_RELAY_CDP_AUD } from "../browser-relay/server.ts";
 import type {
   GapWork,
   HarnessLlmRequestRecord,
@@ -1714,11 +1715,27 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           deps.capabilitySecret ?? deps.signingSecret,
           deps.capabilityTokenCompression,
         );
-        if (deps.relayPublicUrl && !("QM_RELAY_URL" in connectorEnv)) {
+        if (
+          deps.relayPublicUrl &&
+          !("QM_RELAY_URL" in connectorEnv) &&
+          liveTurn &&
+          !automatedTurn &&
+          scopeId === personalScope(actor.id)
+        ) {
           const chosen = await deps.config?.getBrowserProviderDurable(memoryScopeId);
           if (chosen === "extension") {
             const wss = deps.relayPublicUrl.replace(/^http/, "ws").replace(/\/$/, "");
-            connectorEnv.QM_RELAY_URL = `${wss}/v1/browser-relay/cdp?t=${connectorEnv.AGENT_API_TOKEN}`;
+            const relayToken = await mintCapabilityToken(
+              {
+                actorId: actor.id,
+                scopeId,
+                liveActor: true,
+                aud: BROWSER_RELAY_CDP_AUD,
+                exp: Date.now() + CAPABILITY_TTL_MS,
+              },
+              deps.capabilitySecret ?? deps.signingSecret,
+            );
+            connectorEnv.QM_RELAY_URL = `${wss}/v1/browser-relay/cdp?t=${relayToken}`;
           }
         }
         connectorEnv.AGENT_OAUTH_CONSENT_TOKEN = await mintCapabilityToken(

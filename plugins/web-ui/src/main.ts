@@ -13,7 +13,6 @@ import {
 } from "./sessions";
 import { isPhone, onPhoneChange } from "./viewport";
 import { closeRowMenu } from "./row-actions";
-import { redrawFilesPage } from "./files";
 
 function closeComposerMenus(keepOpenWithin: Element | null): boolean {
   let changed = false;
@@ -37,7 +36,7 @@ document.addEventListener("click", (e) => {
   }
   if (!target?.closest(".multi-select-color")) closeSessionSelectionColor();
   if (!target?.closest(".user-menu")) closeUserMenu();
-  if (closeRowMenu(target)) redrawFilesPage();
+  closeRowMenu(target);
 });
 
 document.addEventListener("keydown", (e) => {
@@ -45,7 +44,7 @@ document.addEventListener("keydown", (e) => {
   closeComposerMenus(null);
   closeOpenSessionMenu();
   clearSessionSelection();
-  if (closeRowMenu(null)) redrawFilesPage();
+  closeRowMenu(null);
   closeFormMenus();
   closeUserMenu();
 });

@@ -726,6 +726,7 @@ test("forceTerminal parks a running run instead of requeueing it", async () => {
   assert.equal(after?.status, "failed");
   assert.notEqual(after?.status, "pending");
   assert.equal(after?.result?.reason, "stopped by a person");
+  assert.equal(after?.result?.stopped, true, "a forced stop reads as cancelled, not as a failure");
 });
 
 test("a wedged run stops blocking its conversation once it is forced terminal", async () => {

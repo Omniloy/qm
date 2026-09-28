@@ -1,6 +1,12 @@
 import { isSessionStatus } from "../../sessions/session-status.ts";
 import { suggestedActivityRoutes } from "./suggested-activities.ts";
-import { runtimeFallback, runtimeConfigBody, userRuntimeConfigBody, webuiModelEnabled } from "../runtime-config.ts";
+import {
+  pickerRuntimeConfig,
+  runtimeFallback,
+  runtimeConfigBody,
+  userRuntimeConfigBody,
+  webuiModelEnabled,
+} from "../runtime-config.ts";
 import { sessionSharingRoutes } from "./session-sharing.ts";
 import type { Grant, ScopeId, Session } from "../../types.ts";
 import { parseScopeId, scopeId as makeScopeId } from "../../types.ts";
@@ -1387,9 +1393,12 @@ async function getRuntimeConfig(ctx: ApiCtx): Promise<void> {
   return sendJson(
     ctx.res,
     200,
-    ctx.url.searchParams.get("account") === "company"
-      ? await runtimeConfigBody(ctx, target.scope)
-      : await userRuntimeConfigBody(ctx, target.scope, target.actorId),
+    await pickerRuntimeConfig(
+      ctx,
+      ctx.url.searchParams.get("account") === "company"
+        ? await runtimeConfigBody(ctx, target.scope)
+        : await userRuntimeConfigBody(ctx, target.scope, target.actorId),
+    ),
   );
 }
 
@@ -1447,7 +1456,11 @@ async function putRuntimeConfig(ctx: ApiCtx): Promise<void> {
     resource: "runtime-config",
     scopeLabel: target.scope,
   });
-  return sendJson(ctx.res, 200, await userRuntimeConfigBody(ctx, target.scope, target.actorId));
+  return sendJson(
+    ctx.res,
+    200,
+    await pickerRuntimeConfig(ctx, await userRuntimeConfigBody(ctx, target.scope, target.actorId)),
+  );
 }
 
 async function getChannelHeaderPin(ctx: ApiCtx): Promise<void> {

@@ -29,6 +29,10 @@ they made deliberately.
   none of the automation fingerprint that gets other browsers blocked. No doc, no create step.
   There is no pane to fill — they are watching their own screen.
 
+  Their own Chrome is only reachable on a live turn in their own DM. In a channel, a group, or
+  a scheduled run the relay is withheld on purpose; `open` says so, and you tell them to ask
+  from their DM instead of retrying or switching browsers.
+
   When `open` says their Chrome is not sharing a tab, **stop and ask**. Chrome stops the
   extension when it goes quiet, so this is ordinary rather than alarming: tell them plainly
   that the extension is not sharing, ask them to press **Share this tab**, and run `open`

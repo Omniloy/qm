@@ -16,7 +16,7 @@ export interface DeployReconcileInput {
 }
 
 export interface DeployApplyOptions {
-  readyWindowMs?: number;
+  relaunch?: boolean;
 }
 
 export interface DeployProvider {

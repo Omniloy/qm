@@ -100,7 +100,8 @@ sandboxes never compete with other stacks on the host for a default pool. Docker
 rejects overlaps with its own networks but not with host routes, so if a host route
 or VPN on this box uses `198.18.0.0/15`, override the pool with another private range
 between `/8` and `/28`. Each scope keeps its own bridge: that bridge is what stops
-one sandbox reaching another's unauthenticated exec daemon.
+one sandbox reaching another's unauthenticated exec daemon. Deployed apps' per-app
+`agent-deploy-<id>-net` networks are carved from the same pool, labelled `qm.deploy=1`.
 
 **`docker network inspect <net>` is not an "is this network unused" test.** Its
 `.Containers` lists only running endpoints, so a network whose only member is a
@@ -781,6 +782,23 @@ a chat turn streams and starts a `qm-sbx-*` container; the agent publishes an ap
 `scripts/migrate-transcript-tape.ts` ships in the core image as an optional operator
 command. It is a dry run unless given `--apply`:
 `docker exec qm-omniloy-core node scripts/migrate-transcript-tape.ts`.
+
+### 5a. Retire the legacy deploy network
+
+Deployed apps used to share one `agent-deploynet` network. Each now gets its own
+`agent-deploy-<id>-net`, a `/28` from `LOCAL_SANDBOX_NETWORK_POOL` labelled `qm.deploy=1`,
+and a running app moves onto it the first time core resolves or tails it. Once every
+running app has been opened at least once, nothing is left on the old network; confirm
+that and remove it:
+
+```bash
+docker ps -a --filter network=agent-deploynet --format '{{.Names}}'
+docker network disconnect -f agent-deploynet qm-omniloy-core 2>/dev/null
+docker network rm agent-deploynet
+```
+
+The first command must print nothing (core itself does not count). An app that still shows
+up has not been reached since the deploy; open its `/d/<id>` URL and check again.
 
 ### 6. Reinstall the Slack app
 

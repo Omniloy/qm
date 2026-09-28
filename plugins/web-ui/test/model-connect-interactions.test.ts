@@ -426,6 +426,35 @@ test("AI account modal interactions", async (t) => {
     close();
   });
 
+  await t.test("a saved sign-in for an org-served provider is listed with Disconnect only", async () => {
+    let saved = true;
+    const disconnects: unknown[] = [];
+    fetcher = async (path, init) => {
+      if (path.endsWith("/disconnect")) {
+        disconnects.push(JSON.parse(String(init?.body)));
+        saved = false;
+        return Response.json({ ok: true });
+      }
+      return Response.json({
+        ...status("company", [], { anthropic: "org", openai: "personal" }),
+        ...(saved ? { orgServedConnections: [{ provider: "anthropic", kind: "apikey" }] } : {}),
+      });
+    };
+    await open();
+    const row = provider("Claude");
+    assert.ok(row.classList.contains("mc-org-served"));
+    assert.match(row.textContent!, /not in use/);
+    assert.deepEqual(
+      [...row.querySelectorAll("button")].map((b) => b.textContent?.trim()),
+      ["Disconnect"],
+    );
+    providerButton("Claude", "Disconnect");
+    await tick();
+    assert.deepEqual(disconnects, [{ provider: "claude" }]);
+    assert.equal(doc.querySelector(".mc-org-served"), null);
+    close();
+  });
+
   await t.test("the startup gate activates the newly connected provider before allowing chats", async () => {
     let account = "anthropic";
     let connected = false;
@@ -541,6 +570,22 @@ test("AI account modal interactions", async (t) => {
     await tick();
     assert.deepEqual(labels(), []);
     assert.ok(![...doc.querySelectorAll(".settings-row-title")].some((el) => el.textContent === "AI access"));
+    fetcher = async (path) =>
+      path.endsWith("/status")
+        ? Response.json({
+            ...status("company", [], modes),
+            orgServedConnections: [{ provider: "openai", kind: "oauth" }],
+          })
+        : base(path);
+    renderSettings();
+    await tick();
+    const leftover = doc.querySelector<HTMLElement>("#ai-org-served");
+    assert.ok(leftover, "a saved sign-in keeps the AI access row so it can be removed");
+    assert.deepEqual(labels(), []);
+    leftover.querySelector<HTMLButtonElement>("button")!.click();
+    await tick();
+    assert.ok(provider("ChatGPT / Codex").classList.contains("mc-org-served"));
+    close();
     appState.currentView = "chats";
     appState.mainEl = null;
   });

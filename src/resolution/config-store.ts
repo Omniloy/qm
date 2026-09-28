@@ -394,10 +394,11 @@ export function createMemoryConfigStore(
       individualModelAuthStore.get(org),
       personalModelProviders(),
     ]);
+    const required: ModelAccount = orgRow?.on ? "personal" : "company";
     const chosen: ModelAccount | undefined = row?.on ? (row.provider ?? "personal") : undefined;
-    const account = chosen ?? (orgRow?.on ? "personal" : "company");
+    const account = chosen ?? required;
     if (account === "company" || !allowed.length) return "company";
-    return account === "personal" || allowed.includes(account) ? account : "company";
+    return account === "personal" || allowed.includes(account) ? account : required;
   };
   const webuiModelStore = opts.webuiModels ?? createMemoryMap<PersistedWebuiModels>();
   const modelClassificationStore = opts.modelClassifications ?? createMemoryMap<PersistedModelClassification>();
@@ -1075,18 +1076,23 @@ export function createMemoryConfigStore(
       (await webuiModelStore.get(id))?.ids ?? (await webuiModelStore.get(org))?.ids ?? null,
     getModelClassifications: (id) => modelClassifications.get(id) ?? {},
     setModelClassification(id, modelId, status) {
-      const merged = { ...modelClassifications.get(id) };
-      if (status === "active") delete merged[modelId];
-      else merged[modelId] = status;
-      if (Object.keys(merged).length === 0) {
-        modelClassifications.delete(id);
-        persist(`modelClassifications:${id}`, "model classifications", () => modelClassificationStore.delete(id));
-      } else {
-        modelClassifications.set(id, merged);
-        persist(`modelClassifications:${id}`, "model classifications", () =>
-          modelClassificationStore.put(id, { scopeId: id, statuses: merged }),
-        );
-      }
+      const withStatus = (statuses: Record<string, ModelStatus> | undefined) => {
+        const merged = { ...statuses };
+        if (status === "active") delete merged[modelId];
+        else merged[modelId] = status;
+        return merged;
+      };
+      const cache = (statuses: Record<string, ModelStatus>) => {
+        if (Object.keys(statuses).length === 0) modelClassifications.delete(id);
+        else modelClassifications.set(id, statuses);
+      };
+      cache(withStatus(modelClassifications.get(id)));
+      persist(`modelClassifications:${id}`, "model classifications", async () => {
+        const merged = withStatus((await modelClassificationStore.get(id))?.statuses);
+        if (Object.keys(merged).length === 0) await modelClassificationStore.delete(id);
+        else await modelClassificationStore.put(id, { scopeId: id, statuses: merged });
+        cache(merged);
+      });
     },
     getModelClassificationsDurable: async (id) =>
       (await modelClassificationStore.get(id))?.statuses ?? (await modelClassificationStore.get(org))?.statuses ?? {},
@@ -1281,6 +1287,8 @@ export function createMemoryConfigStore(
         channelHeaderPinRow,
         autoFlaggerRow,
         internalOverridesRow,
+        modelClassificationRow,
+        browserProviderRow,
       ] = await Promise.all([
         soulStore.get(id),
         commandPolicyStore.get(id),
@@ -1299,6 +1307,8 @@ export function createMemoryConfigStore(
         channelHeaderPinStore.get(id),
         id === org ? autoFlaggerStore.get(org) : null,
         id === org ? internalMemberOverridesStore.get(org) : null,
+        modelClassificationStore.get(id),
+        browserProviderStore.get(id),
       ]);
       let refreshedSoul = soul;
       const legacyHistory = legacySoulHistory.get(id) ?? [];
@@ -1349,6 +1359,10 @@ export function createMemoryConfigStore(
       else branding.delete(id);
       if (channelHeaderPinRow) channelHeaderPin.set(id, channelHeaderPinRow.on);
       else channelHeaderPin.delete(id);
+      if (modelClassificationRow) modelClassifications.set(id, modelClassificationRow.statuses);
+      else modelClassifications.delete(id);
+      if (browserProviderRow) browserProviders.set(id, browserProviderRow.providerId);
+      else browserProviders.delete(id);
     },
     async flushScope(id) {
       const keys = [
@@ -1373,6 +1387,8 @@ export function createMemoryConfigStore(
           : []),
         `channelHeaderPin:${id}`,
         `ackEmoji:${id}`,
+        `modelClassifications:${id}`,
+        `browserProvider:${id}`,
       ];
       await Promise.all(
         keys.map(async (key) => {

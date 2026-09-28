@@ -89,7 +89,6 @@ let shareError = "";
 let shareFocusTarget: HTMLElement | null = null;
 let unsharing: {
   skill: SkillItem;
-  /** null while the list is still loading — an empty list means something else. */
   grants: SkillGrantRow[] | null;
   error: string;
   revoking: string | null;
@@ -842,7 +841,6 @@ async function saveCreate(): Promise<void> {
   }
 }
 
-/** The row's overflow button, which survives a redraw and so can take focus back. */
 function menuButtonFor(id: string | undefined): HTMLElement | null {
   if (!id) return null;
   return (
@@ -874,7 +872,6 @@ function startUnshare(s: SkillItem): Promise<void> {
   return loadSkillGrants(s);
 }
 
-/** The dialog this response still belongs to, or null if it moved on under us. */
 function currentUnshare(skillId: string | undefined): NonNullable<typeof unsharing> | null {
   return unsharing && unsharing.skill.id === skillId ? unsharing : null;
 }
@@ -905,7 +902,6 @@ function closeUnshare(): void {
   queueMicrotask(() => restoreDialogFocus(target, () => menuButtonFor(skillId)));
 }
 
-/** Loading, the list, or the empty state — three states, kept out of the markup. */
 function unshareBody(u: NonNullable<typeof unsharing>): TemplateResult {
   if (u.grants === null) return html`<p class="card-meta">Loading…</p>`;
   if (!u.grants.length) return html`<p id="skill-unshare-empty">${unshareEmptyState(u.skill.name)}</p>`;
@@ -1099,8 +1095,6 @@ function shareDialog(): TemplateResult {
   const targets = shareTargets(shareScopes, sh.skill, sh.mode);
   const chosen = targets.find((t) => t.scopeId === sh.toScope);
   const targetLabel = sh.mode === "promote" ? "everyone in the organization" : (chosen?.name ?? "the context you pick");
-  // Promotion has a fixed destination, so it is the one mode that can go ahead
-  // without a chosen scope.
   const ready = sh.mode === "promote" || Boolean(sh.toScope);
   return html`<div
     class="project-dialog-backdrop"
@@ -1207,13 +1201,9 @@ async function performShare(): Promise<void> {
     shareBusy = false;
     shareFocusTarget = null;
     setSkillsBackgroundInert(false);
-    // renderSkills clears the notice on entry, so the confirmation is set after
-    // it settles rather than before.
     await renderSkills();
     skillsNotice = shareSuccessNotice(sh.mode, sh.skill.name, targetLabel);
     drawSkills();
-    // A move re-homes the row, so its old menu button is gone — fall back to
-    // the page's own controls rather than leaving focus on the body.
     restoreDialogFocus(
       opener,
       () => menuButtonFor(skillId) ?? skillsPageHost?.querySelector<HTMLElement>(".list-search input") ?? null,
@@ -1328,9 +1318,6 @@ export async function renderSkills(): Promise<void> {
         )
         .map((context) => ({ scopeId: context.scopeId, name: context.name || context.scopeId })),
     ].filter((scope) => scope.scopeId);
-    // Sharing reaches further than creating does: a public channel is a fine
-    // place to lend a skill to, even though core refuses to let one be born
-    // there. Personal is kept so a skill can be taken back out of a project.
     shareScopes = [
       { scopeId: personal, name: "Personal — only you", kind: "personal" as const },
       ...(contexts.contexts ?? [])

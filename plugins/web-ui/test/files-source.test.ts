@@ -69,3 +69,16 @@ test("Files uses distinct Finder-inspired glyphs and type colors", () => {
     assert.match(css, new RegExp(`\\.file-row-icon\\.${kind}`));
   }
 });
+
+test("a file row with an overflow menu keeps the link and menu in their own columns", () => {
+  assert.match(css, /\.file-row:has\(> \.file-row-link\) \{\s*grid-template-columns: minmax\(0, 1fr\) auto;/);
+  const link = /\.file-row-link \{[^}]*\}/.exec(css)?.[0] ?? "";
+  assert.match(link, /display: grid;/);
+  assert.doesNotMatch(link, /display: contents/);
+  assert.match(css, /\.file-row-link:focus-visible \{\s*outline: 2px solid var\(--ring\);/);
+});
+
+test("a delete confirmation never opens with the previous attempt's error", () => {
+  assert.match(source, /case "delete":\s*deletingFile = f;\s*deleteError = "";/);
+  assert.match(source, /const close = \(\) => \{\s*deletingFile = null;\s*deleteError = "";/);
+});

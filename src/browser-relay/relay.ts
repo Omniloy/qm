@@ -1,20 +1,5 @@
 import type { WebSocket } from "ws";
 
-/**
- * Pairs a person's own Chrome with the browser their agent drives.
- *
- * The two problems a sandbox browser cannot solve are the same problem: it is
- * not the browser the person actually uses. It holds none of their sign-ins and
- * it looks like automation to anything that checks. Their own Chrome holds both
- * — so an extension attaches Chrome's debugger to one tab and this relays the
- * protocol between it and the sandbox.
- *
- * Chrome refuses `--remote-debugging-port` on a real profile on purpose, so an
- * extension is the only way in. What that extension speaks is still CDP, which
- * is why nothing above this file changes: the skill points its existing
- * `open --cdp` at a relay URL and every verb behaves as before.
- */
-
 export type RelaySide = "extension" | "cdp";
 
 export interface RelaySocket {
@@ -25,21 +10,17 @@ export interface RelaySocket {
 interface Pair {
   extension?: RelaySocket;
   cdp?: RelaySocket;
-  /** The tab the extension attached to, as the extension reported it. */
   title?: string;
   url?: string;
-  /** True between "share this tab" and "stop sharing". */
   sharing?: boolean;
 }
 
-/** The single page the sandbox is allowed to see, whatever Chrome calls it. */
 const TARGET_ID = "qm-extension-page";
 const SESSION_ID = "qm-extension-session";
 
 export interface RelayHub {
   attach(principalId: string, side: RelaySide, socket: RelaySocket): void;
   detach(principalId: string, side: RelaySide): void;
-  /** A frame from one side, to be acted on or forwarded. */
   deliver(principalId: string, side: RelaySide, raw: string): void;
   connected(principalId: string): { extension: boolean; cdp: boolean; sharing: boolean };
   describe(principalId: string): { title?: string; url?: string } | null;
@@ -54,16 +35,7 @@ function refuse(socket: RelaySocket, id: number | undefined, message: string): v
   socket.send(JSON.stringify({ id, error: { code: -32000, message } }));
 }
 
-/**
- * `chrome.debugger` attaches to one tab; it is not a browser-level endpoint,
- * so the handshake a remote CDP client opens with has no counterpart to
- * forward to. Answer it here with a single synthetic page instead. That keeps
- * the client — and every skill built on it — unchanged.
- */
 function handshake(pair: Pair, method: string, id: number, cdp: RelaySocket): boolean {
-  // Chrome's debugger API exposes no Browser domain, so a graceful
-  // browser-level close has nothing to call. Closing the person's own browser
-  // would be wrong anyway — this ends the agent's use of it, nothing more.
   if (method === "Browser.close" || method === "Browser.getVersion") {
     reply(cdp, id, method === "Browser.close" ? {} : { product: "Chrome/extension", protocolVersion: "1.3" });
     return true;
@@ -96,14 +68,6 @@ function handshake(pair: Pair, method: string, id: number, cdp: RelaySocket): bo
 }
 
 export interface RelayHubOptions {
-  /**
-   * Called when a person shares a tab, or explicitly stops sharing.
-   *
-   * Connecting the extension and choosing it as your browser were two separate
-   * steps, and doing only the first left every turn quietly on the sandbox
-   * browser — which is exactly the state someone thinks they have fixed. So
-   * sharing a tab IS the choice, and stopping sharing takes it back.
-   */
   onShareChanged?(principalId: string, sharing: boolean): void;
 }
 
@@ -118,9 +82,6 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
   return {
     attach(principalId, side, socket) {
       const pair = pairOf(principalId);
-      // One of each. A second connection on the same side is the newer one
-      // taking over — reconnects after a service worker restart are routine,
-      // and leaving the stale socket wired up would black-hole every reply.
       pair[side]?.close(1000, "replaced by a newer connection");
       pair[side] = socket;
     },
@@ -130,8 +91,6 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
       if (!pair) return;
       delete pair[side];
       if (side === "extension") {
-        // The browser went away. Say so rather than leaving the agent waiting
-        // on replies that are never coming.
         pair.cdp?.close(1001, "the extension disconnected");
         delete pair.cdp;
       }
@@ -163,8 +122,6 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
         pair.extension.send(raw);
         return;
       }
-      // From the extension: command results and page events, plus the one
-      // message that is ours — what tab it attached to.
       let frame: { qm?: string; title?: string; url?: string; restored?: boolean };
       try {
         frame = JSON.parse(raw) as { qm?: string; title?: string; url?: string; restored?: boolean };
@@ -179,9 +136,6 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
         return;
       }
       if (frame.qm === "detached") {
-        // Explicit "stop sharing" only. A socket that merely closed is a
-        // sleeping service worker, not a decision — reverting on that would
-        // undo the person's choice every time Chrome idled the extension.
         pair.sharing = false;
         delete pair.title;
         delete pair.url;
@@ -208,7 +162,6 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
   };
 }
 
-/** Adapts a `ws` socket to the narrow surface the hub needs. */
 export function relaySocket(ws: WebSocket): RelaySocket {
   return {
     send: (data) => {

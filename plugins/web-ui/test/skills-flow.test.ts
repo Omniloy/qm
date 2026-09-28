@@ -40,8 +40,6 @@ test("entering Skills clears overlay and menu state from an earlier visit", () =
       bodyOf("renderSkills"),
     )?.[1];
   assert.ok(teardown, "renderSkills must reset page state when the host is new");
-  // Every overlay that can outlive a view change: an unanswered dialog and an
-  // open row menu both reopen on return otherwise.
   for (const cleared of ["archiveConfirmation = null", "archiveFocusTarget = null", "sharing = null"]) {
     assert.match(teardown, new RegExp(cleared.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }

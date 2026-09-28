@@ -3,7 +3,7 @@ import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { createMemoryDurableByteStore } from "../src/files/durable-byte-store.ts";
 import { createPostgresFileArtifactStore } from "../src/files/postgres-file-artifact-store.ts";
-import { fileArtifactId, type PutFileInput } from "../src/files/file-artifact-store.ts";
+import { ORPHANED_BLOB_GRACE_MS, fileArtifactId, type PutFileInput } from "../src/files/file-artifact-store.ts";
 import { scopeId } from "../src/types.ts";
 
 const URL = process.env.DATABASE_URL;
@@ -20,6 +20,7 @@ beforeEach(async () => {
   await p.query("DROP TABLE IF EXISTS qm_schema_migrations CASCADE");
   await p.query("DROP TABLE IF EXISTS file_artifacts CASCADE");
   await p.query("DROP TABLE IF EXISTS file_artifact_deletions CASCADE");
+  await p.query("DROP TABLE IF EXISTS file_blob_orphans CASCADE");
   await p.end();
 });
 
@@ -177,7 +178,30 @@ test("pg open round-trips bytes; delete removes the ROW only", { skip }, async (
   await store.delete("o1");
   assert.equal(await store.get("o1"), null, "row gone");
   assert.ok(await store.open("i1"), "shared bytes survive (no inline byte delete)");
+  assert.equal(await store.sweepOrphanedBlobs(Date.now() + ORPHANED_BLOB_GRACE_MS + 1), 0);
+  assert.ok(await store.open("i1"), "the sweep never reclaims bytes a row still points at");
 });
+
+test(
+  "pg orphan sweep reclaims the last reference's bytes after the grace, never a re-uploaded blob",
+  { skip },
+  async () => {
+    const bytes = createMemoryDurableByteStore();
+    const store = createPostgresFileArtifactStore(URL!, bytes);
+    const gone = await store.put(put({ id: "gone", path: "p/gone", data: Buffer.from("only once") }));
+    const raced = await store.put(put({ id: "raced", path: "p/raced", data: PNG }));
+    await store.delete("gone");
+    await store.delete("raced");
+    const again = await store.put(put({ id: "again", path: "p/again", data: PNG }));
+    assert.equal(again.artifact.blobKey, raced.artifact.blobKey);
+
+    assert.equal(await store.sweepOrphanedBlobs(), 0, "inside the grace nothing is reclaimed");
+    assert.equal(await store.sweepOrphanedBlobs(Date.now() + ORPHANED_BLOB_GRACE_MS + 1), 1);
+    assert.equal(await bytes.open(gone.artifact.blobKey!), null);
+    assert.ok(await store.open("again"), "an identical upload racing the delete is never left dangling");
+    assert.equal(await store.sweepOrphanedBlobs(Date.now() + ORPHANED_BLOB_GRACE_MS + 1), 0);
+  },
+);
 
 test("pg rows survive across store instances (no per-process cache to diverge)", { skip }, async () => {
   const writer = createPostgresFileArtifactStore(URL!, createMemoryDurableByteStore());

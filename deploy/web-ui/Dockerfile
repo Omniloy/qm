@@ -25,7 +25,6 @@ COPY plugins/admin/ui /admin/ui
 COPY plugins/admin/public /admin/public
 COPY plugins/chassis/src /chassis/src
 COPY --from=build /app/dist-web ./dist-web
-# The browser-bridge extension, served as a downloadable zip from the server.
 COPY extension ./extension
 
 ARG GIT_SHA=

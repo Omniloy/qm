@@ -42,7 +42,6 @@ test("a grant on a different credential does not block this one", () => {
 test("your own personal scope is never a destination", () => {
   const withPersonal = [...CONTEXTS, { scopeId: PERSONAL, name: "You", kind: "personal" as const }];
   const targets = grantTargets(withPersonal, "c1", [], PERSONAL).map((t) => t.scopeId);
-  // Lending a credential to your own chats is what owning it already means.
   assert.ok(!targets.includes(PERSONAL));
 });
 
@@ -52,8 +51,6 @@ test("an expired credential is refused before a grant is ever recorded", () => {
 });
 
 test("an expiry on a file credential is not treated as staleness", () => {
-  // A file has no notion of expiry the way a token does; the field means
-  // something else there.
   const reason = grantBlockedReason({ id: "c1", service: "cert", kind: "file", expiresAt: 500 }, CONTEXTS, 1000);
   assert.equal(reason, null);
 });
@@ -71,8 +68,6 @@ test("standing access says it lasts; one-time says it does not", () => {
   const c = { id: "c1", service: "Stripe" };
   assert.match(grantImpact("standing", c, "#ops"), /from now on/);
   assert.match(grantImpact("once", c, "#ops"), /once/);
-  // Both must say the secret stays server-side — it is the thing people worry
-  // about, and it is true of every grant.
   for (const mode of ["standing", "once"] as const) {
     assert.match(grantImpact(mode, c, "#ops"), /never leaves the server/);
     assert.match(grantImpact(mode, c, "#ops"), /audited/);

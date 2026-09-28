@@ -142,6 +142,10 @@ test("provider modes refuse sign-in for org-served providers and trim the status
       required: false,
       account: "company",
       connections: [],
+      orgServedConnections: [
+        { provider: "anthropic", kind: "apikey" },
+        { provider: "openai", kind: "apikey" },
+      ],
       modes: { anthropic: "org", openai: "org" },
     });
     await refused("/v1/user-model-auth/api-key", { provider: "claude", apiKey: "test-new-key" });
@@ -163,14 +167,27 @@ test("provider modes refuse sign-in for org-served providers and trim the status
       required: false,
       account: "anthropic",
       connections: [{ provider: "anthropic", kind: "apikey" }],
+      orgServedConnections: [{ provider: "openai", kind: "apikey" }],
       modes: { anthropic: "personal", openai: "org" },
     });
 
+    built.config.setIndividualModelAuth(true);
+    await built.config.flushScope("org:default-org");
+    assert.equal((await call("POST", "/v1/user-model-auth/account", { account: "company" })).status, 403);
     await built.config.setModelAccountModes({ anthropic: "org", openai: "org" });
+    assert.equal(((await status()) as { required: boolean }).required, false);
+    assert.equal((await call("POST", "/v1/user-model-auth/account", { account: "company" })).status, 200);
+    built.config.setIndividualModelAuth(false);
+    await built.config.flushScope("org:default-org");
     assert.equal(((await status()) as { account: string }).account, "company");
     assert.equal((await call("POST", "/v1/user-model-auth/disconnect", { provider: "claude" })).status, 200);
     assert.equal(await built.userModelCredentials.get("alice@default-org", "anthropic"), null);
     assert.equal((await built.userModelCredentials.get("alice@default-org", "openai"))?.apiKey, "test-openai-key");
+    assert.deepEqual(((await status()) as { orgServedConnections: unknown }).orgServedConnections, [
+      { provider: "openai", kind: "apikey" },
+    ]);
+    assert.equal((await call("POST", "/v1/user-model-auth/disconnect", { provider: "chatgpt" })).status, 200);
+    assert.equal(((await status()) as { orgServedConnections?: unknown }).orgServedConnections, undefined);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }

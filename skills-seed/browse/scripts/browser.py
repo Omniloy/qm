@@ -398,8 +398,14 @@ def connect():
     state = read_state()
     if not state or not state.get("cdpUrl"):
         die("No browser is open. Run: browser.py open")
+    url = state["cdpUrl"]
+    if state.get("provider") == "extension":
+        url = os.environ.get("QM_RELAY_URL", "").strip()
+        if not url:
+            clear_state()
+            die("Their own Chrome is only reachable from a live turn in their own DM. Run: browser.py open")
     try:
-        return attach_remote(state["cdpUrl"]), state
+        return attach_remote(url), state
     except SystemExit:
         raise
     except Exception as e:
@@ -767,8 +773,9 @@ def main():
             relay = os.environ.get("QM_RELAY_URL", "").strip()
             if not relay:
                 die("This person chose their own Chrome, but no relay URL reached this turn.\n"
-                    "Their extension may not be connected. Tell them to open the QM Browser Bridge\n"
-                    "extension and share a tab, then run: open")
+                    "Their own Chrome is only offered on a live turn in their own DM, never in a\n"
+                    "channel, a group, or a scheduled run. Outside that, say so rather than retrying.\n"
+                    "In their DM: tell them to open the QM Browser Bridge extension and share a tab, then run: open")
             a.cdp = relay
 
         if a.cdp:
@@ -788,7 +795,10 @@ def main():
                     "and a task aimed at their own browser will fail in a way that looks like your "
                     "mistake rather than a disconnected extension.")
             c.close()
-            write_state({"provider": "remote", "cdpUrl": a.cdp, "startedAt": int(time.time())})
+            if via_extension:
+                write_state({"provider": "extension", "cdpUrl": "relay", "startedAt": int(time.time())})
+            else:
+                write_state({"provider": "remote", "cdpUrl": a.cdp, "startedAt": int(time.time())})
             print("Attached to the browser you pointed at. Every verb works the same.")
             return
 

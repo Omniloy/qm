@@ -70,6 +70,7 @@ export interface StatusResponse {
   individualModelAuth: boolean;
   required: boolean;
   connections: { provider: "anthropic" | "openai"; kind: ConnKind }[];
+  orgServedConnections?: { provider: "anthropic" | "openai"; kind: ConnKind }[];
   modes?: Partial<Record<"anthropic" | "openai", "org" | "personal">>;
 }
 
@@ -105,6 +106,7 @@ interface State {
   busy: boolean;
   saving: boolean;
   connections: Partial<Record<ProviderKey, ConnKind>>;
+  orgServed: Partial<Record<ProviderKey, ConnKind>>;
   open: ProviderKey | null;
   method: Method | null;
   flow: Flow;
@@ -134,6 +136,7 @@ function fresh(mode: Mode): State {
     busy: false,
     saving: false,
     connections: {},
+    orgServed: {},
     open: null,
     method: null,
     flow: { kind: "pick" },
@@ -173,6 +176,10 @@ function applyStatus(status: StatusResponse): void {
   s.connections = {};
   for (const c of status.connections ?? []) {
     s.connections[c.provider === "anthropic" ? "claude" : "chatgpt"] = c.kind;
+  }
+  s.orgServed = {};
+  for (const c of status.orgServedConnections ?? []) {
+    s.orgServed[c.provider === "anthropic" ? "claude" : "chatgpt"] = c.kind;
   }
   s.loaded = true;
   if (appState.me) {
@@ -617,6 +624,25 @@ function providerRow(p: ProviderMeta): TemplateResult {
   `;
 }
 
+function orgServedRow(p: ProviderMeta): TemplateResult {
+  return html`
+    <section class="mc-provider connected mc-org-served" data-provider=${p.apiName}>
+      <div class="mc-provider-row">
+        <span class="mc-mark ${p.markClass}" aria-hidden="true">${p.mark}</span>
+        <div class="mc-provider-text">
+          <strong>${p.name}</strong>
+          <small>Saved sign-in, not in use: your organization provides ${p.name} through its own account</small>
+        </div>
+        <div class="mc-provider-actions">
+          <button class="btn mc-quiet-danger" ?disabled=${s.busy || s.saving} @click=${() => disconnect(p)}>
+            ${s.busy ? "…" : "Disconnect"}
+          </button>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
 async function switchAccount(account: "personal" | "company", provider?: "anthropic" | "openai"): Promise<void> {
   if (s.busy || (account === "company" && !s.personal) || (account === "personal" && provider === s.account)) return;
   resetFlow();
@@ -680,6 +706,7 @@ function view(): TemplateResult {
         ${s.personal ? "Using a personal account. Choose a connected provider below." : "Or use your own account. Connect a provider, then choose Use account."}
       </p>
       ${PROVIDERS.filter((p) => personalAllowed(s, p.apiName)).map((p) => providerRow(p))}
+      ${PROVIDERS.filter((p) => !personalAllowed(s, p.apiName) && s.orgServed[p.key]).map((p) => orgServedRow(p))}
     </div>`;
   let title = s.mode === "gate" ? "Connect your AI account" : "AI accounts";
   if (s.intent) title = `Connect ${s.intent.name}`;

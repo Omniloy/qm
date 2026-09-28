@@ -112,6 +112,19 @@ describe("workspace tree route", async () => {
     assert.equal(await r.text(), "print(1)");
   });
 
+  it("keeps the sandbox warm after browsing, so background jobs and a live browser survive", async () => {
+    const teardowns: Array<{ keepWarm?: boolean } | undefined> = [];
+    const teardown = built.sandbox.teardown.bind(built.sandbox);
+    built.sandbox.teardown = async (handle, opts) => {
+      teardowns.push(opts);
+      return teardown(handle, opts);
+    };
+    assert.equal((await get(`/v1/workspace/tree?scope=personal:U1&wake=true`, await capFor("U1"))).status, 200);
+    assert.equal((await get(`/v1/workspace/file?scope=personal:U1&path=notes.md`, await capFor("U1"))).status, 200);
+    assert.equal(teardowns.length, 2);
+    assert.ok(teardowns.every((opts) => opts?.keepWarm === true));
+  });
+
   it("refuses to walk out of the workspace", async () => {
     const r = await get(`/v1/workspace/file?scope=personal:U1&path=../../etc/passwd`, await capFor("U1"));
     assert.equal(r.status, 404);

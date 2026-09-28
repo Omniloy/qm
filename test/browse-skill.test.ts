@@ -243,6 +243,12 @@ test("a relay with no shared tab stops the turn rather than switching browsers",
   assert.match(open, /clear_state\(\)/, "and it leaves no remote state behind to be reused");
 });
 
+test("the relay token is read from the current turn, never persisted to the state file", () => {
+  assert.match(CLI, /write_state\(\{"provider": "extension", "cdpUrl": "relay"/);
+  assert.match(CLI, /if state\.get\("provider"\) == "extension":\n\s+url = os\.environ\.get\("QM_RELAY_URL"/);
+  assert.match(SKILL, /only reachable on a live turn in their own DM/);
+});
+
 test("the skill tells the agent to ask rather than switch browsers on its own", () => {
   assert.match(SKILL, /stop and ask/i);
   assert.match(SKILL, /Do \*\*not\*\* attach to a different browser on your own/);

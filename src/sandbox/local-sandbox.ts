@@ -13,6 +13,7 @@ import { createExecProcessSessions, type ExecProcessIo } from "./exec-process-se
 import { materializeRoLayers, RO_LAYERS_MANIFEST } from "./ro-layers.ts";
 import { createExecExport, createExecFileOps, posixJoin } from "./exec-file-ops.ts";
 import { spawnDockerExec, type DockerExec } from "./docker-exec.ts";
+import { createDockerNetworkPool } from "./docker-network-pool.ts";
 import { ephemeralCredLinkScript } from "../credentials/resident-paths.ts";
 import { ephemeralCredLinkPaths } from "../credentials/resident-paths.ts";
 import { shortHash } from "../util/crypto.ts";
@@ -36,8 +37,6 @@ const RO_LAYERS_TAR = ".ro-layers.tar";
 const FINGERPRINT_LABEL = "qm.sandbox-fingerprint";
 const BUILD_HINT = "run `npm run sandbox:local:build`";
 const PREP_TIMEOUT_SEC = 30;
-const DEFAULT_NETWORK_POOL = "198.18.0.0/16";
-const MAX_SUBNET_PROBES = 64;
 
 export type { DockerExec };
 
@@ -92,20 +91,6 @@ function localSlug(id: string): string {
   return `${cleaned.slice(0, 40).replace(/-+$/, "") || "scope"}-${shortHash(id)}`;
 }
 
-function parseNetworkPool(cidr: string): { base: number; slots: number } {
-  const m = cidr.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/);
-  const octets = m ? m.slice(1, 5).map(Number) : [];
-  const prefix = Number(m?.[5]);
-  if (!m || octets.some((o) => o > 255) || prefix < 8 || prefix > 28) {
-    throw new Error(`local sandbox network pool ${cidr} must be an IPv4 CIDR between /8 and /28`);
-  }
-  const addr = octets.reduce((acc, o) => acc * 256 + o, 0);
-  const size = 2 ** (32 - prefix);
-  return { base: addr - (addr % size), slots: 2 ** (28 - prefix) };
-}
-
-const dottedQuad = (n: number): string => [24, 16, 8, 0].map((shift) => (n >>> shift) & 255).join(".");
-
 export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandboxOptions = {}): Sandbox {
   const image = opts.image ?? DEFAULT_LOCAL_SANDBOX_IMAGE;
   const dexec = opts.dockerExec ?? spawnDockerExec(opts.dockerBin ?? "docker");
@@ -113,8 +98,7 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
   const defaultTimeoutSec = opts.defaultTimeoutSec ?? 600;
   const homeDir = opts.homeDir ?? HOME_DIR;
   const workspaceDir = `${homeDir}/${WORKSPACE_BASENAME}`;
-  const networkPool = opts.networkPool ?? DEFAULT_NETWORK_POOL;
-  const { base: poolBase, slots: poolSlots } = parseNetworkPool(networkPool);
+  const ensurePooledNetwork = createDockerNetworkPool(dexec, opts.networkPool);
   const provisionQueue = createKeyedQueue<string>();
   const recoverQueue = createKeyedQueue<string>();
 
@@ -247,7 +231,7 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
         await dexec(["network", "disconnect", "-f", net, name]);
         const connected = await dexec(["network", "connect", net, name]);
         if (connected.code !== 0 && !/already exists|already connected/i.test(connected.stderr)) {
-          await dexec(["rm", "-f", name]);
+          await removeContainer(name, scopeByContainer.get(name));
           throw new Error(`docker network connect ${net} ${name} failed: ${connected.stderr.trim()}`);
         }
         const started = await dexec(["start", name]);
@@ -292,27 +276,7 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
   }
 
   async function ensureNetwork(name: string): Promise<string> {
-    const net = localNetworkName(name);
-    if ((await dexec(["network", "inspect", net])).code === 0) return net;
-    const start = parseInt(shortHash(net), 16) % poolSlots;
-    const probes = Math.min(poolSlots, MAX_SUBNET_PROBES);
-    for (let i = 0; i < probes; i++) {
-      const subnet = `${dottedQuad(poolBase + ((start + i) % poolSlots) * 16)}/28`;
-      const r = await dexec([
-        "network",
-        "create",
-        "--subnet",
-        subnet,
-        "--label",
-        "qm.sandbox=1",
-        "--label",
-        `qm.org=${configOrgId()}`,
-        net,
-      ]);
-      if (r.code === 0 || /already exists/i.test(r.stderr)) return net;
-      if (!/overlap/i.test(r.stderr)) throw new Error(`docker network create ${net} failed: ${r.stderr.trim()}`);
-    }
-    throw new Error(`docker network create ${net}: no free /28 in ${networkPool} after ${probes} probes`);
+    return ensurePooledNetwork(localNetworkName(name), { "qm.sandbox": "1", "qm.org": configOrgId() });
   }
 
   async function connectCore(net: string): Promise<void> {
@@ -547,32 +511,34 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
     exportFiles: execExport.exportFiles,
 
     async destroyScope(scopeId: string): Promise<void> {
-      return provisionQueue(scopeId, async () => {
-        const name = localContainerName(scopeId);
-        const network = localNetworkName(name);
-        const remove = async (args: string[]) => {
-          const result = await dexec(args);
-          if (
-            result.code !== 0 &&
-            !/no such (container|object|network|volume)|network .* not found/i.test(result.stderr)
-          )
-            throw new Error(`docker ${args.join(" ")}: ${result.stderr.trim()}`);
-        };
-        await remove(["rm", "-f", name]);
-        if (opts.coreContainer) {
-          const result = await dexec(["network", "disconnect", "-f", network, opts.coreContainer]);
-          if (
-            result.code !== 0 &&
-            !/no such (network|container|object)|is not connected|network .* not found/i.test(result.stderr)
-          )
-            throw new Error(`docker network disconnect ${network}: ${result.stderr.trim()}`);
-        }
-        await remove(["network", "rm", network]);
-        await remove(["volume", "rm", localVolumeName(scopeId)]);
-        activeByContainer.delete(name);
-        scopeByContainer.delete(name);
-        portByName.delete(name);
-      });
+      const name = localContainerName(scopeId);
+      return provisionQueue(scopeId, () =>
+        recoverQueue(name, async () => {
+          const network = localNetworkName(name);
+          const remove = async (args: string[]) => {
+            const result = await dexec(args);
+            if (
+              result.code !== 0 &&
+              !/no such (container|object|network|volume)|network .* not found/i.test(result.stderr)
+            )
+              throw new Error(`docker ${args.join(" ")}: ${result.stderr.trim()}`);
+          };
+          await remove(["rm", "-f", name]);
+          if (opts.coreContainer) {
+            const result = await dexec(["network", "disconnect", "-f", network, opts.coreContainer]);
+            if (
+              result.code !== 0 &&
+              !/no such (network|container|object)|is not connected|network .* not found/i.test(result.stderr)
+            )
+              throw new Error(`docker network disconnect ${network}: ${result.stderr.trim()}`);
+          }
+          await remove(["network", "rm", network]);
+          await remove(["volume", "rm", localVolumeName(scopeId)]);
+          activeByContainer.delete(name);
+          scopeByContainer.delete(name);
+          portByName.delete(name);
+        }),
+      );
     },
 
     async teardown(handle, tdOpts?: TeardownOptions): Promise<void> {

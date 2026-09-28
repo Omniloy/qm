@@ -35,11 +35,11 @@ test("provider modes default to org, persist across instances, and gate each per
     "org/org": { "pinned-anthropic": "company", "pinned-openai": "company", both: "company", other: "company" },
     "personal/org": {
       "pinned-anthropic": "anthropic",
-      "pinned-openai": "company",
+      "pinned-openai": "personal",
       both: "personal",
       other: "personal",
     },
-    "org/personal": { "pinned-anthropic": "company", "pinned-openai": "openai", both: "personal", other: "personal" },
+    "org/personal": { "pinned-anthropic": "personal", "pinned-openai": "openai", both: "personal", other: "personal" },
     "personal/personal": {
       "pinned-anthropic": "anthropic",
       "pinned-openai": "openai",
@@ -116,4 +116,23 @@ test("a person with both accounts keeps Claude personal while ChatGPT turns fall
   assert.equal(claude.apiKey, "personal-anthropic");
   assert.equal(routePersonalModelAccess(access, "gpt-5.6-terra", "pi"), "org");
   assert.equal(routePersonalModelAccess(access, "codex/gpt-5.6-terra", "pi"), "org");
+});
+
+test("without the org requirement, a pin to a provider switched to org falls back to the org account", async () => {
+  const store = createMemoryConfigStore("default-org");
+  await store.setPersonalModelAuth("pinned-openai", true, "openai");
+  await store.setModelAccountModes({ anthropic: "personal", openai: "org" });
+  assert.equal(await store.getModelAccountDurable("pinned-openai"), "company");
+  assert.equal(await store.getIndividualModelAuthDurable(), false);
+});
+
+test("the org requirement fails closed for a personal-mode provider with no connected account", async () => {
+  const access = await loadPersonalModelAccess(
+    { getModelAccountModesDurable: async () => ({ anthropic: "personal", openai: "org" }) },
+    { get: async () => null },
+    "U1",
+    "personal",
+  );
+  assert.equal(routePersonalModelAccess(access, "claude-sonnet-5", "pi"), null);
+  assert.equal(routePersonalModelAccess(access, "gpt-5.6-terra", "pi"), "org");
 });

@@ -1,6 +1,8 @@
 import type { Deployment, DeploymentVersion } from "./deploy-store.ts";
 import type { DeployApplyOptions, DeployEndpoint, DeployProvider } from "./deploy-provider.ts";
 import { spawnDockerExec, type DockerExec } from "../sandbox/docker-exec.ts";
+import { createDockerNetworkPool } from "../sandbox/docker-network-pool.ts";
+import { orgId } from "../config.ts";
 import { sleep } from "../util/async.ts";
 import { errMessage } from "../util/errors.ts";
 
@@ -8,6 +10,8 @@ const APP_PORT = 8080;
 const LEGACY_NETWORK = "agent-deploynet";
 const DAEMON_PROBE_TIMEOUT_MS = 10_000;
 const READY_WINDOW_MS = 30_000;
+const RELAUNCH_READY_WINDOW_MS = 3_000;
+const LIVE_ENDPOINT_TTL_MS = 10_000;
 const READY_POLL_MS = 250;
 const PROBE_TIMEOUT_MS = 1_500;
 const PROBE_CALL_TIMEOUT_MS = 3_000;
@@ -23,7 +27,11 @@ export interface DockerDeployProviderOptions {
   dockerExec?: DockerExec;
   coreContainer?: string;
   readyWindowMs?: number;
+  networkPool?: string;
+  onError?: (e: { category: string; code: string; message: string; scopeLabel?: string }) => void;
 }
+
+class AppNotListeningError extends Error {}
 
 export interface DockerDaemonProbeOptions {
   docker?: string;
@@ -51,15 +59,10 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
 
   const name = (d: Deployment) => `agent-deploy-${d.id.slice(0, 12)}`;
   const network = (d: Deployment) => `${name(d)}-net`;
-  const ensureNetwork = async (net: string): Promise<string> => {
-    if ((await dexec(["network", "inspect", net])).code !== 0) {
-      const r = await dexec(["network", "create", net]);
-      if (r.code !== 0 && !/already exists/i.test(r.stderr)) {
-        throw new Error(`docker network create ${net} failed: ${r.stderr.trim()}`);
-      }
-    }
-    return net;
-  };
+  const ensurePooledNetwork = createDockerNetworkPool(dexec, opts.networkPool);
+  const ensureNetwork = (net: string): Promise<string> =>
+    ensurePooledNetwork(net, { "qm.deploy": "1", "qm.org": orgId() });
+  const liveEndpoints = new Map<string, { endpoint: DeployEndpoint; until: number }>();
 
   const connectCore = async (net: string): Promise<void> => {
     if (!opts.coreContainer) return;
@@ -69,9 +72,17 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
     }
   };
 
-  const removeNetwork = async (net: string): Promise<void> => {
+  const removeNetwork = async (net: string, scopeLabel?: string): Promise<void> => {
     if (opts.coreContainer) await dexec(["network", "disconnect", "-f", net, opts.coreContainer]);
-    await dexec(["network", "rm", net]);
+    const r = await dexec(["network", "rm", net]);
+    if (r.code !== 0 && !/not found|no such network/i.test(r.stderr)) {
+      opts.onError?.({
+        category: "deploy_network",
+        code: "network_rm_failed",
+        message: r.stderr.trim(),
+        ...(scopeLabel ? { scopeLabel } : {}),
+      });
+    }
   };
 
   const migrateContainer = async (container: string): Promise<boolean> => {
@@ -166,11 +177,12 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
     }
     if (!sawRunning) throw new Error(`could not confirm ${n} started: docker inspect did not answer`);
     if (couldNotProbe) return;
-    throw await exitedWithOutput(
+    const notListening = await exitedWithOutput(
       n,
       null,
       `nothing is serving port ${APP_PORT} on ${n}'s network address — bind 0.0.0.0, not 127.0.0.1`,
     );
+    throw new AppNotListeningError(notListening.message);
   };
 
   const endpointOf = async (d: Deployment, attempts = 1): Promise<DeployEndpoint> => {
@@ -187,6 +199,7 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
     profile: { managedScaleToZero: false },
 
     async apply(d: Deployment, version: DeploymentVersion, applyOpts?: DeployApplyOptions): Promise<DeployEndpoint> {
+      liveEndpoints.delete(d.id);
       const net = await ensureNetwork(network(d));
       await connectCore(net);
       await dexec(["rm", "-f", name(d)]);
@@ -223,13 +236,14 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
       ]);
       if (r.code !== 0) {
         await dexec(["rm", "-f", name(d)]);
-        await removeNetwork(net);
+        await removeNetwork(net, d.ownerScopeId);
         throw new Error(`deploy run failed: ${r.stderr.trim()}`);
       }
+      const relaunch = applyOpts?.relaunch === true;
       try {
-        await waitAppReady(name(d), applyOpts?.readyWindowMs ?? opts.readyWindowMs ?? READY_WINDOW_MS);
+        await waitAppReady(name(d), relaunch ? RELAUNCH_READY_WINDOW_MS : (opts.readyWindowMs ?? READY_WINDOW_MS));
       } catch (e) {
-        await dexec(["rm", "-f", name(d)]);
+        if (!(relaunch && e instanceof AppNotListeningError)) await dexec(["rm", "-f", name(d)]);
         throw e;
       }
       return endpointOf(d, PORT_READ_ATTEMPTS);
@@ -244,16 +258,22 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
     },
 
     async destroy(d: Deployment): Promise<void> {
+      liveEndpoints.delete(d.id);
       await dexec(["rm", "-f", name(d)]);
-      await removeNetwork(network(d));
+      await removeNetwork(network(d), d.ownerScopeId);
     },
 
     async resolveEndpoint(d: Deployment): Promise<DeployEndpoint | null> {
+      const cached = liveEndpoints.get(d.id);
+      if (cached && cached.until > Date.now()) return cached.endpoint;
+      liveEndpoints.delete(d.id);
       if (!(await migrateTarget(name(d)))) return null;
       await connectCore(network(d));
       const state = await containerState(name(d));
       if (!state?.running) return null;
-      return endpointOf(d);
+      const endpoint = await endpointOf(d);
+      liveEndpoints.set(d.id, { endpoint, until: Date.now() + LIVE_ENDPOINT_TTL_MS });
+      return endpoint;
     },
   };
 }

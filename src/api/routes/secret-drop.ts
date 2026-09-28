@@ -156,7 +156,7 @@ async function dropLinkClaims(
 
 function dropFormHtml(
   dropId: string,
-  rec: { service: string; purpose: string; fields?: SecretDropField[]; createdAt?: number } | null,
+  rec: { service: string; purpose: string; fields?: SecretDropField[]; createdAt?: number; origin?: string } | null,
 ): string {
   if (!rec) {
     return dropPage(
@@ -179,10 +179,17 @@ function dropFormHtml(
     )
     .join("\n");
   const keys = JSON.stringify(fields.map((f) => f.key));
+  const pinned = isHttpOrigin(rec.origin) ? new URL(rec.origin) : undefined;
+  const heading = pinned
+    ? `Provide your password for <code>${escapeHtml(pinned.host)}</code>`
+    : `Provide your <code>${service_}</code> ${multi ? "login" : "credential"}`;
+  const site = pinned
+    ? `<div class="request" id="origin"><p>This password will only ever be typed into pages on:</p><strong>${escapeHtml(pinned.origin)}</strong><p>If that is not the site where you use this password, do not submit it.</p></div>\n`
+    : "";
   return dropPage(
     "Provide a credential",
-    `<h1 id="title">Provide your <code>${service_}</code> ${multi ? "login" : "credential"}</h1>
-<div class="request"><p>The agent asked for this so it can:</p><strong>${purpose_}</strong>${requested_ ? `<span class="requested">Requested ${requested_}</span>` : ""}</div>
+    `<h1 id="title">${heading}</h1>
+${site}<div class="request"><p>The agent asked for this so it can:</p><strong>${purpose_}</strong>${requested_ ? `<span class="requested">Requested ${requested_}</span>` : ""}</div>
 <form id=f>
 ${inputs}
 <button id=go type="submit">Submit securely</button>
@@ -321,6 +328,7 @@ async function dropForm(ctx: ApiCtx): Promise<void> {
     purpose: peeked.rec.purpose,
     fields: peeked.rec.fields,
     createdAt: peeked.rec.createdAt,
+    ...(peeked.rec.fill && peeked.rec.origin ? { origin: peeked.rec.origin } : {}),
   };
   res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
   res.end(dropFormHtml(params.id!, rec));

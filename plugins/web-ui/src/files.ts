@@ -204,11 +204,6 @@ function visibleFiles(): FileRow[] {
     .sort((a, b) => b.createdAt - a.createdAt);
 }
 
-export function redrawFilesPage(): void {
-  if (appState.currentView !== "files" || !filesHost) return;
-  drawFiles();
-}
-
 function drawFiles(loading = false): void {
   if (appState.currentView !== "files" || !appState.mainEl) return;
   if (!filesHost || filesHost.parentElement !== appState.mainEl) {
@@ -402,6 +397,7 @@ function onFileAction(id: string, f: FileRow): void {
     }
     case "delete":
       deletingFile = f;
+      deleteError = "";
       drawFiles();
       return;
   }
@@ -522,6 +518,7 @@ function deleteFileConfirmTpl(): typeof nothing | ReturnType<typeof html> {
   if (!f) return nothing;
   const close = () => {
     deletingFile = null;
+    deleteError = "";
     drawFiles();
   };
   return html`<div

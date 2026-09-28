@@ -25,12 +25,16 @@ async function modelAccountModes(ctx: ApiCtx) {
   return (await ctx.deps.config?.getModelAccountModesDurable()) ?? DEFAULT_MODEL_ACCOUNT_MODES;
 }
 
-async function personalConnections(ctx: ApiCtx, principal: string) {
+async function savedConnections(ctx: ApiCtx, principal: string) {
   const modes = await modelAccountModes(ctx);
   const connections = (await ctx.deps.userModelCredentials?.connections(principal)) ?? [];
-  return connections.filter(
-    (c) => (c.provider === "anthropic" || c.provider === "openai") && modes[c.provider] === "personal",
-  );
+  const usable = (c: (typeof connections)[number]) =>
+    (c.provider === "anthropic" || c.provider === "openai") && modes[c.provider] === "personal";
+  return { connections: connections.filter(usable), orgServedConnections: connections.filter((c) => !usable(c)) };
+}
+
+async function personalConnections(ctx: ApiCtx, principal: string) {
+  return (await savedConnections(ctx, principal)).connections;
 }
 
 async function refusePersonalProvider(ctx: ApiCtx, provider: PersonalModelProvider): Promise<boolean> {
@@ -46,11 +50,18 @@ async function getStatus(ctx: ApiCtx): Promise<void> {
   const principal = caller(ctx);
   if (!principal) return sendJson(ctx.res, 401, { error: "unauthorized" });
   const required = (await ctx.deps.config?.getIndividualModelAuthDurable()) ?? false;
-  const connections = await personalConnections(ctx, principal);
+  const { connections, orgServedConnections } = await savedConnections(ctx, principal);
   const individualModelAuth = (await ctx.deps.config?.getIndividualModelAuthDurable(principal)) ?? false;
   const account = (await ctx.deps.config?.getModelAccountDurable(principal)) ?? "company";
   const modes = await modelAccountModes(ctx);
-  return sendJson(ctx.res, 200, { individualModelAuth, required, account, connections, modes });
+  return sendJson(ctx.res, 200, {
+    individualModelAuth,
+    required,
+    account,
+    connections,
+    ...(orgServedConnections.length ? { orgServedConnections } : {}),
+    modes,
+  });
 }
 
 async function setAccount(ctx: ApiCtx): Promise<void> {

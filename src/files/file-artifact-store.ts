@@ -95,7 +95,11 @@ export interface FileArtifactStore {
   setCreatedInScope(id: string, scopeId: ScopeId): Promise<void>;
 
   delete(id: string): Promise<void>;
+
+  sweepOrphanedBlobs(now?: number): Promise<number>;
 }
+
+export const ORPHANED_BLOB_GRACE_MS = 60 * 60_000;
 
 export function fileArtifactId(seed: string, direction: FileDirection, batchIndex: number): string {
   return createHash("sha256").update(`${seed}:${direction}:${batchIndex}`).digest("hex").slice(0, 32);
@@ -144,6 +148,8 @@ export function clampLimit(limit?: number): number {
 export function createMemoryFileArtifactStore(byteStore: DurableByteStore): FileArtifactStore {
   const rows = new Map<string, FileArtifact>();
   const deleted = new Set<string>();
+  const orphanedBlobs = new Map<string, number>();
+  const referenced = (blobKey: string): boolean => [...rows.values()].some((r) => r.blobKey === blobKey);
 
   async function listFiles(
     scopes: readonly ScopeId[],
@@ -268,8 +274,19 @@ export function createMemoryFileArtifactStore(byteStore: DurableByteStore): File
       deleted.add(id);
       const gone = rows.get(id);
       rows.delete(id);
-      if (!gone?.blobKey) return;
-      if (![...rows.values()].some((r) => r.blobKey === gone.blobKey)) await byteStore.delete(gone.blobKey);
+      if (gone?.blobKey && !referenced(gone.blobKey)) orphanedBlobs.set(gone.blobKey, Date.now());
+    },
+
+    async sweepOrphanedBlobs(now = Date.now()) {
+      let swept = 0;
+      for (const [blobKey, orphanedAt] of orphanedBlobs) {
+        if (orphanedAt > now - ORPHANED_BLOB_GRACE_MS) continue;
+        orphanedBlobs.delete(blobKey);
+        if (referenced(blobKey)) continue;
+        await byteStore.delete(blobKey);
+        swept += 1;
+      }
+      return swept;
     },
   };
 }

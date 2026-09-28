@@ -345,7 +345,20 @@ function aiAccountsRow(): TemplateResult | typeof nothing {
       ["openai", "ChatGPT / Codex"],
     ] as const
   ).filter(([provider]) => personalAllowed(aiStatus, provider));
-  if (aiStatus && !providers.length) return nothing;
+  if (aiStatus && !providers.length) {
+    if (!aiStatus.orgServedConnections?.length) return nothing;
+    return html`
+      <div class="settings-row" id="ai-org-served">
+        <div class="settings-row-copy">
+          <div class="settings-row-title">AI access</div>
+          <div class="settings-row-note">
+            Your organization provides AI access. You still have a saved personal sign-in, which is not used.
+          </div>
+        </div>
+        <button class="btn settings-row-action" @click=${() => openModelConnectManager()}>Remove saved sign-in</button>
+      </div>
+    `;
+  }
   return html`
     <div class="settings-row">
       <div class="settings-row-copy">

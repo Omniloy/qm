@@ -72,7 +72,7 @@ async function provisionScopeWorkspace(
 }
 
 function releaseWorkspaceHandle(sandbox: Sandbox, handle: SandboxHandle): Promise<void> {
-  return sandbox.teardown(handle).catch(swallowAs("workspace browse teardown", undefined));
+  return sandbox.teardown(handle, { keepWarm: true }).catch(swallowAs("workspace browse teardown", undefined));
 }
 
 export function createSessionMethods(

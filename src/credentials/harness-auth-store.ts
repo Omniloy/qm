@@ -1,18 +1,8 @@
 import { decryptSecret, deriveConnectorKey, encryptSecret } from "../connectors/connector-client-store.ts";
 import type { DurableMap } from "../persistence/durable-map.ts";
 import type { HarnessId } from "../model/pi-models.ts";
+import { swallowAs } from "../util/errors.ts";
 
-/**
- * Subscription credentials for harnesses that authenticate themselves.
- *
- * The model credential store answers "which provider key bills this model".
- * This answers a different question — "which account does this agent CLI sign
- * in as" — and the two are not interchangeable: a subscription token is not a
- * provider key, cannot be validated like one, and belongs to a harness rather
- * than to a model. Keeping them apart also keeps ModelProvider from growing a
- * member that the model catalog, the turn-admission gate, and the custom
- * provider surface would each have to learn to ignore.
- */
 export interface StoredHarnessAuth {
   harnessId: HarnessId;
   tokenEnc?: string;
@@ -28,8 +18,10 @@ interface HarnessAuthStatus {
   updatedBy?: string;
 }
 
+type HarnessAuthResolution = { kind: "token"; token: string } | { kind: "disabled" } | { kind: "unset" };
+
 export interface HarnessAuthStore {
-  resolve(harnessId: HarnessId): Promise<string | null>;
+  resolve(harnessId: HarnessId): Promise<HarnessAuthResolution>;
   set(harnessId: HarnessId, token: string, updatedBy: string): Promise<void>;
   delete(harnessId: HarnessId, updatedBy: string): Promise<void>;
   status(harnessId: HarnessId): Promise<HarnessAuthStatus>;
@@ -44,14 +36,12 @@ export function createHarnessAuthStore(input: {
   return {
     async resolve(harnessId) {
       const saved = await input.backing.get(harnessId);
-      if (!saved || saved.disabled || !saved.tokenEnc) return null;
-      // An undecryptable token means the key material changed under us. Report
-      // absent so the harness falls back to its boot credential; throwing here
-      // would take down every turn on this harness instead.
+      if (saved?.disabled) return { kind: "disabled" };
+      if (!saved?.tokenEnc) return { kind: "unset" };
       try {
-        return decryptSecret(saved.tokenEnc, key);
+        return { kind: "token", token: decryptSecret(saved.tokenEnc, key) };
       } catch {
-        return null;
+        return { kind: "unset" };
       }
     },
 
@@ -70,9 +60,6 @@ export function createHarnessAuthStore(input: {
     },
 
     async delete(harnessId, updatedBy) {
-      // A tombstone rather than a removal: a deployment that still carries the
-      // token in its environment must not silently resurrect a credential an
-      // admin has just switched off.
       await input.backing.put(harnessId, {
         harnessId,
         disabled: true,
@@ -94,13 +81,20 @@ export function createHarnessAuthStore(input: {
   };
 }
 
-/** Claude subscription tokens from `claude setup-token` carry this prefix. */
+export async function claudeHarnessAuthEnv(
+  store: Pick<HarnessAuthStore, "resolve">,
+  fallbackEnv: NodeJS.ProcessEnv,
+): Promise<NodeJS.ProcessEnv> {
+  const saved = await store
+    .resolve("claude")
+    .catch(swallowAs("harness auth: claude", { kind: "unset" } as HarnessAuthResolution));
+  if (saved.kind === "token") return { ...fallbackEnv, CLAUDE_CODE_OAUTH_TOKEN: saved.token };
+  if (saved.kind === "disabled") return { ...fallbackEnv, CLAUDE_CODE_OAUTH_TOKEN: undefined };
+  return fallbackEnv;
+}
+
 const CLAUDE_OAUTH_TOKEN_PREFIX = "sk-ant-oat";
 
-/**
- * Reject the likely mistake — pasting a Console API key — before spending a
- * model call to validate it, and say which command produces the right thing.
- */
 export function claudeSubscriptionTokenProblem(token: string): string | null {
   const value = token.trim();
   if (!value) return "A token is required.";

@@ -1,22 +1,3 @@
-/**
- * DOM-free decisions for lending a stored credential to a context.
- *
- * Until now a grant could only come into being by asking in chat: core takes a
- * grant's audience from the capability making the request, which for an agent
- * is the conversation it is already in. That is a real protection — it is what
- * stops an agent lending a secret to a room it was never invited to — and it is
- * also why the keychain page could only ever take access away.
- *
- * A person on the keychain page has no conversation to inherit, so they name the
- * audience instead, and core holds them to the same rule every other kind of
- * sharing here follows: you can lend into a context you are part of.
- *
- * Deliberately limited to stored credentials. Connector accounts and the browser
- * are not grant-driven — the orchestrator hands connector tokens out by
- * conversation kind and never consults a grant — so offering to lend one would
- * record consent that nothing reads.
- */
-
 export type GrantMode = "once" | "standing";
 
 export interface GrantScopeOption {
@@ -39,14 +20,6 @@ export interface ExistingGrant {
   expiresAt?: number;
 }
 
-/**
- * Where a credential can be lent.
- *
- * Your own personal scope is dropped because a credential you own already works
- * in your own chats, and contexts that already hold an active grant are dropped
- * because lending twice is not an action — the row already says so, with a
- * Revoke beside it.
- */
 export function grantTargets(
   contexts: readonly GrantScopeOption[],
   credentialId: string,
@@ -62,12 +35,6 @@ export function grantTargets(
   return contexts.filter((c) => c.scopeId && c.scopeId !== personalScopeId && !held.has(c.scopeId));
 }
 
-/**
- * Whether the credential can be lent at all.
- *
- * An expired credential is refused up front: the grant would be recorded and
- * then quietly do nothing, which is the worst of both outcomes.
- */
 export function grantBlockedReason(
   credential: GrantableCredential,
   targets: readonly GrantScopeOption[],
@@ -80,7 +47,6 @@ export function grantBlockedReason(
   return null;
 }
 
-/** The sentence under the picker, in terms of what the other people get. */
 export function grantImpact(mode: GrantMode, credential: GrantableCredential, targetLabel: string): string {
   if (mode === "once") {
     return (
@@ -99,7 +65,6 @@ export function grantConfirmLabel(mode: GrantMode, busy: boolean): string {
   return mode === "once" ? "Allow once" : "Give access";
 }
 
-/** The body for `POST /api/keychain/grants`. */
 export function grantRequest(
   credentialId: string,
   audienceScopeId: string,
@@ -111,9 +76,6 @@ export function grantRequest(
     credential: credentialId,
     audienceScopeId,
     mode,
-    // Core requires a purpose, and it is what the owner reads months later on
-    // the grant row. An unwritten one says where it came from rather than
-    // leaving the row blank.
     purpose: written || "Given from the keychain page",
   };
 }

@@ -217,18 +217,49 @@ test("a probe that starts unknowable but then says nothing is listening fails th
   await assert.rejects(() => p.apply(deployment(), version), /nothing is serving port 8080/);
 });
 
-test("a relaunch may ask for a shorter ready window than a first deploy", async (t) => {
+test("a relaunch that is not serving yet keeps its still-running container for the next request", async (t) => {
   const docker = fakeDocker();
   t.after(clearFakes);
   process.env.FAKE_RUNNING = "true";
   process.env.FAKE_HOST_PORT = "32901";
   process.env.FAKE_LISTENING = "no";
-  process.env.FAKE_LOGS = "listening on 127.0.0.1:3000";
 
-  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 10_000 });
+  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 60_000 });
   const started = Date.now();
-  await assert.rejects(() => p.apply(deployment(), version, { readyWindowMs: 200 }), /nothing is serving port 8080/);
-  assert.ok(Date.now() - started < 5_000, "the caller's window should bound the wait, not the provider default");
+  await assert.rejects(() => p.apply(deployment(), version, { relaunch: true }), /nothing is serving port 8080/);
+  assert.ok(Date.now() - started < 10_000, "a relaunch waits on a short window, not the first-deploy default");
+  assert.equal(
+    docker.calls().filter((c) => c[0] === "rm").length,
+    1,
+    "only the container it replaced is removed; the slow starter keeps running",
+  );
+});
+
+test("a first deploy that never serves is removed", async (t) => {
+  const docker = fakeDocker();
+  t.after(clearFakes);
+  process.env.FAKE_RUNNING = "true";
+  process.env.FAKE_HOST_PORT = "32901";
+  process.env.FAKE_LISTENING = "no";
+
+  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 200 });
+  await assert.rejects(() => p.apply(deployment(), version), /nothing is serving port 8080/);
+  assert.equal(docker.calls().filter((c) => c[0] === "rm").length, 2);
+});
+
+test("a resolved endpoint is cached briefly so each proxied request does not spawn docker", async (t) => {
+  const docker = fakeDocker();
+  t.after(clearFakes);
+  process.env.FAKE_RUNNING = "true";
+
+  const p = createDockerDeployProvider({ docker: docker.bin, coreContainer: "qm-omniloy-core" });
+  assert.deepEqual(await p.resolveEndpoint!(deployment(), {} as never), { host: LIVE, port: 8080 });
+  const spawned = docker.calls().length;
+  assert.deepEqual(await p.resolveEndpoint!(deployment(), {} as never), { host: LIVE, port: 8080 });
+  assert.equal(docker.calls().length, spawned, "a warm request reuses the cached endpoint");
+  await p.destroy(deployment());
+  process.env.FAKE_RUNNING = "false";
+  assert.equal(await p.resolveEndpoint!(deployment(), {} as never), null, "destroy drops the cached endpoint");
 });
 
 test("a docker that cannot be reached is neither a clean exit nor a successful deploy", async (t) => {

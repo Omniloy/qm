@@ -1,4 +1,4 @@
-import { html } from "lit";
+import { html, nothing } from "lit";
 import { classMap } from "lit/directives/class-map.js";
 import { choiceGroup, saveFooter } from "./setting-controls.ts";
 import type { SettingsState } from "./settings.ts";
@@ -14,6 +14,18 @@ export function modelAccountModesDraft(data: Record<string, any>) {
   );
 }
 
+function requirementNote(s: SettingsState) {
+  if (s.context?.individualModelAuth !== true) return nothing;
+  const personal = PROVIDERS.filter(([provider]) => s.draft[provider] === "personal").map(([, name]) => name);
+  return html`<p class="model-account-requirement" id="model-account-requirement">
+    ${
+      personal.length
+        ? `The organization requires personal accounts. That applies only to ${personal.join(" and ")}: people must connect their own account and cannot fall back to the organization's. Providers on the org account are unaffected.`
+        : "The organization requires personal accounts, but no provider allows them, so the requirement has no effect: every turn uses the organization's account."
+    }
+  </p>`;
+}
+
 export function modelAccountModesCard(s: SettingsState) {
   return html`<section
     class=${classMap({ card: true, "sv-models": true, "setting-row": true, hidden: !s.available, dirty: s.dirty })}
@@ -25,6 +37,7 @@ export function modelAccountModesCard(s: SettingsState) {
         Choose, per provider, whether every turn runs on the organization's account or people may sign in with their
         own. Switching a provider back to the organization's account keeps saved sign-ins but stops using them.
       </p>
+      ${requirementNote(s)}
     </div>
     <div class="body">
       ${PROVIDERS.map(

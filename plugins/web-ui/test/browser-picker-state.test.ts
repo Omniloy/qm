@@ -53,14 +53,10 @@ test("the card opens on the browser in use, so it answers that first", () => {
 });
 
 test("an active provider that has since disappeared falls back to the first tab", () => {
-  // A provider doc can be removed while someone still has it selected; the card
-  // must not open on a tab that is not there.
   assert.equal(initialBrowserTab([KERNEL], "anchor"), "kernel");
 });
 
 test("with no browser connected at all, there is no tab to open on", () => {
-  // The built-in browser used to be the guaranteed fallback. With it gone, a
-  // person who has connected nothing has an empty picker and an empty state.
   assert.deepEqual(browserTabs([], null), []);
   assert.equal(initialBrowserTab([], null), null);
 });
@@ -69,7 +65,6 @@ test("the button offers the one thing that tab can do", () => {
   const tabs = browserTabs([ANCHOR, KERNEL], null);
   assert.deepEqual(browserAction(tabs[0]!), { kind: "use", label: "Use Anchor" });
   assert.deepEqual(browserAction(tabs[1]!), { kind: "connect", label: "Connect Kernel" });
-  // The live one says so rather than offering to switch to itself.
   assert.deepEqual(browserAction(browserTabs([ANCHOR], "anchor")[0]!), { kind: "in-use" });
 });
 
@@ -82,8 +77,6 @@ test("connecting asks for the key and nothing else", () => {
   const draft = connectDraft(ANCHOR)!;
   assert.equal(draft.service, "anchor");
   assert.equal(draft.envKey, "ANCHOR_API_KEY");
-  // Anchor keeps a profile, but naming it is not a decision anyone wants to
-  // make, and a second required field is how the whole paste fails.
   assert.deepEqual(
     draft.fields?.map((f) => [f.key, f.secret]),
     [["ANCHOR_API_KEY", true]],
@@ -116,9 +109,7 @@ const EXTENSION: BrowserProvider = {
 test("the extension is chosen, not key-dropped, even when not attached", async () => {
   const { browserAction, browserTabs, connectDraft, isExtensionTab } = await import("../src/browser-picker-state.ts");
   const [extTab] = browserTabs([EXTENSION], null);
-  // A detached extension still offers "use": the person selects it, then pairs.
   assert.deepEqual(browserAction(extTab!), { kind: "use", label: "Use my Chrome" });
-  // Nothing to paste — pairing is a token, not a stored secret.
   assert.equal(connectDraft(EXTENSION), null);
   assert.equal(isExtensionTab("extension"), true);
   assert.equal(isExtensionTab("anchor"), false);

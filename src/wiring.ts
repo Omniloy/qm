@@ -302,7 +302,11 @@ import { createConsentLinkStore, type ConsentLinkStore, type ConsentLinkRecord }
 import { createOAuthFlowStore, type OAuthFlowStore } from "./connectors/oauth-flow-store.ts";
 import { createModelGateway, type ModelGateway } from "./model/model-gateway.ts";
 import { createModelCredentialStore, type ModelCredentialStore } from "./model/model-credential-store.ts";
-import { createHarnessAuthStore, type HarnessAuthStore } from "./credentials/harness-auth-store.ts";
+import {
+  claudeHarnessAuthEnv,
+  createHarnessAuthStore,
+  type HarnessAuthStore,
+} from "./credentials/harness-auth-store.ts";
 import {
   EXTENSION_BROWSER_ID,
   loadBrowserProviders,
@@ -344,7 +348,7 @@ import {
 import { createControlService } from "./api/control-service.ts";
 import { createMemoryRunStore } from "./runs/memory-run-store.ts";
 import { createPostgresRunStore } from "./runs/postgres-run-store.ts";
-import { createMemoryRunSignalStore, type RunSignalStore } from "./runs/run-signal-store.ts";
+import { createMemoryRunSignalStore, endIgnoredAborts, type RunSignalStore } from "./runs/run-signal-store.ts";
 import { createPostgresRunSignalStore } from "./runs/postgres-run-signal-store.ts";
 import { isTerminal, type Run, type RunStore } from "./runs/run-store.ts";
 import { createWorker, type Worker } from "./runs/worker.ts";
@@ -1306,8 +1310,6 @@ export function buildApp(
   const browserSessionStore: BrowserSessionStore | undefined = keychainKeyMaterial
     ? createBrowserSessionStore({ sessions: artifactMap<StoredBrowserSession>("browser_sessions"), key: credentialKey })
     : undefined;
-  // Same key material as the cookie jar above, because it guards the same
-  // thing: material that opens a browser logged in as a specific person.
   const liveBrowserSessions: LiveBrowserSessionStore | undefined = keychainKeyMaterial
     ? createLiveBrowserSessionStore({
         sessions: artifactMap<StoredLiveBrowserSession>("browser_live_sessions"),
@@ -1316,8 +1318,6 @@ export function buildApp(
     : undefined;
   const connectorTokens = withOperatorTokenFallback(credentialStore, config.egressServiceHosts ?? [], secretSource);
 
-  // Drive folder mounts. Every Drive call below runs as one person: the token
-  // is resolved per principal, never shared between members of a scope.
   const driveMountStore = createMountStore(artifactMap<DriveMount>("drive_mounts"));
   const driveListingCache = createListingCache();
   const GOOGLE_API_HOST = "www.googleapis.com";
@@ -1325,8 +1325,6 @@ export function buildApp(
     (await connectorTokens.connectorAccessToken(GOOGLE_API_HOST, principalId, "personal")) ??
     (await connectorTokens.connectorAccessToken(GOOGLE_API_HOST, principalId));
   const browseDriveFolders = async (accessToken: string, parentId: string, search?: string) => {
-    // Search ignores the parent: someone searching wants the folder wherever
-    // it lives, not "inside whatever I happen to be looking at".
     const q = search
       ? `mimeType='${FOLDER_MIME}' and name contains '${search.replace(/['\\]/g, "\\$&")}' and trashed = false`
       : `mimeType='${FOLDER_MIME}' and '${parentId}' in parents and trashed = false`;
@@ -1349,7 +1347,6 @@ export function buildApp(
       .map((f) => ({ id: f.id, name: f.name }));
   };
 
-  /** Resolve one folder by id, for a pasted link. Returns null when unreachable. */
   const lookupDriveFolder = async (accessToken: string, folderId: string) => {
     const params = new URLSearchParams({ fields: "id,name,mimeType", supportsAllDrives: "true" });
     const res = await fetch(`https://${GOOGLE_API_HOST}/drive/v3/files/${encodeURIComponent(folderId)}?${params}`, {
@@ -1514,8 +1511,7 @@ export function buildApp(
                   "ANTHROPIC_AUTH_TOKEN",
                 ])()
               : {};
-          const token = await harnessAuth.resolve("claude").catch(swallowAs("wiring: claude harness auth", null));
-          return token ? { ...keychainEnv, CLAUDE_CODE_OAUTH_TOKEN: token } : keychainEnv;
+          return claudeHarnessAuthEnv(harnessAuth, keychainEnv);
         },
         signals: runSignals,
         tasks,
@@ -1721,9 +1717,11 @@ export function buildApp(
   const buildDeployProvider: Record<Config["deployProvider"], () => DeployProvider> = {
     aws: buildAwsDeploy,
     docker: () =>
-      createDockerDeployProvider(
-        config.localSandbox.coreContainer ? { coreContainer: config.localSandbox.coreContainer } : {},
-      ),
+      createDockerDeployProvider({
+        ...(config.localSandbox.coreContainer ? { coreContainer: config.localSandbox.coreContainer } : {}),
+        ...(config.localSandbox.networkPool ? { networkPool: config.localSandbox.networkPool } : {}),
+        onError: sandboxOnError,
+      }),
     fly: () =>
       createFlyDeployProvider({
         ...config.flyDeploy,
@@ -2409,6 +2407,8 @@ export function buildApp(
         if (!run || isTerminal(run.status))
           await app.replayOrphanedRunSignals(runId).catch(swallowAs("sessions: recover signal", undefined));
       }
+      for (const runId of await endIgnoredAborts(runs, runSignals))
+        console.warn(`[signal] run ${runId} ignored its abort and was ended outright`);
       if (Date.now() - lastSignalPrune > 60 * 60_000) {
         lastSignalPrune = Date.now();
         await runSignals.prune(7 * 24 * 60 * 60_000);
@@ -2710,7 +2710,10 @@ export function buildApp(
     30 * 60_000,
     { label: "Composio consent returns", immediate: true },
   );
-  const blobSweeper = createSweeper(() => blobTransfer.sweep(BLOB_TTL_MS), 30 * 60_000);
+  const blobSweeper = createSweeper(async () => {
+    await blobTransfer.sweep(BLOB_TTL_MS);
+    await files.sweepOrphanedBlobs();
+  }, 30 * 60_000);
   const BLOB_TRANSFER_EXPIRY_DAYS = 1;
   void blobTransfer
     .ensureExpiry?.(BLOB_TRANSFER_EXPIRY_DAYS)

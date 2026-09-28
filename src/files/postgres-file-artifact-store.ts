@@ -3,6 +3,7 @@ import type { ScopeId } from "../types.ts";
 import type { DurableByteStore } from "./durable-byte-store.ts";
 import {
   FileArtifactDeletedError,
+  ORPHANED_BLOB_GRACE_MS,
   clampLimit,
   decodeCursor,
   encodeCursor,
@@ -72,6 +73,13 @@ export function createPostgresFileArtifactStore(
       id: "files/artifacts/0002",
       statements: [
         "CREATE TABLE IF NOT EXISTS file_artifact_deletions(id TEXT PRIMARY KEY, deleted_at BIGINT NOT NULL)",
+      ],
+    },
+    {
+      id: "files/artifacts/0003",
+      statements: [
+        "CREATE TABLE IF NOT EXISTS file_blob_orphans(blob_key TEXT PRIMARY KEY, orphaned_at BIGINT NOT NULL)",
+        "CREATE INDEX IF NOT EXISTS file_artifacts_blob_key ON file_artifacts (blob_key)",
       ],
     },
   ]);
@@ -234,18 +242,42 @@ export function createPostgresFileArtifactStore(
     },
 
     async delete(id) {
-      const blobKey = await withPgTransaction(await pool(), async (client) => {
+      await withPgTransaction(await pool(), async (client) => {
         await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`file-artifact:${id}`]);
         await client.query(
           "INSERT INTO file_artifact_deletions(id,deleted_at) VALUES($1,$2) ON CONFLICT(id) DO NOTHING",
           [id, Date.now()],
         );
         const removed = await client.query("DELETE FROM file_artifacts WHERE id=$1 RETURNING blob_key", [id]);
-        return (removed.rows[0]?.blob_key as string | null | undefined) ?? null;
+        const blobKey = removed.rows[0]?.blob_key as string | null | undefined;
+        if (!blobKey) return;
+        await client.query(
+          `INSERT INTO file_blob_orphans(blob_key, orphaned_at)
+           SELECT $1, $2 WHERE NOT EXISTS (SELECT 1 FROM file_artifacts WHERE blob_key = $1)
+           ON CONFLICT (blob_key) DO UPDATE SET orphaned_at = EXCLUDED.orphaned_at`,
+          [blobKey, Date.now()],
+        );
       });
-      if (!blobKey) return;
-      const others = await q("SELECT 1 FROM file_artifacts WHERE blob_key = $1 LIMIT 1", [blobKey]);
-      if (!others.length) await byteStore.delete(blobKey);
+    },
+
+    async sweepOrphanedBlobs(now = Date.now()) {
+      const cutoff = now - ORPHANED_BLOB_GRACE_MS;
+      await q(
+        `DELETE FROM file_blob_orphans o
+          WHERE orphaned_at <= $1 AND EXISTS (SELECT 1 FROM file_artifacts f WHERE f.blob_key = o.blob_key)`,
+        [cutoff],
+      );
+      const due = await q(
+        `SELECT blob_key FROM file_blob_orphans o
+          WHERE orphaned_at <= $1 AND NOT EXISTS (SELECT 1 FROM file_artifacts f WHERE f.blob_key = o.blob_key)
+          LIMIT 500`,
+        [cutoff],
+      );
+      for (const row of due) {
+        await byteStore.delete(row.blob_key as string);
+        await q("DELETE FROM file_blob_orphans WHERE blob_key = $1 AND orphaned_at <= $2", [row.blob_key, cutoff]);
+      }
+      return due.length;
     },
   };
 }

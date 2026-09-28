@@ -563,6 +563,7 @@ test("a heal whose container reconnect fails removes the container so the next t
   fake.connectFail = { container: h1.id, stderr: "Error response from daemon: boom" };
   await assert.rejects(sb.provision(rw(scope)), /network connect .* failed: .*boom/);
   assert.equal(fake.containers.has(h1.id), false, "no zero-network container is left to start into nothing");
+  assert.deepEqual(qmNetworks(fake), [], "the network the heal created goes with the container");
   assert.equal(fake.volumes.has(localVolumeName(scope)), true);
 
   delete fake.connectFail;
@@ -570,6 +571,28 @@ test("a heal whose container reconnect fails removes the container so the next t
   assert.equal(h2.id, h1.id);
   assert.equal(h2.coldStart, false, "the home volume survived");
   assert.equal(fake.runCount, 2);
+});
+
+test("a heal racing destroyScope leaves no /28 network behind", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const scope = scopeId("personal", "U45");
+  const name = localContainerName(scope);
+  let pauseHeal = false;
+  const slowHeal: typeof fake.dockerExec = async (args, timeoutMs) => {
+    if (pauseHeal && args[0] === "network" && args[1] === "inspect" && args[2] === localNetworkName(name)) {
+      pauseHeal = false;
+      await sleep(30);
+    }
+    return fake.dockerExec(args, timeoutMs);
+  };
+  const sb = makeSandbox(fake, { dockerExec: slowHeal });
+  const h = await sb.provision(rw(scope));
+  fake.containers.get(h.id)!.running = false;
+  fake.networks.delete(localNetworkName(h.id));
+  pauseHeal = true;
+  await Promise.allSettled([sb.run(h, "echo ok"), sleep(5).then(() => sb.destroyScope!(scope))]);
+  assert.equal(fake.containers.has(name), false);
+  assert.deepEqual(qmNetworks(fake), []);
 });
 
 test("a network removed between create and run leaves no created container or network behind", async () => {
