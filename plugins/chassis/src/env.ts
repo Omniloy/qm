@@ -16,7 +16,18 @@ export function portFromEnv(fallback: number): number {
   return Number(process.env.PORT ?? fallback);
 }
 
+const fileContents = new Map<string, string>();
+
+function readOnce(file: string): string {
+  let content = fileContents.get(file);
+  if (content === undefined) {
+    content = readFileSync(file, "utf8");
+    fileContents.set(file, content);
+  }
+  return content;
+}
+
 export function envOrFile(name: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
   const file = env[`${name}_FILE`]?.trim();
-  return env[name] || (file ? readFileSync(file, "utf8") : undefined);
+  return env[name] || (file ? readOnce(file) : undefined);
 }
