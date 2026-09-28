@@ -123,6 +123,7 @@ function isCompressedMedia(content: Buffer): boolean {
     content.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff])) ||
     content.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) ||
     content.subarray(0, 4).toString("ascii") === "GIF8" ||
+    content.subarray(0, 4).toString("ascii") === "icns" ||
     (content.subarray(0, 4).toString("ascii") === "RIFF" && content.subarray(8, 12).toString("ascii") === "WEBP")
   );
 }
@@ -137,9 +138,9 @@ function readTrackedContent(path: string): Buffer | null {
   }
 }
 
-const provisionedInfrastructure = ["deploy/sandbox/fly.toml"];
+const provisionedInfrastructure = ["test/deploy-notice.test.ts"];
 
-test("tracked files carry no trace of the pre-QM brand", () => {
+test("tracked files use only QM branding", () => {
   const paths = execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" })
     .split("\0")
     .filter(Boolean)
@@ -149,6 +150,11 @@ test("tracked files carry no trace of the pre-QM brand", () => {
   const legacyContent = paths.flatMap((path) => {
     const content = readTrackedContent(path);
     if (!content || isCompressedMedia(content)) return [];
+    const encodedDocumentFixture =
+      path.startsWith("test/fixtures/documents/") &&
+      (content.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04])) ||
+        content.subarray(0, 5).toString("ascii") === "%PDF-");
+    if (encodedDocumentFixture) return [];
     return findLegacyNames(content.toString("latin1"), {
       binary: isBinary(content),
       compressed: isCompressedMedia(content),
@@ -243,46 +249,4 @@ test("brand guard recognizes legacy variants", () => {
   assert.deepEqual(findLegacyNames("WCAG2Config"), []);
   assert.deepEqual(findLegacyNames("wcagConfig"), []);
   assert.deepEqual(findLegacyNames("myWCAGConfig"), []);
-});
-
-const priorProductName = ["Q", "M"].join("");
-const priorProductNamePattern = new RegExp(`(?<![A-Za-z0-9_])${priorProductName}(?![A-Za-z0-9_])`);
-const brandGuardSelf = "test/qm-brand.test.ts";
-
-test("no user-facing text still calls the product by its previous name", () => {
-  const offenders = execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" })
-    .split("\0")
-    .filter(Boolean)
-    .filter((path) => path !== brandGuardSelf && !path.startsWith("deploy/layers/"))
-    .flatMap((path) => {
-      const content = readTrackedContent(path);
-      if (!content || isBinary(content) || isCompressedMedia(content)) return [];
-      return content
-        .toString("utf8")
-        .split(/\r?\n/)
-        .flatMap((line, index) => {
-          const searchable = line.replace(/(["']integrity["']\s*:\s*["'])[^"'\r\n]*(["'])/gi, "$1$2");
-          return priorProductNamePattern.test(searchable) ? [`${path}:${index + 1}:${line.trim()}`] : [];
-        });
-    });
-
-  assert.deepEqual(offenders, []);
-});
-
-test("the guard would catch the previous name coming back", () => {
-  assert.ok(priorProductNamePattern.test(`the ${priorProductName} web app`));
-  assert.ok(
-    !priorProductNamePattern.test(
-      `"integrity": "sha512-J+${priorProductName}/4x8ZgA=="`.replace(
-        /(["']integrity["']\s*:\s*["'])[^"'\r\n]*(["'])/gi,
-        "$1$2",
-      ),
-    ),
-    "base64 integrity hashes are scrubbed before matching, like the older guard does",
-  );
-  assert.ok(priorProductNamePattern.test(`"${priorProductName}"`));
-  assert.ok(priorProductNamePattern.test(`${priorProductName}.`));
-  assert.ok(!priorProductNamePattern.test("QM_RELAY_URL"), "env var prefixes are identifiers, not the brand");
-  assert.ok(!priorProductNamePattern.test("qm"), "the lowercase identifier is deliberately kept");
-  assert.ok(!priorProductNamePattern.test("acme-qm-deploy-locks"), "resource names keep the identifier");
 });

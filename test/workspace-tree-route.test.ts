@@ -1,6 +1,6 @@
-import "./support/auto-fake-sprites.ts";
+import { fakeSprites } from "./support/auto-fake-sprites.ts";
 
-import { after, before, beforeEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
@@ -31,28 +31,29 @@ describe("workspace tree route", async () => {
   const get = async (path: string, token: string) =>
     fetch(`${base}${path}`, { headers: { "x-agent-capability": token } });
 
-  before(async () => {
-    built = buildApp(testConfig({ signingSecret: SECRET }));
+  const serve = async (config = testConfig({ signingSecret: SECRET })) => {
+    built = buildApp(config);
     server = createServer(built.app, { signingSecret: SECRET });
     await new Promise<void>((resolve) => server.listen(0, resolve));
     base = `http://localhost:${(server.address() as AddressInfo).port}`;
-  });
+  };
 
   beforeEach(async () => {
+    await serve();
     const handle = await built.sandbox.provision([{ scopeId: scopeId("personal", "U1"), mountPath: "", mode: "rw" }]);
     await built.sandbox.writeFile(handle, "licit/ted.py", "print(1)");
     await built.sandbox.writeFile(handle, "licit/hits/candidates.json", "[]");
     await built.sandbox.writeFile(handle, "notes.md", "hello");
     await built.sandbox.writeFile(handle, "global/org-policy.md", "org only");
     await built.sandbox.writeFile(handle, "team-T9/roadmap.md", "team only");
-    await built.sandbox.writeFile(handle, "skills/browse/SKILL.md", "a skill");
+    await built.sandbox.writeFile(handle, ".agent-turn/t1/skills/browse/SKILL.md", "a skill");
     await built.sandbox.writeFile(handle, ".ro-layers.manifest", "deadbeef");
     await built.sandbox.writeFile(handle, "repo/.git/config", "[core]");
     await built.sandbox.writeFile(handle, "app/node_modules/left-pad/index.js", "x");
     await built.sandbox.teardown(handle, { keepWarm: true });
   });
 
-  after(async () => {
+  afterEach(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 
@@ -92,7 +93,7 @@ describe("workspace tree route", async () => {
     const { paths } = (await r.json()) as { paths: string[] };
     assert.ok(!paths.some((p) => p.startsWith("global/")), "org mount leaked into the tree");
     assert.ok(!paths.some((p) => p.startsWith("team-")), "team mount leaked into the tree");
-    assert.ok(!paths.some((p) => p.startsWith("skills/")), "skills leaked into the tree");
+    assert.ok(!paths.some((p) => p.startsWith(".agent-turn/")), "turn skills leaked into the tree");
   });
 
   it("refuses a scope the viewer cannot act in", async () => {
@@ -140,5 +141,20 @@ describe("workspace tree route", async () => {
   it("refuses a file in a scope the viewer cannot act in", async () => {
     const r = await get(`/v1/workspace/file?scope=personal:U2&path=notes.md`, await capFor("U1"));
     assert.equal(r.status, 403);
+  });
+
+  it("answers an empty tree and no file, without provisioning, when the scope has no default sandbox", async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await serve(testConfig({ signingSecret: SECRET, sandboxResourcesEnabled: true }));
+    await built.sandboxResources.initialize();
+    await built.sandboxResources.setDefault("U1", scopeId("personal", "U1"), null);
+    const provisioned = fakeSprites.calls.length;
+
+    const tree = await get(`/v1/workspace/tree?scope=personal:U1&wake=true`, await capFor("U1"));
+    assert.equal(tree.status, 200);
+    assert.deepEqual(((await tree.json()) as { paths: string[] }).paths, []);
+    const file = await get(`/v1/workspace/file?scope=personal:U1&path=notes.md`, await capFor("U1"));
+    assert.equal(file.status, 404);
+    assert.equal(fakeSprites.calls.length, provisioned);
   });
 });

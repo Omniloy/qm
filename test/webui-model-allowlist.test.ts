@@ -230,7 +230,7 @@ test("the classification route validates the model id, the status, the scope, an
   }
 });
 
-test("a scope's chat picker grandfathers only the pairing it runs, not one it merely inherits", async () => {
+test("a scope's chat picker grandfathers the pairings it is configured with, and no other Anthropic model", async () => {
   const srv = startAnthropic();
   try {
     srv.built.config.setRuntimeSelection("org:default-org", { harnessId: "pi", modelId: "claude-opus-5" });
@@ -238,11 +238,8 @@ test("a scope's chat picker grandfathers only the pairing it runs, not one it me
     const runtime = await fetch(`${srv.base}/v1/runtime-config?principalId=alice&scopeId=personal%3Aalice`);
     const pi = ((await runtime.json()) as { modelsByHarness: Record<string, string[]> }).modelsByHarness.pi!;
     assert.ok(pi.includes("claude-sonnet-5"), "the scope keeps seeing what it is actually running");
-    assert.equal(
-      pi.includes("claude-opus-5"),
-      false,
-      "the org default it does not run must not become a second Anthropic option in its chat menu",
-    );
+    assert.ok(pi.includes("claude-opus-5"), "the org default stays reachable, so the scope can inherit it again");
+    assert.equal(pi.includes("claude-opus-4-8"), false, "no other Anthropic model is offered for pi");
   } finally {
     await srv.close();
   }

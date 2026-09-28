@@ -17,9 +17,10 @@ import { parseRef } from "../acl/resource-ref.ts";
 import { swallowAs } from "../util/errors.ts";
 import { hashId } from "../util/crypto.ts";
 import type { SecurityScreenVerdict } from "../security/security-posture.ts";
+import { downscaleVisionImage } from "./image-downscale.ts";
+import { NoDefaultSandboxError } from "../sandbox/sandbox-routing.ts";
 
 export const INBOX_DIR = "inbox";
-export const OUTBOX_DIR = "outbox";
 export const SHARED_DIR = "shared";
 export const TURN_FILES_DIR = ".agent-turn";
 
@@ -92,10 +93,28 @@ const MIME_BY_EXT: Record<string, string> = {
   yaml: "application/yaml",
   yml: "application/yaml",
   pdf: "application/pdf",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ppt: "application/vnd.ms-powerpoint",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  odt: "application/vnd.oasis.opendocument.text",
+  ods: "application/vnd.oasis.opendocument.spreadsheet",
+  odp: "application/vnd.oasis.opendocument.presentation",
+  rtf: "application/rtf",
+  tsv: "text/tab-separated-values",
+  eml: "message/rfc822",
+  ics: "text/calendar",
+  vcf: "text/vcard",
+  js: "text/javascript",
+  ts: "text/typescript",
+  py: "text/x-python",
   png: "image/png",
   jpg: "image/jpeg",
   jpeg: "image/jpeg",
   gif: "image/gif",
+  webp: "image/webp",
   svg: "image/svg+xml",
   zip: "application/zip",
 };
@@ -183,18 +202,44 @@ function uniqueName(name: string, used: Set<string>): string {
   return `${stem}-${n}${ext}`;
 }
 
-export function inboundManifest(metas: AttachmentMeta[], inboxDir = INBOX_DIR): string {
+export function withoutAlreadyIngested(
+  attachments: IncomingAttachment[],
+  contextEntries: readonly SessionEntry[],
+): IncomingAttachment[] {
+  const seen = new Set<string>();
+  for (const entry of contextEntries) {
+    if (entry.type !== "user") continue;
+    const metas = (entry.payload as { attachments?: unknown } | null)?.attachments;
+    if (!Array.isArray(metas)) continue;
+    for (const meta of metas as AttachmentMeta[]) {
+      if (meta.direction === "in" && typeof meta.sourceId === "string" && shownToModel(meta)) seen.add(meta.sourceId);
+    }
+  }
+  if (!seen.size) return attachments;
+  return attachments.filter((a) => !a.sourceId || !seen.has(a.sourceId));
+}
+
+function shownToModel(meta: AttachmentMeta): boolean {
+  return isVisionAttachment(meta) && meta.sizeBytes > 0 && meta.sizeBytes <= MAX_VISION_IMAGE_BYTES;
+}
+
+export function inboundManifest(metas: AttachmentMeta[], inboxDir = INBOX_DIR, unstaged?: Set<string>): string {
   if (!metas.length) return "";
   const list = metas
     .map(
       (m) =>
-        `- ${inboxDir}/${m.name} (${m.mimetype}, ${m.sizeBytes} bytes)${m.author ? ` — shared by ${m.author}` : ""}`,
+        `- ${inboxDir}/${m.name} (${m.mimetype}, ${m.sizeBytes} bytes)${m.author ? ` — shared by ${m.author}` : ""}${
+          unstaged?.has(m.name)
+            ? ` — saved as file ${m.artifactId}, not yet on a computer (no default sandbox); if you need it on disk, select or create a sandbox with set_default, then download GET $AGENT_API_URL/v1/files/${m.artifactId}/content (header x-agent-capability: $AGENT_API_TOKEN) to a path you choose`
+            : ""
+        }`,
     )
     .join("\n");
   const noun = metas.length === 1 ? "file" : "files";
+  const where = unstaged?.size ? `for ./${inboxDir}/` : `available in ./${inboxDir}/`;
   const lead = metas.some((m) => m.author)
-    ? `${metas.length} ${noun} shared in this conversation, available in ./${inboxDir}/:`
-    : `The user shared ${metas.length} ${noun}, available in ./${inboxDir}/:`;
+    ? `${metas.length} ${noun} shared in this conversation, ${where}:`
+    : `The user shared ${metas.length} ${noun}, ${where}:`;
   return `${lead}\n${list}`;
 }
 
@@ -282,7 +327,7 @@ export function senderNote(name: string | undefined): string {
 
 export async function materializeInbound(
   sandbox: Sandbox,
-  handle: SandboxHandle,
+  handle: SandboxHandle | (() => Promise<SandboxHandle>),
   attachments: IncomingAttachment[],
   transfer: BlobTransferStore,
   register?: ArtifactRegistration,
@@ -299,7 +344,15 @@ export async function materializeInbound(
   unavailable: string[];
   blocked: string[];
   unscreened: string[];
+  unstaged?: Set<string>;
 }> {
+  let target: Promise<SandboxHandle | null> | undefined;
+  const computer = () =>
+    (target ??= (typeof handle === "function" ? handle() : Promise.resolve(handle)).catch((e: unknown) => {
+      if (e instanceof NoDefaultSandboxError) return null;
+      throw e;
+    }));
+  const unstaged = new Set<string>();
   const metas: AttachmentMeta[] = [];
   const images: InboundImage[] = [];
   const tooMany: string[] = [];
@@ -330,90 +383,59 @@ export async function materializeInbound(
       }
       if (!verdict || verdict.unscreened) unscreened.push(name);
     }
-    await sandbox.writeFileBytes(handle, `${inboxDir}/${name}`, bytes);
+    const box = await computer();
+    if (box) await sandbox.writeFileBytes(box, `${inboxDir}/${name}`, bytes);
     const registered = register
       ? await registerArtifact(register, "in", metas.length, name, mimetype, bytes)
       : undefined;
+    if (!box) {
+      if (!registered) {
+        unavailable.push(name);
+        continue;
+      }
+      unstaged.add(name);
+    }
     metas.push({
       name,
       mimetype,
       sizeBytes: bytes.length,
       direction: "in",
       ...(a.author ? { author: a.author } : {}),
+      ...(a.sourceId ? { sourceId: a.sourceId } : {}),
       ...(registered ? { artifactId: registered.id } : {}),
     });
     if (VISION_MIME_TYPES.has(mimetype) && bytes.length > 0 && bytes.length <= MAX_VISION_IMAGE_BYTES) {
+      const imageBytes = await downscaleVisionImage(bytes, mimetype);
       images.push({
         name,
         mimeType: mimetype,
-        dataBase64: Buffer.from(bytes).toString("base64"),
+        dataBase64: Buffer.from(imageBytes).toString("base64"),
         ...(registered ? { artifactId: registered.id } : {}),
       });
     }
   }
-  return { metas, images, tooMany, unavailable, blocked, unscreened };
+  return { metas, images, tooMany, unavailable, blocked, unscreened, ...(unstaged.size ? { unstaged } : {}) };
 }
 
-export function deliveryManifest(attachments: readonly OutgoingAttachment[]): string {
-  return attachments.map((a) => `${a.name} (${a.mimetype}, ${a.sizeBytes} bytes)`).join("; ");
+const DELIVERY_NOTE_PREFIX = "[files delivered to the conversation: ";
+
+export function deliveryNote(manifest: string): string {
+  return `${DELIVERY_NOTE_PREFIX}${manifest.replace(/\s+/g, " ").trim()}]`;
 }
 
-export function recentDeliveryNote(history: readonly SessionEntry[]): string {
-  const recent: string[] = [];
-  for (let i = history.length - 1; i >= 0; i--) {
-    const e = history[i]!;
-    if (e.type !== "delivery") break;
-    const text = (e.payload as { text?: string } | null)?.text;
-    if (text) recent.unshift(text);
-  }
-  if (!recent.length) return "";
-  return `For your reference — file(s) you delivered to this conversation in your previous turn: ${recent.join("; ")}`;
+export function isDeliveryNote(text: string): boolean {
+  const t = text.trim();
+  return t.startsWith(DELIVERY_NOTE_PREFIX) && t.endsWith("]") && !t.includes("\n");
 }
 
-export async function collectOutbound(
-  sandbox: Sandbox,
-  handle: SandboxHandle,
-  transfer: BlobTransferStore,
-  register?: ArtifactRegistration,
-  outboxDir = OUTBOX_DIR,
-): Promise<{ attachments: OutgoingAttachment[]; oversized: string[]; empty: string[]; dropped: number }> {
-  const paths = (await sandbox.listDir(handle, outboxDir)).sort();
-  const attachments: OutgoingAttachment[] = [];
-  const oversized: string[] = [];
-  const empty: string[] = [];
-  const usedNames = new Set<string>();
-  let dropped = 0;
-  for (const rel of paths) {
-    if (attachments.length + oversized.length + empty.length >= MAX_OUTBOUND_FILES) {
-      dropped++;
-      continue;
-    }
-    const bytes = await sandbox.readFileBytes(handle, rel);
-    if (!bytes) continue;
-    const name = uniqueName(safeAttachmentName(rel.split(/[\\/]/).pop() ?? rel), usedNames);
-    usedNames.add(name);
-    if (bytes.length === 0) {
-      empty.push(name);
-      continue;
-    }
-    if (bytes.length > MAX_ATTACHMENT_BYTES) {
-      oversized.push(name);
-      continue;
-    }
-    const mimetype = mimeFromName(name);
-    const { blobId } = await transfer.put(bytes);
-    const artifact = register
-      ? await registerArtifact(register, "out", attachments.length, name, mimetype, bytes)
-      : undefined;
-    attachments.push({
-      name,
-      mimetype,
-      sizeBytes: bytes.length,
-      blobId,
-      ...(artifact ? { artifactId: artifact.id, artifactViewerId: register!.createdBy } : {}),
-    });
-  }
-  return { attachments, oversized, empty, dropped };
+export function deliveryNoteManifest(text: string): string | null {
+  if (!isDeliveryNote(text)) return null;
+  return text.trim().slice(DELIVERY_NOTE_PREFIX.length, -1);
+}
+
+export function legacyDeliveryNoteManifest(text: string): string | null {
+  const m = /^\(delivered file\(s\) to the conversation: ([^\n]*)\)$/.exec(text.trim());
+  return m ? m[1]! : null;
 }
 
 export async function collectNamedOutbound(
@@ -422,14 +444,22 @@ export async function collectNamedOutbound(
   paths: readonly string[],
   transfer: BlobTransferStore,
   register?: ArtifactRegistration,
-): Promise<{ attachments: OutgoingAttachment[]; missing: string[]; empty: string[]; oversized: string[] }> {
+  reservedNames: readonly string[] = [],
+): Promise<{
+  attachments: OutgoingAttachment[];
+  missing: string[];
+  empty: string[];
+  oversized: string[];
+  createdArtifactIds: Set<string>;
+}> {
   const invalid = paths.filter(hasParentPathSegment);
-  if (invalid.length) return { attachments: [], missing: invalid, empty: [], oversized: [] };
+  if (invalid.length)
+    return { attachments: [], missing: invalid, empty: [], oversized: [], createdArtifactIds: new Set() };
   const attachments: OutgoingAttachment[] = [];
   const missing: string[] = [];
   const empty: string[] = [];
   const oversized: string[] = [];
-  const usedNames = new Set<string>();
+  const usedNames = new Set<string>(reservedNames);
   const doomed = () => missing.length > 0 || empty.length > 0 || oversized.length > 0;
   const createdArtifacts = new Map<string, string>();
   let i = 0;
@@ -485,6 +515,24 @@ export async function collectNamedOutbound(
       }),
     );
     attachments.length = 0;
+    createdArtifacts.clear();
   }
-  return { attachments, missing, empty, oversized };
+  return { attachments, missing, empty, oversized, createdArtifactIds: new Set(createdArtifacts.keys()) };
+}
+
+export async function discardOutbound(
+  attachment: OutgoingAttachment,
+  transfer: BlobTransferStore,
+  register?: ArtifactRegistration,
+  created?: ReadonlySet<string>,
+): Promise<void> {
+  await transfer.delete(attachment.blobId).catch(swallowAs("attachments: discard blob delete", undefined));
+  if (!register || !attachment.artifactId || !created?.has(attachment.artifactId)) return;
+  await register.store.delete(attachment.artifactId).catch((e) => {
+    try {
+      register.onError?.(e);
+    } catch (err) {
+      swallowAs("attachments: discard onError", undefined)(err);
+    }
+  });
 }

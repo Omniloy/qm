@@ -61,7 +61,7 @@ test("a shell with no branding still gets the shipped product name in its title"
 test("branding drives the badge: a logo replaces the letter, and its absence keeps it", () => {
   const withLogo = injectBranding("<html><head></head><body></body></html>", { logoSvg: ok, mark: "M" });
   assert.match(withLogo, /--brand-logo:url\("data:image\/svg\+xml/);
-  assert.match(withLogo, /--brand-mark:""/);
+  assert.match(withLogo, /--brand-mark:none/);
   assert.match(withLogo, /--brand-mark-bg:transparent/);
 
   const withoutLogo = injectBranding("<html><head></head><body></body></html>", { mark: "M" });

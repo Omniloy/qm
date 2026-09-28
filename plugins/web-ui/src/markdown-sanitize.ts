@@ -1,4 +1,5 @@
 import { marked } from "marked";
+import { escapeHtml } from "./html-escape.ts";
 import DOMPurify, { type Config } from "dompurify";
 
 export const MARKDOWN_SANITIZE_CONFIG: Config = {
@@ -7,25 +8,50 @@ export const MARKDOWN_SANITIZE_CONFIG: Config = {
   ADD_ATTR: ["target", "encoding"],
 };
 
-let installed = false;
+export const SHARED_MARKDOWN_SANITIZE_CONFIG: Config = {
+  ...MARKDOWN_SANITIZE_CONFIG,
+  FORBID_TAGS: ["img", "video", "audio", "source", "iframe", "object", "embed", "style", "form"],
+  FORBID_ATTR: ["href", "xlink:href", "src", "srcset", "poster", "style", "action"],
+};
 
-export function installMarkdownSanitizer(): void {
-  if (installed) return;
-  // DOMPurify binds to `window` at import time. With no DOM its `sanitize` is not even a function,
-  // so installing the hook in a plain-node process would make every test that renders markdown
-  // throw. There is no XSS sink without a DOM either, so skipping is safe — and it deliberately
-  // does NOT latch `installed`, so a later call from a real page still installs.
-  if (!DOMPurify.isSupported || typeof DOMPurify.sanitize !== "function") return;
-  installed = true;
-  marked.use({ hooks: { postprocess: (html: string) => String(DOMPurify.sanitize(html, MARKDOWN_SANITIZE_CONFIG)) } });
+const SANDBOX_WORKSPACE_LINK = /\shref=(["'])sandbox:\/home\/sprite\/workspace\/([^"']+)\1/gi;
+
+function decodedBasename(path: string): string | null {
+  const encoded = path.split("/").at(-1);
+  if (!encoded) return null;
+  try {
+    return decodeURIComponent(encoded);
+  } catch {
+    return null;
+  }
 }
 
-// Installed as a side effect of THIS module, not of chat.ts.
-//
-// It used to run only in chat.ts's module body. chat.ts statically imports ./shell and ./sessions,
-// so the anonymous share page cannot import it — which meant every markdown renderer outside
-// chat.ts (share-view.ts is the first) shipped marked's raw HTML: `marked.parse("<script>…")`
-// returns the script tag verbatim with no hook installed, and `<img src=x onerror=…>` keeps its
-// handler. Anything that renders markdown now gets the sanitizer by importing this module, which
-// is the one thing every renderer already has to do.
-installMarkdownSanitizer();
+export function rewriteSandboxFileLinks(html: string): string {
+  return html.replace(SANDBOX_WORKSPACE_LINK, (match, quote: string, path: string) => {
+    const name = decodedBasename(path);
+    if (!name) return match;
+    const href = `/api/files/by-name/content?name=${encodeURIComponent(name)}`;
+    return ` href=${quote}${href}${quote}`;
+  });
+}
+
+let installed = false;
+
+export function installMarkdownSanitizer(options: { shared?: boolean } = {}): void {
+  if (installed) return;
+  installed = true;
+  marked.use({
+    walkTokens(token) {
+      if (token.type === "html") token.text = escapeHtml(token.text);
+    },
+    hooks: {
+      postprocess: (html: string) =>
+        String(
+          DOMPurify.sanitize(
+            rewriteSandboxFileLinks(html),
+            options.shared ? SHARED_MARKDOWN_SANITIZE_CONFIG : MARKDOWN_SANITIZE_CONFIG,
+          ),
+        ),
+    },
+  });
+}

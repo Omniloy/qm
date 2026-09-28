@@ -5,6 +5,7 @@ import {
   resolveCustomModel,
   isCustomModelId,
   customModelCatalog,
+  customModelsJson,
   validateCustomProviderSpec,
 } from "../src/model/custom-providers.ts";
 import { builtInModelCatalog } from "../src/model/model-catalog.ts";
@@ -54,6 +55,21 @@ test("anthropic-protocol providers produce anthropic-messages models with defaul
   assert.equal(model.api, "anthropic-messages");
   assert.equal(model.contextWindow, 128_000);
   assert.equal(model.cost.input, 0);
+});
+
+test("openai-responses survives both custom model mappings", () => {
+  setCustomProviders([
+    {
+      id: "responses-gateway",
+      name: "Responses Gateway",
+      protocol: "openai-responses",
+      baseUrl: "https://responses.example.com/v1",
+      models: [{ id: "responses-model" }],
+    },
+  ]);
+  assert.equal(resolveCustomModel("responses-model")?.api, "openai-responses");
+  const generated = customModelsJson() as { providers: Record<string, { api: string }> };
+  assert.equal(generated.providers["responses-gateway"]?.api, "openai-responses");
 });
 
 test("resolveModel falls back to custom models; built-ins shadow custom ids", () => {
@@ -215,3 +231,21 @@ test("an Anthropic-protocol custom provider is not offered for pi, an OpenAI-pro
   assert.equal(modelSelectableForHarness("claude-custom", "pi"), false);
   assert.equal(modelSelectableForHarness("acme-large", "pi"), true);
 });
+
+for (const field of ["contextWindow", "maxTokens"] as const) {
+  test(`custom provider ${field} must be a positive safe integer`, () => {
+    for (const value of [0, -1, 2048.5, Number.MAX_SAFE_INTEGER + 1, NaN, Infinity]) {
+      assert.throws(
+        () => validateCustomProviderSpec({ ...GATEWAY, models: [{ id: "acme-large", [field]: value }] }),
+        /positive safe integer/,
+        `${field}=${value}`,
+      );
+    }
+    assert.doesNotThrow(() =>
+      validateCustomProviderSpec({ ...GATEWAY, models: [{ id: "acme-large", [field]: 8192 }] }),
+    );
+    assert.doesNotThrow(() =>
+      validateCustomProviderSpec({ ...GATEWAY, models: [{ id: "acme-large", input: 0.25, output: 0 }] }),
+    );
+  });
+}

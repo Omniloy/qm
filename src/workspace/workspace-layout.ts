@@ -1,5 +1,4 @@
 import { TURN_FILES_DIR } from "../core/attachments.ts";
-import { SKILLS_DIR } from "../skills/materialization-paths.ts";
 import { RO_LAYERS_MANIFEST } from "../sandbox/ro-layers.ts";
 import { carriesGitMetadata } from "../deploy/deploy-fs.ts";
 
@@ -36,7 +35,7 @@ export function hiddenWorkspaceReason(path: string): "mount" | "machine" | null 
   const segments = normalized.split("/");
   const head = segments[0]!;
   if (isMountedLayerDir(head)) return "mount";
-  if (head === TURN_FILES_DIR || head === SKILLS_DIR || normalized === RO_LAYERS_MANIFEST) return "machine";
+  if (head === TURN_FILES_DIR || normalized === RO_LAYERS_MANIFEST) return "machine";
   if (carriesGitMetadata(normalized) || segments.some((s) => NOISE_DIRS.has(s))) return "machine";
   return null;
 }

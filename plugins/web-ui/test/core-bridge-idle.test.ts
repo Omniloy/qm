@@ -1,3 +1,4 @@
+import { buildTimeline } from "../src/timeline.ts";
 import { test, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
@@ -363,4 +364,86 @@ test("approval denial is rendered as a normal status, not a stream error", async
   assert.equal(block?.type === "text" ? block.text : "", "Denied.");
   assert.equal(work?.status, "complete");
   assert.equal(work?.activity.length, 1);
+});
+
+test("a failed run renders friendly copy, never the internal failure reason", async () => {
+  setClock(() => 1_000_000);
+  instantSleep();
+  stubRuns([
+    { status: "failed", result: { status: "failed", reason: "TypeError: fetch failed at sandbox.ts:42" }, partial: "" },
+  ]);
+
+  const stream = createAssistantMessageEventStream();
+  await pollRun(stream, blankAssistant(), "run-failed-copy", freshAcc(1_000_000));
+  const final = await drain(stream);
+
+  assert.equal(final.stopReason, "error");
+  assert.doesNotMatch(final.errorMessage ?? "", /TypeError|sandbox\.ts/, "raw internals never reach the transcript");
+  assert.equal(final.errorMessage, "Something went wrong on my end and I couldn't finish that. Try again in a moment.");
+});
+
+test("a refused run still shows its authored, user-facing reason", async () => {
+  setClock(() => 1_000_000);
+  instantSleep();
+  stubRuns([
+    { status: "done", result: { status: "refused", reason: "you're not a member of that context" }, partial: "" },
+  ]);
+
+  const stream = createAssistantMessageEventStream();
+  await pollRun(stream, blankAssistant(), "run-refused-copy", freshAcc(1_000_000));
+  const final = await drain(stream);
+
+  assert.equal(final.stopReason, "error");
+  assert.equal(final.errorMessage, "you're not a member of that context");
+});
+
+test("a stored quarantine refusal renders the canned copy on the web, never the internal verdict", async () => {
+  setClock(() => 1_000_000);
+  instantSleep();
+  stubRuns([
+    {
+      status: "done",
+      result: { status: "refused", refusalKind: "security_quarantine", reason: "internal screening details" },
+      partial: "",
+    },
+  ]);
+
+  const stream = createAssistantMessageEventStream();
+  await pollRun(stream, blankAssistant(), "run-quarantine-copy", freshAcc(1_000_000));
+  const final = await drain(stream);
+
+  assert.equal(final.stopReason, "error");
+  assert.doesNotMatch(final.errorMessage ?? "", /internal screening details/);
+  assert.match(final.errorMessage ?? "", /security screen flagged/);
+});
+
+test("live run polling includes only consumed visible steering in activity order", async () => {
+  instantSleep();
+  stubRuns([
+    {
+      status: "done",
+      result: { status: "ok", reply: "Done" },
+      activity: [
+        { seq: 1, type: "user", createdAt: 1, payload: { text: "start" } },
+        { seq: 2, type: "tool_call", createdAt: 2, payload: { tool: "execute", callId: "a" } },
+        { seq: 3, type: "tool_result", createdAt: 3, payload: { tool: "execute", callId: "a" } },
+        { seq: 4, type: "user", createdAt: 4, payload: { text: "Change direction", steered: true } },
+        { seq: 5, type: "user", createdAt: 5, payload: { text: "Hidden", steered: true, hidden: true } },
+        { seq: 6, type: "tool_call", createdAt: 6, payload: { tool: "execute", callId: "b" } },
+      ],
+    },
+  ]);
+  const stream = createAssistantMessageEventStream();
+  const partial = blankAssistant() as AssistantWork;
+  partial.work = { status: "thinking", activity: [] };
+  await pollRun(stream, partial, "run-steer", freshAcc(Date.now()));
+  const final = (await drain(stream)) as AssistantWork;
+  assert.deepEqual(
+    final.work!.activity.map((entry) => entry.seq),
+    [2, 3, 4, 6],
+  );
+  assert.deepEqual(
+    buildTimeline(final.work!).map((item) => item.kind),
+    ["tool", "steer", "tool"],
+  );
 });

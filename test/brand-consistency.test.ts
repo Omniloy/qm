@@ -3,16 +3,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { BRAND } from "../plugins/chassis/src/brand.ts";
-import { BRAND as CLI_BRAND } from "../cli/src/brand.ts";
-
-test("the CLI's brand copy agrees with the chassis brand", () => {
-  for (const key of Object.keys(CLI_BRAND) as (keyof typeof CLI_BRAND)[]) {
-    assert.equal(CLI_BRAND[key], BRAND[key], `cli/src/brand.ts ${key} drifted from plugins/chassis/src/brand.ts`);
-  }
-});
 
 test("the shipped Slack manifests carry the brand", () => {
-  for (const path of ["src/slack/manifest.json", "cli/templates/slack-manifest.json"]) {
+  for (const path of ["src/slack/manifest.json"]) {
     const manifest = JSON.parse(readFileSync(new URL(`../${path}`, import.meta.url), "utf8")) as {
       display_information: { name: string; background_color: string };
       features: { bot_user: { display_name: string } };
@@ -65,9 +58,4 @@ test("the admin shell links an icon that resolves", () => {
   const m = /<link rel="icon" href="([^"]+)"/.exec(html);
   assert.ok(m, "admin declares an icon");
   assert.match(m[1]!, /^\//, `concatenating a base with no separator gives /adminfavicon.svg: ${m[1]}`);
-});
-
-test("a deployed app carries an icon", () => {
-  const shell = readFileSync(join(process.cwd(), "src/deploy/app-shell.ts"), "utf8");
-  assert.match(shell, /<link rel="icon" href="\/favicon\.svg">/);
 });

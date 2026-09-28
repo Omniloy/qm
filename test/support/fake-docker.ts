@@ -10,6 +10,7 @@ export interface FakeContainer {
   volume?: string;
   networkMode?: string;
   attached?: { name: string; gen: number };
+  args: string[];
 }
 
 export interface FakeDocker {
@@ -31,6 +32,7 @@ export interface FakeDocker {
   runFailLeavesCreated?: boolean;
   connectFail?: { container: string; stderr: string };
   networkRmFail?: string;
+  labelInspectFails: boolean;
 }
 
 function cidrRange(cidr: string): [number, number] {
@@ -65,6 +67,7 @@ export function installFakeDocker(daemonPort: number): FakeDocker {
     imageMissing: false,
     imageId: "sha256:image-v1",
     imageFingerprint: "",
+    labelInspectFails: false,
     dockerExec: async (args) => exec(args),
   };
 
@@ -77,7 +80,7 @@ export function installFakeDocker(daemonPort: number): FakeDocker {
     networks.has(net) && c.attached?.name === net && c.attached.gen === netGen.get(net);
 
   function parseRun(args: string[]): FakeContainer {
-    const c: FakeContainer = { name: "", imageId: self.imageId, running: true, labels: {} };
+    const c: FakeContainer = { name: "", imageId: self.imageId, running: true, labels: {}, args };
     for (let i = 0; i < args.length; i++) {
       const a = args[i]!;
       if (a === "--name") c.name = args[++i]!;
@@ -164,7 +167,9 @@ export function installFakeDocker(daemonPort: number): FakeDocker {
         return ok("Docker version fake");
       case "image": {
         if (self.imageMissing) return fail("Error: No such image");
-        return ok(`${self.imageId} ${self.imageFingerprint}`);
+        if (rest.includes("{{.Id}}")) return ok(self.imageId);
+        if (self.labelInspectFails) return fail('map has no entry for key "Labels"');
+        return ok(self.imageFingerprint);
       }
       case "inspect": {
         const name = rest[rest.length - 1]!;

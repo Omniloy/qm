@@ -67,6 +67,7 @@ export function startBrowserPanePolling(rerender: () => void, streaming: boolean
   currentInterval = wanted;
   void refreshBrowserPane(rerender);
   timer = setInterval(() => void refreshBrowserPane(rerender), wanted);
+  (timer as { unref?: () => void }).unref?.();
 }
 
 let currentInterval = 0;

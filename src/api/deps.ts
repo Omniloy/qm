@@ -1,24 +1,45 @@
-import type { ModelProviderAvailability } from "../model/pi-models.ts";
 import type { HarnessAuthStore } from "../credentials/harness-auth-store.ts";
 import type { BrowserProviderSpec } from "../connectors/browser-providers.ts";
 import type { RelayHub } from "../browser-relay/relay.ts";
+import type { ExternalSlackPolicies } from "../resolution/external-slack.ts";
+import type { DurableMap } from "../persistence/durable-map.ts";
+import type { BackgroundOwnershipStore } from "../runs/background-ownership.ts";
+import type { LoopIngressService } from "../loops/ingress.ts";
+import type { createSuggestedActivityService } from "../suggestions/activities.ts";
+import type { ManagedSlack } from "../surfaces/slack-managed.ts";
+import type { InboxSourceRefresh } from "../loops/inbox-source-refresh.ts";
+import type { BrokerSessionStore } from "../auth/broker-sessions.ts";
+import type { DirectFileUploads } from "../files/direct-file-upload.ts";
+import type { SandboxResources } from "../sandbox/sandbox-resources.ts";
+import type { ModelVerifier } from "../model/model-verification.ts";
+import type { DurableByteStore } from "../files/durable-byte-store.ts";
+import type { SessionShareStore } from "../sessions/session-share.ts";
+import type { ModelOverlayStore } from "../model/model-overlay-store.ts";
+import type { ModelProvider, ModelProviderAvailability } from "../model/pi-models.ts";
 import type { ModelCredentialStore } from "../model/model-credential-store.ts";
+import type { UserModelCredentialStore } from "../model/user-model-credential-store.ts";
 import type { CustomProviderStore } from "../model/custom-provider-store.ts";
+import type { McpServerStore } from "../mcp/mcp-server-store.ts";
+import type { McpToolService } from "../mcp/mcp-tool-service.ts";
 import type { ReplayDedupe } from "../auth/replay-dedupe.ts";
 import type { FetchLike, OAuthClientResolver } from "../connectors/oauth.ts";
 import type { ConsentLinkStore } from "../connectors/consent-link.ts";
-import type { ScopedConfigStore } from "../resolution/config-store.ts";
+import type { OAuthFlowStore } from "../connectors/oauth-flow-store.ts";
+import type { OrgBranding, ScopedConfigStore } from "../resolution/config-store.ts";
 import type { AclStore } from "../acl/acl-store.ts";
 import type { CredentialUsageSink } from "../admin/credential-usage-sink.ts";
 import type { EgressAuditSink } from "../admin/egress-audit-sink.ts";
 import type { BrokerFetch } from "./credential-broker.ts";
 import type { GitHttpFetch } from "./git-http-broker.ts";
 import type { AdminService } from "../admin/admin-service.ts";
+import type { InviteMailer } from "../admin/invite-email.ts";
 import type { SessionStore } from "../sessions/session-store.ts";
+import type { SecurityScreenProbe } from "../security/security-screener.ts";
 import type { AuditLog } from "../audit/audit-log.ts";
 import type { ErrorLog } from "../admin/error-log.ts";
 import type { MetricsSink } from "../admin/metrics-sink.ts";
 import type { RunStore } from "../runs/run-store.ts";
+import type { RunSignalStore } from "../runs/run-signal-store.ts";
 import type { WorkspaceStore } from "../workspace/workspace-store.ts";
 import type { ScopeId } from "../types.ts";
 import type { MountStore } from "../mounts/mount-store.ts";
@@ -29,8 +50,11 @@ import type { SandboxMigrationRunner } from "../sandbox/sandbox-migration-runner
 import type { EgressEnforcement, Sandbox } from "../sandbox/sandbox.ts";
 import type { EnvironmentStore } from "../environments/environment-store.ts";
 import type { Scheduler } from "../cron/scheduler.ts";
+import type { WebhookReceiver } from "../webhooks/webhook-receiver.ts";
 import type { IdentityService } from "../identity/identity-service.ts";
+import type { PrincipalLinkService } from "../identity/principal-links.ts";
 import type { DeviceFlowCutoverStore } from "../credentials/device-flow-cutover.ts";
+import type { FeatureFlagStore } from "../feature-flags.ts";
 import type {
   ConnectorTokenStore,
   Keychain,
@@ -43,6 +67,7 @@ import type { DropResolution } from "../triggers/keychain-ask.ts";
 import type { BlobTransferStore } from "../persistence/blob-transfer.ts";
 import type { DeliveryStore } from "../delivery/delivery-store.ts";
 import type { ControlService } from "./control-service.ts";
+import type { LoopServiceDeps } from "./routes/loops.ts";
 import type { CronStore } from "../cron/cron-store.ts";
 import type { ProcessRegistry } from "../processes/process-registry.ts";
 import type { BrowserSessionStore } from "../connectors/browser-session-store.ts";
@@ -52,35 +77,54 @@ import type { DeploymentLayerStore } from "../deployment/deployment-layer-store.
 import type { AmbientJudgmentStore } from "../surface-cache/ambient-judgment-store.ts";
 import type { AckEmojiPickStore } from "../surface-cache/ack-emoji-pick-store.ts";
 import type { ChannelPolicyStore } from "../surface-cache/channel-policy-store.ts";
+import type { UiStateStore } from "../surfaces/ui-state.ts";
+import type { ConnectorTokenSource, SlackUserClient } from "../loops/sources/adapter.ts";
 import type { RateLimiter } from "../ratelimit/rate-limiter.ts";
 import type { AdvisoryLock } from "../persistence/advisory-lock.ts";
 import type { SlackInstallationStore, SlackSocketAppIdReader } from "../surfaces/slack-installation.ts";
 
+import type { SlackAccountLink, ComposioReturn } from "./routes/composio.ts";
+
 export interface ServerDeps {
+  externalSlackPolicies?: ExternalSlackPolicies;
+  checkReadiness?: (signal: AbortSignal) => Promise<void>;
+  slackAccounts?: DurableMap<SlackAccountLink>;
+  composioReturns?: DurableMap<ComposioReturn>;
+  composioFetch?: typeof fetch;
+  suggestedActivities?: ReturnType<typeof createSuggestedActivityService>;
   production?: boolean;
   allowUnauthenticatedCore?: boolean;
   signingSecret?: string;
   capabilitySecret?: string;
+  capabilityTokenCompression?: boolean;
   portalIdentitySecret?: string;
   requireSignedPortalIdentity?: boolean;
   control: ControlService;
   replayDedupe?: ReplayDedupe;
+  deploymentLiveSmoke?: () => Promise<void>;
+  brokerSessions?: BrokerSessionStore;
   connectorTokens?: ConnectorTokenStore;
+  managedSlack?: ManagedSlack;
   slackInstallation?: SlackInstallationStore;
   slackInstallationFetch?: typeof fetch;
   slackInstallationSocketAppId?: SlackSocketAppIdReader;
   slackEnvironmentState?: "absent" | "configured" | "partial";
+  slackEventsPort?: number;
+  slackEnvBotToken?: string;
   oauthStateSecret?: string;
   oauthFetch?: FetchLike;
   oauthEnv?: NodeJS.ProcessEnv;
   resolveClient?: OAuthClientResolver;
   consentLinks?: ConsentLinkStore;
+  oauthFlows?: OAuthFlowStore;
+  apiBaseUrl?: string;
   publicUrl?: string;
   portalUrl?: string;
   config?: ScopedConfigStore;
   acl?: AclStore;
   credentialUsage?: CredentialUsageSink;
   deviceFlowCutover?: DeviceFlowCutoverStore;
+  featureFlags?: FeatureFlagStore;
   egressAudit?: EgressAuditSink;
   brokerFetch?: BrokerFetch;
   gitHttpFetch?: GitHttpFetch;
@@ -89,57 +133,61 @@ export interface ServerDeps {
   providerKeys?: ModelProviderAvailability;
   modelCredentials?: ModelCredentialStore;
   harnessAuth?: HarnessAuthStore;
-  /** Hosted browsers a person may connect, read from the browse skill docs. */
   browserProviders?: readonly BrowserProviderSpec[];
-  /** Pairs a person's own Chrome with the browser their agent drives. */
   browserRelay?: RelayHub;
-  /** Public wss origin the extension dials, e.g. https://relay.qm.example.com. */
   relayPublicUrl?: string;
-  /** Where the ChatGPT proxy lives and the key that lets core drive its sign-in. */
   codexProxy?: { url: string; managementKey: string };
-  /** Wired at the entry point, which owns process.env; injected in tests so saving a token needs no live model call. */
   harnessAuthProbe?: (token: string) => Promise<{ ok: boolean; detail?: string }>;
+  userModelCredentials?: UserModelCredentialStore;
+  mcpServers?: McpServerStore;
+  mcpToolService?: McpToolService;
   modelCredentialFetch?: typeof fetch;
+  modelRegistry?: ModelOverlayStore;
+  modelVerifier?: ModelVerifier;
+  refreshModels?: () => Promise<void>;
   customProviders?: CustomProviderStore;
   refreshCustomProviders?: () => Promise<void>;
-  brandingDefault?: { accent?: string; mark?: string; selfLabel?: string; productName?: string; logoSvg?: string };
+  brandingDefault?: OrgBranding;
   harnessId?: string;
+  harnessCarriedModelAuth?: ModelProvider;
   admin?: AdminService;
+  inviteMailer?: InviteMailer;
+  emailAuthPrincipals?: readonly string[];
+  emailAuthDomain?: string;
+  slackAllowFrom?: readonly string[];
   rateLimiter?: RateLimiter;
   sessions?: SessionStore;
-  /**
-   * Drive folder mounts. Absent when the deployment has no Google connector
-   * configured, in which case the mount routes answer 503 rather than 404 —
-   * the endpoints exist, the capability does not.
-   */
   driveMounts?: {
     store: MountStore;
     cache: ListingCache;
-    /** Same check that governs uploading a file to the scope. */
     canUseContext: (principalId: string, scopeId: ScopeId) => Promise<boolean>;
-    /** The caller's own Drive token, or null when Google is not connected. */
     tokenFor: (principalId: string) => Promise<string | null>;
-    /** Lists folders under a parent, server-side, with the caller's token. */
     browseFolders: (
       accessToken: string,
       parentId: string,
       search?: string,
     ) => Promise<Array<{ id: string; name: string }>>;
-    /** Resolve one folder by id, for a pasted Drive link. */
     lookupFolder: (accessToken: string, folderId: string) => Promise<{ id: string; name: string } | null>;
   };
+  screenSecurity?: SecurityScreenProbe;
   auditLog?: AuditLog;
   errors?: ErrorLog;
   metrics?: MetricsSink;
   crons?: CronStore;
+  loops?: LoopServiceDeps;
   runs?: RunStore;
+  signals?: RunSignalStore;
   workspace?: WorkspaceStore;
   files?: FileArtifactStore;
+  fileUploads?: DirectFileUploads;
+  filesDirectUploadsEnabled?: boolean;
   memory?: MemoryService;
   sandboxBackend?: string;
   egressDeclaredEnforcement?: EgressEnforcement;
   egressEnforcement?: EgressEnforcement;
+  egressControlPlaneConfigured?: boolean;
   sandboxMigration?: SandboxMigrationRunner;
+  sandboxResources?: SandboxResources;
   sandbox?: Sandbox;
   advisoryLock?: AdvisoryLock;
   processes?: ProcessRegistry;
@@ -156,16 +204,29 @@ export interface ServerDeps {
   ambientJudgments?: AmbientJudgmentStore;
   ackEmojiPicks?: AckEmojiPickStore;
   channelPolicy?: ChannelPolicyStore;
+  uiState?: UiStateStore;
+  loopSourceTokens?: ConnectorTokenSource;
+  inboxSourceRefresh?: InboxSourceRefresh;
+  loopSlackClient?: (token: string) => SlackUserClient;
+  sessionShares?: SessionShareStore;
+  sessionShareBytes?: DurableByteStore;
   environments?: EnvironmentStore;
   deploymentLayer?: DeploymentLayerStore;
+  backgroundOwnership?: { store: BackgroundOwnershipStore; instanceId: string; deploymentId: string };
+  deploymentControlSecret?: string;
+  credentialServices?: () => readonly string[];
   brokeredServices?: () => readonly string[];
   deployDialTimeoutMs?: number;
   deployAppsDomain?: string;
   deployGateSecret?: string;
   deployAppsSessionSecret?: string;
   deployAppsLoginUrl?: string;
+  deployAppsLoginPath?: "/auth/login" | "/auth/trusted/login";
   scheduler?: Scheduler;
+  webhookReceiver?: WebhookReceiver;
+  loopIngress?: LoopIngressService;
   identity?: IdentityService;
+  principalLinks?: PrincipalLinkService;
   keychain?: Keychain;
   serviceCreds?: ServiceCredentialStore;
   deliveries?: DeliveryStore;

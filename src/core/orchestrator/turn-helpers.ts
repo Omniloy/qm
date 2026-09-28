@@ -1,9 +1,9 @@
 import type {
   CandidateDestination,
   CommandApprovalGrant,
+  Destination,
   EgressPolicy,
   Principal,
-  Resolution,
   ScopeId,
   SessionEntry,
   TurnRequest,
@@ -14,7 +14,6 @@ import { turnOriginRequestFields } from "../turn-origin.ts";
 import type { DirectoryStore } from "../../directory/directory-store.ts";
 import { isOverheardEntry } from "../../sessions/session-store.ts";
 import type { DeliveryStore } from "../../delivery/delivery-store.ts";
-import { writableMemoryScope } from "../../memory/policy.ts";
 import { collectBytes } from "../../util/bytes.ts";
 import type { SkillBundle, SkillBundleStore } from "../../skills/skill-bundle-store.ts";
 import type { SkillResolution } from "../../skills/skill-store.ts";
@@ -91,14 +90,6 @@ export async function loadTapeImage(
   return { data: bytes.data.toString("base64"), mimeType: artifact.mimetype, sizeBytes: bytes.sizeBytes };
 }
 
-export function visibleSkillScopes(resolution: Resolution, scopeId: ScopeId): ScopeId[] {
-  const memoryScopeId = writableMemoryScope(resolution.layers, scopeId);
-  const teamScopes = resolution.layers
-    .filter((l) => l.mode === "ro" && l.scopeId !== resolution.orgScopeId)
-    .map((l) => l.scopeId);
-  return [memoryScopeId, ...teamScopes, resolution.orgScopeId];
-}
-
 const CONNECTOR_SKILL_PROVIDERS: Readonly<Record<string, string>> = {
   dropbox: "dropbox",
   "email-draft-in-voice": "google",
@@ -107,6 +98,7 @@ const CONNECTOR_SKILL_PROVIDERS: Readonly<Record<string, string>> = {
   "google-workspace": "google",
   linear: "linear",
   "morning-digest": "x",
+  "slack-drafts": "slack",
   x: "x",
 };
 
@@ -166,12 +158,18 @@ export function stripTurnBoilerplate(text: string): string {
   return kept || text.trim();
 }
 
+export function visibleTitleEntryText(entry: SessionEntry): string | undefined {
+  const payload = entry.payload as { text?: unknown; display?: unknown } | null;
+  const value = entry.type === "user" && typeof payload?.display === "string" ? payload.display : payload?.text;
+  return typeof value === "string" ? value.trim() || undefined : undefined;
+}
+
 export function renderTitleTranscript(entries: SessionEntry[]): string {
   const lines: string[] = [];
   for (const e of entries) {
     if (e.type !== "user" && e.type !== "assistant") continue;
     if (isOverheardEntry(e)) continue;
-    const raw = (e.payload as { text?: string } | null)?.text?.trim();
+    const raw = visibleTitleEntryText(e);
     if (!raw) continue;
     const text = e.type === "user" ? stripTurnBoilerplate(raw) : raw;
     if (!text) continue;
@@ -180,6 +178,8 @@ export function renderTitleTranscript(entries: SessionEntry[]): string {
   }
   return lines.join("\n\n");
 }
+
+const DELIVERY_NOTE_ITEM_MAX_CHARS = 200;
 
 export async function recentPrincipalDeliveryNote(
   deliveries: DeliveryStore | undefined,
@@ -191,7 +191,11 @@ export async function recentPrincipalDeliveryNote(
   const lines = recent.map((d) => {
     const from = d.destination.onBehalfOf ? ` from ${d.destination.onBehalfOf}` : "";
     const trigger = d.provenance?.trigger ? ` [${d.provenance.trigger}]` : "";
-    const text = d.text.trim().replace(/\s+/g, " ");
+    const flattened = d.text.trim().replace(/\s+/g, " ");
+    const text =
+      flattened.length > DELIVERY_NOTE_ITEM_MAX_CHARS
+        ? `${flattened.slice(0, DELIVERY_NOTE_ITEM_MAX_CHARS)}…`
+        : flattened;
     return `- ${new Date(d.deliveredAt ?? d.createdAt).toISOString()}${trigger}${from}: ${text}`;
   });
   return [
@@ -228,6 +232,9 @@ export function replayableRequest(input: OrchestratorInput): TurnRequest {
   const c = input.conversation;
   return {
     surface: input.surface ?? "unknown",
+    ...(input.slackSource ? { slackSource: input.slackSource } : {}),
+    ...(input.externalSlack ? { externalSlack: input.externalSlack } : {}),
+    ...(input.sessionSenderId ? { sessionSenderId: input.sessionSenderId } : {}),
     ...(input.scopeVersion ? { scopeVersion: input.scopeVersion } : {}),
     ...(input.deliveryTarget ? { deliveryTarget: input.deliveryTarget } : {}),
     ...(input.deliveryCandidates?.length ? { deliveryCandidates: input.deliveryCandidates } : {}),
@@ -244,6 +251,8 @@ export function replayableRequest(input: OrchestratorInput): TurnRequest {
     },
     text: input.text,
     ...(input.gatewayContext ? { gatewayContext: input.gatewayContext } : {}),
+    ...(input.analyticsSuppressed ? { analyticsSuppressed: true } : {}),
+    ...(input.proactiveOpener ? { proactiveOpener: true } : {}),
     ...turnOriginRequestFields(input.origin),
     ...(input.conversationHeader ? { conversationHeader: input.conversationHeader } : {}),
     ...(input.priorTurns?.length ? { priorTurns: input.priorTurns } : {}),
@@ -256,6 +265,10 @@ export function replayableRequest(input: OrchestratorInput): TurnRequest {
     ...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}),
     ...(input.fastMode !== undefined ? { fastMode: input.fastMode } : {}),
     ...(input.readOnly ? { readOnly: true } : {}),
+    ...(input.privateSessionMessage
+      ? { privateSessionMessage: true as const, sessionMessageDepth: input.sessionMessageDepth }
+      : {}),
+    ...(input.skipMemory ? { skipMemory: true } : {}),
     ...(input.surfaceTools ? { surfaceTools: true } : {}),
     ...(input.addressed ? { addressed: true } : {}),
     ...(input.envelopeWrapped ? { envelopeWrapped: true } : {}),
@@ -273,6 +286,50 @@ export function approvalGrantId(
 
 function candidateKey(target: string, audienceScopeId: ScopeId): string {
   return hashId([target, audienceScopeId]);
+}
+
+const SURFACE_ENQUEUE_ACTIONS = new Set(["post", "reach", "react", "edit", "delete"]);
+
+export function completedSurfaceEnqueues(
+  entries: readonly SessionEntry[],
+  sinceSeq: number,
+  surfaceTool: string,
+): number {
+  const calls: Array<{ enqueues: boolean; callId: string | undefined; done: boolean }> = [];
+  for (const e of entries) {
+    if (e.seq <= sinceSeq) continue;
+    if (e.type === "tool_call") {
+      const p = e.payload as { tool?: unknown; action?: unknown; callId?: unknown } | null;
+      calls.push({
+        enqueues: p?.tool === surfaceTool && SURFACE_ENQUEUE_ACTIONS.has(String(p?.action)),
+        callId: typeof p?.callId === "string" ? p.callId : undefined,
+        done: false,
+      });
+    } else if (e.type === "tool_result") {
+      const cid = (e.payload as { callId?: unknown } | null)?.callId;
+      const call =
+        typeof cid === "string" ? calls.find((c) => c.callId === cid && !c.done) : calls.findLast((c) => !c.done);
+      if (call) call.done = true;
+    }
+  }
+  return calls.filter((c) => c.enqueues && c.done).length;
+}
+
+export interface TurnPostKeys {
+  seed(completed: number): void;
+  take(): number;
+  key(destination: Destination, seq: number): string;
+}
+
+export function turnPostKeys(turnKey: string): TurnPostKeys {
+  let next = 0;
+  return {
+    seed(completed) {
+      next = completed;
+    },
+    take: () => next++,
+    key: (destination, seq) => `post:${turnKey}:${destination.type}:${destination.target}:${seq}`,
+  };
 }
 
 export function replaceThreadSegment(target: string, threadTs: string): string {
