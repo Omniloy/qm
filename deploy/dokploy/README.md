@@ -11,22 +11,34 @@ maintained by hand against `cli/src/services.ts` and `cli/src/secrets.ts`.
 
 ## Topology
 
-| Service  | Image                            | Exposure                                     |
-| -------- | -------------------------------- | -------------------------------------------- |
-| `pg`     | `postgres:16`                    | private                                      |
-| `core`   | `deploy/dokploy/core.Dockerfile` | private, mounts the host Docker socket       |
-| `auth`   | `deploy/auth/Dockerfile`         | private                                      |
-| `web-ui` | `deploy/web-ui/Dockerfile`       | private                                      |
-| `admin`  | `deploy/admin/Dockerfile`        | private                                      |
-| `portal` | `deploy/portal/Dockerfile`       | **public**, via Traefik on `dokploy-network` |
+| Service             | Image                         | Exposure                                                  |
+| ------------------- | ----------------------------- | --------------------------------------------------------- |
+| `pg`                | `postgres:16`                 | private                                                   |
+| `core`              | `deploy/core/Dockerfile`      | private, plus the relay route; mounts the host socket     |
+| `web-ui`            | `deploy/web-ui/Dockerfile`    | private; serves the chat UI and the admin module          |
+| `portal`            | `deploy/portal/Dockerfile`    | **public**, via Traefik on `dokploy-network`; embeds auth |
+| `codex-proxy`       | pinned `eceasy/cli-proxy-api` | private, no published ports                               |
+| `sandbox-keepalive` | `${LOCAL_SANDBOX_IMAGE}`      | no network                                                |
 
-The portal is the only Internet-facing service, as on Fly and AWS. It proxies the web
-UI, `/admin`, and the sign-in broker's two browser routes under `/idp`.
+This is upstream's three-workload layout ([`docs/combined-services.md`](../../docs/combined-services.md)).
+`web-ui` hosts the admin module under `/admin` (`ADMIN_ENABLED=1`), and `portal` runs
+the sign-in broker in-process on `127.0.0.1:8099` (`AUTH_EMBEDDED=1`). The portal is the
+only Internet-facing service, as on Fly and AWS. It proxies the web UI, `/admin` (to
+`http://web-ui:8080/admin`), and the broker's two browser routes under `/idp`. The
+broker's token, userinfo and JWKS endpoints are reachable only on the portal's own
+loopback.
 
-`core` differs from the Fly/AWS image in exactly one respect: `SANDBOX_BACKEND=local`
-runs each scope's agent computer as a container on this host's Docker daemon, so the
-image carries the `docker` CLI and runs as root to reach the mounted socket. Anything
-the agent can run in its sandbox is therefore bounded by that daemon — treat the host
+`core` uses upstream's image unchanged. It runs as the unprivileged `node` user
+(uid 1000), so two host facts have to line up with it:
+
+- **The Docker socket.** `SANDBOX_BACKEND=local` runs each scope's agent computer as a
+  container on this host's daemon. Compose adds the socket's group to core with
+  `group_add: ${DOCKER_GID}`, default `998` (this host's `docker` group). Check it with
+  `stat -c %g /var/run/docker.sock` on a new host.
+- **The data bind.** `DATA_HOST_DIR` must be writable by uid 1000. See the one-time
+  `chown` in [Upgrading to v0.1.13](#upgrading-to-v0113).
+
+Anything the agent can run in its sandbox is bounded by that daemon — treat the host
 as part of the trust boundary and read [`SECURITY.md`](../../SECURITY.md) before
 widening access.
 
@@ -129,7 +141,7 @@ that is core's _own_ loopback, so nothing is reachable: sandboxes fail with
 `exec daemon never became reachable: fetch failed` and deployed apps 404, while both
 are demonstrably healthy when curled from the host.
 
-`CORE_CONTAINER` names core's own container. When set, core joins the workload's
+`QM_CORE_CONTAINER` names core's own container. When set, core joins the workload's
 network and addresses it by container name, so nothing depends on the published host
 port. It must match `container_name` on the `core` service. Host networking would also
 fix it, but this host has no firewall — core would be exposed on port 8080 publicly.
@@ -179,6 +191,7 @@ docker exec qm-omniloy-core printenv | grep YOUR_KEY
 | `LOCAL_SANDBOX_NETWORK_POOL` | optional; IPv4 CIDR the per-scope `/28` networks come from, default `198.18.0.0/16` |
 | `DATA_HOST_DIR`              | host path for core's data, e.g. `/opt/qm/data`; it _is_ `DATA_DIR` — see above      |
 | `ADMIN_GRANTS`               | `someone@example.com:org_admin`, comma-separated                                    |
+| `DOCKER_GID`                 | optional; group id of `/var/run/docker.sock`, default `998`                         |
 
 `ADMIN_GRANTS` is the only source of admin identity. `org_admin` is the sole accepted
 role, and the principal is whatever `OIDC_PRINCIPAL_CLAIM` yields — the lowercased
@@ -192,8 +205,11 @@ instead, since changing the variable will no longer have any effect.
 | --------------------------- | ------------------------------------------------------- |
 | `AUTH_EMAIL_FROM`           | verified sender, e.g. `MiniOmni <no-reply@example.com>` |
 | `AUTH_ALLOWED_EMAIL_DOMAIN` | domain allowed to sign in                               |
-| `AUTH_BRAND_NAME`           | name shown on the sign-in page                          |
 | `RESEND_API_KEY`            | Resend key that can send as `AUTH_EMAIL_FROM`           |
+
+Core receives `RESEND_API_KEY` and `AUTH_EMAIL_FROM` too, which lets it email
+invitations to external users added from the admin Users tab or by chatting with
+MiniOmni. Leave either unset on core and invitations are simply not emailed.
 
 The broker sends one-time sign-in links through Resend. The sender domain must be
 verified in Resend, or delivery is limited to the Resend account's own address.
@@ -253,7 +269,7 @@ verified domain, e.g. `MiniOmni <noreply@send.<domain>>`.
 
 #### Changing it on a running stack
 
-`AUTH_EMAIL_FROM` reaches the auth service as `${AUTH_EMAIL_FROM}` in
+`AUTH_EMAIL_FROM` reaches the portal's embedded broker (and core, for invitations) as `${AUTH_EMAIL_FROM}` in
 `docker-compose.yml`, so its value lives in the Dokploy application env and changing it
 needs no repository change — read the env with `compose.one`, replace the one line,
 `compose.update`, then `compose.deploy`. Send the `compose.update` response to
@@ -262,11 +278,11 @@ needs no repository change — read the env with `compose.one`, replace the one 
 A 200 from `compose.update` is not evidence the container received anything. Confirm
 from inside the container, and confirm delivery through the real sign-in path rather
 than by calling Resend directly — calling Resend proves only that Resend works, not
-that the auth service is configured:
+that the embedded broker is configured:
 
 ```bash
-docker exec qm-omniloy-auth-1 printenv | grep AUTH_EMAIL_FROM
-docker logs --since 5m qm-omniloy-auth-1 | grep 'sign-in link'
+docker exec qm-omniloy-portal-1 printenv | grep AUTH_EMAIL_FROM
+docker logs --since 5m qm-omniloy-portal-1 | grep 'sign-in link'
 curl -s -H "Authorization: Bearer $RESEND_API_KEY" \
   https://api.resend.com/emails/<resend-message-id>
 ```
@@ -313,6 +329,58 @@ node -e "const {generateKeyPairSync}=require('node:crypto');process.stdout.write
 
 Connector OAuth clients and the optional Slack bot tokens are not set here — enter them
 at `${PUBLIC_URL}/admin` once the stack is up.
+
+### First-boot feature flags
+
+Core pins four behaviours explicitly, each overridable from the Dokploy env without a
+repository change:
+
+| Key                            | Default | Effect                                                                      |
+| ------------------------------ | ------- | --------------------------------------------------------------------------- |
+| `SWARMS_ENABLED`               | `false` | the swarm service, API and tools ([`docs/swarms.md`](../../docs/swarms.md)) |
+| `EAGER_PROVISION`              | `false` | provisions a scope's sandbox ahead of its first turn                        |
+| `SUGGESTED_ACTIVITIES_ENABLED` | `false` | proposes recurring activities people can schedule                           |
+| `SECURITY_SCREEN_BACKEND`      | `model` | `off`, `model`, or `proxy`; screens agent actions                           |
+
+Upstream defaults the first three to `true` and the screen to `off`. They stay off on
+first boot so an upgrade changes one thing at a time; see
+[Enabling the deferred features](#enabling-the-deferred-features).
+
+## Branding
+
+MiniOmni's identity lives in the organization layer, not in core:
+[`deploy/layers/omniloy/branding.conf`](../layers/omniloy/branding.conf) is loaded as an
+`env_file` by `core` and `portal`. It sets the upstream branding variables
+(`ORG_BRAND_SELF_LABEL`, `ORG_BRAND_ORG_NAME`, `ORG_BRAND_ACCENT`, `ORG_BRAND_MARK`), the
+Slack message identity (`SLACK_BOT_DISPLAY_NAME`) and the sign-in page title
+(`AUTH_BRAND_NAME`). An `environment:` entry in the compose file would override the
+file, so none of these keys appear there, and `AUTH_BRAND_NAME` is no longer read from
+the Dokploy env. The branding default seeds the admin **Branding** card; a value saved
+there takes precedence.
+
+## Compose notes
+
+Rationale that the compose file does not carry inline:
+
+- **`OPENAI_BASE_URL` and `OPENAI_API_KEY`.** GPT models resolve as built-ins whose base
+  URL is pointed at `codex-proxy`, so they keep the registry's names, context windows and
+  prices; a custom provider would never resolve because the built-in registry is read
+  first. The key is the proxy's own and proves only that core is the caller.
+- **`sandbox-keepalive`** holds a container open on the sandbox image so an aggressive
+  `docker system prune --all` cannot reclaim it.
+- **`codex-proxy`** is pinned by digest because it holds a live ChatGPT credential. Its
+  config is written at boot from the env, and the `$$` escapes keep Compose from
+  interpolating the keys so the shell expands them inside the container, out of
+  `docker inspect`.
+- **`PORTAL_XFF_TRUSTED_HOPS=1`.** Traefik terminates TLS in front of the portal. Without
+  a trusted hop count the portal refuses to start, because public share links are rate
+  limited per client.
+- **Two names for the broker client secret.** The embedded broker reads
+  `AUTH_CLIENT_SECRET` and the portal's OIDC client reads `OIDC_CLIENT_SECRET`; both come
+  from `${AUTH_CLIENT_SECRET}`.
+- **The relay router** matches both `${RELAY_HOST}` and the `/v1/browser-relay` prefix,
+  so nothing else of core is routable. `RELAY_HOST` is only used by the label at
+  render time.
 
 ## Choosing the engine
 
@@ -443,7 +511,7 @@ Builds run on the host, so the first deploy is slow; later ones reuse layer cach
 ## Standing up a new instance
 
 Everything below is one Dokploy Compose application; there is no second app to create
-and no domain record to add. Run the steps in order — three of them have to happen
+and no domain record to add. Run the steps in order — four of them have to happen
 before the first deploy or it fails in ways that look like something else.
 
 ### Before the first deploy
@@ -455,6 +523,9 @@ before the first deploy or it fails in ways that look like something else.
    Core starts happily without it and only fails when someone sends the first turn.
 3. **A GitHub source in Dokploy**, if the repository is private. Check with
    `GET /api/admin.haveGithubConfigured`; without it the deploy fails at clone.
+4. **The data directory**, owned by core's uid: `mkdir -p /opt/qm/data && chown 1000:1000 /opt/qm/data`
+   (or wherever `DATA_HOST_DIR` points). Docker otherwise creates it as root and core
+   cannot write to it.
 
 **You do not create a domain.** The portal and the relay are routed by Traefik labels in
 `docker-compose.yml` keyed on `${PUBLIC_HOST}` and `${RELAY_HOST}`, with
@@ -556,7 +627,7 @@ Build logs are at `/etc/dokploy/logs/<appName>/`, newest last. Then confirm the 
 actually reached the container, which is the only honest check that step 4 worked:
 
 ```bash
-docker exec <appName>-core printenv | grep -E 'CORE_CONTAINER|DATA_HOST_DIR|PUBLIC_URL'
+docker exec <appName>-core printenv | grep -E 'QM_CORE_CONTAINER|DATA_HOST_DIR|PUBLIC_URL'
 ```
 
 ### Smoke test
@@ -580,7 +651,7 @@ In order, because each step depends on the last:
    and their networks `qm-net-<slug>`, each a `/28` from `LOCAL_SANDBOX_NETWORK_POOL`
    (scratch boxes use `qm-net-scratch-<slug>`).
 
-   No container plus `exec daemon never became reachable` means `CORE_CONTAINER` is unset
+   No container plus `exec daemon never became reachable` means `QM_CORE_CONTAINER` is unset
    or does not match `container_name`. A container that starts and dies usually means the
    sandbox image was never built.
 
@@ -599,3 +670,157 @@ API -X POST -d '{"composeId":"'"$COMPOSE_ID"'","branch":"<branch>"}' \
     "$DOKPLOY_URL/api/compose.update" >/dev/null
 API -X POST -d '{"composeId":"'"$COMPOSE_ID"'"}' "$DOKPLOY_URL/api/compose.deploy" >/dev/null
 ```
+
+## The Slack app manifest
+
+The MiniOmni Slack app is defined by
+[`deploy/layers/omniloy/slack-app-manifest.json`](../layers/omniloy/slack-app-manifest.json):
+upstream's `cli/templates/slack-manifest.json` with MiniOmni's name, handle, colour and
+agent description. `cli/templates/` stays identical to upstream, and core renders the
+admin panel's "create a Slack app" link from that template with `ORG_BRAND_SELF_LABEL`
+as the name. When upstream changes scopes or events, regenerate the layer file from the
+template and keep only the display fields different.
+
+Applying a new manifest to the existing app: at api.slack.com/apps → **MiniOmni** →
+**App Manifest**, first copy the current manifest out and save it as the rollback copy,
+then paste the layer file, save, and **reinstall to the workspace** so the new scopes are
+granted. The socket-mode app token is unchanged. If Slack issues a new bot token, enter
+it at `${PUBLIC_URL}/admin`.
+
+## Upgrading to v0.1.13
+
+v0.1.13 changes the stack shape (five application services to three), core's image and
+user, the core-container variable, and the Slack scopes. Nothing in the upgrade rotates
+a key or changes a public URL: `AUTH_ISSUER` stays `${PUBLIC_URL}/idp`, the callback stays
+`${PUBLIC_URL}/auth/callback`, and `AUTH_SIGNING_JWK`, `AUTH_TOKEN_SECRET`,
+`AUTH_CLIENT_SECRET` and `PORTAL_SESSION_SECRET` keep their values, so existing sessions
+and sign-in links survive. Run every host step on the Dokploy host as root.
+
+### 1. Back up Postgres and prove the backup restores
+
+```bash
+mkdir -p /root/qm-backups && cd /root/qm-backups
+docker exec qm-omniloy-pg-1 pg_dump -U postgres -d qm -Fc > qm-pre-v0113.dump
+docker run -d --name qm-restore-test -e POSTGRES_PASSWORD=restore postgres:16
+docker cp qm-pre-v0113.dump qm-restore-test:/tmp/qm.dump
+docker exec qm-restore-test sh -c 'until pg_isready -U postgres; do sleep 1; done;
+  createdb -U postgres qm && pg_restore -U postgres -d qm --no-owner /tmp/qm.dump'
+COUNTS="select count(*) from information_schema.tables where table_schema='public'"
+docker exec qm-omniloy-pg-1 psql -U postgres -d qm -tAc "$COUNTS"
+docker exec qm-restore-test psql -U postgres -d qm -tAc "$COUNTS"
+docker exec qm-omniloy-pg-1 psql -U postgres -d qm -tAc "select count(*) from admin_grants"
+docker exec qm-restore-test psql -U postgres -d qm -tAc "select count(*) from admin_grants"
+docker rm -f qm-restore-test
+```
+
+The table counts and the spot-checked row counts must match. `pg_restore` errors mean
+the dump is not a recovery point; stop here.
+
+### 2. Record the rollback point
+
+```bash
+cd /etc/dokploy/compose/qm-omniloy
+git rev-parse HEAD | tee /root/qm-backups/pre-v0113.sha
+cp deploy/dokploy/docker-compose.yml /root/qm-backups/docker-compose.5-services.yml
+for s in core web-ui admin portal auth; do docker tag qm-omniloy-$s:latest qm-omniloy-$s:pre-v0113; done
+```
+
+From a checkout, publish that commit as a branch Dokploy can deploy:
+`git push origin "$(cat pre-v0113.sha)":refs/heads/rollback/pre-v0113`. Also save the
+current Slack manifest from the App Manifest page, or from Git:
+`git show "$(cat pre-v0113.sha)":cli/templates/slack-manifest.json`.
+
+### 3. Prepare the host and env
+
+- **Core container variable.** The old compose passes `CORE_CONTAINER`, the new one
+  `QM_CORE_CONTAINER`; both are literals in the compose file, equal to
+  `container_name`, so each commit carries its own and no Dokploy key is needed. v0.1.13
+  core reads only `QM_CORE_CONTAINER`.
+- **Docker group.** Confirm `stat -c %g /var/run/docker.sock` prints `998`, or set
+  `DOCKER_GID` in the Dokploy env to what it prints.
+- **Data ownership.** Core now runs as uid 1000. Hand it the data bind once; the old
+  root core is unaffected by the change:
+
+  ```bash
+  chown -R 1000:1000 /opt/qm/data
+  ```
+
+- **Env.** No new key is required. `AUTH_BRAND_NAME` in the Dokploy env is no longer
+  read (the layer sets it); leave it until the rollback window closes. `RESEND_API_KEY`
+  and `AUTH_EMAIL_FROM` now also reach core, which enables emailed invitations.
+
+### 4. Deploy
+
+Merge the upgrade to `main` and deploy it with `compose.deploy`, or point the app at the
+upgrade branch first as in [Moving an instance to a feature branch](#moving-an-instance-to-a-feature-branch).
+Dokploy runs `up -d --build --remove-orphans`, so the `admin` and `auth` containers are
+removed by this deploy; their `:pre-v0113` images stay on the host.
+
+### 5. Verify
+
+Keep a browser signed in from before the deploy; it is the remembered-session test.
+
+```bash
+git -C /etc/dokploy/compose/qm-omniloy rev-parse --short HEAD
+docker ps --format '{{.Names}}\t{{.Status}}' | grep qm-omniloy
+docker exec qm-omniloy-core id
+docker exec qm-omniloy-core docker ps --format '{{.Names}}' | head -3
+docker exec qm-omniloy-core printenv | grep -E 'QM_CORE_CONTAINER|ORG_BRAND|SWARMS|EAGER|SUGGESTED|SECURITY_SCREEN'
+docker logs qm-omniloy-portal-1 2>&1 | grep -E 'sign-in broker on http://127.0.0.1:8099|public front door'
+curl -s -o /dev/null -w '%{http_code}\n' https://mo.omniloy.com/idp/token
+```
+
+`id` shows `uid=1000(node)` with group `998`, and `docker ps` inside core works. The
+token probe must not return the broker's token endpoint (anything but a token-endpoint
+error is fine; the endpoint lives only on the portal's loopback). Then, in the browser:
+the pre-deploy session is still signed in; sign out and back in with an emailed link;
+an admin opens `/admin` and saves a harmless setting; a non-admin gets no admin access;
+a chat turn streams and starts a `qm-sbx-*` container; the agent publishes an app under
+`/d/<id>`; and a Slack DM gets an answer.
+
+`scripts/migrate-transcript-tape.ts` ships in the core image as an optional operator
+command. It is a dry run unless given `--apply`:
+`docker exec qm-omniloy-core node scripts/migrate-transcript-tape.ts`.
+
+### 6. Reinstall the Slack app
+
+Only after step 5 passes, apply the new manifest as described in
+[The Slack app manifest](#the-slack-app-manifest). Until then the existing install keeps
+working without the new scopes.
+
+### Rolling back
+
+1. Point Dokploy at `rollback/pre-v0113` and deploy. That commit's compose is the saved
+   five-service file, and the `:pre-v0113` tags keep its image layers cached, so the
+   rebuild is quick.
+2. Leave the data bind as it is: the old core runs as root and reads uid-1000 files. Run
+   the `chown` again before rolling forward, since the old core writes files as root.
+3. Restore Postgres only if the old code fails on the upgraded schema, since it discards
+   everything written after the dump:
+
+   ```bash
+   docker stop qm-omniloy-core
+   docker exec qm-omniloy-pg-1 psql -U postgres -c 'drop database qm with (force)' -c 'create database qm'
+   docker exec -i qm-omniloy-pg-1 pg_restore -U postgres -d qm --no-owner < /root/qm-backups/qm-pre-v0113.dump
+   docker start qm-omniloy-core
+   ```
+
+4. Re-apply the saved Slack manifest if it was already replaced.
+
+### Enabling the deferred features
+
+After a full day stable on v0.1.13, turn the first-boot flags on one at a time on
+mo.omniloy.com, redeploying and testing each before the next: set the key in the Dokploy
+env, `compose.deploy`, confirm with `docker exec qm-omniloy-core printenv`, and exercise
+the feature.
+
+1. `SUGGESTED_ACTIVITIES_ENABLED=true`: suggestions appear and scheduling one creates a
+   cron.
+2. `EAGER_PROVISION=true`: a new scope's sandbox starts before its first turn, and host
+   memory stays within `LOCAL_SANDBOX_MEMORY_MB` per box.
+3. `SWARMS_ENABLED=true`: a swarm request creates worker sessions visible in the session
+   viewer.
+
+`SECURITY_SCREEN_BACKEND=model` is on from first boot; watch the error log for screen
+timeouts and set it to `off` if it blocks legitimate work. Remove a key from the Dokploy
+env to return to the compose default.
