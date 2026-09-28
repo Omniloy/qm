@@ -52,7 +52,7 @@ export interface SlackPluginConfig {
   maxPrivateChannels?: number;
   recentMessages?: number;
   userCacheTtlMs?: number;
-  botIdentity?: { username?: string; icon_emoji?: string; icon_url?: string };
+  botIdentity?: { username?: string; icon_emoji?: string };
   devIntrospection?: { port: number };
 }
 

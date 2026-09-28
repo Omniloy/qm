@@ -225,8 +225,7 @@ body.resizing-sidebar {
   flex: 0 0 22px;
   overflow: hidden;
   border-radius: 5px;
-  background: var(--brand-mark-bg, var(--brand-accent)) var(--brand-mark-image, var(--brand-logo, url("/favicon.svg")))
-    center / contain no-repeat;
+  background: var(--brand-accent) var(--brand-mark-image, url("./assets/brand-mark.svg")) center / cover no-repeat;
   color: white;
   font-size: 16px;
   font-weight: 500;

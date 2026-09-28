@@ -11,7 +11,7 @@ interface ActiveConversation {
   threadRef: string | null;
 }
 
-export const PRODUCT_TITLE = "MiniOmni · Web";
+export const PRODUCT_TITLE = "QM · Web";
 
 const VIEW_TITLES: Record<View, string> = {
   chats: "Chats",

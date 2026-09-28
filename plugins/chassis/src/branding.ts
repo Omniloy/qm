@@ -1,13 +1,9 @@
-import { BRAND } from "./brand.ts";
-
 export interface OrgBranding {
   orgName?: string;
   accent?: string;
   mark?: string;
   markUrl?: string;
   selfLabel?: string;
-  productName?: string;
-  logoSvg?: string;
 }
 
 const REFRESH_MS = 30_000;
@@ -65,20 +61,12 @@ export function createBrandingCache(fetchBranding: () => Promise<OrgBranding>): 
 const escapeAttr = (v: string): string =>
   v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-const escapeText = (v: string): string => v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-
 const CSS_HOSTILE = /[<>{}"'();\\]/;
 const cssSafe = (v: string | undefined): v is string => !!v && !CSS_HOSTILE.test(v);
 const cssUrlSafe = (v: string | undefined): v is string => cssSafe(v) && /^https:\/\/\S+$/.test(v);
 
-const BRAND_TITLE_TOKEN = "__BRAND__";
-
-export function logoCssUrl(logoSvg: string): string {
-  return `url("data:image/svg+xml;charset=utf-8,${encodeURIComponent(logoSvg).replace(/'/g, "%27")}")`;
-}
-
 export function injectBranding(html: string, branding: OrgBranding, opts?: { titleSuffix?: string }): string {
-  const { accent, mark, markUrl, selfLabel, productName, logoSvg } = branding;
+  const { accent, mark, markUrl, selfLabel } = branding;
   let out = html;
   if (selfLabel) {
     out = out.replace(
@@ -94,22 +82,9 @@ export function injectBranding(html: string, branding: OrgBranding, opts?: { tit
       out = out.replace(/<title>[^<]*<\/title>/, () => `<title>${title}</title>`);
     }
   }
-  if (productName) {
-    out = out.replace(
-      /(<meta name="brand-product-name" content=")[^"]*(")/,
-      (_m, pre: string, post: string) => `${pre}${escapeAttr(productName)}${post}`,
-    );
-  }
-  const titleName = productName ?? BRAND.productName;
-  out = out.replace(/<title>([^<]*)<\/title>/, (whole, current: string) =>
-    current.includes(BRAND_TITLE_TOKEN)
-      ? `<title>${escapeText(current.replaceAll(BRAND_TITLE_TOKEN, titleName))}</title>`
-      : whole,
-  );
   const decls = [
     ...(cssSafe(accent) ? [`--brand-accent:${accent}`] : []),
-    ...(logoSvg ? [`--brand-logo:${logoCssUrl(logoSvg)}`, "--brand-mark:none", "--brand-mark-bg:transparent"] : []),
-    ...(!logoSvg && cssSafe(mark) ? [`--brand-mark:"${mark}"`] : []),
+    ...(cssSafe(mark) ? [`--brand-mark:"${mark}"`] : []),
     ...(cssUrlSafe(markUrl) ? [`--brand-mark-image:url("${markUrl}")`] : []),
   ].join(";");
   if (decls) out = out.replace("</head>", () => `<style>:root{${decls}}</style></head>`);

@@ -29,12 +29,9 @@ import {
   PayloadTooLargeError,
   sendBuffered,
   serveFavicon,
-  serveBrandLogoPng,
 } from "../../chassis/src/http.ts";
 import { verifyPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
 import { createBrandingCache, injectBranding } from "../../chassis/src/branding.ts";
-import { BRAND, BRAND_LOGO_PATH } from "../../chassis/src/brand.ts";
-import { brandLogoPng } from "../../chassis/src/brand-logo.ts";
 import { parseSuggestedActivities } from "../../chassis/src/suggested-activities.ts";
 import { principalInAllowlist } from "../../chassis/src/principal-allowlist.ts";
 
@@ -97,8 +94,6 @@ const brandingCache = createBrandingCache(async () => {
     ...(typeof b?.mark === "string" ? { mark: b.mark } : {}),
     ...(typeof b?.markUrl === "string" ? { markUrl: b.markUrl } : {}),
     ...(typeof b?.selfLabel === "string" ? { selfLabel: b.selfLabel } : {}),
-    ...(typeof b?.productName === "string" ? { productName: b.productName } : {}),
-    ...(typeof b?.logoSvg === "string" ? { logoSvg: b.logoSvg } : {}),
   };
 });
 
@@ -130,37 +125,6 @@ async function serveWebManifest(res: ServerResponse): Promise<void> {
 async function brandIndexHtml(html: string): Promise<string> {
   const branding = await brandingCache.forRender();
   return injectBranding(html, branding, { titleSuffix: "· Web" });
-}
-
-const EXTENSION_TEXT_FILES = new Set(["manifest.json", "popup.html", "popup.js", "background.js", "README.md"]);
-
-function extensionProductName(branding: { productName?: string }): string {
-  return (branding.productName ?? "").trim() || BRAND.productName;
-}
-
-function extensionZipName(branding: { productName?: string }): string {
-  const slug = extensionProductName(branding)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "");
-  return slug ? `${slug}-browser-bridge.zip` : BRAND.extensionZipName;
-}
-
-function rebrandExtensionFile(name: string, data: Buffer, branding: { productName?: string }): Buffer {
-  const productName = extensionProductName(branding);
-  if (productName === BRAND.productName || !EXTENSION_TEXT_FILES.has(name)) return data;
-  const rebranded = data
-    .toString("utf8")
-    .replaceAll(BRAND.extensionName, `${productName} Browser Bridge`)
-    .replaceAll(BRAND.productName, productName);
-  if (name.endsWith(".json")) {
-    try {
-      JSON.parse(rebranded);
-    } catch {
-      return data;
-    }
-  }
-  return Buffer.from(rebranded, "utf8");
 }
 
 const portalTokenStore = new AsyncLocalStorage<string | undefined>();
@@ -2421,11 +2385,7 @@ const apiRoutes: readonly WebRoute[] = [
       const { res } = c;
       try {
         const names = readdirSync(EXTENSION_DIR).filter((n) => !n.startsWith("."));
-        const branding = await brandingCache.forRender();
-        const entries = names.map((name) => ({
-          name,
-          data: rebrandExtensionFile(name, readFileSync(join(EXTENSION_DIR, name)), branding),
-        }));
+        const entries = names.map((name) => ({ name, data: readFileSync(join(EXTENSION_DIR, name)) }));
         const pairing = await coreFetchCap("POST", "/v1/browser-relay/pairing", "{}");
         if (pairing.status >= 200 && pairing.status < 300) {
           try {
@@ -2443,7 +2403,7 @@ const apiRoutes: readonly WebRoute[] = [
         const zip = makeZip(entries);
         res.writeHead(200, {
           "content-type": "application/zip",
-          "content-disposition": `attachment; filename="${extensionZipName(branding)}"`,
+          "content-disposition": 'attachment; filename="qm-browser-bridge.zip"',
           "content-length": String(zip.length),
         });
         return void res.end(zip);
@@ -3405,16 +3365,11 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
   const method = req.method ?? "GET";
 
   if (method === "GET" && path === "/healthz") return json(res, 200, { ok: true });
-  if (method === "GET" && path === BRAND_LOGO_PATH) {
-    return serveBrandLogoPng(res, brandLogoPng(), "public, max-age=86400");
-  }
   if (method === "GET" && path === "/favicon.svg") {
     return serveFavicon(
       res,
       {
-        svg:
-          process.env.WEB_UI_FAVICON_SVG ??
-          (process.env.WEB_UI_FAVICON_EMOJI ? undefined : (brandingCache.current().logoSvg ?? BRAND.logoSvg)),
+        svg: process.env.WEB_UI_FAVICON_SVG,
         emoji: process.env.WEB_UI_FAVICON_EMOJI ?? "\u{1F3F4}\u{200D}\u2620\uFE0F",
       },
       "no-cache",

@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import { ClaimStoreUnavailableError } from "../../chassis/src/claims.ts";
-import { BRAND } from "../../chassis/src/brand.ts";
 import { createLocalJWKSet, decodeProtectedHeader, jwtVerify, type JWK } from "jose";
 import {
   authorizeQuery,
@@ -789,7 +788,7 @@ test("trusted sign-in remains available when email is unavailable", async () => 
   }
 });
 
-test("AUTH_FAVICON_SVG replaces the brand-logo favicon", async (t) => {
+test("AUTH_FAVICON_SVG replaces the envelope favicon", async (t) => {
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><rect width="8" height="8"/></svg>';
   const h = await startHarness({ env: { AUTH_FAVICON_SVG: svg } });
   t.after(() => h.close());
@@ -798,5 +797,5 @@ test("AUTH_FAVICON_SVG replaces the brand-logo favicon", async (t) => {
   assert.equal(await r.text(), svg);
   const plain = await startHarness();
   t.after(() => plain.close());
-  assert.equal(await (await fetch(`${plain.base}/favicon.ico`)).text(), BRAND.logoSvg);
+  assert.match(await (await fetch(`${plain.base}/favicon.ico`)).text(), /✉️/);
 });

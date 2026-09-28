@@ -319,7 +319,7 @@ def clear_state():
 # ------------------------------------------------------------------- core
 
 def core_call(method, path, body=None, timeout=8):
-    """Talk to MiniOmni. Returns None when MiniOmni is unreachable or says no.
+    """Talk to QM. Returns None when QM is unreachable or says no.
 
     Every caller treats failure as "no pane", never as "no browser": the person
     asked to browse, and losing the picture is not a reason to refuse the task.
@@ -329,7 +329,7 @@ def core_call(method, path, body=None, timeout=8):
 
 
 def core_call_status(method, path, body=None, timeout=8):
-    """As above, but says what MiniOmni answered.
+    """As above, but says what QM answered.
 
     Some refusals are meant to be obeyed rather than shrugged off — "there is
     no room for another browser" is a real answer, not a failed lookup.
@@ -358,7 +358,7 @@ def core_call_status(method, path, body=None, timeout=8):
 
 
 def control_mode(state):
-    """Who has the wheel right now, as far as MiniOmni knows.
+    """Who has the wheel right now, as far as QM knows.
 
     Unknown counts as the agent's: a browser nobody registered still has to be
     drivable, and refusing on a failed lookup would strand the task.
@@ -747,7 +747,7 @@ def main():
         if status == 409:
             die((payload or {}).get("message", "there is no room for another browser right now"))
         if not (status and 200 <= status < 300):
-            die(f"MiniOmni did not accept it ({status}): {(payload or {}).get('message', 'no reason given')}\n"
+            die(f"QM did not accept it ({status}): {(payload or {}).get('message', 'no reason given')}\n"
                 "Browsing still works — say the pane is unavailable and give them the viewer link instead.")
         state = read_state() or {}
         state["sessionId"] = a.session
@@ -767,7 +767,7 @@ def main():
             relay = os.environ.get("QM_RELAY_URL", "").strip()
             if not relay:
                 die("This person chose their own Chrome, but no relay URL reached this turn.\n"
-                    "Their extension may not be connected. Tell them to open the MiniOmni Browser Bridge\n"
+                    "Their extension may not be connected. Tell them to open the QM Browser Bridge\n"
                     "extension and share a tab, then run: open")
             a.cdp = relay
 
@@ -782,7 +782,7 @@ def main():
                 clear_state()
                 die("Their Chrome is not sharing a tab, so there is nothing to drive "
                     f"({str(e)[:80]}).\n"
-                    "Ask them to open the MiniOmni Browser Bridge extension and press Share this tab,\n"
+                    "Ask them to open the QM Browser Bridge extension and press Share this tab,\n"
                     "then run: open\n"
                     "Do NOT quietly attach to a different browser: it has none of their sign-ins, "
                     "and a task aimed at their own browser will fail in a way that looks like your "
@@ -800,7 +800,7 @@ def main():
                 f"Read skills/browse/providers/{chosen}.md, create the browser it describes,\n"
                 "then come back and run: open --cdp \"$CDP_URL\".")
         die("No browser is connected for this person.\n"
-            "Their own Chrome: ask them to open the MiniOmni Browser Bridge extension and share a tab,\n"
+            "Their own Chrome: ask them to open the QM Browser Bridge extension and share a tab,\n"
             "then run: open.\n"
             "A hosted browser: read its provider doc under skills/browse/providers/, create it,\n"
             "then run: open --cdp \"$CDP_URL\".")

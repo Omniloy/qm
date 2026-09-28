@@ -2,7 +2,7 @@ import { html, render, type TemplateResult } from "lit";
 import { Globe, KeyRound, Link } from "lucide";
 import { api, type CoreContext } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
-import { fieldSelect, icon, productName } from "./ui";
+import { brandName, fieldSelect, icon } from "./ui";
 import { connectorLogo } from "./connector-logo";
 import { appState, replacePanePreservingFocus } from "./shell";
 import { scopedSession, scopedViewTopbar } from "./session-scope";
@@ -440,7 +440,7 @@ function extensionPanel(provider: BrowserProvider): TemplateResult {
                 <button class="btn" type="button" ?disabled=${relayChecking} @click=${() => void recheckExtension()}>
                   ${relayChecking ? "Checking…" : "Re-check"}
                 </button>
-                <a class="btn" href="/api/browser-relay/extension.zip" download="miniomni-browser-bridge.zip"
+                <a class="btn" href="/api/browser-relay/extension.zip" download="qm-browser-bridge.zip"
                   >Download again</a
                 >
               </div>
@@ -454,11 +454,10 @@ function extensionPanel(provider: BrowserProvider): TemplateResult {
           ? ""
           : html`<ol class="kc-ext-steps">
                 <li>
-                  <a class="btn" href="/api/browser-relay/extension.zip" download="miniomni-browser-bridge.zip"
+                  <a class="btn" href="/api/browser-relay/extension.zip" download="qm-browser-bridge.zip"
                     >Download the extension</a
                   >
-                  and unzip it. It comes set up with your ${productName()} address and a pairing token — nothing to
-                  paste.
+                  and unzip it. It comes set up with your ${brandName()} address and a pairing token — nothing to paste.
                 </li>
                 <li>
                   Open <code>chrome://extensions</code> (copy-paste it — Chrome blocks links there), turn on

@@ -2,19 +2,10 @@ import { unsafeSVG } from "lit/directives/unsafe-svg.js";
 import { html, nothing, type TemplateResult } from "lit";
 import { live } from "lit/directives/live.js";
 import { Check, ChevronDown, Download, createElement, type IconNode } from "lucide";
-import { BRAND } from "../../chassis/src/brand.ts";
-
-function metaContent(name: string): string | undefined {
-  if (typeof document === "undefined") return undefined;
-  return document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`)?.content || undefined;
-}
 
 export function brandName(): string {
-  return metaContent("brand-self-label") ?? BRAND.productName;
-}
-
-export function productName(): string {
-  return metaContent("brand-product-name") ?? BRAND.productName;
+  if (typeof document === "undefined") return "QM";
+  return document.querySelector<HTMLMetaElement>('meta[name="brand-self-label"]')?.content || "QM";
 }
 
 export function brandMark(): TemplateResult {

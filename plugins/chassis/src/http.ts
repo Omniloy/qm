@@ -91,16 +91,7 @@ export function serveFavicon(res: ServerResponse, icon: { svg?: string; emoji: s
     "content-type": "image/svg+xml; charset=utf-8",
     "cache-control": cacheControl,
     "x-content-type-options": "nosniff",
-    "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+    "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'",
   });
   res.end(faviconSvg(icon));
-}
-
-export function serveBrandLogoPng(res: ServerResponse, body: Buffer, cacheControl: string): void {
-  res.writeHead(200, {
-    "content-type": "image/png",
-    "content-length": String(body.length),
-    "cache-control": cacheControl,
-  });
-  res.end(body);
 }

@@ -10,7 +10,6 @@ export interface SlackReplyArgs {
   reply_broadcast?: false;
   username?: string;
   icon_emoji?: string;
-  icon_url?: string;
   unfurl_links?: boolean;
   unfurl_media?: boolean;
 }
@@ -18,17 +17,14 @@ export interface SlackReplyArgs {
 export interface BotIdentityOverride {
   username?: string;
   icon_emoji?: string;
-  icon_url?: string;
 }
 
 export function botIdentityFromEnv(env: Record<string, string | undefined>): BotIdentityOverride {
   const username = (env.SLACK_BOT_DISPLAY_NAME ?? "").trim();
   const icon_emoji = (env.SLACK_BOT_ICON_EMOJI ?? "").trim();
-  const icon_url = (env.SLACK_BOT_ICON_URL ?? "").trim();
   return {
     ...(username ? { username } : {}),
     ...(icon_emoji ? { icon_emoji } : {}),
-    ...(icon_url?.startsWith("https://") ? { icon_url } : {}),
   };
 }
 
@@ -42,7 +38,6 @@ export function botIdentityArgs(): BotIdentityOverride {
   return {
     ...(id.username ? { username: id.username } : {}),
     ...(id.icon_emoji ? { icon_emoji: id.icon_emoji } : {}),
-    ...(id.icon_url ? { icon_url: id.icon_url } : {}),
   };
 }
 

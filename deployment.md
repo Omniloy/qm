@@ -1,4 +1,4 @@
-# Deploy MiniOmni
+# Deploy QM
 
 The deployment workflow shipped by this repository is
 [`cli/templates/deployment/deployment.md`](cli/templates/deployment/deployment.md).

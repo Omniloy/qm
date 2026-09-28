@@ -1,5 +1,4 @@
 import type { SmtpTlsMode } from "./smtp.ts";
-import { BRAND } from "../../chassis/src/brand.ts";
 import { parsePasswordHash } from "./password.ts";
 
 type EmailTransportKind = "resend" | "smtp";
@@ -109,7 +108,7 @@ export function readConfig(env: NodeJS.ProcessEnv): AuthConfig {
     passwordLimitPerEmail: numberFrom(env.AUTH_PASSWORD_LIMIT_PER_EMAIL, 10),
     passwordLimitPerIp: numberFrom(env.AUTH_PASSWORD_LIMIT_PER_IP, 30),
     emailFrom: env.AUTH_EMAIL_FROM?.trim() ?? "",
-    brandName: env.AUTH_BRAND_NAME?.trim() || BRAND.productName,
+    brandName: env.AUTH_BRAND_NAME?.trim() || "qm",
     faviconSvg: env.AUTH_FAVICON_SVG?.trim() || undefined,
     transport,
     resendApiKey: env.RESEND_API_KEY ?? "",

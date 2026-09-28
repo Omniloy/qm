@@ -402,7 +402,7 @@ function toolCtx(deploy: DeployService): ToolContext {
   } as never);
 }
 
-test('publish share:[{scope:"org"}] resolves to the org — truthful readback, real reach (the MiniOmni bug)', async () => {
+test('publish share:[{scope:"org"}] resolves to the org — truthful readback, real reach (the QM bug)', async () => {
   const { deploy } = makeDeploy();
   const r = await toolCtx(deploy).publish({
     entrypoint: "x",

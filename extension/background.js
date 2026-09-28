@@ -1,10 +1,10 @@
 /**
- * MiniOmni Browser Bridge — the extension half of the relay.
+ * QM Browser Bridge — the extension half of the relay.
  *
  * Chrome refuses `--remote-debugging-port` on a real profile on purpose, so
  * this is the only way an agent can work in the browser where someone is
  * actually signed in. It attaches Chrome's debugger to ONE tab the person
- * nominates and relays the protocol to MiniOmni. It is deliberately not a
+ * nominates and relays the protocol to QM. It is deliberately not a
  * whole-browser bridge: one tab at a time, within the window that tab is in,
  * and the rest of Chrome stays out of reach.
  */
@@ -27,7 +27,7 @@ async function settings() {
 }
 
 /**
- * The download is built for this person on this MiniOmni, so it can carry both the
+ * The download is built for this person on this QM, so it can carry both the
  * address and a pairing token. Load them once, the first time, so a fresh
  * install connects with nothing to paste.
  */
@@ -70,7 +70,7 @@ function pageBanner(on) {
   if (existing) return;
   const el = document.createElement("div");
   el.id = ID;
-  el.textContent = "● MiniOmni is using this tab";
+  el.textContent = "● QM is using this tab";
   el.setAttribute("data-qm-bridge", "1");
   el.style.cssText = [
     "position:fixed",
@@ -103,7 +103,7 @@ function send(payload) {
   return true;
 }
 
-/** Tell MiniOmni which tab this is, so the agent's page list names something real. */
+/** Tell QM which tab this is, so the agent's page list names something real. */
 async function announce(tabId, restored) {
   if (tabId === null) return;
   try {
@@ -149,7 +149,7 @@ async function detach(explicit = false) {
   const stored = await chrome.storage.local.get("attachedTabId").catch(() => ({}));
   const tabId = attachedTabId ?? (typeof stored.attachedTabId === "number" ? stored.attachedTabId : null);
   if (tabId === null) return;
-  // Tell MiniOmni only when the person meant it. A closing socket is a sleeping
+  // Tell QM only when the person meant it. A closing socket is a sleeping
   // service worker, and reverting their browser choice on that would undo it
   // every time Chrome idled this extension.
   if (explicit && !send({ qm: "detached" })) {
@@ -241,7 +241,7 @@ async function onCommand(frame) {
   if (attachedTabId === null) {
     return send({
       id,
-      error: { code: -32000, message: "no tab is shared — click the MiniOmni extension and pick one" },
+      error: { code: -32000, message: "no tab is shared — click the QM extension and pick one" },
     });
   }
   try {

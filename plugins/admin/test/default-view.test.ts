@@ -33,16 +33,15 @@ function resolvedDisplay(classes: string[]) {
   return display;
 }
 
-test("admin shell uses the MiniOmni identity with org-injectable branding", () => {
-  assert.match(html, /<title>__BRAND__ Admin<\/title>/);
-  assert.match(html, /<meta name="brand-self-label" content="MiniOmni" \/>/);
-  assert.match(html, /<meta name="brand-product-name" content="MiniOmni" \/>/);
+test("admin shell uses the QM identity with org-injectable branding", () => {
+  assert.match(html, /<title>QM Admin<\/title>/);
+  assert.match(html, /<meta name="brand-self-label" content="QM" \/>/);
   assert.match(html, /<header class="top">/);
   assert.match(html, /id="home-link">[\s\S]*?<span>Back to home<\/span>\s*<\/a>/);
   assert.match(html, /<span class="brand-mark" aria-hidden="true"><\/span>/);
   assert.match(
     html,
-    /<span class="brand-name"\s*>\s*<span id="brand-product" data-brand-product>MiniOmni<\/span> <span class="brand-suffix">\(admin\)<\/span>/,
+    /<span class="brand-name"\s*>\s*<span id="brand-product" data-brand-product>QM<\/span> <span class="brand-suffix">\(admin\)<\/span>/,
   );
   assert.match(html, /<aside class="admin-sidebar"[^>]*>\s*<div class="brand">/, "the lockup sits in the sidebar");
   assert.match(html, /<main class="admin-main" id="main" aria-label="Admin content">/);

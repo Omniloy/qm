@@ -69,8 +69,6 @@ async function fetchBrand(): Promise<OrgBranding> {
     ...(typeof b?.mark === "string" ? { mark: b.mark } : {}),
     ...(typeof b?.markUrl === "string" ? { markUrl: b.markUrl } : {}),
     ...(typeof b?.selfLabel === "string" ? { selfLabel: b.selfLabel } : {}),
-    ...(typeof b?.productName === "string" ? { productName: b.productName } : {}),
-    ...(typeof b?.logoSvg === "string" ? { logoSvg: b.logoSvg } : {}),
   };
 }
 const brandCache = createBrandingCache(fetchBrand);
@@ -81,14 +79,7 @@ async function refreshBrandNow(): Promise<void> {
 type Shell = { key: string; html: string; gzip: Buffer; etag: string; gzipEtag: string };
 let shellCache: Shell | null = null;
 function brandedShell(branding: OrgBranding): Shell {
-  const key = JSON.stringify([
-    branding.accent,
-    branding.mark,
-    branding.markUrl,
-    branding.selfLabel,
-    branding.productName,
-    branding.logoSvg,
-  ]);
+  const key = JSON.stringify([branding.accent, branding.mark, branding.markUrl, branding.selfLabel]);
   if (shellCache?.key === key) return shellCache;
   const html = injectBranding(BASE_HTML, branding, { titleSuffix: "Admin" });
   const digest = createHash("sha256").update(html).digest("hex").slice(0, 16);

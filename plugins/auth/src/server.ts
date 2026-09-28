@@ -2,15 +2,7 @@ import { reportBackendError } from "../../chassis/src/error-reporting.ts";
 import { createHmac } from "node:crypto";
 import { coreRememberedSessions, type RememberedSessions, type RememberedSession } from "./sessions.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import {
-  readBody,
-  PayloadTooLargeError,
-  sendBuffered,
-  serveBrandLogoPng,
-  serveFavicon,
-} from "../../chassis/src/http.ts";
-import { BRAND, BRAND_LOGO_PATH } from "../../chassis/src/brand.ts";
-import { brandLogoPng } from "../../chassis/src/brand-logo.ts";
+import { readBody, PayloadTooLargeError, sendBuffered, serveFavicon } from "../../chassis/src/http.ts";
 import { errMessage } from "../../chassis/src/errors.ts";
 import type { AuthConfig } from "./config.ts";
 import { passwordConfigured, validEmail } from "./config.ts";
@@ -614,10 +606,7 @@ export function createAuthHandler(deps: AuthDeps): (req: IncomingMessage, res: S
       }
     }
     if (method === "GET" && (path === "/favicon.ico" || path === "/favicon.svg")) {
-      return serveFavicon(res, { svg: cfg.faviconSvg ?? BRAND.logoSvg, emoji: "✉️" }, "max-age=86400");
-    }
-    if (method === "GET" && path === BRAND_LOGO_PATH) {
-      return serveBrandLogoPng(res, brandLogoPng(), "public, max-age=86400");
+      return serveFavicon(res, { svg: cfg.faviconSvg, emoji: "✉️" }, "max-age=86400");
     }
     if (method === "GET" && path === "/.well-known/jwks.json") {
       res.writeHead(200, { "content-type": "application/json", "cache-control": "public, max-age=300" });

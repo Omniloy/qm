@@ -6,12 +6,11 @@ import { dirname, join } from "node:path";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import { JSDOM } from "jsdom";
-import { BRAND } from "../../chassis/src/brand.ts";
 
 const core = createServer((req: IncomingMessage, res) => {
   if ((req.url ?? "").startsWith("/v1/surface-config")) {
     res.writeHead(200, { "content-type": "application/json" });
-    return void res.end(JSON.stringify({ branding: { accent: "#f0652f", mark: "Y", selfLabel: "MiniOmni" } }));
+    return void res.end(JSON.stringify({ branding: { accent: "#f0652f", mark: "Y", selfLabel: "QM" } }));
   }
   res.writeHead(200, { "content-type": "application/json" });
   res.end("{}");
@@ -50,16 +49,14 @@ test("cold start: the FIRST shell render already carries accent, mark, and self-
   assert.match(html, /--brand-mark:"Y"/, "mark injected on the first render");
   assert.match(
     html,
-    /<meta name="brand-self-label" content="MiniOmni"\s*\/?>/,
+    /<meta name="brand-self-label" content="QM"\s*\/?>/,
     "self-label meta injected regardless of template formatting",
   );
 });
 
-test("the vite template carries the anchors the server injects into", () => {
+test("the vite template carries the self-label anchor the server injects into", () => {
   const template = readFileSync(new URL("../index.html", import.meta.url), "utf8");
-  assert.match(template, new RegExp(`<meta name="brand-self-label" content="${BRAND.productName}"\\s*/?>`));
-  assert.match(template, new RegExp(`<meta name="brand-product-name" content="${BRAND.productName}"\\s*/?>`));
-  assert.match(template, new RegExp(`<title>${BRAND.productName} · Web</title>`));
+  assert.match(template, /<meta name="brand-self-label" content="QM"\s*\/?>/);
 });
 
 test("injectBranding rewrites the tab title with the escaped label when a suffix is given", async () => {
@@ -111,14 +108,14 @@ test("brandName() reads the injected self-label and falls back to the product na
   } finally {
     delete (globalThis as { document?: Document }).document;
   }
-  assert.equal(brandName!(), BRAND.productName);
+  assert.equal(brandName!(), "QM");
 });
 
 test("the installable-app metadata follows the brand: manifest link, touch icon, home-screen title", async () => {
   const template = readFileSync(new URL("../index.html", import.meta.url), "utf8");
   assert.match(template, /<link rel="manifest" href="%BASE_URL%manifest\.webmanifest"\s*\/?>/);
   assert.match(template, /<link rel="apple-touch-icon" href="%BASE_URL%brand-mark\.svg"\s*\/?>/);
-  assert.match(template, new RegExp(`<meta name="apple-mobile-web-app-title" content="${BRAND.productName}"\\s*/?>`));
+  assert.match(template, /<meta name="apple-mobile-web-app-title" content="QM"\s*\/?>/);
   assert.match(template, /viewport-fit=cover, interactive-widget=resizes-content/);
   const { injectBranding } = await import("../../chassis/src/branding.ts");
   const shell =

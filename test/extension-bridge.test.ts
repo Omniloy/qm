@@ -257,7 +257,7 @@ test("stopping mid-restore is not quietly undone", async () => {
   assert.ok(await until(() => !("attachedTabId" in h.store)), "the share is really gone");
   assert.ok(
     h.sent().some((m) => m.qm === "detached"),
-    "and MiniOmni is told, so the browser choice is handed back",
+    "and qm is told, so the browser choice is handed back",
   );
 });
 
@@ -283,7 +283,7 @@ test("the person cancelling the debugger bar is a real stop, and says so", async
 
   h.fire("detach", { tabId: 7 }, "canceled_by_user");
 
-  assert.ok(await until(() => h.sent().some((m) => m.qm === "detached")), "MiniOmni is told the share ended");
+  assert.ok(await until(() => h.sent().some((m) => m.qm === "detached")), "qm is told the share ended");
 });
 
 test("a detach Chrome caused is recovered from, not treated as a decision", async () => {

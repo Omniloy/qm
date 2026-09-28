@@ -1,5 +1,4 @@
 import type { WebSocket } from "ws";
-import { BRAND } from "../../plugins/chassis/src/brand.ts";
 
 /**
  * Pairs a person's own Chrome with the browser their agent drives.
@@ -154,15 +153,11 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
           if (handshake(pair, frame.method, frame.id, pair.cdp)) return;
         }
         if (!pair.extension) {
-          refuse(pair.cdp, frame.id, `your Chrome is not connected — open the ${BRAND.productName} extension`);
+          refuse(pair.cdp, frame.id, "your Chrome is not connected — open the QM extension");
           return;
         }
         if (!pair.sharing && typeof frame.method === "string" && frame.method.startsWith("Target.")) {
-          refuse(
-            pair.cdp,
-            frame.id,
-            `no tab is shared — open the ${BRAND.productName} extension and press Share this tab`,
-          );
+          refuse(pair.cdp, frame.id, "no tab is shared — open the QM extension and press Share this tab");
           return;
         }
         pair.extension.send(raw);

@@ -18,7 +18,6 @@ import { audit, resolveCapabilityDestination, verifiedConversationSpeaker } from
 import { swallow, swallowAs } from "../../util/errors.ts";
 import { cronIdOf } from "../../sessions/session-store.ts";
 import { keychainUseCommand } from "../contract.ts";
-import { BRAND } from "../../../plugins/chassis/src/brand.ts";
 
 const CONSENT_ON_TRIGGERED_TURN =
   "consent can only be recorded on a turn its owner themself sent — this turn was fired by a trigger, not a person";
@@ -205,7 +204,8 @@ async function handleKeychain(ctx: ApiCtx): Promise<void> {
         browserProviders.push({
           id: EXTENSION_BROWSER_ID,
           name: "Your Chrome",
-          summary: `Drive one tab in your own browser through the ${BRAND.extensionName} extension, so it has your real sign-ins and does not look like automation.`,
+          summary:
+            "Drive one tab in your own browser through the QM Browser Bridge extension, so it has your real sign-ins and does not look like automation.",
           keyEnv: "",
           keyService: "",
           connected: live?.extension ?? false,

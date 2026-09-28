@@ -1,11 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { BRAND } from "../../chassis/src/brand.ts";
 
 const core = createServer((_req, res) => {
   res.writeHead(200, { "content-type": "application/json" });
@@ -38,11 +37,11 @@ test.after(() => {
   core.close();
 });
 
-test("without WEB_UI_FAVICON_SVG the favicon is the brand logo and the manifest icon is the stock mark", async () => {
+test("without WEB_UI_FAVICON_SVG the favicon is the emoji and the manifest icon is the stock mark", async () => {
   delete process.env.WEB_UI_FAVICON_SVG;
   const icon = await fetch(`${base}/favicon.svg`);
   assert.equal(icon.headers.get("content-type"), "image/svg+xml; charset=utf-8");
-  assert.equal(await icon.text(), BRAND.logoSvg);
+  assert.match(await icon.text(), /\u{1F3F4}\u{200D}☠️/u);
   const manifest = (await (await fetch(`${base}/manifest.webmanifest`)).json()) as { icons: Array<{ src: string }> };
   assert.equal(manifest.icons[0]?.src, "/brand-mark.svg");
 });
@@ -58,4 +57,11 @@ test("WEB_UI_FAVICON_SVG is served verbatim and becomes the manifest icon", asyn
   } finally {
     delete process.env.WEB_UI_FAVICON_SVG;
   }
+});
+
+test("the favicon is linked absolutely, so it survives a nested route", () => {
+  const server = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "server", "index.ts"), "utf8");
+  const rewrites = server.match(/"%BASE_URL%favicon\.svg",\s*"([^"]+)"/g) ?? [];
+  assert.ok(rewrites.length > 0, "the shell rewrites the favicon placeholder");
+  for (const r of rewrites) assert.match(r, /"\/favicon\.svg"/, r);
 });

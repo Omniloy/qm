@@ -67,7 +67,6 @@ import {
   readBody,
   PayloadTooLargeError,
 } from "../../chassis/src/http.ts";
-import { BRAND, BRAND_LOGO_PATH } from "../../chassis/src/brand.ts";
 import {
   CORE_API_URL as CORE,
   CORE_ORG_ID as ORG,
@@ -110,10 +109,8 @@ function playgroundIntEnv(name: string, fallback: number): number {
 }
 const PLAYGROUND_MINTS_PER_IP = playgroundIntEnv("PORTAL_PLAYGROUND_MINTS_PER_IP", 30);
 const PLAYGROUND_MINT_WINDOW_S = playgroundIntEnv("PORTAL_PLAYGROUND_MINT_WINDOW_S", 3600);
-const NEUTRAL_ACCENT: string = BRAND.accent;
-let brandAccent: string = NEUTRAL_ACCENT;
-let brandProductName: string = BRAND.productName;
-let brandLogoSvg: string = BRAND.logoSvg;
+const NEUTRAL_ACCENT = "#4f46e5";
+let brandAccent = NEUTRAL_ACCENT;
 let modelProviderConfigured: boolean | undefined;
 let surfaceConfigNextAt = 0;
 let surfaceConfigInflight: Promise<void> | null = null;
@@ -134,13 +131,8 @@ async function fetchSurfaceConfig(): Promise<void> {
       signal: AbortSignal.timeout(2_000),
     });
     if (r.ok) {
-      const body = (await r.json()) as {
-        branding?: { accent?: unknown; productName?: unknown; logoSvg?: unknown };
-        modelProviderConfigured?: unknown;
-      };
+      const body = (await r.json()) as { branding?: { accent?: unknown }; modelProviderConfigured?: unknown };
       brandAccent = typeof body.branding?.accent === "string" ? body.branding.accent : NEUTRAL_ACCENT;
-      brandProductName = typeof body.branding?.productName === "string" ? body.branding.productName : BRAND.productName;
-      brandLogoSvg = typeof body.branding?.logoSvg === "string" ? body.branding.logoSvg : BRAND.logoSvg;
       modelProviderConfigured =
         typeof body.modelProviderConfigured === "boolean" ? body.modelProviderConfigured : undefined;
       surfaceConfigNextAt = Date.now() + (modelProviderConfigured === false ? 5_000 : 30_000);
@@ -188,7 +180,6 @@ const BROKER_PUBLIC_ROUTES: ReadonlyArray<{ method: string; path: string }> = [
   { method: "POST", path: "/authorize" },
   { method: "GET", path: "/verify" },
   { method: "POST", path: "/verify" },
-  { method: "GET", path: BRAND_LOGO_PATH },
 ];
 
 export function brokerRouteFor(method: string, pathname: string): string | null {
@@ -549,7 +540,7 @@ function cardPage(o: {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(o.title)} · ${escapeHtml(brandProductName)}</title>
+<title>${escapeHtml(o.title)} · Portal</title>
 ${CARD_STYLE}
 </head>
 <body>
@@ -645,7 +636,7 @@ const connectStyle = (): string => `<style>
 
 function connectPage(o: { title: string; body: string; action?: string }): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(o.title)} · ${escapeHtml(brandProductName)}</title>${connectStyle()}</head>
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(o.title)} · Portal</title>${connectStyle()}</head>
 <body><div class="card"><h1>${escapeHtml(o.title)}</h1><p>${escapeHtml(o.body)}</p>${o.action ?? ""}</div></body></html>`;
 }
 
@@ -1025,7 +1016,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return serveFavicon(
       res,
       {
-        svg: process.env.PORTAL_FAVICON_SVG ?? (process.env.PORTAL_FAVICON_EMOJI ? undefined : brandLogoSvg),
+        svg: process.env.PORTAL_FAVICON_SVG,
         emoji: process.env.PORTAL_FAVICON_EMOJI ?? "\u{1F3F4}\u{200D}\u2620\uFE0F",
       },
       "max-age=86400",

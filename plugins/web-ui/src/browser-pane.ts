@@ -24,7 +24,7 @@ import {
  * pane, so there is nothing to dismiss and nothing to explain.
  *
  * The body is a cross-origin iframe of the provider's own viewer. Pixels and
- * input go straight between the person's tab and the provider; MiniOmni carries
+ * input go straight between the person's tab and the provider; qm carries
  * neither. Verified against production: SPA_CSP already allows it.
  */
 

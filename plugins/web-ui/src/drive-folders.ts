@@ -2,7 +2,7 @@ import { html, nothing, type TemplateResult } from "lit";
 import { FolderOpen, Link, TriangleAlert } from "lucide";
 import { api } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
-import { icon, productName } from "./ui";
+import { brandName, icon } from "./ui";
 import { resetRowMenus, rowMenuTpl } from "./row-actions";
 import { openContextPicker, resetContextPicker } from "./context-picker";
 import {
@@ -261,7 +261,7 @@ export function driveBandTpl(now: number, rerender: () => void, onAttach: () => 
       // No action offered: nothing this person can do resolves it.
       body = emptyCard(
         "Google Workspace is not set up here",
-        `An admin has to configure the Google connector before folders can be attached. Ask whoever runs your ${productName()} workspace.`,
+        `An admin has to configure the Google connector before folders can be attached. Ask whoever runs your ${brandName()} workspace.`,
       );
       break;
     case "not-connected":
@@ -489,7 +489,7 @@ function attachConfirmTpl(scopeId: string, rerender: () => void): TemplateResult
     <header class="drive-picker-head"><h2>Attach “${p.folder.name}”</h2></header>
 
     <label class="drive-field">
-      <span>Name in ${productName()}</span>
+      <span>Name in ${brandName()}</span>
       <input
         type="text"
         .value=${p.name}
@@ -527,7 +527,7 @@ function attachConfirmTpl(scopeId: string, rerender: () => void): TemplateResult
     </div>
 
     <p class="drive-note">
-      ${productName()} may use your Google account to read${p.mode === "rw" ? ", create and edit" : ""} files in
+      ${brandName()} may use your Google account to read${p.mode === "rw" ? ", create and edit" : ""} files in
       <strong>${p.folder.name}</strong> on your behalf. Teammates use their own Google accounts, not yours.
     </p>
     ${p.error ? html`<p class="drive-note warning">${p.error}</p>` : ""}

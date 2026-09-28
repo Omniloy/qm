@@ -3,10 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>__BRAND__ Admin</title>
-    <link rel="icon" href="/favicon.svg" />
-    <meta name="brand-self-label" content="MiniOmni" />
-    <meta name="brand-product-name" content="MiniOmni" />
+    <title>QM Admin</title>
+    <meta name="brand-self-label" content="QM" />
     <style>
       :root {
         color-scheme: light;
@@ -135,8 +133,8 @@
         flex: 0 0 22px;
         overflow: hidden;
         border-radius: 5px;
-        background: var(--brand-mark-bg, var(--brand-accent, #003b7a))
-          var(--brand-mark-image, var(--brand-logo, url("./brand-mark.svg"))) center / contain no-repeat;
+        background: var(--brand-accent, #4f46e5) var(--brand-mark-image, url("./brand-mark.svg")) center / cover
+          no-repeat;
         color: #fff;
         font-size: 16px;
         font-weight: 500;
@@ -4355,8 +4353,8 @@
         flex: 0 0 22px;
         overflow: hidden;
         border-radius: 5px;
-        background: var(--brand-mark-bg, var(--brand-accent, #003b7a))
-          var(--brand-mark-image, var(--brand-logo, url("./brand-mark.svg"))) center / contain no-repeat;
+        background: var(--brand-accent, #4f46e5) var(--brand-mark-image, url("./brand-mark.svg")) center / cover
+          no-repeat;
         color: #fff;
         font-size: 16px;
         font-weight: 500;
@@ -6386,9 +6384,7 @@
       <div class="signin">
         <div class="signin-brand">
           <span class="brand-mark" aria-hidden="true"></span>
-          <span class="brand-name"
-            ><span data-brand-product>MiniOmni</span> <span class="brand-suffix">(admin)</span></span
-          >
+          <span class="brand-name"><span data-brand-product>QM</span> <span class="brand-suffix">(admin)</span></span>
         </div>
         <p class="lead" role="status">Checking your access…</p>
       </div>
@@ -6398,9 +6394,7 @@
       <div class="signin">
         <div class="signin-brand">
           <span class="brand-mark" aria-hidden="true"></span>
-          <span class="brand-name"
-            ><span data-brand-product>MiniOmni</span> <span class="brand-suffix">(admin)</span></span
-          >
+          <span class="brand-name"><span data-brand-product>QM</span> <span class="brand-suffix">(admin)</span></span>
         </div>
         <h1>Sign in through the portal</h1>
         <p class="lead">This admin surface is reached through the portal. Sign in there to continue.</p>
@@ -6414,9 +6408,7 @@
       <div class="signin">
         <div class="signin-brand">
           <span class="brand-mark" aria-hidden="true"></span>
-          <span class="brand-name"
-            ><span data-brand-product>MiniOmni</span> <span class="brand-suffix">(admin)</span></span
-          >
+          <span class="brand-name"><span data-brand-product>QM</span> <span class="brand-suffix">(admin)</span></span>
         </div>
         <h1>Admin is temporarily unavailable</h1>
         <p class="lead">
@@ -6437,9 +6429,7 @@
       <div class="signin">
         <div class="signin-brand">
           <span class="brand-mark" aria-hidden="true"></span>
-          <span class="brand-name"
-            ><span data-brand-product>MiniOmni</span> <span class="brand-suffix">(admin)</span></span
-          >
+          <span class="brand-name"><span data-brand-product>QM</span> <span class="brand-suffix">(admin)</span></span>
         </div>
         <h1>You don't have admin access</h1>
         <p class="lead">
@@ -6467,7 +6457,7 @@
         <div class="brand">
           <span class="brand-mark" aria-hidden="true"></span>
           <span class="brand-name"
-            ><span id="brand-product" data-brand-product>MiniOmni</span> <span class="brand-suffix">(admin)</span></span
+            ><span id="brand-product" data-brand-product>QM</span> <span class="brand-suffix">(admin)</span></span
           >
         </div>
         <div class="tab-section">Admin</div>
@@ -6893,12 +6883,11 @@
       let view = DEFAULT_VIEW;
       let orgId = "acme";
 
-      const metaBrand = (name, fallback) =>
-        document.querySelector(`meta[name="${name}"]`)?.getAttribute("content") || fallback;
-      const brandSelfLabel = () => metaBrand("brand-self-label", "MiniOmni");
-      const brandProductName = () => metaBrand("brand-product-name", "MiniOmni");
-      for (const el of document.querySelectorAll("[data-brand-product]")) el.textContent = brandProductName();
-      document.title = `${brandProductName()} Admin`;
+      const brandSelfLabel = () =>
+        document.querySelector('meta[name="brand-self-label"]')?.getAttribute("content") || "QM";
+      // The header's product name and the tab title follow the org's assistant label.
+      for (const el of document.querySelectorAll("[data-brand-product]")) el.textContent = brandSelfLabel();
+      document.title = `${brandSelfLabel()} Admin`;
       let page = 1;
 
       const FOCUS_STALE_MS = 60000;

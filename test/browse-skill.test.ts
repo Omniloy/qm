@@ -138,7 +138,7 @@ test("registering a pane persists the session so the wheel guard can query core"
 
 test("an unknown control mode lets the agent carry on", () => {
   // A browser nobody registered still has to be drivable, and failing closed on
-  // a lookup error would strand every task whenever MiniOmni hiccups.
+  // a lookup error would strand every task whenever qm hiccups.
   const cm = /def control_mode\([\s\S]{0,700}/.exec(CLI)?.[0] ?? "";
   assert.match(cm, /return "agent"/);
 });

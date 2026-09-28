@@ -2,16 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { JSDOM } from "jsdom";
 import { brandName, copyText } from "../src/ui.ts";
-import { BRAND } from "../../chassis/src/brand.ts";
 
-test("brand name defaults to the shipped product name", () => {
+test("brand name defaults to QM", () => {
   const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
   Object.defineProperty(globalThis, "document", {
     configurable: true,
     value: new JSDOM("").window.document,
   });
   try {
-    assert.equal(brandName(), BRAND.productName);
+    assert.equal(brandName(), "QM");
   } finally {
     if (documentDescriptor) Object.defineProperty(globalThis, "document", documentDescriptor);
     else delete (globalThis as { document?: Document }).document;

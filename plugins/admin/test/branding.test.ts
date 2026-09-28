@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 
-let coreBranding = { accent: "#f0652f", mark: "Y", selfLabel: "MiniOmni" };
+let coreBranding = { accent: "#f0652f", mark: "Y", selfLabel: "QM" };
 const core = createServer((req: IncomingMessage, res) => {
   if ((req.url ?? "").startsWith("/v1/surface-config")) {
     res.writeHead(200, { "content-type": "application/json" });
@@ -46,11 +46,11 @@ test("cold start: the FIRST shell render already carries the org branding", asyn
   assert.match(html, /--brand-accent:#f0652f/, "accent style injected on the first render");
   assert.match(
     html,
-    /<meta name="brand-self-label" content="MiniOmni"\s*\/?>/,
+    /<meta name="brand-self-label" content="QM"\s*\/?>/,
     "self-label meta injected regardless of the shell's formatting",
   );
   assert.match(html, /--brand-mark:"Y"/, "brand mark variable injected for the badge");
-  assert.match(html, /<title>MiniOmni Admin<\/title>/, "tab title carries the configured label");
+  assert.match(html, /<title>QM Admin<\/title>/, "tab title carries the configured label");
 });
 
 test("the shell's badge and product name are branding-driven, not hardcoded", () => {
@@ -87,8 +87,8 @@ test("the brand icon is a CSS variable the org can point at its own image", () =
   const shell = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
   assert.match(
     shell,
-    /var\(--brand-mark-image, var\(--brand-logo, url\("\.\/brand-mark\.svg"\)\)\)/,
-    "the badge paints from the variable, then the injected logo, then the shipped mark",
+    /var\(--brand-mark-image, url\("\.\/brand-mark\.svg"\)\)/,
+    "the badge paints from the variable and falls back to the shipped mark",
   );
   assert.match(readAdminSource(), /id="branding-mark-url"/, "the admin form can set it");
   assert.match(
