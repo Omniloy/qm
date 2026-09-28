@@ -189,7 +189,11 @@ export async function mountSharing(root: HTMLElement, c: Context) {
               "Everyone",
               "Default. Anyone who manages a skill can share or move it into a conversation, channel, or teammate they're in.",
             ],
-            ["admins", "Org admins only", "Members keep their skills to themselves; an admin shares them on request."],
+            [
+              "admins",
+              "Org admins only",
+              "Members keep their skills personal. Only an admin can share or move one, or create or edit one in a shared conversation.",
+            ],
           ])}
           <h3>The whole organization</h3>
           ${choiceGroup({ name: "skill-sharing-org", value: draft.org, onChange: pick("org") }, [
@@ -197,7 +201,7 @@ export async function mountSharing(root: HTMLElement, c: Context) {
             [
               "everyone",
               "Everyone",
-              "Any member can give a skill they manage to the whole organization and take back their own. Only an admin can replace or remove someone else's.",
+              "Any member can give a skill they manage to the whole organization, in person from the web app (never through an agent), and take back one they wrote. Replacing a skill the organization already has, or one a built-in skill reserves, stays with admins.",
             ],
           ])}
         </div>

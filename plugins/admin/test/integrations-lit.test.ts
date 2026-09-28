@@ -173,6 +173,7 @@ test("MCP servers and Composio are managed from the Connectors view", async () =
     auth.value = "bearer";
     auth.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
     type("mcp-bearerToken", "tok");
+    assert.equal((doc.getElementById("mcp-readOnly") as HTMLInputElement).checked, true);
     doc.getElementById("mcp-save")!.click();
     await new Promise((r) => setTimeout(r, 0));
     const put = calls.find((c) => c.method === "PUT")!;
@@ -183,7 +184,7 @@ test("MCP servers and Composio are managed from the Connectors view", async () =
       auth: "bearer",
       credentialScope: "shared",
       bearerToken: "tok",
-      readOnly: false,
+      readOnly: true,
       enabled: true,
     });
     assert.match(doc.getElementById("st-mcp-servers")!.textContent!, /2 tools found/);
@@ -200,6 +201,7 @@ test("MCP servers and Composio are managed from the Connectors view", async () =
       envKey: "COMPOSIO_API_KEY",
       secret: "ak_test",
       enabled: true,
+      grantees: ["org:test"],
     });
   } finally {
     dom.window.close();
@@ -267,6 +269,7 @@ test("replacing the Composio key updates the existing credential at its loaded v
       enabled: true,
       hasSecret: true,
       updatedAt: 42,
+      grantees: ["channel:C1"],
     },
   ];
   composio.key = " ak_new ";
@@ -274,4 +277,34 @@ test("replacing the Composio key updates the existing credential at its loaded v
   assert.equal(bodies[0].slug, "composio-prod");
   assert.equal(bodies[0].secret, "ak_new");
   assert.equal(bodies[0].expectedUpdatedAt, 42);
+  assert.deepEqual(bodies[0].grantees, ["channel:C1", "org:test"]);
+});
+test("the Composio card reads Configured only when the key is granted to the whole organization", async () => {
+  const dom = setup();
+  try {
+    const state = async (grantees: string[]) => {
+      const credential = {
+        slug: "composio",
+        delivery: "env",
+        envKey: "COMPOSIO_API_KEY",
+        enabled: true,
+        hasSecret: true,
+        updatedAt: 1,
+        grantees,
+      };
+      dom.window.eval(
+        `ui.configure({orgScope:()=>"org:test",connectorName:x=>x,fmtTime:x=>x,api:async(method,path)=>{
+          if(path==="/api/connector-catalog")return{ok:true,data:{catalog:[]}};
+          if(path.includes("?view=connectors"))return{ok:true,data:{connectors:[],serviceCredentials:[${JSON.stringify(credential)}]}};
+          return{ok:true,data:{}};}})`,
+      );
+      await dom.window.eval("ui.loadConnectors()");
+      return dom.window.document.getElementById("composio-state")!.textContent!;
+    };
+    assert.match(await state([]), /Not shared org-wide/);
+    assert.match(await state(["personal:U1"]), /Not shared org-wide/);
+    assert.match(await state(["org:test"]), /Configured/);
+  } finally {
+    dom.window.close();
+  }
 });

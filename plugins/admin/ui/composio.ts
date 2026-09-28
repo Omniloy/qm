@@ -22,22 +22,20 @@ class ComposioState {
     if (this.saving) return;
     if (!this.key.trim()) return this.setStatus("Paste the Composio project API key.", "err");
     const existing = this.credential;
+    const org = context.orgScope();
     this.saving = true;
     this.setStatus("Saving…", "saving");
     try {
-      const result = await context.api(
-        "PUT",
-        "/api/scopes/" + encodeURIComponent(context.orgScope()) + "/service-credentials",
-        {
-          slug: existing?.slug ?? "composio",
-          name: "Composio",
-          delivery: "env",
-          envKey: ENV_KEY,
-          secret: this.key.trim(),
-          enabled: true,
-          ...(existing ? { expectedUpdatedAt: existing.updatedAt } : {}),
-        },
-      );
+      const result = await context.api("PUT", "/api/scopes/" + encodeURIComponent(org) + "/service-credentials", {
+        slug: existing?.slug ?? "composio",
+        name: "Composio",
+        delivery: "env",
+        envKey: ENV_KEY,
+        secret: this.key.trim(),
+        enabled: true,
+        grantees: [...new Set([...(existing?.grantees ?? []), org])],
+        ...(existing ? { expectedUpdatedAt: existing.updatedAt } : {}),
+      });
       if (!result.ok) return this.setStatus(result.data?.message || "Save failed.", "err");
       this.key = "";
       await connectors.load();
@@ -55,9 +53,13 @@ export const composio = new ComposioState();
 function composioState() {
   const c = composio.credential;
   if (!connectors.serviceCredentials) return "Loading…";
-  if (c?.enabled && c.hasSecret)
-    return html`<span class="badge ok">Configured</span> People can connect apps from the web UI or by asking the agent.`;
   if (!c) return html`<span class="badge muted">Not configured</span>`;
+  const orgWide = c.grantees?.includes(context.orgScope()) === true;
+  if (c.enabled && c.hasSecret && orgWide)
+    return html`<span class="badge ok">Configured</span> People can connect apps from the web UI or by asking the agent.`;
+  if (c.enabled && c.hasSecret)
+    return html`<span class="badge warn">Not shared org-wide</span> Only the people and channels granted the
+      <code>${c.slug}</code> credential under Credentials can connect apps. Saving a key here grants it to everyone.`;
   return html`<span class="badge warn">${c.enabled ? "Key missing" : "Disabled"}</span> Paste a key below, or re-enable
     the <code>${c.slug}</code> credential under Credentials.`;
 }

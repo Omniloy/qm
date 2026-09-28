@@ -31,7 +31,7 @@ const blank = () => ({
   credentialScope: "shared" as NonNullable<McpServer["credentialScope"]>,
   credentialHost: "",
   credentialAccountType: "default" as NonNullable<McpServer["credentialAccountType"]>,
-  readOnly: false,
+  readOnly: true,
   enabled: true,
 });
 export type McpDraft = ReturnType<typeof blank>;
@@ -277,7 +277,7 @@ function editor() {
           )}`
         : nothing
     }
-    ${checkbox("readOnly", "Read-only: its tools only read data, so they stay available in read-only turns")}
+    ${checkbox("readOnly", "Read-only: its tools only read data, so they stay available in read-only turns. Uncheck only for a server whose tools change data.")}
     ${checkbox("enabled", "Enabled")}
   </div>`;
 }

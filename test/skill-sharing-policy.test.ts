@@ -11,7 +11,7 @@ import { buildApp, type BuiltApp } from "../src/wiring.ts";
 import { createControlService } from "../src/api/control-service.ts";
 import { createMemoryConfigStore, type PersistedSkillSharingPolicy } from "../src/resolution/config-store.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
-import type { CapabilityClaims } from "../src/auth/capability-token.ts";
+import { CONTROL_PLANE_AUD, type CapabilityClaims } from "../src/auth/capability-token.ts";
 import { scopeId } from "../src/types.ts";
 import { testConfig } from "./support/test-config.ts";
 
@@ -30,9 +30,9 @@ function start(): { base: string; built: BuiltApp; close: () => Promise<void> } 
   return { base, built, close: () => new Promise<void>((r) => server.close(() => r())) };
 }
 
-async function publish(built: BuiltApp, owner: string, name: string) {
+async function publish(built: BuiltApp, owner: string, name: string, home = scopeId("personal", owner)) {
   const skill = await built.skills.create({
-    scopeId: scopeId("personal", owner),
+    scopeId: home,
     manifest: { name, description: name, requiredCapabilities: [], body: `# ${name}` },
     createdBy: owner,
   });
@@ -42,6 +42,12 @@ async function publish(built: BuiltApp, owner: string, name: string) {
 
 const live = (actorId: string): CapabilityClaims =>
   ({ actorId, scopeId: scopeId("personal", actorId), exp: 9_999_999_999, liveActor: true }) as CapabilityClaims;
+
+const liveTurn = (actorId: string): CapabilityClaims => ({
+  ...live(actorId),
+  aud: CONTROL_PLANE_AUD,
+  sessionId: "S1",
+});
 
 test("the skill sharing policy defaults to today's behaviour and persists in its durable map", async () => {
   const backing = createMemoryMap<PersistedSkillSharingPolicy>();
@@ -112,13 +118,14 @@ test("when everyone may share with the org, a member promotes and takes back the
   const mine = await publish(built, "U1", "digest");
   const theirs = await publish(built, "U2", "triage");
 
-  await assert.rejects(app.promoteSkill(mine.id, ORG_SCOPE, "U1", false), /live person/);
-  await assert.rejects(app.promoteSkill(theirs.id, ORG_SCOPE, "U1", true), /isn't yours/);
-  const promoted = await app.promoteSkill(mine.id, ORG_SCOPE, "U1", true);
+  await assert.rejects(app.promoteSkill(mine.id, ORG_SCOPE, "U1", false, true), /live person/);
+  await assert.rejects(app.promoteSkill(mine.id, ORG_SCOPE, "U1", true), /in the web app/);
+  await assert.rejects(app.promoteSkill(theirs.id, ORG_SCOPE, "U1", true, true), /isn't yours/);
+  const promoted = await app.promoteSkill(mine.id, ORG_SCOPE, "U1", true, true);
   assert.equal(promoted.scopeId, ORG_SCOPE);
 
   const rival = await publish(built, "U2", "digest");
-  await assert.rejects(app.promoteSkill(rival.id, ORG_SCOPE, "U2", true), /only an org admin can replace/);
+  await assert.rejects(app.promoteSkill(rival.id, ORG_SCOPE, "U2", true, true), /only an org admin can replace/);
   const adminCopy = await app.promoteSkill(theirs.id, ORG_SCOPE, "admin-alice", true);
 
   await assert.rejects(app.demoteSkill(adminCopy.id, "U1", true), /only an org admin/);
@@ -144,10 +151,101 @@ test("limiting context sharing to admins refuses a member's skill share and move
   await built.config.setSkillSharingPolicy({ contexts: "admins", org: "admins" });
   const refused = await share("U1");
   assert.equal(refused.ok, false);
-  assert.match((refused as { message: string }).message, /only an org admin can share or move a skill/);
+  assert.match((refused as { message: string }).message, /only an org admin can put a skill/);
   const moved = await control.shareArtifact(
     { type: "skill", id: mine.id, scope: scopeId("personal", "U1"), move: true },
     live("U1"),
   );
   assert.equal(moved.ok, false);
+});
+
+test("a member's agent turn cannot give a skill to the org even when everyone may, but their web session can", async () => {
+  const built = buildApp(testConfig());
+  const control = createControlService(built.app, undefined, built.admin);
+  await built.config.setSkillSharingPolicy({ contexts: "everyone", org: "everyone" });
+  const mine = await publish(built, "U1", "digest");
+  const promote = (claims: CapabilityClaims) =>
+    control.shareArtifact({ type: "skill", id: mine.id, scope: ORG_SCOPE }, claims);
+
+  const fromTurn = await promote(liveTurn("U1"));
+  assert.equal(fromTurn.ok, false);
+  assert.match((fromTurn as { message: string }).message, /in the web app/);
+  assert.equal((await promote(live("U1"))).ok, true);
+
+  const theirs = await publish(built, "admin-alice", "triage");
+  const adminTurn = await control.shareArtifact(
+    { type: "skill", id: theirs.id, scope: ORG_SCOPE },
+    liveTurn("admin-alice"),
+  );
+  assert.equal(adminTurn.ok, true);
+});
+
+test("a member cannot claim an org skill name a built-in skill reserves, even while it is archived", async () => {
+  const built = buildApp(testConfig());
+  await built.config.setSkillSharingPolicy({ contexts: "everyone", org: "everyone" });
+  const seed = await built.skills.create({
+    scopeId: ORG_SCOPE,
+    manifest: { name: "digest", description: "seed", requiredCapabilities: [], body: "# seed" },
+    createdBy: "system:skills-seed",
+  });
+  await built.skills.archive(seed.id);
+  const mine = await publish(built, "U1", "digest");
+  await assert.rejects(built.app.promoteSkill(mine.id, ORG_SCOPE, "U1", true, true), /only an org admin can replace/);
+});
+
+test("the org name-taken check and take-back treat one person's differently cased ids as the same author", async () => {
+  const built = buildApp(testConfig());
+  await built.config.setSkillSharingPolicy({ contexts: "everyone", org: "everyone" });
+  const mine = await publish(built, "Ana@Acme.com", "digest");
+  const promoted = await built.app.promoteSkill(mine.id, ORG_SCOPE, "Ana@Acme.com", true, true);
+  const again = await publish(built, "ana@acme.com", "digest");
+  await built.app.promoteSkill(again.id, ORG_SCOPE, "ana@acme.com", true, true);
+  await built.app.demoteSkill(promoted.id, "ana@acme.com", true);
+  assert.equal((await built.skills.get(promoted.id))?.status, "archived");
+});
+
+test("limiting context sharing to admins also refuses a member creating a skill in a shared home", async () => {
+  const built = buildApp(testConfig());
+  const channel = scopeId("channel", "C1");
+  await built.config.setSkillSharingPolicy({ contexts: "admins", org: "admins" });
+  const create = (principalId: string, homeScope?: typeof channel) =>
+    built.app.createOwnedSkill({
+      principalId,
+      ...(homeScope ? { homeScope } : {}),
+      name: "triage",
+      description: "triage",
+      body: "# triage",
+    });
+
+  const personal = await create("U1");
+  assert.equal(typeof personal === "object" && personal?.scopeId, scopeId("personal", "U1"));
+  assert.equal(await create("U1", channel), "forbidden");
+  assert.equal(
+    (await built.skills.list()).some((s) => s.scopeId === channel),
+    false,
+  );
+  const admin = await create("admin-alice", channel);
+  assert.equal(typeof admin === "object" && admin?.scopeId, channel);
+});
+
+test("the skills listing says which skills the viewer wrote, including their org-wide ones", async () => {
+  const srv = start();
+  const { built } = srv;
+  const mine = await publish(built, "U1", "digest");
+  await built.app.promoteSkill(mine.id, ORG_SCOPE, "admin-alice", true);
+  try {
+    const rows = (
+      (await (await fetch(`${srv.base}/v1/skills?principalId=U1&includeShadowed=1`)).json()) as {
+        skills: Array<{ name: string; scope: string; editable: boolean; createdByViewer: boolean }>;
+      }
+    ).skills;
+    const org = rows.find((r) => r.name === "digest" && r.scope === "org")!;
+    assert.equal(org.editable, false);
+    assert.equal(org.createdByViewer, true);
+    assert.equal(rows.find((r) => r.name === "digest" && r.scope === "personal")?.createdByViewer, true);
+    assert.ok(rows.filter((r) => r.name !== "digest").every((r) => r.createdByViewer === false));
+    assert.ok(rows.length > 2);
+  } finally {
+    await srv.close();
+  }
 });

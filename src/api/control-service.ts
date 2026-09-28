@@ -22,8 +22,10 @@ import { AdminError } from "../admin/admin-service.ts";
 import type { AdminService } from "../admin/admin-service.ts";
 import {
   livePersonCapability,
+  portalSessionCapability,
   resolveShareTarget,
   SHARED_SKILL_TRIGGER_REFUSAL,
+  SKILL_CONTEXTS_ADMIN_ONLY,
   type ShareArtifactRequest,
   type ShareArtifactResult,
 } from "./artifact-share.ts";
@@ -908,7 +910,7 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
         return {
           ok: false,
           code: "forbidden",
-          message: "only an org admin can share or move a skill into another context in this organization",
+          message: SKILL_CONTEXTS_ADMIN_ONLY,
         };
       }
       if (
@@ -924,7 +926,13 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
 
       try {
         if (orgSkillCede) {
-          const promoted = await app.promoteSkill(home.id, toScope, capability.actorId, capability.liveActor === true);
+          const promoted = await app.promoteSkill(
+            home.id,
+            toScope,
+            capability.actorId,
+            capability.liveActor === true,
+            portalSessionCapability(capability),
+          );
           return {
             ok: true,
             verb: "promote",

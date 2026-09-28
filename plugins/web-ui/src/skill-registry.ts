@@ -1,4 +1,5 @@
 import type { SkillItem } from "./composer";
+import { friendlyPrincipal } from "./deploy-view.ts";
 
 export type SkillStatusFilter = "active" | "archived" | "all";
 
@@ -53,7 +54,7 @@ function inScope(skill: SkillItem, scope: string): boolean {
 export function skillHomeLabel(skill: SkillItem, me: string | null, titleFor: (scopeId: string) => string): string {
   if (skill.scope === "personal") {
     const owner = skill.scopeId?.slice("personal:".length);
-    return !owner || owner === me ? "Personal" : `Shared by ${owner}`;
+    return !owner || owner === me ? "Personal" : `Shared by ${friendlyPrincipal(owner)}`;
   }
   if ((skill.scope === "channel" || skill.scope === "group") && skill.scopeId) return titleFor(skill.scopeId);
   return skill.scope === "org" ? "Org" : skill.scope.charAt(0).toUpperCase() + skill.scope.slice(1);

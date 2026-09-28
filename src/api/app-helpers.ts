@@ -9,7 +9,7 @@ import type {
   TurnResult,
 } from "../types.ts";
 import { orgId as orgIdOf } from "../config.ts";
-import { isManageableCreationScope, parseScopeId, scopeId } from "../types.ts";
+import { isManageableCreationScope, isSharedScope, parseScopeId, scopeId } from "../types.ts";
 import { type ListOwnedOptions } from "../files/file-artifact-store.ts";
 import { isTerminal, type Run } from "../runs/run-store.ts";
 import { sleep } from "../util/async.ts";
@@ -18,6 +18,7 @@ import { processRun } from "../runs/worker.ts";
 import { deployRef, encodeRef, parseRef } from "../acl/resource-ref.ts";
 import type { Skill } from "../skills/skill-store.ts";
 import type { CapabilityClaims } from "../auth/capability-token.ts";
+import type { SkillSharingPolicy } from "../resolution/config-store.ts";
 import {
   createCanReadScope,
   createCanManageScope,
@@ -487,6 +488,19 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     return undefined;
   }
 
+  async function isOrgAdmin(actorId: string): Promise<boolean> {
+    if (!deps.admin) throw new Error("org skill sharing requires an admin service");
+    return (await deps.admin.adminStatusOf({ id: actorId, type: "internal" })).isAdmin;
+  }
+
+  async function skillSharingAllows(actorId: string, audience: keyof SkillSharingPolicy): Promise<boolean> {
+    return (await deps.config.getSkillSharingPolicy())[audience] === "everyone" || (await isOrgAdmin(actorId));
+  }
+
+  async function maySkillLiveIn(homeScope: ScopeId, actorId: string): Promise<boolean> {
+    return !isSharedScope(homeScope) || (await skillSharingAllows(actorId, "contexts"));
+  }
+
   function canManageSkill(skill: Pick<Skill, "scopeId" | "createdBy">, principalId: string): Promise<boolean> {
     return principalManagesArtifactHome(skill.scopeId, skill.createdBy, principalId);
   }
@@ -756,6 +770,9 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     principalManagesArtifactHome,
     artifactAuthor,
     canManageSkill,
+    isOrgAdmin,
+    skillSharingAllows,
+    maySkillLiveIn,
     republishIfShared,
     effectiveDeploymentPermission,
     principalCanReadDeployment,

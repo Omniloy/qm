@@ -8,6 +8,7 @@ export interface SkillShareRow {
   scope: string;
   scopeId?: string;
   editable?: boolean;
+  createdByViewer?: boolean;
   status?: string;
 }
 
@@ -25,7 +26,7 @@ export function skillShareActions(
 ): RowActionSpec[] {
   const canPromote = opts.isAdmin || opts.canPromote === true;
   if (isOrgScoped(row)) {
-    if (opts.archived || !row.id || !(opts.isAdmin || (canPromote && row.editable === true))) return [];
+    if (opts.archived || !row.id || !(opts.isAdmin || (canPromote && row.createdByViewer === true))) return [];
     return [{ id: "demote", label: "Take back from everyone…", danger: true }];
   }
 

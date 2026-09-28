@@ -86,6 +86,7 @@ export type ServiceCredential = {
   enabled: boolean;
   hasSecret: boolean;
   updatedAt: number;
+  grantees?: string[];
 };
 export class ConnectorsState {
   catalog: Connector[] = [];

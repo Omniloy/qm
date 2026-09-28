@@ -10,12 +10,19 @@ export const UNATTESTED_TURN_CAUSE =
 
 export const SHARED_SKILL_TRIGGER_REFUSAL = `a skill in a shared scope can only be changed by a person the platform can attest is present — ${UNATTESTED_TURN_CAUSE}`;
 
+export const SKILL_CONTEXTS_ADMIN_ONLY =
+  "only an org admin can put a skill into a shared conversation or give it to someone else in this organization";
+
 export function triggerBlocksSharedSkill(homeScope: ScopeId, liveActor: boolean): boolean {
   return isSharedScope(homeScope) && !liveActor;
 }
 
 export function livePersonCapability(c: { liveActor?: boolean; liveAuthor?: boolean } | undefined): boolean {
   return c?.liveAuthor === true || c?.liveActor === true;
+}
+
+export function portalSessionCapability(c: { liveActor?: boolean; aud?: string; sessionId?: string }): boolean {
+  return c.liveActor === true && c.aud === undefined && c.sessionId === undefined;
 }
 
 export const ARTIFACT_TYPES = ["file", "skill", "deploy", "cron"] as const;

@@ -151,11 +151,12 @@ test("when the org lets everyone promote, a member can promote and take back the
     (a) => a.id === "promote",
   );
   assert.equal(promote?.disabled, false);
-  const own = skill({ scope: "org", scopeId: "org:omniloy", editable: true });
+  const own = skill({ scope: "org", scopeId: "org:omniloy", editable: false, createdByViewer: true });
   assert.deepEqual(
     skillShareActions(own, { isAdmin: false, canPromote: true, archived: false }).map((a) => a.id),
     ["demote"],
   );
-  const others = skill({ scope: "org", scopeId: "org:omniloy", editable: false });
+  assert.deepEqual(skillShareActions(own, { isAdmin: false, canPromote: false, archived: false }), []);
+  const others = skill({ scope: "org", scopeId: "org:omniloy", editable: false, createdByViewer: false });
   assert.deepEqual(skillShareActions(others, { isAdmin: false, canPromote: true, archived: false }), []);
 });

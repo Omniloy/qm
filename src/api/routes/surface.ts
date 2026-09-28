@@ -24,6 +24,7 @@ import {
 import { builtInModelCatalog, selectableCatalogForHarness, selectableModelCatalog } from "../../model/model-catalog.ts";
 import { dropHidden } from "../../model/model-classification.ts";
 import { errMessage } from "../../util/errors.ts";
+import { samePerson } from "../../directory/person.ts";
 import { renderAgentApis } from "../agent-api-catalog.ts";
 import { mintCapabilityToken, CAPABILITY_TTL_MS } from "../../auth/capability-token.ts";
 import { contentTypeWithUtf8Charset, pipeToResponse, sendJson } from "../http.ts";
@@ -45,6 +46,7 @@ import {
   livePersonCapability,
   splitToScope,
   SHARED_SKILL_TRIGGER_REFUSAL,
+  SKILL_CONTEXTS_ADMIN_ONLY,
   UNATTESTED_TURN_CAUSE,
 } from "../artifact-share.ts";
 
@@ -975,6 +977,7 @@ async function listSkills(ctx: ApiCtx): Promise<void> {
       assetCount: r.skill.manifest.files?.length ?? 0,
       requiredCapabilities: r.skill.manifest.requiredCapabilities,
       editable: await app.canManageSkill(r.skill, principalId),
+      createdByViewer: samePerson(r.skill.createdBy, principalId),
     })),
   );
   return sendJson(res, 200, { skills });
@@ -1056,6 +1059,7 @@ async function updateSkill(ctx: ApiCtx): Promise<void> {
   const updated = await app.updateOwnedSkill(id, principalId, patch, { liveActor });
   if (updated === "trigger_blocked")
     return sendJson(res, 403, { error: "forbidden", message: SHARED_SKILL_TRIGGER_REFUSAL });
+  if (updated === "forbidden") return sendJson(res, 403, { error: "forbidden", message: SKILL_CONTEXTS_ADMIN_ONLY });
   if (!updated) return sendJson(res, 404, { error: "not_found", message: "no such skill, or it isn't yours to edit" });
   return sendJson(res, 200, {
     skill: {
@@ -1199,6 +1203,7 @@ async function createSkill(ctx: ApiCtx): Promise<void> {
     description: b.description,
     body: b.body,
   });
+  if (created === "forbidden") return sendJson(res, 403, { error: "forbidden", message: SKILL_CONTEXTS_ADMIN_ONLY });
   if (!created)
     return sendJson(res, 409, {
       error: "exists",

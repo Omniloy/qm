@@ -143,7 +143,7 @@ test("a skill's home names where the copy lives", () => {
   const home = (overrides: Partial<SkillItem>) => skillHomeLabel(skill(overrides), "me@acme.com", title);
   assert.equal(home({ scope: "org", scopeId: "org:acme" }), "Org");
   assert.equal(home({ scope: "personal", scopeId: "personal:me@acme.com" }), "Personal");
-  assert.equal(home({ scope: "personal", scopeId: "personal:peer@acme.com" }), "Shared by peer@acme.com");
+  assert.equal(home({ scope: "personal", scopeId: "personal:ana.lopez@acme.com" }), "Shared by Ana Lopez");
   assert.equal(home({ scope: "channel", scopeId: "channel:C1" }), "#sales");
   assert.equal(home({ scope: "group", scopeId: "group:p" }), "Project group:p");
   assert.equal(home({ scope: "team", scopeId: "team:t" }), "Team");

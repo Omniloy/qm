@@ -730,7 +730,7 @@ export function buildApp(
     interactiveFastMode: artifactMap<PersistedScopedFlag>("interactive_fast_mode_flag"),
     individualModelAuth: artifactMap<PersistedScopedFlag>("individual_model_auth_flag"),
     modelAccountModes: artifactMap<PersistedModelAccountModes>("model_account_modes"),
-    skillSharing: artifactMap<PersistedSkillSharingPolicy>("skill_sharing_policy"),
+    skillSharing: artifactMap<PersistedSkillSharingPolicy>("fork_skill_sharing_policy"),
     webuiModels: artifactMap<PersistedWebuiModels>("webui_model_configs"),
     modelClassifications: artifactMap<PersistedModelClassification>("model_classifications"),
     peopleDirectoryUrls: artifactMap<PersistedPeopleDirectoryUrl>("people_directory_urls"),

@@ -239,7 +239,7 @@ export function createSkillMethods(
   | "createOwnedSkill"
   | "deleteOwnedSkill"
 > {
-  const { canManageSkill, republishIfShared } = h;
+  const { canManageSkill, maySkillLiveIn, republishIfShared } = h;
   return {
     listSkills() {
       return deps.skills.list();
@@ -267,6 +267,7 @@ export function createSkillMethods(
       if (!skill || !(await canManageSkill(skill, principalId))) return null;
       if (triggerBlocksSharedSkill(skill.scopeId, opts?.liveActor === true)) return "trigger_blocked";
       if (skill.status === "archived") return null;
+      if (!(await maySkillLiveIn(skill.scopeId, principalId))) return "forbidden";
       const manifest = {
         ...skill.manifest,
         description: patch.description ?? skill.manifest.description,
@@ -397,6 +398,7 @@ export function createSkillMethods(
           "a skill cannot be created directly in an org or team scope — promote a published skill instead",
         );
       }
+      if (!(await maySkillLiveIn(homeScope, input.principalId))) return "forbidden";
       const existing = (await deps.skills.list()).find((s) => s.scopeId === homeScope && s.manifest.name === name);
       if (existing && existing.status !== "archived") return null;
       if (existing) await deps.skills.delete(existing.id);

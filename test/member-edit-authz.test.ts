@@ -147,6 +147,27 @@ test("skills: a private-channel member may edit + delete a shared skill; provena
   assert.equal(await app.deleteOwnedSkill({ principalId: PRIV_MEMBER, id: planted.id, liveActor: true }), "deleted");
 });
 
+test("skills: when only admins may share skills, a member cannot edit a shared-home skill but an admin can", async () => {
+  const deps = makeDeps();
+  await deps.config.setSkillSharingPolicy({ contexts: "admins", org: "admins" });
+  const planted = await deps.skills.create({
+    scopeId: privScope,
+    manifest: { name: "gated", description: "d", requiredCapabilities: [], body: "# b" },
+    createdBy: OWNER,
+  });
+  await deps.skills.review(planted.id, "system:test", []);
+  await deps.skills.publish(planted.id);
+  const admin = { adminStatusOf: async (p: { id: string }) => ({ isAdmin: p.id === OWNER }) };
+  const app = createApp({ ...deps, admin } as unknown as AppDeps);
+  assert.equal(
+    await app.updateOwnedSkill(planted.id, PRIV_MEMBER, { body: "# replaced" }, { liveActor: true }),
+    "forbidden",
+  );
+  assert.equal((await deps.skills.get(planted.id))?.manifest.body, "# b");
+  const edited = await app.updateOwnedSkill(planted.id, OWNER, { body: "# admin" }, { liveActor: true });
+  assert.equal(typeof edited === "object" && edited?.manifest.body, "# admin");
+});
+
 test("skills: a member editing a normal shared skill auto-republishes it (stays live)", async () => {
   const deps = makeDeps();
   const planted = await deps.skills.create({

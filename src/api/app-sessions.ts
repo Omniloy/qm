@@ -28,7 +28,6 @@ import { grantSharedContextRead, MAX_ATTACHMENT_BYTES, mimeFromName, safeAttachm
 import { projectIdFromGroupRef, projectScopeId } from "../projects/project-store.ts";
 
 import type { App, AppDeps } from "./app-types.ts";
-import type { SkillSharingPolicy } from "../resolution/config-store.ts";
 import {
   MAX_WORKSPACE_FILE_BYTES,
   MAX_WORKSPACE_PATHS,
@@ -75,6 +74,8 @@ async function provisionScopeWorkspace(
 function releaseWorkspaceHandle(sandbox: Sandbox, handle: SandboxHandle): Promise<void> {
   return sandbox.teardown(handle, { keepWarm: true }).catch(swallowAs("workspace browse teardown", undefined));
 }
+
+const PLATFORM_SKILL_AUTHOR = /^(system|pack):/;
 
 export function createSessionMethods(
   deps: AppDeps,
@@ -155,12 +156,6 @@ export function createSessionMethods(
     principalManagesArtifactHome,
     artifactAuthor,
   } = h;
-  const isOrgAdmin = async (actorId: string) => {
-    if (!deps.admin) throw new Error("org skill sharing requires an admin service");
-    return (await deps.admin.adminStatusOf({ id: actorId, type: "internal" })).isAdmin;
-  };
-  const skillSharingAllows = async (actorId: string, audience: keyof SkillSharingPolicy) =>
-    (await deps.config.getSkillSharingPolicy())[audience] === "everyone" || (await isOrgAdmin(actorId));
   const transcripts = createTranscriptSource(deps.sessions);
   const pinView = (
     rec: { id: string; text?: string; entrySeq?: number; addedBy: string; createdAt: number },
@@ -1216,9 +1211,9 @@ export function createSessionMethods(
         scopeLabel: granteeScopeId,
       });
     },
-    skillSharingAllows,
+    skillSharingAllows: h.skillSharingAllows,
 
-    async promoteSkill(id, targetScopeId, actorId, liveActor) {
+    async promoteSkill(id, targetScopeId, actorId, liveActor, portalSession = false) {
       if (parseScopeId(targetScopeId).kind !== "org")
         throw new Error("promote targets the org scope — use share or move for anything narrower");
       if (liveActor !== true)
@@ -1226,18 +1221,23 @@ export function createSessionMethods(
           403,
           `promoting a skill org-wide takes a live person the platform can attest is present — ${UNATTESTED_TURN_CAUSE}`,
         );
-      if (!(await isOrgAdmin(actorId))) {
-        if (!(await skillSharingAllows(actorId, "org")))
+      if (!(await h.isOrgAdmin(actorId))) {
+        if (!(await h.skillSharingAllows(actorId, "org")))
           throw new AdminError(403, "only an org admin can promote a skill org-wide");
+        if (!portalSession)
+          throw new AdminError(
+            403,
+            "giving a skill to the whole organization takes you, in the web app — the agent can't do it for you",
+          );
         const skill = await deps.skills.get(id);
         if (!skill || !(await principalManagesArtifactHome(skill.scopeId, skill.createdBy, actorId)))
           throw new AdminError(403, "that skill isn't yours to share");
         const taken = (await deps.skills.list()).find(
           (s) =>
             s.scopeId === targetScopeId &&
-            s.status === "published" &&
             s.manifest.name === skill.manifest.name &&
-            s.createdBy !== actorId,
+            !samePerson(s.createdBy, actorId) &&
+            (s.status === "published" || PLATFORM_SKILL_AUTHOR.test(s.createdBy)),
         );
         if (taken)
           throw new AdminError(
@@ -1266,8 +1266,8 @@ export function createSessionMethods(
           403,
           `taking a skill back from the org takes a live person the platform can attest is present — ${UNATTESTED_TURN_CAUSE}`,
         );
-      const ownPromotion = skill.createdBy === actorId && (await skillSharingAllows(actorId, "org"));
-      if (!ownPromotion && !(await isOrgAdmin(actorId)))
+      const ownPromotion = samePerson(skill.createdBy, actorId) && (await h.skillSharingAllows(actorId, "org"));
+      if (!ownPromotion && !(await h.isOrgAdmin(actorId)))
         throw new AdminError(403, "only an org admin can take a skill back from the org");
       await deps.skills.archive(id);
       deps.auditLog.record({
