@@ -2,7 +2,7 @@ import { openDesktopBrowser } from "../../chassis/src/desktop-browser";
 import "./slack-account.css";
 import { LitElement, html, nothing } from "lit";
 import { ArrowUpRight, Check } from "lucide";
-import { icon, slackMark } from "./ui";
+import { brandName, icon, slackMark } from "./ui";
 
 export class OnboardingSlack extends LitElement {
   static properties = {
@@ -92,7 +92,7 @@ export class OnboardingSlack extends LitElement {
     }
     const popup = window.open("", "_blank");
     if (!popup) {
-      this.error = "Allow a new tab to install QM, then try again.";
+      this.error = `Allow a new tab to install ${brandName()}, then try again.`;
       return;
     }
     popup.opener = null;
@@ -137,7 +137,7 @@ export class OnboardingSlack extends LitElement {
     if (this.installAvailable === undefined) label = "Checking Slack…";
     return html`${
       this.connected
-        ? html`<div class="slack-connected" role="status">${icon(Check, 14)} QM added to Slack</div>`
+        ? html`<div class="slack-connected" role="status">${icon(Check, 14)} ${brandName()} added to Slack</div>`
         : html`<button
             class="welcome-slack"
             type="button"
@@ -145,7 +145,7 @@ export class OnboardingSlack extends LitElement {
             @click=${() => void this.install()}
           >
             ${slackMark(24)}<span
-              ><strong>${label}</strong><small>Work with QM where your team already talks.</small></span
+              ><strong>${label}</strong><small>Work with ${brandName()} where your team already talks.</small></span
             >${icon(ArrowUpRight, 16)}
           </button>`
     }

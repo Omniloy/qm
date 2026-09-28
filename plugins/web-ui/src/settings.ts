@@ -4,7 +4,7 @@ import { openModelConnectManager, personalAllowed, type StatusResponse } from ".
 import { api, withBase } from "./core-bridge";
 import { html, nothing, render, type TemplateResult } from "lit";
 import { Download, ExternalLink, LogOut, Monitor, Moon, ShieldUser, Sun, type IconNode } from "lucide";
-import { icon } from "./ui";
+import { brandName, icon } from "./ui";
 import { ADMIN_HOME_URL, appState, can, signOut } from "./shell";
 import { sessionsState, setWebOnly } from "./sessions";
 import { errMessage } from "../../chassis/src/errors";
@@ -407,7 +407,7 @@ function desktopRow(): TemplateResult {
     <div class="settings-row">
       <div class="settings-row-copy">
         <div class="settings-row-title">Desktop app</div>
-        <div class="settings-row-note">QM for Mac. Requires Apple Silicon and macOS 13 or later.</div>
+        <div class="settings-row-note">${brandName()} for Mac. Requires Apple Silicon and macOS 13 or later.</div>
       </div>
       <a class="btn settings-row-action" href=${QM_MAC_DOWNLOAD_URL} target="_blank" rel="noreferrer noopener">
         ${icon(Download, 15)}<span>Download for Mac</span>

@@ -352,12 +352,20 @@ first boot so an upgrade changes one thing at a time; see
 MiniOmni's identity lives in the organization layer, not in core:
 [`deploy/layers/omniloy/branding.conf`](../layers/omniloy/branding.conf) is loaded as an
 `env_file` by `core` and `portal`. It sets the upstream branding variables
-(`ORG_BRAND_SELF_LABEL`, `ORG_BRAND_ORG_NAME`, `ORG_BRAND_ACCENT`, `ORG_BRAND_MARK`), the
+(`ORG_BRAND_SELF_LABEL`, `ORG_BRAND_ORG_NAME`, `ORG_BRAND_ACCENT`, `ORG_BRAND_MARK`,
+`ORG_BRAND_MARK_URL`), the
 Slack message identity (`SLACK_BOT_DISPLAY_NAME`) and the sign-in page title
 (`AUTH_BRAND_NAME`). An `environment:` entry in the compose file would override the
 file, so none of these keys appear there, and `AUTH_BRAND_NAME` is no longer read from
 the Dokploy env. The branding default seeds the admin **Branding** card; a value saved
 there takes precedence.
+
+The logo is [`deploy/layers/omniloy/logo.svg`](../layers/omniloy/logo.svg). The compose
+file bind-mounts it read-only at `/etc/qm/brand/logo.svg` in `web-ui` and `portal` and
+points `WEB_UI_FAVICON_SVG_FILE`, `PORTAL_FAVICON_SVG_FILE` and `AUTH_FAVICON_SVG_FILE` at
+it, so every surface serves it as `/favicon.svg`. `ORG_BRAND_MARK_URL` points the sidebar
+and admin badge at that same public `/favicon.svg`; it must be an absolute `https://` URL,
+so it names the public host.
 
 ## Compose notes
 

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 export const CORE_API_URL = (process.env.CORE_API_URL ?? "http://localhost:8080").replace(/\/$/, "");
 export const CORE_ORG_ID = process.env.CORE_ORG_ID ?? "acme";
 const secret = (raw: string | undefined): string | undefined => (raw?.trim() ? raw : undefined);
@@ -12,4 +14,9 @@ if (!secret(process.env.PORTAL_IDENTITY_SECRET) && CORE_SIGNING_SECRET) {
 
 export function portFromEnv(fallback: number): number {
   return Number(process.env.PORT ?? fallback);
+}
+
+export function envOrFile(name: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const file = env[`${name}_FILE`]?.trim();
+  return env[name] || (file ? readFileSync(file, "utf8") : undefined);
 }

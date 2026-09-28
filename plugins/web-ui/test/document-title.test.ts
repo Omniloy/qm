@@ -3,22 +3,37 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { JSDOM } from "jsdom";
 import { createServer } from "vite";
-import { activeSessionForDocumentTitle, documentTitle, PRODUCT_TITLE } from "../src/document-title.ts";
+import { activeSessionForDocumentTitle, documentTitle, productTitle } from "../src/document-title.ts";
 
 const index = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 
 test("page titles retain the static product title", () => {
-  assert.ok(index.includes(`<title>${PRODUCT_TITLE}</title>`));
-  assert.equal(documentTitle("chats", "Quarterly planning", true), `Quarterly planning · ${PRODUCT_TITLE}`);
-  assert.equal(documentTitle(), PRODUCT_TITLE);
+  assert.ok(index.includes(`<title>${productTitle()}</title>`));
+  assert.equal(documentTitle("chats", "Quarterly planning", true), `Quarterly planning · ${productTitle()}`);
+  assert.equal(documentTitle(), productTitle());
+});
+
+test("page titles carry the configured product name", () => {
+  const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: new JSDOM('<meta name="brand-self-label" content="Acme Agent">').window.document,
+  });
+  try {
+    assert.equal(documentTitle(), "Acme Agent · Web");
+    assert.equal(documentTitle("files"), "Files · Acme Agent · Web");
+  } finally {
+    if (documentDescriptor) Object.defineProperty(globalThis, "document", documentDescriptor);
+    else delete (globalThis as { document?: Document }).document;
+  }
 });
 
 test("chat and non-chat views have useful fallbacks", () => {
-  assert.equal(documentTitle("chats"), `Chats · ${PRODUCT_TITLE}`);
-  assert.equal(documentTitle("chats", null, true), `New chat · ${PRODUCT_TITLE}`);
-  assert.equal(documentTitle("contexts"), `Projects · ${PRODUCT_TITLE}`);
-  assert.equal(documentTitle("files"), `Files · ${PRODUCT_TITLE}`);
-  assert.equal(documentTitle("keychain"), `Keychain · ${PRODUCT_TITLE}`);
+  assert.equal(documentTitle("chats"), `Chats · ${productTitle()}`);
+  assert.equal(documentTitle("chats", null, true), `New chat · ${productTitle()}`);
+  assert.equal(documentTitle("contexts"), `Projects · ${productTitle()}`);
+  assert.equal(documentTitle("files"), `Files · ${productTitle()}`);
+  assert.equal(documentTitle("keychain"), `Keychain · ${productTitle()}`);
 });
 
 test("active session selection follows conversation switches and title updates", () => {
@@ -93,11 +108,11 @@ test("document title follows session switches, split-pane focus, and sign-out", 
     mainConversation().state.sessionId = "old";
     mainConversation().state.threadRef = "web:old";
     syncDocumentTitle();
-    assert.equal(document.title, `Old title · ${PRODUCT_TITLE}`);
+    assert.equal(document.title, `Old title · ${productTitle()}`);
     mainConversation().state.sessionId = "new";
     mainConversation().state.threadRef = "web:new";
     syncDocumentTitle();
-    assert.equal(document.title, `New title · ${PRODUCT_TITLE}`);
+    assert.equal(document.title, `New title · ${productTitle()}`);
 
     globalThis.fetch = async (input) => {
       const session = String(input).includes("/sessions/new") ? newSession : oldSession;
@@ -119,7 +134,7 @@ test("document title follows session switches, split-pane focus, and sign-out", 
     document
       .querySelector(".zone-right")!
       .dispatchEvent(new dom.window.Event("drop", { bubbles: true, cancelable: true }));
-    assert.equal(document.title, `New title · ${PRODUCT_TITLE}`);
+    assert.equal(document.title, `New title · ${productTitle()}`);
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     const paneTitles = () =>
@@ -143,20 +158,20 @@ test("document title follows session switches, split-pane focus, and sign-out", 
     assert.deepEqual(paneTitles(), ["Old title", "New title"]);
     await refreshTitles("", "New title");
     assert.deepEqual(paneTitles(), ["Web chat", "New title"]);
-    assert.equal(document.title, `New title · ${PRODUCT_TITLE}`);
+    assert.equal(document.title, `New title · ${productTitle()}`);
     await refreshTitles("Fallback for overloaded title model", "New title");
     assert.deepEqual(paneTitles(), ["Fallback for overloaded title model", "New title"]);
     focusPane(0);
-    assert.equal(document.title, `Fallback for overloaded title model · ${PRODUCT_TITLE}`);
+    assert.equal(document.title, `Fallback for overloaded title model · ${productTitle()}`);
     await refreshTitles("Fallback for overloaded title model", "Fallback for OAuth callback");
     assert.deepEqual(paneTitles(), ["Fallback for overloaded title model", "Fallback for OAuth callback"]);
-    assert.equal(document.title, `Fallback for overloaded title model · ${PRODUCT_TITLE}`);
+    assert.equal(document.title, `Fallback for overloaded title model · ${productTitle()}`);
     focusPane(1);
-    assert.equal(document.title, `Fallback for OAuth callback · ${PRODUCT_TITLE}`);
+    assert.equal(document.title, `Fallback for OAuth callback · ${productTitle()}`);
 
     globalThis.fetch = async () => new Response(null, { status: 204 });
     await signOut();
-    assert.equal(document.title, PRODUCT_TITLE);
+    assert.equal(document.title, productTitle());
     await new Promise((resolve) => setTimeout(resolve, 250));
   } finally {
     await vite.close();

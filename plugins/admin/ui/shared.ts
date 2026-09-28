@@ -1,6 +1,10 @@
 import { html, render, nothing } from "lit";
 import { ifDefined } from "lit/directives/if-defined.js";
 
+export function brandLabel(): string {
+  return document.querySelector('meta[name="brand-self-label"]')?.getAttribute("content") || "QM";
+}
+
 export function node(template: unknown): HTMLElement {
   const fragment = document.createDocumentFragment();
   render(template, fragment);

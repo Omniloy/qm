@@ -112,11 +112,11 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
           if (handshake(pair, frame.method, frame.id, pair.cdp)) return;
         }
         if (!pair.extension) {
-          refuse(pair.cdp, frame.id, "your Chrome is not connected — open the QM extension");
+          refuse(pair.cdp, frame.id, "your Chrome is not connected — open the Browser Bridge extension");
           return;
         }
         if (!pair.sharing && typeof frame.method === "string" && frame.method.startsWith("Target.")) {
-          refuse(pair.cdp, frame.id, "no tab is shared — open the QM extension and press Share this tab");
+          refuse(pair.cdp, frame.id, "no tab is shared — open the Browser Bridge extension and press Share this tab");
           return;
         }
         pair.extension.send(raw);

@@ -1311,7 +1311,7 @@ export function createChatSurface(
     try {
       if (agent) {
         await ctx.composer.refreshRuntimeSelection(null, agent);
-        await ctx.composer.sendSuggestedPrompt(welcomeIdeasPrompt, agent);
+        await ctx.composer.sendSuggestedPrompt(welcomeIdeasPrompt(), agent);
       }
     } finally {
       startingIdeas = false;

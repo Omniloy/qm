@@ -3,10 +3,7 @@ import { html, nothing, type TemplateResult } from "lit";
 import { live } from "lit/directives/live.js";
 import { Check, ChevronDown, Download, createElement, type IconNode } from "lucide";
 
-export function brandName(): string {
-  if (typeof document === "undefined") return "QM";
-  return document.querySelector<HTMLMetaElement>('meta[name="brand-self-label"]')?.content || "QM";
-}
+export { brandName } from "./brand-name.ts";
 
 export function brandMark(): TemplateResult {
   return html`<span class="brand-mark" aria-hidden="true"></span>`;

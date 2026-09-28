@@ -13,6 +13,7 @@ import { dirname, extname, join, normalize } from "node:path";
 import { randomBytes } from "node:crypto";
 import { LRUCache } from "lru-cache";
 import { makeZip } from "./zip.ts";
+import { brandExtension } from "./extension-brand.ts";
 import {
   fetchCoreText,
   signedHeaders,
@@ -39,6 +40,7 @@ import {
   CORE_API_URL as CORE,
   CORE_ORG_ID as ORG,
   CORE_SIGNING_SECRET,
+  envOrFile,
   PORTAL_IDENTITY_SECRET,
   portFromEnv,
 } from "../../chassis/src/env.ts";
@@ -111,7 +113,7 @@ async function serveWebManifest(res: ServerResponse): Promise<void> {
     theme_color: "#ffffff",
     icons: [
       {
-        src: process.env.WEB_UI_FAVICON_SVG ? "/favicon.svg" : "/brand-mark.svg",
+        src: envOrFile("WEB_UI_FAVICON_SVG") ? "/favicon.svg" : "/brand-mark.svg",
         sizes: "any",
         type: "image/svg+xml",
         purpose: "any maskable",
@@ -2385,7 +2387,11 @@ const apiRoutes: readonly WebRoute[] = [
       const { res } = c;
       try {
         const names = readdirSync(EXTENSION_DIR).filter((n) => !n.startsWith("."));
-        const entries = names.map((name) => ({ name, data: readFileSync(join(EXTENSION_DIR, name)) }));
+        const extension = brandExtension(
+          names.map((name) => ({ name, data: readFileSync(join(EXTENSION_DIR, name)) })),
+          (await brandingCache.forRender()).selfLabel,
+        );
+        const entries = extension.entries;
         const pairing = await coreFetch("POST", "/v1/browser-relay/pairing", "{}");
         if (pairing.status >= 200 && pairing.status < 300) {
           try {
@@ -2403,7 +2409,7 @@ const apiRoutes: readonly WebRoute[] = [
         const zip = makeZip(entries);
         res.writeHead(200, {
           "content-type": "application/zip",
-          "content-disposition": 'attachment; filename="qm-browser-bridge.zip"',
+          "content-disposition": `attachment; filename="${extension.filename}"`,
           "content-length": String(zip.length),
         });
         return void res.end(zip);
@@ -3369,7 +3375,7 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
     return serveFavicon(
       res,
       {
-        svg: process.env.WEB_UI_FAVICON_SVG,
+        svg: envOrFile("WEB_UI_FAVICON_SVG"),
         emoji: process.env.WEB_UI_FAVICON_EMOJI ?? "\u{1F3F4}\u{200D}\u2620\uFE0F",
       },
       "no-cache",

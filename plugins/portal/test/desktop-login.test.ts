@@ -26,7 +26,10 @@ const claims = new Set<string>();
 let claimsUnavailable = false;
 const core = createServer((req, res) => {
   void (async () => {
-    if (new URL(req.url!, origin).pathname !== "/v1/auth/broker/claim") return void res.end("{}");
+    const pathname = new URL(req.url!, origin).pathname;
+    if (pathname === "/v1/surface-config")
+      return void res.end(JSON.stringify({ branding: { selfLabel: "Acme Agent" } }));
+    if (pathname !== "/v1/auth/broker/claim") return void res.end("{}");
     if (claimsUnavailable) {
       res.statusCode = 503;
       return void res.end("{}");
@@ -96,6 +99,8 @@ test("GET requires explicit confirmation and cannot mint a code", async () => {
   const html = await response.text();
   assert.equal(response.status, 200);
   assert.match(html, /person@example.test/);
+  assert.match(html, /Sign in to Acme Agent Desktop/);
+  assert.doesNotMatch(html, /\bQM\b/);
   assert.match(html, /method="post"/);
   assert.doesNotMatch(html, /qm-desktop:\/\//);
   assert.equal(response.headers.get("set-cookie"), null);

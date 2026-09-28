@@ -1,7 +1,7 @@
 import { openDesktopBrowser } from "../../chassis/src/desktop-browser";
 import { LitElement, html, nothing } from "lit";
 import { ArrowUpRight, Check, Link2, UserRound } from "lucide";
-import { icon, slackMark } from "./ui";
+import { brandName, icon, slackMark } from "./ui";
 import "./slack-account.css";
 import { withBase } from "./core-bridge";
 
@@ -69,13 +69,12 @@ export class SlackAccount extends LitElement {
       for (const key of ["slackReturn", "status", "error", "connectedAccountId"]) url.searchParams.delete(key);
       history.replaceState(history.state, "", url);
       if (!this.attempt || this.attempt.state !== state) {
-        this.error =
-          "This connection expired or was started in another QM account. Sign in to the account you want to connect and try again.";
+        this.error = `This connection expired or was started in another ${brandName()} account. Sign in to the account you want to connect and try again.`;
         return;
       }
       if (cancelled) {
         this.clearAttempt();
-        this.error = "Slack authorization was cancelled. Your QM account has not been linked.";
+        this.error = `Slack authorization was cancelled. Your ${brandName()} account has not been linked.`;
         return;
       }
       void this.complete();
@@ -174,7 +173,7 @@ export class SlackAccount extends LitElement {
               </div>
               <span
                 ><strong>${this.busy ? "Linking Slack…" : "Link your Slack account"}</strong
-                ><small>Let QM search Slack and take action on your behalf.</small></span
+                ><small>Let ${brandName()} search Slack and take action on your behalf.</small></span
               >
               ${icon(ArrowUpRight, 16)}
             </button>`

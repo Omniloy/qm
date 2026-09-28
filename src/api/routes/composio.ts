@@ -449,7 +449,7 @@ async function completeAuth(ctx: ApiCtx): Promise<void> {
   } catch {
     return sendJson(ctx.res, 400, {
       error: "verification_failed",
-      message: "Sign in to the QM account that started this connection and try connecting again.",
+      message: "Sign in to the account that started this connection and try connecting again.",
     });
   }
 }
@@ -536,7 +536,7 @@ async function completeSlack(ctx: ApiCtx): Promise<void> {
     return sendJson(res, 400, {
       error: "invalid_link",
       message:
-        "This connection expired or belongs to another QM account. Start again from the account you want to connect.",
+        "This connection expired or belongs to another account. Start again from the account you want to connect.",
     });
   try {
     const account = await request(ctx, access.key, `/connected_accounts/${encodeURIComponent(proof.accountId)}`);
@@ -549,7 +549,7 @@ async function completeSlack(ctx: ApiCtx): Promise<void> {
     )
       return sendJson(res, 403, {
         error: "wrong_account",
-        message: "This Slack connection does not belong to your QM account.",
+        message: "This Slack connection does not belong to your account.",
       });
     if (account.status !== "ACTIVE")
       return sendJson(res, 409, {
@@ -595,7 +595,7 @@ async function completeSlack(ctx: ApiCtx): Promise<void> {
     if (teamId !== slack.team_id)
       return sendJson(res, 409, {
         error: "wrong_workspace",
-        message: "Connect the Slack workspace where your company uses QM.",
+        message: "Connect your company’s Slack workspace.",
       });
     const members = (await deps.directory.list()).filter(
       (m) => m.slackId === slack.user_id || m.principalId === slack.user_id,
@@ -604,7 +604,7 @@ async function completeSlack(ctx: ApiCtx): Promise<void> {
       return sendJson(res, 409, {
         error: "member_unavailable",
         message:
-          "QM could not find your company Slack membership. Message the bot and try again, or ask your administrator for help.",
+          "Could not find your company Slack membership. Message the bot and try again, or ask your administrator for help.",
       });
     const member = members[0]!;
     await deps.identity?.refresh(true);
@@ -643,7 +643,7 @@ async function completeSlack(ctx: ApiCtx): Promise<void> {
       if (canonicalPerson(member.principalId) !== member.principalId)
         return sendJson(res, 409, {
           error: "already_linked",
-          message: "This Slack identity is connected to another QM account. Ask your administrator for help.",
+          message: "This Slack identity is connected to another account. Ask your administrator for help.",
         });
       await deps.principalLinks.link({
         principalId: member.principalId,

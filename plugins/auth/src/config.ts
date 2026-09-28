@@ -1,3 +1,4 @@
+import { envOrFile } from "../../chassis/src/env.ts";
 import type { SmtpTlsMode } from "./smtp.ts";
 import { parsePasswordHash } from "./password.ts";
 
@@ -109,7 +110,7 @@ export function readConfig(env: NodeJS.ProcessEnv): AuthConfig {
     passwordLimitPerIp: numberFrom(env.AUTH_PASSWORD_LIMIT_PER_IP, 30),
     emailFrom: env.AUTH_EMAIL_FROM?.trim() ?? "",
     brandName: env.AUTH_BRAND_NAME?.trim() || "qm",
-    faviconSvg: env.AUTH_FAVICON_SVG?.trim() || undefined,
+    faviconSvg: envOrFile("AUTH_FAVICON_SVG", env)?.trim() || undefined,
     transport,
     resendApiKey: env.RESEND_API_KEY ?? "",
     smtp: {

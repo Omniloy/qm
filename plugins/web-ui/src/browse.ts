@@ -4,7 +4,7 @@ import { deepLinkPath, isPlainLeftClick, UI_BASE } from "./deep-link";
 import { nextGridIndex } from "./grid-nav";
 import { setScopedSession } from "./session-scope";
 import { ADMIN_HOME_URL, appState, can, switchView } from "./shell";
-import { icon } from "./ui";
+import { brandName, icon } from "./ui";
 import type { View } from "./shell-state";
 
 interface Destination {
@@ -31,15 +31,15 @@ export function destinations(): Destination[] {
   });
   const list: Destination[] = [
     to("contexts", Folder, "Projects", "Group chats, files, and automations"),
-    to("files", Files, "Files", "Everything you and QM have shared"),
+    to("files", Files, "Files", `Everything you and ${brandName()} have shared`),
     to("crons", Clock, "Crons", "Work that runs on a schedule"),
-    to("webhooks", Webhook, "Webhooks", "Inbound events that wake QM"),
+    to("webhooks", Webhook, "Webhooks", `Inbound events that wake ${brandName()}`),
     to("keychain", KeyRound, "Keychain", "Connected accounts and credentials"),
-    to("deploys", Rocket, "Apps", "What QM has shipped for you"),
-    to("memory", Brain, "Memory", "What QM remembers about your work"),
-    to("skills", Box, "Skills", "Reusable procedures QM can follow"),
+    to("deploys", Rocket, "Apps", `What ${brandName()} has shipped for you`),
+    to("memory", Brain, "Memory", `What ${brandName()} remembers about your work`),
+    to("skills", Box, "Skills", `Reusable procedures ${brandName()} can follow`),
   ];
-  if (can("loops")) list.push(to("loops", Repeat, "Loops", "Standing work QM keeps pushing forward"));
+  if (can("loops")) list.push(to("loops", Repeat, "Loops", `Standing work ${brandName()} keeps pushing forward`));
   if (can("admin")) {
     list.push({
       view: null,

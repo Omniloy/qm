@@ -53,6 +53,10 @@ test("ORG_BRAND_* parses into a validated branding default", () => {
   assert.deepEqual(loadConfig({ ORG_BRAND_ORG_NAME: "Acme Corp" }).brandingDefault, { orgName: "Acme Corp" });
   assert.equal(loadConfig({ ORG_BRAND_ORG_NAME: "x".repeat(80) }).brandingDefault?.orgName?.length, 40);
   assert.deepEqual(loadConfig({ ORG_BRAND_SELF_LABEL: "{{straylight}}" }).brandingDefault, { selfLabel: "straylight" });
+  assert.deepEqual(loadConfig({ ORG_BRAND_MARK_URL: "https://acme.example/icon.svg" }).brandingDefault, {
+    markUrl: "https://acme.example/icon.svg",
+  });
+  assert.equal(loadConfig({ ORG_BRAND_MARK_URL: "http://acme.example/icon.svg" }).brandingDefault, undefined);
 });
 
 test("AUTH_ALLOWED_EMAILS becomes a normalized email-auth principal set", () => {

@@ -135,6 +135,9 @@ services:
       ADMIN_BASE_PATH: /admin
       CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET}
       PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET}
+      WEB_UI_FAVICON_SVG_FILE: /etc/qm/brand/logo.svg
+    volumes:
+      - ../layers/omniloy/logo.svg:/etc/qm/brand/logo.svg:ro
     networks: [qm]
 
   portal:
@@ -180,6 +183,10 @@ services:
       PORTAL_SESSION_SECRET: ${PORTAL_SESSION_SECRET}
       PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET}
       CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET}
+      PORTAL_FAVICON_SVG_FILE: /etc/qm/brand/logo.svg
+      AUTH_FAVICON_SVG_FILE: /etc/qm/brand/logo.svg
+    volumes:
+      - ../layers/omniloy/logo.svg:/etc/qm/brand/logo.svg:ro
     networks: [qm, dokploy-network]
     labels:
       - traefik.enable=true

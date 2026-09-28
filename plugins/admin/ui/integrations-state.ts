@@ -1,5 +1,6 @@
 import { openDesktopBrowser } from "../../chassis/src/desktop-browser.ts";
 import { SettingState, settingRegistry } from "./setting-state.ts";
+import { brandLabel } from "./shared.ts";
 export type Api = (
   method: string,
   path: string,
@@ -234,7 +235,7 @@ export class SlackInstallationState {
       else await this.start(step!);
     }
     if (step === "connected" && this.data.configured && this.data.setup?.connected)
-      this.setStatus("Connected. You can return to your QM conversation.", "ok");
+      this.setStatus(`Connected. You can return to your ${brandLabel()} conversation.`, "ok");
   }
   async start(step = "install") {
     if (this.busy) return;
@@ -288,7 +289,7 @@ export class SlackInstallationState {
     if (
       this.busy ||
       !confirm(
-        "Disconnect this Slack app? QM will stop replying in Slack until you reconnect. The app will remain installed in your workspace.",
+        `Disconnect this Slack app? ${brandLabel()} will stop replying in Slack until you reconnect. The app will remain installed in your workspace.`,
       )
     )
       return;

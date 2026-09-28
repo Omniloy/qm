@@ -16,6 +16,7 @@ export {
   installation,
 } from "./integrations-state.ts";
 import { loadScope as loadSettings } from "./integrations-state.ts";
+import { brandLabel } from "./shared.ts";
 export function loadScope(data: any, scope: string) {
   loadSettings(data, scope);
   if (states.get("ack-emoji")!.available) void emoji.load();
@@ -106,9 +107,9 @@ cards["card-channel-header-pin-default"] = () => {
     <div class="head">
       <h2>Pinned channel message</h2>
       <p>
-        When QM joins an internal Slack channel, it can post and pin a message showing the active model and a link to
-        that channel’s settings. Turn this off to remove QM’s pinned message from channels using this default.
-        Individual channels can override it on their settings page.
+        When ${brandLabel()} joins an internal Slack channel, it can post and pin a message showing the active model and
+        a link to that channel’s settings. Turn this off to remove ${brandLabel()}’s pinned message from channels using
+        this default. Individual channels can override it on their settings page.
       </p>
     </div>
     <div class="body">
@@ -131,9 +132,9 @@ cards["card-channel-header-pin-default"] = () => {
       <figure class="slack-message-example">
         <figcaption>Example · pinned in #product</figcaption>
         <div class="slack-example-message">
-          <span class="slack-example-avatar" aria-hidden="true">Q</span>
+          <span class="slack-example-avatar" aria-hidden="true">${brandLabel().slice(0, 1).toUpperCase()}</span>
           <div>
-            <strong>QM</strong> <span class="muted">APP</span>
+            <strong>${brandLabel()}</strong> <span class="muted">APP</span>
             <p>Using Sonnet here. <span class="slack-example-link">More settings</span></p>
           </div>
         </div>
@@ -350,8 +351,8 @@ cards["card-slack-installation"] = () => {
           </li>
           <li>
             In <strong>Basic Information → App-Level Tokens</strong>, click <strong>Generate Token and Scopes</strong>.
-            Name it <strong>QM connection</strong>, add <code>connections:write</code>, and generate it. Copy the token
-            starting with <code>xapp-</code>.
+            Name it <strong>${brandLabel()} connection</strong>, add <code>connections:write</code>, and generate it.
+            Copy the token starting with <code>xapp-</code>.
           </li>
           <li>
             Paste both tokens below and click <strong>Validate and connect</strong>. Keep this page open while you work
@@ -366,7 +367,7 @@ cards["card-slack-installation"] = () => {
           Replacing a connected app changes the bot identity. Invite the new bot to your channels and start a new DM
           with it. The old app stays installed until a workspace admin removes it.
           <span id="slack-hosted-switch" class=${d.installAvailable ? "" : "hidden"}
-            >To switch back to the QM app, disconnect here first, then choose Add to Slack.</span
+            >To switch back to the ${brandLabel()} app, disconnect here first, then choose Add to Slack.</span
           >
         </p>
         <button
@@ -636,8 +637,8 @@ function installationTitle(data: Record<string, any>) {
   return data.source === "invalid_environment" ? "Finish connecting your app" : "Connect your workspace";
 }
 function installationDescription(data: Record<string, any>) {
-  if (data.configured) return data.source === "service" ? "QM app" : "Custom app";
+  if (data.configured) return data.source === "service" ? `${brandLabel()} app` : "Custom app";
   return data.installAvailable
-    ? "Add the QM app or connect your own below."
+    ? `Add the ${brandLabel()} app or connect your own below.`
     : "Create a Slack app from our manifest, then connect it here.";
 }

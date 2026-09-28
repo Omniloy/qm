@@ -3,6 +3,7 @@ import { html, render, type TemplateResult } from "lit";
 import { classMap } from "lit/directives/class-map.js";
 import { repeat } from "lit/directives/repeat.js";
 import { states, patternError, type GovernanceState } from "./governance-state.ts";
+import { brandLabel } from "./shared.ts";
 export {
   owns,
   collect,
@@ -318,7 +319,7 @@ const cards: Record<string, (s: GovernanceState) => TemplateResult> = {
             [
               "open",
               "Open",
-              "QM can use your saved memories, files, and skills across conversations when you ask it for help. In a group conversation, this could risk revealing private information to others.",
+              `${brandLabel()} can use your saved memories, files, and skills across conversations when you ask it for help. In a group conversation, this could risk revealing private information to others.`,
             ],
           ],
         )}

@@ -71,6 +71,7 @@ import {
   CORE_API_URL as CORE,
   CORE_ORG_ID as ORG,
   CORE_SIGNING_SECRET,
+  envOrFile,
   PORTAL_IDENTITY_SECRET,
   portFromEnv,
 } from "../../chassis/src/env.ts";
@@ -111,6 +112,7 @@ const PLAYGROUND_MINTS_PER_IP = playgroundIntEnv("PORTAL_PLAYGROUND_MINTS_PER_IP
 const PLAYGROUND_MINT_WINDOW_S = playgroundIntEnv("PORTAL_PLAYGROUND_MINT_WINDOW_S", 3600);
 const NEUTRAL_ACCENT = "#4f46e5";
 let brandAccent = NEUTRAL_ACCENT;
+let brandLabel = "QM";
 let modelProviderConfigured: boolean | undefined;
 let surfaceConfigNextAt = 0;
 let surfaceConfigInflight: Promise<void> | null = null;
@@ -131,8 +133,12 @@ async function fetchSurfaceConfig(): Promise<void> {
       signal: AbortSignal.timeout(2_000),
     });
     if (r.ok) {
-      const body = (await r.json()) as { branding?: { accent?: unknown }; modelProviderConfigured?: unknown };
+      const body = (await r.json()) as {
+        branding?: { accent?: unknown; selfLabel?: unknown };
+        modelProviderConfigured?: unknown;
+      };
       brandAccent = typeof body.branding?.accent === "string" ? body.branding.accent : NEUTRAL_ACCENT;
+      brandLabel = (typeof body.branding?.selfLabel === "string" && body.branding.selfLabel) || "QM";
       modelProviderConfigured =
         typeof body.modelProviderConfigured === "boolean" ? body.modelProviderConfigured : undefined;
       surfaceConfigNextAt = Date.now() + (modelProviderConfigured === false ? 5_000 : 30_000);
@@ -1016,7 +1022,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     return serveFavicon(
       res,
       {
-        svg: process.env.PORTAL_FAVICON_SVG,
+        svg: envOrFile("PORTAL_FAVICON_SVG"),
         emoji: process.env.PORTAL_FAVICON_EMOJI ?? "\u{1F3F4}\u{200D}\u2620\uFE0F",
       },
       "max-age=86400",
@@ -1427,17 +1433,18 @@ async function desktopLogin(req: IncomingMessage, res: ServerResponse, url: URL)
     });
     return void res.end();
   }
+  await refreshSurfaceConfig();
   if (req.method === "GET") {
     return sendHtml(
       res,
       200,
       cardPage({
-        title: "Open QM Desktop",
-        heading: "Sign in to QM Desktop",
+        title: `Open ${brandLabel} Desktop`,
+        heading: `Sign in to ${brandLabel} Desktop`,
         icon: LOCK_ICON,
         msg: `Continue as ${session.sub}.`,
-        actions: `<form method="post" action="${escapeHtml(`${url.pathname}${url.search}`)}"><button class="btn primary" type="submit">Open QM Desktop</button></form>`,
-        help: "Only continue if you just started sign-in in the QM desktop app on this computer.",
+        actions: `<form method="post" action="${escapeHtml(`${url.pathname}${url.search}`)}"><button class="btn primary" type="submit">Open ${escapeHtml(brandLabel)} Desktop</button></form>`,
+        help: `Only continue if you just started sign-in in the ${brandLabel} desktop app on this computer.`,
       }),
     );
   }
@@ -1448,11 +1455,11 @@ async function desktopLogin(req: IncomingMessage, res: ServerResponse, url: URL)
     res,
     200,
     cardPage({
-      title: "Ready to open QM",
-      heading: "Opening QM Desktop…",
+      title: `Ready to open ${brandLabel}`,
+      heading: `Opening ${brandLabel} Desktop…`,
       icon: LOCK_ICON,
-      msg: "If QM doesn’t open automatically, use the button below.",
-      actions: `<a id="desktop-launch" class="btn primary" href="${escapeHtml(callback.href)}">Open QM Desktop</a><script>${DESKTOP_LAUNCH_SCRIPT}</script>`,
+      msg: `If ${brandLabel} doesn’t open automatically, use the button below.`,
+      actions: `<a id="desktop-launch" class="btn primary" href="${escapeHtml(callback.href)}">Open ${escapeHtml(brandLabel)} Desktop</a><script>${DESKTOP_LAUNCH_SCRIPT}</script>`,
       help: "This link expires in two minutes and works only for the app that requested it.",
     }),
     `${PAGE_CSP}; script-src '${DESKTOP_LAUNCH_SCRIPT_HASH}'`,

@@ -73,9 +73,9 @@ export function channelSurfaceUrl(webUiPublicUrl: string | undefined, channelId:
 
 export function channelWelcomeMessage(surfaceUrl: string | undefined): string {
   if (!surfaceUrl) {
-    return "QM here, ready to assist.";
+    return "Ready to assist.";
   }
-  return `QM here, ready to assist. Access my data and channel settings <${surfaceUrl}|here>.`;
+  return `Ready to assist. Access my data and channel settings <${surfaceUrl}|here>.`;
 }
 
 export function surfaceHeaderText(facts: { modelName?: string }, projectUrl: string | undefined): string | undefined {

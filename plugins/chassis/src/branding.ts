@@ -82,10 +82,11 @@ export function injectBranding(html: string, branding: OrgBranding, opts?: { tit
       out = out.replace(/<title>[^<]*<\/title>/, () => `<title>${title}</title>`);
     }
   }
+  const markImage = cssUrlSafe(markUrl);
   const decls = [
     ...(cssSafe(accent) ? [`--brand-accent:${accent}`] : []),
-    ...(cssSafe(mark) ? [`--brand-mark:"${mark}"`] : []),
-    ...(cssUrlSafe(markUrl) ? [`--brand-mark-image:url("${markUrl}")`] : []),
+    ...(markImage ? [`--brand-mark-image:url("${markUrl}")`] : []),
+    ...(!markImage && cssSafe(mark) ? [`--brand-mark:"${mark}"`] : []),
   ].join(";");
   if (decls) out = out.replace("</head>", () => `<style>:root{${decls}}</style></head>`);
   return out;

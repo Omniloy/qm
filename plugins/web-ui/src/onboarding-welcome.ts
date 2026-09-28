@@ -9,7 +9,7 @@ import {
 } from "./connection-return";
 import { LitElement, html, nothing } from "lit";
 import { Check } from "lucide";
-import { icon } from "./ui";
+import { brandName, icon } from "./ui";
 import { mountConnectionPicker, type ConnectionService } from "./connection-picker";
 import type { Me } from "./shell-state";
 import "./onboarding-welcome.css";
@@ -356,7 +356,8 @@ export class OnboardingWelcome extends LitElement {
         <span class="connection-preview-label">Provider simulation · No account access</span>
         <h1>${this.consent ? `Connect ${this.consent.service.name}` : "This preview has expired"}</h1>
         <p>
-          This stands in for the provider’s consent page. Choose an outcome to return to QM through the callback URL.
+          This stands in for the provider’s consent page. Choose an outcome to return to ${brandName()} through the
+          callback URL.
         </p>
         ${
           this.consent
@@ -375,7 +376,7 @@ export class OnboardingWelcome extends LitElement {
                 </details>`
             : nothing
         }
-        <a href="?connectionDemo=1">Back to QM</a>
+        <a href="?connectionDemo=1">Back to ${brandName()}</a>
       </section>`;
     }
     const name = this.me?.displayName?.trim().split(/\s+/)[0];
@@ -434,7 +435,7 @@ export class OnboardingWelcome extends LitElement {
               ${
                 cohort
                   ? html`<p class="welcome-beat" style="--welcome-delay:2400ms">
-                        And welcome to QM, the agent harness we use to run YC.
+                        And welcome to ${brandName()}, your agent harness.
                       </p>
                       <p class="welcome-beat" style="--welcome-delay:2600ms">
                         Use it to research customers and investors, fundraise, and automate the everyday work of running
@@ -442,12 +443,12 @@ export class OnboardingWelcome extends LitElement {
                         ${this.onMoreIdeas ? html`<button type="button" class="welcome-more-ideas" ?disabled=${this.ideasDisabled} @click=${this.onMoreIdeas}>More ideas</button>` : nothing}
                       </p>
                       <p class="welcome-beat" style="--welcome-delay:2800ms">
-                        Think of it as your YC partner in a box. The more you use QM, the more context we have, the more
-                        we can help.
+                        Think of it as a partner in a box. The more you use ${brandName()}, the more context it has, the
+                        more it can help.
                       </p>`
                   : html`<p class="welcome-beat" style="--welcome-delay:400ms">
-                        Welcome to QM, your agent harness. Use it to research customers, build tools, and automate the
-                        everyday work of running ${this.me?.companyName?.trim() || "your company"}.
+                        Welcome to ${brandName()}, your agent harness. Use it to research customers, build tools, and
+                        automate the everyday work of running ${this.me?.companyName?.trim() || "your company"}.
                       </p>
                       <p class="welcome-beat" style="--welcome-delay:700ms">The easiest way to get up and running:</p>`
               }`
@@ -465,7 +466,7 @@ export class OnboardingWelcome extends LitElement {
           : nothing
       }
       ${this.widget === "slack-account" && this.workspaceError ? html`<p role="status">Could not check Slack setup. <button class="btn" @click=${() => void this.refreshWorkspace()}>Try again</button></p>` : nothing}
-      ${this.widget === "slack-account" && this.workspaceConnected === false ? html`<p role="status">QM needs to be added to your company’s Slack workspace before you can link your account. Ask an administrator to finish setup.</p>` : nothing}
+      ${this.widget === "slack-account" && this.workspaceConnected === false ? html`<p role="status">${brandName()} needs to be added to your company’s Slack workspace before you can link your account. Ask an administrator to finish setup.</p>` : nothing}
       <div class="welcome-beat" style=${`--welcome-delay:${cohort ? 3250 : 1100}ms`}>
         ${this.workspaceConnected && this.widget !== "apps" && (["slack", "slack-account"].includes(this.widget) || (!this.loading && !this.error)) ? html`<qm-slack-account .user=${this.previewUser()}></qm-slack-account>` : nothing}
       </div>

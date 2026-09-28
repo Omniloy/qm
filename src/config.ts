@@ -973,6 +973,7 @@ function orgBrandingFromEnv(env: NodeJS.ProcessEnv): Config["brandingDefault"] {
   return sanitizeBranding({
     accent: env.ORG_BRAND_ACCENT,
     mark: env.ORG_BRAND_MARK,
+    markUrl: env.ORG_BRAND_MARK_URL,
     selfLabel: env.ORG_BRAND_SELF_LABEL,
     orgName: env.ORG_BRAND_ORG_NAME,
   });

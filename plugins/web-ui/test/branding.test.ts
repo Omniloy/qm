@@ -97,6 +97,15 @@ test("injectBranding refuses any CSS value that could escape the style block it 
   );
 });
 
+test("an image mark replaces the letter mark instead of being painted over by it", async () => {
+  const { injectBranding } = await import("../../chassis/src/branding.ts");
+  const shell = "<!doctype html><html><head></head><body></body></html>";
+  const both = injectBranding(shell, { mark: "M", markUrl: "https://cdn.example.com/icon.svg" });
+  assert.match(both, /--brand-mark-image:url\("https:\/\/cdn\.example\.com\/icon\.svg"\)/);
+  assert.doesNotMatch(both, /--brand-mark:/);
+  assert.match(injectBranding(shell, { mark: "M", markUrl: "http://insecure/icon.svg" }), /--brand-mark:"M"/);
+});
+
 test("brandName() reads the injected self-label and falls back to the product name", async () => {
   const ui = await import("../src/ui.ts");
   const brandName = (ui as { brandName?: () => string }).brandName;

@@ -205,7 +205,7 @@ async function handleKeychain(ctx: ApiCtx): Promise<void> {
           id: EXTENSION_BROWSER_ID,
           name: "Your Chrome",
           summary:
-            "Drive one tab in your own browser through the QM Browser Bridge extension, so it has your real sign-ins and does not look like automation.",
+            "Drive one tab in your own browser through the Browser Bridge extension, so it has your real sign-ins and does not look like automation.",
           keyEnv: "",
           keyService: "",
           connected: live?.extension ?? false,

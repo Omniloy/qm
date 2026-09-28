@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { createServer } from "node:http";
@@ -56,6 +57,20 @@ test("WEB_UI_FAVICON_SVG is served verbatim and becomes the manifest icon", asyn
     assert.equal(manifest.icons[0]?.src, "/favicon.svg");
   } finally {
     delete process.env.WEB_UI_FAVICON_SVG;
+  }
+});
+
+test("WEB_UI_FAVICON_SVG_FILE serves the SVG from a mounted file", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "favicon-"));
+  writeFileSync(join(dir, "logo.svg"), svg);
+  process.env.WEB_UI_FAVICON_SVG_FILE = join(dir, "logo.svg");
+  try {
+    assert.equal(await (await fetch(`${base}/favicon.svg`)).text(), svg);
+    const manifest = (await (await fetch(`${base}/manifest.webmanifest`)).json()) as { icons: Array<{ src: string }> };
+    assert.equal(manifest.icons[0]?.src, "/favicon.svg");
+  } finally {
+    delete process.env.WEB_UI_FAVICON_SVG_FILE;
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
