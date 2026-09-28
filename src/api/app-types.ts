@@ -453,7 +453,14 @@ export interface App {
   ): Promise<OpenedWorkspaceFile | "not_found" | "too_large" | "forbidden" | "unavailable">;
   grant(g: Grant): Promise<void>;
   revokeGrant(ownerScopeId: ScopeId, ref: string, granteeScopeId: ScopeId, revokedBy: string): Promise<void>;
-  promoteSkill(id: string, targetScopeId: ScopeId, actorId: string, liveActor: boolean): Promise<Skill>;
+  skillSharingAllows(actorId: string, audience: "contexts" | "org"): Promise<boolean>;
+  promoteSkill(
+    id: string,
+    targetScopeId: ScopeId,
+    actorId: string,
+    liveActor: boolean,
+    portalSession?: boolean,
+  ): Promise<Skill>;
   /** The inverse of promoteSkill: take an org-wide skill back out of circulation. */
   demoteSkill(id: string, actorId: string, liveActor: boolean): Promise<void>;
   /** Which scopes hold a grant on a skill — what "shared with" means, listed. */
@@ -584,8 +591,12 @@ export interface App {
     principalId: string,
     patch: { description?: string; body?: string },
     opts?: { liveActor?: boolean },
-  ): Promise<Skill | "trigger_blocked" | null>;
-  restoreOwnedSkill(id: string, principalId: string): Promise<Skill | null>;
+  ): Promise<Skill | "trigger_blocked" | "forbidden" | null>;
+  restoreOwnedSkill(
+    id: string,
+    principalId: string,
+    opts?: { liveActor?: boolean },
+  ): Promise<Skill | "trigger_blocked" | "forbidden" | null>;
   listSkillPacks(): Promise<SkillPack[]>;
   getSkillPack(id: string): Promise<SkillPack | null>;
   registerSkillPack(input: NewSkillPack): Promise<SkillPack>;
@@ -601,7 +612,7 @@ export interface App {
     description: string;
     body: string;
     requiredCapabilities?: string[];
-  }): Promise<Skill | null>;
+  }): Promise<Skill | "forbidden" | null>;
   deleteOwnedSkill(input: {
     principalId: string;
     id: string;

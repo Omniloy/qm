@@ -141,3 +141,170 @@ test("Slack connection validates token drafts before submitting", async () => {
   assert.equal(called, false);
   assert.equal(s.message, "Both Slack tokens are required.");
 });
+test("MCP servers and Composio are managed from the Connectors view", async () => {
+  const calls: Array<{ method: string; path: string; body?: any }> = [];
+  const dom = setup();
+  try {
+    dom.window.eval(
+      `ui.configure({orgScope:()=>"org:test",connectorName:x=>x,fmtTime:x=>x,api:async(method,path,body)=>{window.calls.push({method,path,body});
+        if(path==="/api/mcp-servers")return{ok:true,data:{servers:[{id:"linear",name:"Linear",url:"https://mcp.linear.app/mcp",auth:"bearer",hasBearerToken:true,credentialScope:"shared",readOnly:false,enabled:true}],tools:[{name:"linear_list",serverId:"linear"}]}};
+        if(path==="/api/connector-catalog")return{ok:true,data:{catalog:[]}};
+        if(path.includes("?view=connectors"))return{ok:true,data:{connectors:[],serviceCredentials:[]}};
+        return{ok:true,data:{tools:["a","b"]}};}})`,
+    );
+    (dom.window as any).calls = { push: (call: any) => calls.push(JSON.parse(JSON.stringify(call))) };
+    await dom.window.eval("ui.loadConnectors()");
+    const doc = dom.window.document;
+    const view = doc.getElementById("view-connectors")!;
+    assert.ok(view.querySelector("#card-mcp-servers"));
+    assert.ok(view.querySelector("#card-composio"));
+    assert.match(doc.getElementById("mcp-list")!.textContent!, /Linear[\s\S]*1 tool/);
+    assert.match(doc.getElementById("composio-state")!.textContent!, /Not configured/);
+
+    doc.getElementById("mcp-add")!.click();
+    const type = (id: string, value: string) => {
+      const input = doc.getElementById(id) as HTMLInputElement;
+      input.value = value;
+      input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    };
+    type("mcp-id", "notion");
+    type("mcp-url", "https://mcp.notion.com/mcp");
+    const auth = doc.getElementById("mcp-auth") as HTMLSelectElement;
+    auth.value = "bearer";
+    auth.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+    type("mcp-bearerToken", "tok");
+    assert.equal((doc.getElementById("mcp-readOnly") as HTMLInputElement).checked, true);
+    doc.getElementById("mcp-save")!.click();
+    await new Promise((r) => setTimeout(r, 0));
+    const put = calls.find((c) => c.method === "PUT")!;
+    assert.equal(put.path, "/api/mcp-servers/notion");
+    assert.deepEqual(put.body, {
+      name: "notion",
+      url: "https://mcp.notion.com/mcp",
+      auth: "bearer",
+      credentialScope: "shared",
+      bearerToken: "tok",
+      readOnly: true,
+      enabled: true,
+    });
+    assert.match(doc.getElementById("st-mcp-servers")!.textContent!, /2 tools found/);
+
+    type("composio-key", "ak_test");
+    doc.getElementById("composio-save")!.click();
+    await new Promise((r) => setTimeout(r, 0));
+    const saved = calls.find((c) => c.path.endsWith("/service-credentials"))!;
+    assert.equal(saved.path, "/api/scopes/org%3Atest/service-credentials");
+    assert.deepEqual(saved.body, {
+      slug: "composio",
+      name: "Composio",
+      delivery: "env",
+      envKey: "COMPOSIO_API_KEY",
+      secret: "ak_test",
+      enabled: true,
+      grantees: ["org:test"],
+    });
+  } finally {
+    dom.window.close();
+  }
+});
+test("editing an MCP server keeps its stored secret unless a new one is typed", async () => {
+  const bodies: any[] = [];
+  configure({
+    orgScope: () => "org:test",
+    connectorName: (x) => x,
+    fmtTime: (x) => x,
+    api: async (method, _path, body) => {
+      if (method === "PUT") bodies.push(body);
+      return { ok: true, data: { servers: [] } };
+    },
+  });
+  const { McpServersState } = await import("../ui/mcp-servers.ts");
+  const s = new McpServersState();
+  s.open({
+    id: "tools",
+    name: "Tools",
+    url: "https://tools.example.com/mcp",
+    auth: "client-credentials",
+    clientId: "cid",
+    hasClientSecret: true,
+    credentialScope: "per-user",
+    credentialHost: "accounts.example.com",
+    credentialAccountType: "company",
+    readOnly: true,
+    enabled: true,
+  });
+  await s.save();
+  assert.deepEqual(bodies, [
+    {
+      name: "Tools",
+      url: "https://tools.example.com/mcp",
+      auth: "client-credentials",
+      credentialScope: "per-user",
+      credentialHost: "accounts.example.com",
+      credentialAccountType: "company",
+      clientId: "cid",
+      readOnly: true,
+      enabled: true,
+    },
+  ]);
+});
+test("replacing the Composio key updates the existing credential at its loaded version", async () => {
+  const bodies: any[] = [];
+  configure({
+    orgScope: () => "org:test",
+    connectorName: (x) => x,
+    fmtTime: (x) => x,
+    api: async (method, _path, body) => {
+      if (method === "PUT") bodies.push(body);
+      return { ok: true, data: {} };
+    },
+  });
+  const { composio } = await import("../ui/composio.ts");
+  const { connectors } = await import("../ui/integrations-state.ts");
+  connectors.serviceCredentials = [
+    {
+      slug: "composio-prod",
+      delivery: "env",
+      envKey: "COMPOSIO_API_KEY",
+      enabled: true,
+      hasSecret: true,
+      updatedAt: 42,
+      grantees: ["channel:C1"],
+    },
+  ];
+  composio.key = " ak_new ";
+  await composio.save();
+  assert.equal(bodies[0].slug, "composio-prod");
+  assert.equal(bodies[0].secret, "ak_new");
+  assert.equal(bodies[0].expectedUpdatedAt, 42);
+  assert.deepEqual(bodies[0].grantees, ["channel:C1", "org:test"]);
+});
+test("the Composio card reads Configured only when the key is granted to the whole organization", async () => {
+  const dom = setup();
+  try {
+    const state = async (grantees: string[]) => {
+      const credential = {
+        slug: "composio",
+        delivery: "env",
+        envKey: "COMPOSIO_API_KEY",
+        enabled: true,
+        hasSecret: true,
+        updatedAt: 1,
+        grantees,
+      };
+      dom.window.eval(
+        `ui.configure({orgScope:()=>"org:test",connectorName:x=>x,fmtTime:x=>x,api:async(method,path)=>{
+          if(path==="/api/connector-catalog")return{ok:true,data:{catalog:[]}};
+          if(path.includes("?view=connectors"))return{ok:true,data:{connectors:[],serviceCredentials:[${JSON.stringify(credential)}]}};
+          return{ok:true,data:{}};}})`,
+      );
+      await dom.window.eval("ui.loadConnectors()");
+      return dom.window.document.getElementById("composio-state")!.textContent!;
+    };
+    assert.match(await state([]), /Not shared org-wide/);
+    assert.match(await state(["personal:U1"]), /Not shared org-wide/);
+    assert.match(await state(["org:test"]), /Configured/);
+  } finally {
+    dom.window.close();
+  }
+});

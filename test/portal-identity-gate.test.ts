@@ -391,6 +391,17 @@ describe("user-scoped routes require a portal-verified actor when enforcement is
     const claims = await verifyCapabilityToken(body.token as string, CAP);
     assert.equal(claims?.actorId, "U1");
     assert.equal(claims?.scopeId, "personal:U1");
+    assert.equal(claims?.portalSession, true);
+  });
+
+  it("POST /v1/session-cap does not mark an admin's impersonated session as the person's own web session", async () => {
+    const impersonating = await mintSignedPayload({ p: "U1", imp: "admin-alice", exp: Date.now() + 60_000 }, PID);
+    const r = await post("/v1/session-cap", {}, { "x-portal-identity": impersonating });
+    assert.equal(r.status, 200);
+    const claims = await verifyCapabilityToken(((await r.json()) as { token: string }).token, CAP);
+    assert.equal(claims?.actorId, "U1");
+    assert.equal(claims?.liveActor, true);
+    assert.equal(claims?.portalSession, undefined);
   });
 });
 

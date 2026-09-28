@@ -24,6 +24,7 @@ import {
   livePersonCapability,
   resolveShareTarget,
   SHARED_SKILL_TRIGGER_REFUSAL,
+  SKILL_CONTEXTS_ADMIN_ONLY,
   type ShareArtifactRequest,
   type ShareArtifactResult,
 } from "./artifact-share.ts";
@@ -904,6 +905,13 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
           message: `only the ${req.type}'s owner (or a member of its shared home) can share or move it`,
         };
       }
+      if (req.type === "skill" && !orgSkillCede && !(await app.skillSharingAllows(capability.actorId, "contexts"))) {
+        return {
+          ok: false,
+          code: "forbidden",
+          message: SKILL_CONTEXTS_ADMIN_ONLY,
+        };
+      }
       if (
         (toKind === "channel" || toKind === "group" || toKind === "team") &&
         !(await app.belongsToScope(capability.actorId, toScope))
@@ -917,7 +925,13 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
 
       try {
         if (orgSkillCede) {
-          const promoted = await app.promoteSkill(home.id, toScope, capability.actorId, capability.liveActor === true);
+          const promoted = await app.promoteSkill(
+            home.id,
+            toScope,
+            capability.actorId,
+            capability.liveActor === true,
+            capability.portalSession === true,
+          );
           return {
             ok: true,
             verb: "promote",

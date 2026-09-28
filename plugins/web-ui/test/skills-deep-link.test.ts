@@ -33,10 +33,7 @@ test("skill details have a back link and resource fields", () => {
   for (const label of ["Description", "Scope", "Version", "Source", "Capabilities", "Assets"]) {
     assert.match(detail, new RegExp(`<label>${label}</label>`));
   }
-  assert.match(
-    bodyOf("skillScopeTitle"),
-    /s\.scope === "personal" \|\| s\.scope === "channel" \|\| s\.scope === "group"/,
-  );
+  assert.match(detail, /<div class="value">\$\{skillHome\(s\)\}<\/div>/);
 });
 
 test("skill detail routes survive reload and browser history", () => {

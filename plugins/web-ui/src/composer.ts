@@ -142,6 +142,7 @@ export interface SkillItem {
   scope: string;
   shadowed?: boolean;
   editable?: boolean;
+  createdByViewer?: boolean;
   scopeId?: string;
   status?: string;
   version?: number;

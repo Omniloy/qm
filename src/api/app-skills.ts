@@ -239,7 +239,7 @@ export function createSkillMethods(
   | "createOwnedSkill"
   | "deleteOwnedSkill"
 > {
-  const { canManageSkill, republishIfShared } = h;
+  const { canManageSkill, maySkillLiveIn, republishIfShared } = h;
   return {
     listSkills() {
       return deps.skills.list();
@@ -267,6 +267,7 @@ export function createSkillMethods(
       if (!skill || !(await canManageSkill(skill, principalId))) return null;
       if (triggerBlocksSharedSkill(skill.scopeId, opts?.liveActor === true)) return "trigger_blocked";
       if (skill.status === "archived") return null;
+      if (!(await maySkillLiveIn(skill.scopeId, principalId))) return "forbidden";
       const manifest = {
         ...skill.manifest,
         description: patch.description ?? skill.manifest.description,
@@ -283,9 +284,11 @@ export function createSkillMethods(
       });
       return live;
     },
-    async restoreOwnedSkill(id, principalId) {
+    async restoreOwnedSkill(id, principalId, opts) {
       const skill = await deps.skills.get(id);
       if (!skill || skill.status !== "archived" || !(await canManageSkill(skill, principalId))) return null;
+      if (triggerBlocksSharedSkill(skill.scopeId, opts?.liveActor === true)) return "trigger_blocked";
+      if (!(await maySkillLiveIn(skill.scopeId, principalId))) return "forbidden";
       await deps.skills.review(id, principalId, skill.manifest.requiredCapabilities);
       const restored = await deps.skills.publish(id);
       deps.auditLog.record({
@@ -397,6 +400,7 @@ export function createSkillMethods(
           "a skill cannot be created directly in an org or team scope — promote a published skill instead",
         );
       }
+      if (!(await maySkillLiveIn(homeScope, input.principalId))) return "forbidden";
       const existing = (await deps.skills.list()).find((s) => s.scopeId === homeScope && s.manifest.name === name);
       if (existing && existing.status !== "archived") return null;
       if (existing) await deps.skills.delete(existing.id);

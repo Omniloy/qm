@@ -8,6 +8,7 @@ export interface SkillShareRow {
   scope: string;
   scopeId?: string;
   editable?: boolean;
+  createdByViewer?: boolean;
   status?: string;
 }
 
@@ -19,9 +20,13 @@ export interface ShareScopeOption {
 
 export const NOT_ADMIN_REASON = "Only an org admin can give a skill to the whole organization";
 
-export function skillShareActions(row: SkillShareRow, opts: { isAdmin: boolean; archived: boolean }): RowActionSpec[] {
+export function skillShareActions(
+  row: SkillShareRow,
+  opts: { isAdmin: boolean; canPromote?: boolean; archived: boolean },
+): RowActionSpec[] {
+  const canPromote = opts.isAdmin || opts.canPromote === true;
   if (isOrgScoped(row)) {
-    if (opts.archived || !row.id || !opts.isAdmin) return [];
+    if (opts.archived || !row.id || !(opts.isAdmin || (canPromote && row.createdByViewer === true))) return [];
     return [{ id: "demote", label: "Take back from everyone…", danger: true }];
   }
 
@@ -35,8 +40,8 @@ export function skillShareActions(row: SkillShareRow, opts: { isAdmin: boolean; 
     {
       id: "promote",
       label: "Share with everyone…",
-      disabled: !opts.isAdmin,
-      ...(opts.isAdmin ? {} : { reason: NOT_ADMIN_REASON }),
+      disabled: !canPromote,
+      ...(canPromote ? {} : { reason: NOT_ADMIN_REASON }),
     },
     { id: "move", label: "Move to another context…" },
     { id: "archive", label: "Archive…", danger: true },

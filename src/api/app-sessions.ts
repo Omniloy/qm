@@ -75,6 +75,8 @@ function releaseWorkspaceHandle(sandbox: Sandbox, handle: SandboxHandle): Promis
   return sandbox.teardown(handle, { keepWarm: true }).catch(swallowAs("workspace browse teardown", undefined));
 }
 
+const PLATFORM_SKILL_AUTHOR = /^(system|pack):/;
+
 export function createSessionMethods(
   deps: AppDeps,
   h: AppHelpers,
@@ -121,6 +123,7 @@ export function createSessionMethods(
   | "forkSession"
   | "grant"
   | "revokeGrant"
+  | "skillSharingAllows"
   | "promoteSkill"
   | "demoteSkill"
   | "listSkillGrants"
@@ -1208,7 +1211,9 @@ export function createSessionMethods(
         scopeLabel: granteeScopeId,
       });
     },
-    async promoteSkill(id, targetScopeId, actorId, liveActor) {
+    skillSharingAllows: h.skillSharingAllows,
+
+    async promoteSkill(id, targetScopeId, actorId, liveActor, portalSession = false) {
       if (parseScopeId(targetScopeId).kind !== "org")
         throw new Error("promote targets the org scope — use share or move for anything narrower");
       if (liveActor !== true)
@@ -1216,9 +1221,34 @@ export function createSessionMethods(
           403,
           `promoting a skill org-wide takes a live person the platform can attest is present — ${UNATTESTED_TURN_CAUSE}`,
         );
-      if (!deps.admin) throw new Error("org promotion requires an admin service");
-      const status = await deps.admin.adminStatusOf({ id: actorId, type: "internal" });
-      if (!status.isAdmin) throw new AdminError(403, "only an org admin can promote a skill org-wide");
+      if (!(await h.isOrgAdmin(actorId))) {
+        if (!(await h.skillSharingAllows(actorId, "org")))
+          throw new AdminError(403, "only an org admin can promote a skill org-wide");
+        if (!portalSession)
+          throw new AdminError(
+            403,
+            "giving a skill to the whole organization takes you, in the web app — the agent can't do it for you",
+          );
+        const skill = await deps.skills.get(id);
+        if (
+          !skill ||
+          !samePerson(skill.createdBy, actorId) ||
+          !(await principalManagesArtifactHome(skill.scopeId, skill.createdBy, actorId))
+        )
+          throw new AdminError(403, "that skill isn't yours to share");
+        const taken = (await deps.skills.list()).find(
+          (s) =>
+            s.scopeId === targetScopeId &&
+            s.manifest.name === skill.manifest.name &&
+            !samePerson(s.createdBy, actorId) &&
+            (s.status === "published" || PLATFORM_SKILL_AUTHOR.test(s.createdBy)),
+        );
+        if (taken)
+          throw new AdminError(
+            403,
+            `the organization already has a /${skill.manifest.name} skill — only an org admin can replace it`,
+          );
+      }
       const promoted = await deps.skills.promote(id, targetScopeId);
       deps.auditLog.record({
         at: Date.now(),
@@ -1240,9 +1270,9 @@ export function createSessionMethods(
           403,
           `taking a skill back from the org takes a live person the platform can attest is present — ${UNATTESTED_TURN_CAUSE}`,
         );
-      if (!deps.admin) throw new Error("org demotion requires an admin service");
-      const status = await deps.admin.adminStatusOf({ id: actorId, type: "internal" });
-      if (!status.isAdmin) throw new AdminError(403, "only an org admin can take a skill back from the org");
+      const ownPromotion = samePerson(skill.createdBy, actorId) && (await h.skillSharingAllows(actorId, "org"));
+      if (!ownPromotion && !(await h.isOrgAdmin(actorId)))
+        throw new AdminError(403, "only an org admin can take a skill back from the org");
       await deps.skills.archive(id);
       deps.auditLog.record({
         at: Date.now(),

@@ -2,6 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createApp, type App, type AppDeps } from "../src/api/app.ts";
 import { postSoul } from "../src/api/routes/surface.ts";
+import { createInsecureTestServer } from "../src/api/server.ts";
+import type { AddressInfo } from "node:net";
 import type { ApiCtx } from "../src/api/routes/route.ts";
 import { createMemoryFileArtifactStore } from "../src/files/file-artifact-store.ts";
 import { createMemoryDurableByteStore } from "../src/files/durable-byte-store.ts";
@@ -145,6 +147,80 @@ test("skills: a private-channel member may edit + delete a shared skill; provena
   assert.ok(edited && edited !== "trigger_blocked", "a private-channel member edits the scope's skill");
   assert.equal((edited as { createdBy: string }).createdBy, OWNER, "createdBy is never rewritten on a member edit");
   assert.equal(await app.deleteOwnedSkill({ principalId: PRIV_MEMBER, id: planted.id, liveActor: true }), "deleted");
+});
+
+test("skills: when only admins may share skills, a member cannot edit a shared-home skill but an admin can", async () => {
+  const deps = makeDeps();
+  await deps.config.setSkillSharingPolicy({ contexts: "admins", org: "admins" });
+  const planted = await deps.skills.create({
+    scopeId: privScope,
+    manifest: { name: "gated", description: "d", requiredCapabilities: [], body: "# b" },
+    createdBy: OWNER,
+  });
+  await deps.skills.review(planted.id, "system:test", []);
+  await deps.skills.publish(planted.id);
+  const admin = { adminStatusOf: async (p: { id: string }) => ({ isAdmin: p.id === OWNER }) };
+  const app = createApp({ ...deps, admin } as unknown as AppDeps);
+  assert.equal(
+    await app.updateOwnedSkill(planted.id, PRIV_MEMBER, { body: "# replaced" }, { liveActor: true }),
+    "forbidden",
+  );
+  assert.equal((await deps.skills.get(planted.id))?.manifest.body, "# b");
+  const edited = await app.updateOwnedSkill(planted.id, OWNER, { body: "# admin" }, { liveActor: true });
+  assert.equal(typeof edited === "object" && edited?.manifest.body, "# admin");
+});
+
+test("skills: a member who manages a teammate's shared skill cannot promote it org-wide as the teammate", async () => {
+  const deps = makeDeps();
+  await deps.config.setSkillSharingPolicy({ contexts: "everyone", org: "everyone" });
+  const planted = await deps.skills.create({
+    scopeId: privScope,
+    manifest: { name: "teammate", description: "d", requiredCapabilities: [], body: "# b" },
+    createdBy: OWNER,
+  });
+  await deps.skills.review(planted.id, "system:test", []);
+  await deps.skills.publish(planted.id);
+  const admin = { adminStatusOf: async () => ({ isAdmin: false }) };
+  const app = createApp({ ...deps, admin } as unknown as AppDeps);
+  const org = scopeId("org", ORG);
+  assert.equal(await app.canManageSkill(planted, PRIV_MEMBER), true);
+  await assert.rejects(app.promoteSkill(planted.id, org, PRIV_MEMBER, true, true), /isn't yours to share/);
+  assert.equal((await app.promoteSkill(planted.id, org, OWNER, true, true)).scopeId, org);
+});
+
+test("skills: restoring an archived shared skill refuses a trigger and a member barred from sharing into contexts", async () => {
+  const deps = makeDeps();
+  const planted = await deps.skills.create({
+    scopeId: privScope,
+    manifest: { name: "revived", description: "d", requiredCapabilities: [], body: "# b" },
+    createdBy: OWNER,
+  });
+  await deps.skills.review(planted.id, "system:test", []);
+  await deps.skills.publish(planted.id);
+  await deps.skills.archive(planted.id);
+  const admin = { adminStatusOf: async (p: { id: string }) => ({ isAdmin: p.id === OWNER }) };
+  const app = createApp({ ...deps, admin } as unknown as AppDeps);
+  const server = createInsecureTestServer(app, { config: deps.config, auditLog: deps.auditLog });
+  server.listen(0);
+  const restore = (principalId: string) =>
+    fetch(`http://localhost:${(server.address() as AddressInfo).port}/v1/skills/${planted.id}/restore`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ principalId }),
+    });
+  try {
+    assert.equal(await app.restoreOwnedSkill(planted.id, PRIV_MEMBER), "trigger_blocked");
+    await deps.config.setSkillSharingPolicy({ contexts: "admins", org: "admins" });
+    assert.equal(await app.restoreOwnedSkill(planted.id, PRIV_MEMBER, { liveActor: true }), "forbidden");
+    const refused = await restore(PRIV_MEMBER);
+    assert.equal(refused.status, 403);
+    assert.match(((await refused.json()) as { message: string }).message, /only an org admin can put a skill/);
+    assert.equal((await deps.skills.get(planted.id))?.status, "archived");
+    assert.equal((await restore(OWNER)).status, 200);
+    assert.equal((await deps.skills.get(planted.id))?.status, "published");
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+  }
 });
 
 test("skills: a member editing a normal shared skill auto-republishes it (stays live)", async () => {

@@ -2,7 +2,7 @@ import { html, nothing, render } from "lit";
 import { repeat } from "lit/directives/repeat.js";
 import { ifDefined } from "lit/directives/if-defined.js";
 import { card, bareCard, table, renderer } from "./shared.ts";
-import { mountPacks, skillDetail, removeSkill } from "./artifacts-skills.ts";
+import { mountPacks, mountSharing, skillDetail, removeSkill } from "./artifacts-skills.ts";
 export type Data = Record<string, any>;
 export type Context = Record<string, any>;
 type Row = {
@@ -487,6 +487,7 @@ export function skills(root: HTMLElement, d: Data, c: Context) {
     c.plural(items.length, "skill") +
     (c.index && items.length ? " · " + c.plural(new Set(items.map((s: Data) => s.ownerScopeId)).size, "scope") : "");
   const packs = document.createElement("div"),
+    sharing = document.createElement("div"),
     detail = document.createElement("div");
   const identity = (s: Data) => (s.name || s.id) + "\0" + (s.createdBy || "");
   const open = (s: Data) =>
@@ -543,7 +544,7 @@ export function skills(root: HTMLElement, d: Data, c: Context) {
       },
     ]);
     render(
-      html`${c.index ? packs : nothing}${card(
+      html`${c.index ? html`${sharing}${packs}` : nothing}${card(
         "Installed skills",
         "",
         html`${c.index ? html`<div class=${q ? "hidden" : ""}>${scopeList(all, c, "skill", lastUse, "No skills yet.")}</div>` : nothing}
@@ -570,7 +571,10 @@ export function skills(root: HTMLElement, d: Data, c: Context) {
     draw,
   );
   draw();
-  if (c.index) void mountPacks(packs, c);
+  if (c.index) {
+    void mountSharing(sharing, c);
+    void mountPacks(packs, c);
+  }
 }
 const cronStatus = (c: Data) =>
   (() => {

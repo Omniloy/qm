@@ -311,6 +311,7 @@ const WRITES = new Map<string, string[]>([
   ["model-registry", ["POST", "PUT", "DELETE"]],
   ["custom-providers", ["PUT", "DELETE"]],
   ["codex-auth", ["POST", "DELETE"]],
+  ["mcp-servers", ["PUT", "DELETE"]],
 ]);
 
 const READS = [
@@ -342,6 +343,7 @@ const READS = [
   "custom-providers",
   "codex-auth",
   "principal-links",
+  "mcp-servers",
 ];
 
 export async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {

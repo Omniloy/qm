@@ -83,6 +83,7 @@ import {
   scopeChip,
 } from "./contexts";
 import { contextPickerTpl, openContextPicker, resetContextPicker } from "./context-picker";
+import { placeMenuPopover } from "./row-actions";
 import { groupDmLabel, groupDmText } from "./group-dm-label";
 import { transcriptModel } from "./model-options";
 import { appState, closeSidebarOnNarrowView, renderSidebarTop, syncDocumentTitle, syncUrlFromState } from "./shell";
@@ -439,7 +440,7 @@ export function renderList(): void {
   selection = pruneSelection(selection, new Set(visibleRowOrder()));
   if (selection.ids.size !== beforePrune) renderSidebarTop();
   if (sessionsState.openMenuId) {
-    requestAnimationFrame(() => placeSessionMenu(appState.listEl?.querySelector(".session-menu-popover") ?? undefined));
+    requestAnimationFrame(() => placeMenuPopover(appState.listEl?.querySelector(".session-menu-popover") ?? undefined));
   }
   notifyPanesChanged();
 }
@@ -562,7 +563,7 @@ function startProjectChat(event: Event, scopeId: string, name: string | null): v
 function projectMenuPopover(item: Extract<RecentItem, { kind: "project" }>): TemplateResult {
   const owned = projectOf(item.scopeId)?.ownerId === appState.me?.user;
   return html`
-    <div class="session-menu-popover" role="menu" ${ref(placeSessionMenu)} @click=${(e: Event) => e.stopPropagation()}>
+    <div class="session-menu-popover" role="menu" ${ref(placeMenuPopover)} @click=${(e: Event) => e.stopPropagation()}>
       <button
         class="session-menu-option"
         type="button"
@@ -1149,26 +1150,12 @@ function detachDropZone(): TemplateResult {
   </div>`;
 }
 
-const placeSessionMenu = (el?: Element): void => {
-  if (!(el instanceof HTMLElement)) return;
-  el.classList.remove("drop-up");
-  const margin = 8;
-  const scrollport = el.closest(".list")?.getBoundingClientRect();
-  const bottomLimit = Math.min(window.innerHeight, scrollport?.bottom ?? Infinity) - margin;
-  const topLimit = Math.max(0, scrollport?.top ?? 0) + margin;
-  const rect = el.getBoundingClientRect();
-  const anchorTop = el.parentElement?.getBoundingClientRect().top ?? rect.top;
-  if (rect.bottom > bottomLimit && anchorTop - 4 - rect.height >= topLimit) {
-    el.classList.add("drop-up");
-  }
-};
-
 function sessionMenuPopover(s: CoreSession): TemplateResult {
   const archived = Boolean(s.archived);
   const pinned = Boolean(s.pinned);
   const refreshingTitle = refreshingTitleIds.has(s.id);
   return html`
-    <div class="session-menu-popover" role="menu" ${ref(placeSessionMenu)} @click=${(e: Event) => e.stopPropagation()}>
+    <div class="session-menu-popover" role="menu" ${ref(placeMenuPopover)} @click=${(e: Event) => e.stopPropagation()}>
       <button class="session-menu-option" type="button" role="menuitem" @click=${() => void copySessionLink(s)}>
         ${icon(Link, 15)}<span>Copy link</span>
       </button>

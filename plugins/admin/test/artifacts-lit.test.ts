@@ -350,3 +350,49 @@ test("pack registration preserves newer edits after its request completes", asyn
   assert.match(root.querySelector(".status")!.textContent!, /newer changes/);
   dom.window.close();
 });
+
+test("the org skills page offers the skill sharing policy and saves both audiences", async () => {
+  const { dom, root, c, skills } = fixture();
+  const calls: any[] = [];
+  c.api = async (method: string, path: string, body?: unknown) => {
+    calls.push([method, path, JSON.parse(JSON.stringify(body ?? null))]);
+    return method === "GET"
+      ? { ok: true, data: { skillSharing: { contexts: "everyone", org: "admins" } } }
+      : { ok: true, data: {} };
+  };
+  await skills.mountSharing(root, c);
+  assert.deepEqual(calls[0], ["GET", "/api/scopes/org%3Aacme?view=skills", null]);
+  const card = root.querySelector("#card-skill-sharing")!;
+  const save = card.querySelector<HTMLButtonElement>(".foot button")!;
+  assert.equal(card.querySelector<HTMLInputElement>('[name="skill-sharing-org"][value="admins"]')!.checked, true);
+  assert.equal(save.disabled, true);
+  card.querySelector<HTMLInputElement>('[name="skill-sharing-org"][value="everyone"]')!.click();
+  assert.equal(card.querySelector("#st-skill-sharing")!.textContent, "Unsaved changes");
+  save.click();
+  await tick();
+  assert.deepEqual(calls[1], [
+    "PUT",
+    "/api/scopes/org%3Aacme/skill-sharing",
+    { contexts: "everyone", org: "everyone" },
+  ]);
+  assert.equal(card.querySelector("#st-skill-sharing")!.textContent, "Saved");
+  assert.equal(save.disabled, true);
+  dom.window.close();
+});
+
+test("the org skills index mounts the sharing card alongside skill packs", async () => {
+  const { dom, root, c, ui } = fixture();
+  c.index = true;
+  c.view = "skills";
+  c.api = async (_method: string, path: string) =>
+    path.includes("view=skills")
+      ? { ok: true, data: { skillSharing: { contexts: "admins", org: "admins" } } }
+      : { ok: true, data: { packs: [] } };
+  ui.skills(root, { skills: [] }, c);
+  await tick();
+  await tick();
+  const card = root.querySelector("#card-skill-sharing")!;
+  assert.ok(card);
+  assert.equal(card.querySelector<HTMLInputElement>('[name="skill-sharing-contexts"][value="admins"]')!.checked, true);
+  dom.window.close();
+});
