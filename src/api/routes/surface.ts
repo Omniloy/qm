@@ -1,9 +1,7 @@
 import { isSessionStatus } from "../../sessions/session-status.ts";
 import { suggestedActivityRoutes } from "./suggested-activities.ts";
 import {
-  pickerRuntimeConfig,
   runtimeFallback,
-  runtimeConfigBody,
   userPickerRuntimeConfig,
   userRuntimeConfigBody,
   webuiModelEnabled,
@@ -1405,9 +1403,7 @@ async function getRuntimeConfig(ctx: ApiCtx): Promise<void> {
   return sendJson(
     ctx.res,
     200,
-    ctx.url.searchParams.get("account") === "company"
-      ? await pickerRuntimeConfig(ctx, await runtimeConfigBody(ctx, target.scope))
-      : await userPickerRuntimeConfig(ctx, target.scope, target.actorId),
+    await userPickerRuntimeConfig(ctx, target.scope, target.actorId, account === "company"),
   );
 }
 

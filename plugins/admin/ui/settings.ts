@@ -16,6 +16,7 @@ import { mountFlags } from "./settings-flags.ts";
 export { configureFlags, loadFlags } from "./settings-flags.ts";
 import { brandingCard } from "./settings-branding.ts";
 import { modelAccountModesCard, modelAccountModesDraft } from "./model-account-modes.ts";
+import { fastModeAccessBody, fastModeAccessCard, fastModeAccessDraft } from "./fast-mode-access.ts";
 import { html } from "lit";
 import { classMap } from "lit/directives/class-map.js";
 import { repeat } from "lit/directives/repeat.js";
@@ -37,6 +38,7 @@ export class SettingsState extends SettingState {
       const { inherit: _inherit, ...selection } = this.draft;
       return structuredClone(selection);
     }
+    if (this.key === "fast-mode-access") return fastModeAccessBody(this.draft, _validate);
     if (this.key === "branding")
       return Object.fromEntries(Object.entries(this.draft).map(([key, value]) => [key, String(value).trim()]));
     return structuredClone(this.draft);
@@ -101,7 +103,7 @@ export class SettingsState extends SettingState {
   }
 }
 export const states = new Map(
-  [...runtimeKeys, "webui-models", "model-account-modes", "soul", "branding"].map((key) => [
+  [...runtimeKeys, "fast-mode-access", "webui-models", "model-account-modes", "soul", "branding"].map((key) => [
     key,
     new SettingsState(key),
   ]),
@@ -120,6 +122,13 @@ export function load(data: Data, scope: string, only?: string) {
         markUrl: data.branding?.markUrl || "",
       };
       s.available = scope.startsWith("org:") && "branding" in data;
+      s.saving = false;
+      capture(key);
+      continue;
+    }
+    if (key === "fast-mode-access") {
+      s.draft = fastModeAccessDraft(data);
+      s.available = scope.startsWith("org:") && "fastModeAccess" in data;
       s.saving = false;
       capture(key);
       continue;
@@ -192,6 +201,7 @@ function card(s: SettingsState) {
   if (s.key === "soul") return soulCard(s);
   if (s.key === "branding") return brandingCard(s);
   if (s.key === "model-account-modes") return modelAccountModesCard(s);
+  if (s.key === "fast-mode-access") return fastModeAccessCard(s);
   if (runtimeKeys.includes(s.key)) {
     const prefix = s.key === "runtime" ? "base" : s.key;
     const purpose = s.key !== "runtime";
@@ -351,10 +361,10 @@ export function mountCards() {
   mountProviders();
   mountCredentials();
   const renderRuntimes = mountTemplate('template[data-settings-card="card-base-model"]', () =>
-    runtimeKeys.map((key) => card(states.get(key)!)),
+    [...runtimeKeys, "fast-mode-access"].map((key) => card(states.get(key)!)),
   );
   for (const [key, s] of states) {
-    if (runtimeKeys.includes(key)) {
+    if (runtimeKeys.includes(key) || key === "fast-mode-access") {
       s.render = renderRuntimes;
       continue;
     }

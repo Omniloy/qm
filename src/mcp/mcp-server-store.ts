@@ -21,6 +21,7 @@ export interface McpServer {
   clientId?: string;
   clientSecret?: string;
   oauthScopes?: string[];
+  iconUrl?: string;
   readOnly: boolean;
   enabled: boolean;
   updatedAt: number;
@@ -31,6 +32,40 @@ const ID_PATTERN = /^[a-z][a-z0-9-]{1,39}$/;
 
 export function isValidMcpServerId(id: string): boolean {
   return ID_PATTERN.test(id);
+}
+
+const ICON_URL_MAX = 2048;
+const ICON_URL_PATTERN = /^https:\/\/[^\s"'<>\\`]+$/;
+
+export function parseMcpIconUrl(value: unknown): string | undefined | null {
+  const text = typeof value === "string" ? value.trim() : value;
+  if (text === undefined || text === null || text === "") return undefined;
+  if (typeof text !== "string" || text.length > ICON_URL_MAX || !ICON_URL_PATTERN.test(text)) return null;
+  try {
+    const url = new URL(text);
+    return url.protocol === "https:" && !url.username && !url.password && url.hostname.includes(".") ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+export function mcpServerIcon(server: Pick<McpServer, "url" | "iconUrl">): string | undefined {
+  if (server.iconUrl) return server.iconUrl;
+  try {
+    const url = new URL(server.url);
+    if (url.protocol !== "https:" || !url.hostname.includes(".")) return undefined;
+    const site = url.hostname.replace(/^mcp\./, "");
+    return parseMcpIconUrl(`https://${site.includes(".") ? site : url.hostname}/favicon.ico`) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function singleLineName(value: string): string {
+  return value
+    .replace(/[\s\p{Cc}\p{Cf}]+/gu, " ")
+    .trim()
+    .slice(0, 80);
 }
 
 export interface McpServerStore {
@@ -46,14 +81,18 @@ export function createMcpServerStore(backing: DurableMap<McpServer>): McpServerS
   const emit = () => {
     for (const l of listeners) l();
   };
+  const clean = (server: McpServer): McpServer => ({ ...server, name: singleLineName(server.name) || server.id });
   return {
     async list() {
       const entries = await backing.entries();
-      return entries.map(([, v]) => v).sort((a, b) => a.id.localeCompare(b.id));
+      return entries.map(([, v]) => clean(v)).sort((a, b) => a.id.localeCompare(b.id));
     },
-    get: (id) => backing.get(id),
+    get: async (id) => {
+      const server = await backing.get(id);
+      return server ? clean(server) : null;
+    },
     put: async (server) => {
-      await backing.put(server.id, server);
+      await backing.put(server.id, clean(server));
       emit();
     },
     delete: async (id) => {

@@ -16,6 +16,8 @@ export type McpServer = {
   hasClientSecret?: boolean;
   clientId?: string;
   oauthScopes?: string[];
+  iconUrl?: string;
+  icon?: string;
   oauth?: { issuer: string; clientId: string; redirectUri: string; scopes?: string[]; source: string };
   hasCatalog?: boolean;
   readOnly: boolean;
@@ -27,6 +29,7 @@ const blank = () => ({
   id: "",
   name: "",
   url: "",
+  iconUrl: "",
   auth: "none" as McpServer["auth"],
   bearerToken: "",
   clientId: "",
@@ -68,6 +71,7 @@ export class McpServersState {
           id: server.id,
           name: server.name,
           url: server.url,
+          iconUrl: server.iconUrl ?? "",
           auth: server.auth,
           clientId: server.clientId ?? "",
           credentialScope: server.credentialScope ?? "shared",
@@ -108,6 +112,7 @@ export class McpServersState {
       return {
         name: d.name.trim() || d.id,
         url: d.url.trim(),
+        iconUrl: d.iconUrl.trim(),
         auth: d.auth,
         oauthScopes: d.oauthScopes.trim(),
         readOnly: d.readOnly,
@@ -116,6 +121,7 @@ export class McpServersState {
     return {
       name: d.name.trim() || d.id,
       url: d.url.trim(),
+      iconUrl: d.iconUrl.trim(),
       auth: d.auth,
       credentialScope: d.credentialScope,
       ...(d.credentialScope === "per-user"
@@ -135,6 +141,9 @@ export class McpServersState {
     if (!/^[a-z][a-z0-9-]{1,39}$/.test(id))
       return this.setStatus("ID: 2-40 lowercase letters, digits, or hyphens, starting with a letter.", "err");
     if (!this.draft.url.trim()) return this.setStatus("Server URL is required.", "err");
+    const icon = this.draft.iconUrl.trim();
+    if (icon && (!/^https:\/\/[^\s"'<>\\`]+$/.test(icon) || icon.length > 2048))
+      return this.setStatus("Icon: an https image URL without spaces or quotes.", "err");
     this.saving = true;
     const oauth = this.draft.auth === "oauth";
     this.setStatus(oauth ? "Discovering sign-in and registering…" : "Connecting and listing tools…", "saving");
@@ -163,6 +172,7 @@ export class McpServersState {
       const result = await context.api("PUT", "/api/mcp-servers/" + encodeURIComponent(server.id), {
         name: server.name,
         url: server.url,
+        iconUrl: server.iconUrl ?? "",
         auth: "oauth",
         oauthScopes: (server.oauthScopes ?? []).join(" "),
         readOnly: server.readOnly,
@@ -189,6 +199,47 @@ export class McpServersState {
   }
 }
 export const mcp = new McpServersState();
+
+const PLUG = html`<svg
+  width="18"
+  height="18"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+  aria-hidden="true"
+>
+  <path d="M12 22v-5" />
+  <path d="M9 8V2" />
+  <path d="M15 8V2" />
+  <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z" />
+</svg>`;
+
+function mcpIcon(src: string | undefined) {
+  return html`<span
+    class="mcp-icon"
+    aria-hidden="true"
+    style="position: relative; display: inline-flex; flex: none; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--border, #2a2a2a); overflow: hidden"
+    >${PLUG}${
+      src
+        ? html`<img
+            src=${src}
+            alt=""
+            width="20"
+            height="20"
+            loading="lazy"
+            referrerpolicy="no-referrer"
+            style="position: absolute; inset: 0; margin: auto; object-fit: contain; background: var(--surface, var(--bg, #fff))"
+            @error=${(event: Event) => {
+              (event.currentTarget as HTMLImageElement).hidden = true;
+            }}
+          />`
+        : nothing
+    }</span
+  >`;
+}
 
 const badge = (text: string, tone: string) => html`<span class=${"badge " + tone}>${text}</span>`;
 const AUTH_LABELS = {
@@ -217,7 +268,8 @@ function rows() {
       const secretMissing =
         (s.auth === "bearer" && !s.hasBearerToken) || (s.auth === "client-credentials" && !s.hasClientSecret);
       return html`<div class=${classMap({ "credential-row": true, "is-editing": s.id === mcp.editing })}>
-        <div class="credential-main">
+        ${mcpIcon(s.icon)}
+        <div class="credential-main" style="flex: 1">
           <div class="credential-title"><strong>${s.name}</strong><span class="credential-slug">${s.id}</span></div>
           <div class="hint">${s.url}${s.updatedBy ? " · by " + s.updatedBy : ""}</div>
           <div class="credential-badges">
@@ -250,7 +302,7 @@ function field(label: string, input: unknown, hint?: string) {
 }
 
 function text(
-  key: "id" | "name" | "url" | "clientId" | "credentialHost" | "oauthScopes",
+  key: "id" | "name" | "url" | "iconUrl" | "clientId" | "credentialHost" | "oauthScopes",
   placeholder: string,
   disabled = false,
 ) {
@@ -312,6 +364,7 @@ function editor() {
     ${field("ID", text("id", "e.g. linear", !!mcp.editing), "Prefixes the tool names agents see. Can't be changed later.")}
     ${field("Name", text("name", "Display name"))}
     ${field("Server URL", text("url", "https://example.com/mcp"), "Streamable HTTP endpoint. Saving checks that it answers tools/list.")}
+    ${field("Icon URL", text("iconUrl", "https://example.com/logo.png"), "Optional https image shown next to the app. Leave blank to use the site's favicon.")}
     ${field(
       "Authentication",
       select("auth", [

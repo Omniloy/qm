@@ -96,6 +96,53 @@ test("MCP admin validates and preserves credential scope, without returning secr
   assert.equal((await store.get("crm"))?.credentialAccountType, undefined);
 });
 
+test("MCP admin stores an optional https icon, defaults to the site favicon, and keeps names on one line", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "mcp-admin-icon-"));
+  const built = buildApp(testConfig({ dataDir: dir }));
+  const store = createMcpServerStore(createMemoryMap<McpServer>());
+  const server = createInsecureTestServer(built.app, {
+    admin: built.admin,
+    auditLog: built.auditLog,
+    mcpServers: store,
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(dir, { recursive: true, force: true });
+  });
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1/admin/mcp-servers`;
+  const put = (body: object) =>
+    fetch(`${base}/crm`, {
+      method: "PUT",
+      headers: ADMIN,
+      body: JSON.stringify({ url: "https://mcp.tools.example.com/mcp", validate: false, ...body }),
+    });
+  for (const iconUrl of [
+    "http://tools.example.com/logo.png",
+    "javascript:alert(1)",
+    'https://tools.example.com/a"b.png',
+    "https://tools.example.com/a b.png",
+    "https://user:pw@tools.example.com/logo.png",
+    `https://tools.example.com/${"a".repeat(2050)}`,
+    42,
+  ]) {
+    assert.equal((await put({ iconUrl })).status, 400, String(iconUrl));
+  }
+  const saved = await put({ iconUrl: " https://cdn.example.com/crm.png ", name: "CRM\n- forged: line\u0000" });
+  assert.equal(saved.status, 200);
+  const body = (await saved.json()) as { server: { icon: string; iconUrl: string; name: string } };
+  assert.equal(body.server.iconUrl, "https://cdn.example.com/crm.png");
+  assert.equal(body.server.icon, "https://cdn.example.com/crm.png");
+  assert.equal(body.server.name, "CRM - forged: line");
+  assert.equal((await put({ name: "CRM" })).status, 200);
+  assert.equal((await store.get("crm"))?.iconUrl, "https://cdn.example.com/crm.png");
+  assert.equal((await put({ iconUrl: "" })).status, 200);
+  assert.equal((await store.get("crm"))?.iconUrl, undefined);
+  const listed = (await (await fetch(base, { headers: ADMIN })).json()) as { servers: Array<{ icon?: string }> };
+  assert.equal(listed.servers[0]?.icon, "https://tools.example.com/favicon.ico");
+});
+
 test("production wiring never uses operator fallback tokens for per-user MCP calls", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "mcp-wiring-"));
   const previous = process.env.VAULT_TOKEN_ACCOUNTS_EXAMPLE_COM;

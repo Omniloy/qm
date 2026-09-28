@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { JSDOM } from "jsdom";
 import { createServer } from "vite";
 
-test("MCP connector cards start sign-in once per click and offer a different account", async () => {
+test("MCP connector cards show their icon, start sign-in once per click, and free the buttons when the page stays", async () => {
   const dom = new JSDOM('<!doctype html><div id="app"></div><main id="main"></main>', {
     url: "http://localhost/keychain",
   });
@@ -41,10 +41,12 @@ test("MCP connector cards start sign-in once per click and offer a different acc
   const starts: Array<{ path: string; body: unknown }> = [];
   let releaseStart!: () => void;
   let connected = true;
+  let authorizeUrl = "";
   globalThis.fetch = async (input, init) => {
     const path = new URL(String(input), "http://localhost").pathname;
     if (path.endsWith("/api/connectors/mcp-granola/start")) {
       starts.push({ path, body: JSON.parse(String(init?.body ?? "{}")) });
+      if (authorizeUrl) return Response.json({ authorizeUrl });
       await new Promise<void>((resolve) => {
         releaseStart = resolve;
       });
@@ -53,7 +55,15 @@ test("MCP connector cards start sign-in once per click and offer a different acc
     if (path.endsWith("/api/connectors"))
       return Response.json({
         providers: {
-          "mcp-granola": { kind: "mcp", name: "Granola", available: true, connected, hosts: [] },
+          "mcp-granola": {
+            kind: "mcp",
+            name: "Granola",
+            available: true,
+            connected,
+            hosts: [],
+            icon: "https://granola.ai/favicon.ico",
+          },
+          "mcp-odd": { kind: "mcp", name: "Odd", available: true, hosts: [], icon: 'http://odd.example.com/"x".png' },
           google: { name: "Google Workspace", available: true, connected: false, hosts: [] },
         },
       });
@@ -74,6 +84,15 @@ test("MCP connector cards start sign-in once per click and offer a different acc
 
     await renderConnectors();
     await tick();
+    const logo = card("mcp-granola").querySelector<HTMLImageElement>(".connector-logo-remote img")!;
+    assert.equal(logo.getAttribute("src"), "https://granola.ai/favicon.ico");
+    assert.equal(logo.getAttribute("referrerpolicy"), "no-referrer");
+    assert.equal(logo.getAttribute("loading"), "lazy");
+    assert.ok(card("mcp-granola").querySelector(".connector-logo-remote svg"));
+    logo.dispatchEvent(new dom.window.Event("error"));
+    assert.equal(logo.hidden, true);
+    assert.equal(card("mcp-odd").querySelector(".connector-logo img"), null);
+    assert.ok(card("mcp-odd").querySelector(".connector-logo svg"));
     assert.ok(button("mcp-granola", "Use a different account"));
     assert.equal(button("google", "Use a different account"), undefined);
 
@@ -99,6 +118,46 @@ test("MCP connector cards start sign-in once per click and offer a different acc
     assert.deepEqual(starts[1]!.body, { switchAccount: true });
     releaseStart();
     await tick();
+    await tick();
+
+    authorizeUrl = "https://auth.example.com/authorize";
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    button("mcp-granola", "Connect account")!.click();
+    await tick();
+    await tick();
+    assert.equal(starts.length, 3);
+    assert.equal(button("mcp-granola", "Connect account")!.disabled, true);
+    document.dispatchEvent(new dom.window.Event("visibilitychange"));
+    assert.equal(button("mcp-granola", "Connect account")!.disabled, true);
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    document.dispatchEvent(new dom.window.Event("visibilitychange"));
+    await tick();
+    assert.equal(button("mcp-granola", "Connect account")!.disabled, false);
+
+    button("mcp-granola", "Connect account")!.click();
+    await tick();
+    await tick();
+    assert.equal(button("mcp-granola", "Connect account")!.disabled, true);
+    dom.window.dispatchEvent(new dom.window.Event("pagehide"));
+    await tick();
+    assert.equal(button("mcp-granola", "Connect account")!.disabled, false);
+    document.dispatchEvent(new dom.window.Event("visibilitychange"));
+    const timers: Array<{ run: () => void; ms: number }> = [];
+    const setTimer = dom.window.setTimeout;
+    dom.window.setTimeout = ((run: () => void, ms: number) => {
+      timers.push({ run, ms });
+      return 0;
+    }) as typeof dom.window.setTimeout;
+    button("mcp-granola", "Connect account")!.click();
+    await tick();
+    await tick();
+    dom.window.setTimeout = setTimer;
+    assert.equal(starts.length, 5);
+    assert.equal(button("mcp-granola", "Connect account")!.disabled, true);
+    const release = timers.find((timer) => timer.ms === 15_000)!;
+    release.run();
+    await tick();
+    assert.equal(button("mcp-granola", "Connect account")!.disabled, false);
   } finally {
     await vite.close();
     globalThis.fetch = originalFetch;

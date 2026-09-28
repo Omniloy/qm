@@ -5,7 +5,14 @@
 // model-provider credential, not like a personal connector.
 
 import type { McpOAuthRegistration } from "../../../mcp/mcp-oauth.ts";
-import { isValidMcpServerId, type McpServer, type McpServerAuthMode } from "../../../mcp/mcp-server-store.ts";
+import {
+  isValidMcpServerId,
+  mcpServerIcon,
+  parseMcpIconUrl,
+  singleLineName,
+  type McpServer,
+  type McpServerAuthMode,
+} from "../../../mcp/mcp-server-store.ts";
 import { sendJson } from "../../http.ts";
 import { mcpOAuthView, purgeMcpOAuth, registerMcpOAuthClient } from "../mcp-oauth.ts";
 import type { ApiCtx } from "../route.ts";
@@ -33,6 +40,7 @@ function redact(server: McpServer, registration?: McpOAuthRegistration | null, h
   const { bearerToken, clientSecret, ...rest } = server;
   return {
     ...rest,
+    icon: mcpServerIcon(server),
     hasBearerToken: !!bearerToken,
     hasClientSecret: !!clientSecret,
     ...(server.auth === "oauth"
@@ -86,7 +94,8 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
       message: "id must be 2-40 chars: lowercase letters, digits, hyphens, starting with a letter",
     });
   }
-  const b = ctx.body as Partial<Omit<McpServer, "oauthScopes">> & {
+  const b = ctx.body as Partial<Omit<McpServer, "oauthScopes" | "iconUrl">> & {
+    iconUrl?: unknown;
     validate?: boolean;
     reregister?: unknown;
     oauthScopes?: unknown;
@@ -149,6 +158,13 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
       message: "per-user credentials require HTTPS (except loopback)",
     });
   }
+  const iconUrl = b.iconUrl === undefined ? existing?.iconUrl : parseMcpIconUrl(b.iconUrl);
+  if (iconUrl === null) {
+    return sendJson(ctx.res, 400, {
+      error: "bad_request",
+      message: "iconUrl must be an https image URL of at most 2048 characters without spaces or quotes",
+    });
+  }
   let oauthScopes: string[] | undefined | null;
   if (oauth) oauthScopes = b.oauthScopes === undefined ? existing?.oauthScopes : parseScopes(b.oauthScopes);
   if (oauthScopes === null) {
@@ -160,8 +176,9 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
     typeof b.oauthClientSecret === "string" && b.oauthClientSecret ? b.oauthClientSecret : undefined;
   const server: McpServer = {
     id,
-    name: typeof b.name === "string" && b.name.trim() ? b.name.trim().slice(0, 80) : id,
+    name: (typeof b.name === "string" && singleLineName(b.name)) || id,
     url,
+    ...(iconUrl ? { iconUrl } : {}),
     auth,
     credentialScope,
     ...(credentialScope === "per-user" && !oauth ? { credentialHost, credentialAccountType } : {}),

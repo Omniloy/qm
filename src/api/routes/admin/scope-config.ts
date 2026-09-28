@@ -279,6 +279,7 @@ const SETTINGS_RESOURCES = {
     "approvedHarnesses",
     "webuiModels",
     "interactiveFastMode",
+    "fastModeAccess",
     "individualModelAuth",
     "modelAccountModes",
     "browseModel",

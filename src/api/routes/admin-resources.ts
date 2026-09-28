@@ -543,6 +543,41 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
     ),
   },
   {
+    id: "fast-mode-access",
+    kind: "custom",
+    target: "org",
+    label:
+      "Who may use fast mode org-wide: people null means everyone; a list of principal IDs or emails limits it to those people. Turns by anyone else, including their crons and sub-agents, run at normal speed.",
+    readKey: "fastModeAccess",
+    get: async (deps, scope) =>
+      parseScopeId(scope).kind === "org"
+        ? {
+            people: await deps.config!.getFastModeAccess(),
+            directory: ((await deps.directory?.list()) ?? []).map(({ principalId, displayName }) => ({
+              principalId,
+              displayName,
+            })),
+          }
+        : undefined,
+    apply: generic<string[] | null>(
+      (body, { scope }) => {
+        const bad = orgOnly(scope, "fast-mode access is org-wide");
+        if (bad) return bad;
+        const people = (body as { people?: unknown } | null)?.people;
+        if (people === null) return { value: null };
+        if (
+          !Array.isArray(people) ||
+          people.length > 500 ||
+          people.some((p) => typeof p !== "string" || !p.trim() || p.length > 320 || /[\s\p{Cc}]/u.test(p.trim()))
+        )
+          return { error: "fast-mode-access requires { people: null } or { people: string[] } (at most 500 IDs)" };
+        if (!people.length) return { error: "add at least one person, or set people to null to allow everyone" };
+        return { value: people.map((p: string) => p.trim()) };
+      },
+      (deps, _scope, people) => deps.config!.setFastModeAccess(people),
+    ),
+  },
+  {
     id: "individual-model-auth",
     kind: "boolean",
     target: "org",

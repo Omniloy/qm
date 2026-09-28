@@ -13,7 +13,7 @@ import {
   type McpOAuthRegistration,
 } from "../../mcp/mcp-oauth.ts";
 import { clientRefFor } from "../../mcp/mcp-oauth-store.ts";
-import type { McpServer } from "../../mcp/mcp-server-store.ts";
+import { mcpServerIcon, type McpServer } from "../../mcp/mcp-server-store.ts";
 import { errMessage, swallow } from "../../util/errors.ts";
 import { hostOf } from "../../util/network.ts";
 import type { ServerDeps } from "../deps.ts";
@@ -178,11 +178,13 @@ export async function mcpConnectorStatus(deps: ServerDeps, principalId: string):
         currentRegistration(deps, server),
       ]);
       if (status.connected) deps.mcpToolService?.retryMissingCatalog(server.id, principalId);
+      const icon = mcpServerIcon(server);
       return [
         mcpProviderName(server.id),
         {
           kind: "mcp",
           name: server.name,
+          ...(icon ? { icon } : {}),
           hosts: [{ host: hostOf(server.url), ...status }],
           connected: status.connected,
           ...(status.needsReconnect ? { needsReconnect: true } : {}),

@@ -303,3 +303,53 @@ test("personal AI account card edits one mode per provider and stays org-only", 
     dom.window.close();
   }
 });
+test("fast mode access card switches between everyone and a picked list of people", () => {
+  const dom = setup();
+  const document = dom.window.document;
+  const data = {
+    ...models,
+    fastModeAccess: { people: null, directory: [{ principalId: "carol@acme.com", displayName: "Carol" }] },
+  };
+  try {
+    dom.window.eval("settingsUI.load(" + JSON.stringify(data) + ',"org:test","fast-mode-access")');
+    const card = document.getElementById("card-fast-mode-access")!;
+    assert.equal(card.classList.contains("hidden"), false);
+    assert.deepEqual(JSON.parse(String(dom.window.eval('JSON.stringify(settingsUI.collect("fast-mode-access"))'))), {
+      people: null,
+    });
+    assert.equal(document.getElementById("fast-mode-access-add"), null);
+    const limited = card.querySelector<HTMLInputElement>('input[name="fast-mode-access"][value="people"]')!;
+    limited.checked = true;
+    limited.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+    assert.ok(document.getElementById("fast-mode-access-empty"));
+    assert.throws(() => dom.window.eval('settingsUI.collect("fast-mode-access")'), /at least one person/);
+    assert.equal(
+      document.querySelector('#fast-mode-access-options option[value="carol@acme.com"]')?.getAttribute("label"),
+      "Carol",
+    );
+    const input = document.getElementById("fast-mode-access-add") as HTMLInputElement;
+    for (const value of ["carol@acme.com", "Erin@Acme.com", "carol@acme.com"]) {
+      input.value = value;
+      input.dispatchEvent(new dom.window.Event("input"));
+      document.getElementById("fast-mode-access-add-button")!.click();
+    }
+    assert.deepEqual(JSON.parse(String(dom.window.eval('JSON.stringify(settingsUI.collect("fast-mode-access"))'))), {
+      people: ["carol@acme.com", "erin@acme.com"],
+    });
+    assert.match(card.querySelector('[data-person="carol@acme.com"]')!.textContent!, /Carol \(carol@acme\.com\)/);
+    assert.equal((card.querySelector('[data-save="fast-mode-access"]') as HTMLButtonElement).disabled, false);
+    card.querySelector<HTMLButtonElement>('[aria-label="Remove erin@acme.com"]')!.click();
+    assert.deepEqual(
+      JSON.parse(String(dom.window.eval('JSON.stringify(settingsUI.collect("fast-mode-access"))'))).people,
+      ["carol@acme.com"],
+    );
+    dom.window.eval(
+      "settingsUI.load(" + JSON.stringify({ ...data, fastModeAccess: undefined }) + ',"org:test","fast-mode-access")',
+    );
+    assert.equal(document.getElementById("card-fast-mode-access")!.classList.contains("hidden"), true);
+    dom.window.eval("settingsUI.load(" + JSON.stringify(data) + ',"personal:x","fast-mode-access")');
+    assert.equal(document.getElementById("card-fast-mode-access")!.classList.contains("hidden"), true);
+  } finally {
+    dom.window.close();
+  }
+});

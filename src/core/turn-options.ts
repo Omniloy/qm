@@ -1,4 +1,5 @@
-import type { RuntimePurpose } from "../resolution/config-store.ts";
+import type { RuntimePurpose, ScopedConfigStore } from "../resolution/config-store.ts";
+import { samePersonMatcher, type RosterPerson } from "../directory/person.ts";
 import {
   defaultWebuiModelIds,
   THINKING_LEVELS,
@@ -28,6 +29,19 @@ export function resolveTurnFastMode(
 ): boolean | undefined {
   if (typeof requested === "boolean") return requested;
   return humanTurn && interactiveDefault ? true : undefined;
+}
+
+export async function fastModeAllowed(
+  config: Pick<ScopedConfigStore, "getFastModeAccess"> | undefined,
+  directory: { get(principalId: string): Promise<RosterPerson | null> } | undefined,
+  actorId: string | undefined,
+): Promise<boolean> {
+  const people = (await config?.getFastModeAccess()) ?? null;
+  if (people === null) return true;
+  if (!actorId || !people.length) return false;
+  const matches = await samePersonMatcher(directory ?? { get: async () => null }, actorId);
+  for (const person of people) if (await matches(person)) return true;
+  return false;
 }
 
 export function turnModelOptions(input: {

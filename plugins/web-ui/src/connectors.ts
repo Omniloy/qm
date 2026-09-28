@@ -42,6 +42,7 @@ interface ConnectorProvider {
   refreshError?: string;
   available?: boolean;
   hosts?: Array<{ host?: string } | string>;
+  icon?: string;
 }
 
 const CONNECTOR_LABELS: Record<string, { name: string; hosts: string }> = {
@@ -961,7 +962,7 @@ function drawConnectors(): void {
         data-connector=${id}
       >
         <div class="kc-resource-main">
-          ${connectorLogo(id)}
+          ${connectorLogo(id, p.icon)}
           <div class="kc-resource-copy">
             <div class="kc-resource-title-row">
               <h3>${meta.name}</h3>
@@ -1315,6 +1316,8 @@ async function createDrop(): Promise<void> {
   }
 }
 
+const CONNECTOR_START_RELEASE_MS = 15_000;
+
 async function startConnector(provider: string, switchAccount = false): Promise<void> {
   const operation = beginKeychainMutation();
   if (!operation) return;
@@ -1329,13 +1332,19 @@ async function startConnector(provider: string, switchAccount = false): Promise<
     if (!keychainOperations.isCurrentEpoch(operation.epoch)) return;
     if (r.authorizeUrl) {
       navigating = true;
-      window.addEventListener(
-        "pagehide",
-        () => {
-          if (keychainOperations.finishMutation(operation)) drawConnectors();
-        },
-        { once: true },
-      );
+      let timer = 0;
+      const onVisible = () => {
+        if (document.visibilityState === "visible") release();
+      };
+      const release = () => {
+        window.clearTimeout(timer);
+        window.removeEventListener("pagehide", release);
+        document.removeEventListener("visibilitychange", onVisible);
+        if (keychainOperations.finishMutation(operation)) drawConnectors();
+      };
+      timer = window.setTimeout(release, CONNECTOR_START_RELEASE_MS);
+      window.addEventListener("pagehide", release);
+      document.addEventListener("visibilitychange", onVisible);
       location.href = r.authorizeUrl;
       return;
     }

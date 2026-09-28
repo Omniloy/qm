@@ -89,6 +89,7 @@ import {
   type PersistedScopedFlag,
   type PersistedModelAccountModes,
   type PersistedSkillSharingPolicy,
+  type PersistedFastModeAccess,
   type PersistedBaseModel,
   type PersistedApprovedHarnesses,
   type PersistedInternalMemberOverrides,
@@ -340,6 +341,7 @@ import { createPiHarness, piHarnessConfigOptions } from "./harness/pi-harness.ts
 import { createHarnessRouter, resolveRuntimeChoiceDurable } from "./harness/harness-router.ts";
 import { selectableModelCatalog } from "./model/model-catalog.ts";
 import type { Harness } from "./harness/harness.ts";
+import { fastModeAllowed } from "./core/turn-options.ts";
 import { createSecurityScreenProxy, type SecurityScreener } from "./security/security-screener.ts";
 import { createMemoryTaskStore } from "./tasks/memory-task-store.ts";
 import { createPostgresTaskStore } from "./tasks/postgres-task-store.ts";
@@ -739,6 +741,7 @@ export function buildApp(
     individualModelAuth: artifactMap<PersistedScopedFlag>("individual_model_auth_flag"),
     modelAccountModes: artifactMap<PersistedModelAccountModes>("model_account_modes"),
     skillSharing: artifactMap<PersistedSkillSharingPolicy>("fork_skill_sharing_policy"),
+    fastModeAccess: artifactMap<PersistedFastModeAccess>("fork_fast_mode_access"),
     webuiModels: artifactMap<PersistedWebuiModels>("webui_model_configs"),
     modelClassifications: artifactMap<PersistedModelClassification>("model_classifications"),
     peopleDirectoryUrls: artifactMap<PersistedPeopleDirectoryUrl>("people_directory_urls"),
@@ -1556,23 +1559,28 @@ export function buildApp(
     if (!(await modelCredentials.availability()).openrouter) return undefined;
     return selectableModelCatalog(overrides.modelCredentialFetch);
   };
-  const harness = createHarnessRouter(adapters, adapters.get(fallbackHarness)!, async (input) => {
-    await refreshModels();
-    if (input.runtimePinned && input.runtime?.harnessId && input.runtime.modelId) {
-      if (!modelSupportedByHarness(input.runtime.modelId, input.runtime.harnessId))
-        throw new Error(`Unsupported model: ${input.runtime.modelId}`);
-      return { ...input.runtime, harnessId: input.runtime.harnessId, modelId: input.runtime.modelId };
-    }
-    return resolveRuntimeChoiceDurable(
-      configStore,
-      runtimeOrgScope,
-      input.scopeLabel,
-      fallback,
-      input.runtime,
-      hydrateModelCatalog,
-      input.runtimePurpose,
-    );
-  });
+  const harness = createHarnessRouter(
+    adapters,
+    adapters.get(fallbackHarness)!,
+    async (input) => {
+      await refreshModels();
+      if (input.runtimePinned && input.runtime?.harnessId && input.runtime.modelId) {
+        if (!modelSupportedByHarness(input.runtime.modelId, input.runtime.harnessId))
+          throw new Error(`Unsupported model: ${input.runtime.modelId}`);
+        return { ...input.runtime, harnessId: input.runtime.harnessId, modelId: input.runtime.modelId };
+      }
+      return resolveRuntimeChoiceDurable(
+        configStore,
+        runtimeOrgScope,
+        input.scopeLabel,
+        fallback,
+        input.runtime,
+        hydrateModelCatalog,
+        input.runtimePurpose,
+      );
+    },
+    (actorId) => fastModeAllowed(configStore, directory, actorId),
+  );
 
   if (
     config.securityScreenBackend !== "model" &&
