@@ -892,6 +892,40 @@ test("internal-member-overrides is org-only, validates entries, audits, and roun
   }
 });
 
+test("model-account-modes is org-admin-only, validates both providers, and reads back in the models view", async () => {
+  const srv = start();
+  const url = `${srv.base}/v1/admin/scopes/org:default-org/model-account-modes`;
+  const put = (body: unknown, headers: Record<string, string> = ADMIN, target = url) =>
+    fetch(target, { method: "PUT", headers, body: JSON.stringify(body) });
+  const read = async () =>
+    (
+      (await (await fetch(`${srv.base}/v1/admin/scopes/org:default-org?view=models`, { headers: ADMIN })).json()) as {
+        modelAccountModes: unknown;
+      }
+    ).modelAccountModes;
+  try {
+    assert.deepEqual(await read(), { anthropic: "org", openai: "org" });
+    const personal = { anthropic: "personal", openai: "org" };
+    assert.equal(
+      (await put(personal, { "content-type": "application/json", "x-admin-actor": "nobody@default-org" })).status,
+      403,
+    );
+    assert.equal(
+      (await put(personal, ADMIN, `${srv.base}/v1/admin/scopes/personal:U1/model-account-modes`)).status,
+      400,
+    );
+    for (const bad of [{ anthropic: "personal" }, { anthropic: "personal", openai: "mine" }, {}]) {
+      assert.equal((await put(bad)).status, 400);
+    }
+    assert.deepEqual(await read(), { anthropic: "org", openai: "org" });
+    assert.equal((await put({ ...personal, openrouter: "personal" })).status, 200);
+    assert.deepEqual(await read(), personal);
+    assert.deepEqual(await srv.built.config.getModelAccountModesDurable(), personal);
+  } finally {
+    await srv.close();
+  }
+});
+
 test("GET /v1/admin/slack-emoji surfaces 404 without a token, and serves the plugin-published catalog once one exists", async () => {
   const srv = start();
   try {

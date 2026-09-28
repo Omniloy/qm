@@ -1,6 +1,6 @@
 import "./onboarding-welcome";
 import "./slack-account";
-import { openModelConnectManager, type StatusResponse } from "./model-connect";
+import { openModelConnectManager, personalAllowed, type StatusResponse } from "./model-connect";
 import { api, withBase } from "./core-bridge";
 import { html, nothing, render, type TemplateResult } from "lit";
 import { Download, ExternalLink, LogOut, Monitor, Moon, ShieldUser, Sun, type IconNode } from "lucide";
@@ -338,7 +338,14 @@ async function chooseAiAccount(account: "company" | "anthropic" | "openai"): Pro
   drawSettings();
 }
 
-function aiAccountsRow(): TemplateResult {
+function aiAccountsRow(): TemplateResult | typeof nothing {
+  const providers = (
+    [
+      ["anthropic", "Claude"],
+      ["openai", "ChatGPT / Codex"],
+    ] as const
+  ).filter(([provider]) => personalAllowed(aiStatus, provider));
+  if (aiStatus && !providers.length) return nothing;
   return html`
     <div class="settings-row">
       <div class="settings-row-copy">
@@ -348,13 +355,7 @@ function aiAccountsRow(): TemplateResult {
       </div>
       <div class="settings-ai-controls">
         <div class="settings-choice" role="group" aria-label="AI access">
-          ${(
-            [
-              ["company", "Company"],
-              ["anthropic", "Claude"],
-              ["openai", "ChatGPT / Codex"],
-            ] as const
-          ).map(
+          ${([["company", "Company"], ...providers] as const).map(
             ([value, label]) => html`
               <button
                 type="button"

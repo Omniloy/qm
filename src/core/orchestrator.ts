@@ -174,7 +174,7 @@ import type { Orchestrator, OrchestratorDeps, OrchestratorInput } from "./orches
 import { isHarnessId, resolveModel, CODEX_SUBSCRIPTION_PROVIDER } from "../model/pi-models.ts";
 import type { ProviderKeys } from "../harness/pi-harness.ts";
 import type { CodexTurnAuth } from "../harness/harness.ts";
-import { resolveIndividualAuthRouting } from "./individual-auth-routing.ts";
+import { loadPersonalModelAccess, routePersonalModelAccess } from "./individual-auth-routing.ts";
 import {
   MAX_AUTO_ATTACHMENT_SCREEN_BYTES,
   approvalGrantId,
@@ -3227,10 +3227,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             ? "company"
             : (input.modelAccount ?? (await deps.config?.getModelAccountDurable(actor.id)) ?? "company");
           if (userCredStore && humanTurn && account !== "company") {
-            const [anthCred, oaiCred] = await Promise.all([
-              account === "openai" ? null : userCredStore.get(actor.id, "anthropic"),
-              account === "anthropic" ? null : userCredStore.get(actor.id, "openai"),
-            ]);
+            const access = await loadPersonalModelAccess(deps.config, userCredStore, actor.id, account);
+            const { anthropic: anthCred, openai: oaiCred } = access;
             const orgRuntime = await deps.config?.getRuntimeSelectionDurable(resolution.orgScopeId);
             const preferredHarness =
               runtime.harnessId ??
@@ -3238,9 +3236,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               purposeDefault?.harnessId ??
               orgRuntime?.harnessId ??
               deps.defaultHarness;
-            const routing = resolveIndividualAuthRouting(
-              anthCred ?? null,
-              oaiCred ?? null,
+            const routed = routePersonalModelAccess(
+              access,
               account === "personal" || input.surface === "web"
                 ? (runtime.modelId ?? input.model ?? purposeDefault?.modelId)
                 : (runtime.modelId ?? purposeDefault?.modelId),
@@ -3248,6 +3245,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 ? preferredHarness
                 : (runtime.harnessId ?? purposeDefault?.harnessId),
             );
+            const routing = routed === "org" ? null : routed;
             if (routing?.kind === "apikey") {
               userHarnessOverride = "pi";
               userProviderKeys = { [routing.provider]: routing.apiKey };
@@ -3284,7 +3282,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 userModelOverride = routing.model;
               }
             }
-            if (!userHarnessOverride) {
+            if (!userHarnessOverride && routed !== "org") {
               throw new NonRetryableTurnError(
                 "Your personal AI account is unavailable. Open Settings → AI access to reconnect Claude or ChatGPT / Codex, or choose company access. The chat cannot continue on company access.",
               );

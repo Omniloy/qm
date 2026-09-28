@@ -1,6 +1,6 @@
 import type { RuntimePurpose } from "../resolution/config-store.ts";
 import { resolveRuntimeChoiceDurable } from "../harness/harness-router.ts";
-import { resolveIndividualAuthRouting } from "../core/individual-auth-routing.ts";
+import { loadPersonalModelAccess, routePersonalModelAccess } from "../core/individual-auth-routing.ts";
 import { gatewayModelCatalog } from "../model/gateway-models.ts";
 import type { AppDeps } from "./app-types.ts";
 import type { ScopeId } from "../types.ts";
@@ -54,21 +54,19 @@ export async function userRuntimeConfigBody(ctx: { deps: RuntimeDeps }, scope: S
   const account = await ctx.deps.config?.getModelAccountDurable(actorId);
   const store = ctx.deps.userModelCredentials;
   if (!store || !account || account === "company") return runtimeConfigBody(ctx, scope);
-  const [anthropic, openai] = await Promise.all([
-    account === "openai" ? null : store.get(actorId, "anthropic"),
-    account === "anthropic" ? null : store.get(actorId, "openai"),
-  ]);
+  const access = await loadPersonalModelAccess(ctx.deps.config, store, actorId, account);
+  const company = access.orgServed.size ? await runtimeConfigBody(ctx, scope) : undefined;
   const snapshot = await runtimeConfigBody(ctx, scope, async (choice) => {
-    const route = resolveIndividualAuthRouting(anthropic, openai, choice.modelId, choice.harnessId);
+    const route = routePersonalModelAccess(access, choice.modelId, choice.harnessId);
+    if (route === "org")
+      return company?.modelsByHarness[choice.harnessId]?.includes(choice.modelId)
+        ? null
+        : "account_runtime_unavailable";
     return route?.harness === choice.harnessId && route.model === choice.modelId ? null : "account_runtime_unavailable";
   });
-  const route = resolveIndividualAuthRouting(
-    anthropic,
-    openai,
-    snapshot.effective.modelId,
-    snapshot.effective.harnessId,
-  );
-  if (!route?.model || !snapshot.modelsByHarness[route.harness]?.includes(route.model)) return snapshot;
+  const route = routePersonalModelAccess(access, snapshot.effective.modelId, snapshot.effective.harnessId);
+  if (route === "org" || !route?.model || !snapshot.modelsByHarness[route.harness]?.includes(route.model))
+    return snapshot;
   const { unavailableReason: _, ...available } = snapshot;
   return {
     ...available,

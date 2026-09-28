@@ -6595,6 +6595,7 @@
                 </div>
                 <template data-settings-card="card-base-model"></template>
                 <template data-settings-card="card-webui-models"></template>
+                <template data-settings-card="card-model-account-modes"></template>
                 <template data-settings-card="card-branding"></template>
                 <template data-settings-card="card-feature-flags"></template>
                 <div class="governance-group" id="governance-credentials">
@@ -8220,6 +8221,7 @@
           governanceUI.settings.load(r.data, scope, "cron-runtime");
           governanceUI.settings.load(r.data, scope, "subagent-runtime");
           governanceUI.settings.load(r.data, scope, "webui-models");
+          governanceUI.settings.load(r.data, scope, "model-account-modes");
         }
         refreshModelChoices.push(() => governanceUI.settings.updateCatalog(r.data));
         if (requestedView === "customize") {
@@ -8729,6 +8731,7 @@
         "cron-runtime": "st-cron-runtime",
         "subagent-runtime": "st-subagent-runtime",
         "webui-models": "st-webui-models",
+        "model-account-modes": "st-model-account-modes",
         "ack-emoji": "st-ack-emoji",
         branding: "st-branding",
       };

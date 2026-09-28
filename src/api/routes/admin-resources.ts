@@ -44,6 +44,11 @@ import {
   type SecurityPosture,
 } from "../../security/security-posture.ts";
 import type { ApprovalGrantModes } from "../../types.ts";
+import {
+  PERSONAL_MODEL_PROVIDERS,
+  type ModelAccountModes,
+  type PersonalModelProvider,
+} from "../../resolution/config-store.ts";
 import { parseEgressPolicy } from "../../resolution/egress-policy.ts";
 import { DEVICE_FLOW_CUTOVER_MODES, type DeviceFlowCutoverMode } from "../../credentials/device-flow-cutover.ts";
 import { FEATURE_NAMES, type FeatureName } from "../../feature-flags.ts";
@@ -551,6 +556,29 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
         return boolBody(body);
       },
       (deps, _scope, on) => deps.config!.setIndividualModelAuth(on),
+    ),
+  },
+  {
+    id: "model-account-modes",
+    kind: "custom",
+    target: "org",
+    label:
+      "Personal AI accounts per provider: org means the organization's own Claude or ChatGPT account serves every turn for that provider; personal lets each person sign in with their own account for it.",
+    readKey: "modelAccountModes",
+    get: (deps, scope) => (parseScopeId(scope).kind === "org" ? deps.config!.getModelAccountModesDurable() : undefined),
+    apply: generic<ModelAccountModes>(
+      (body, { scope }) => {
+        const bad = orgOnly(scope, "personal AI account modes are org-wide");
+        if (bad) return bad;
+        const modes = body as Partial<Record<PersonalModelProvider, unknown>>;
+        const valid = (mode: unknown) => mode === "org" || mode === "personal";
+        if (!PERSONAL_MODEL_PROVIDERS.every((provider) => valid(modes[provider])))
+          return {
+            error: 'model-account-modes requires { anthropic: "org" | "personal", openai: "org" | "personal" }',
+          };
+        return { value: modes as ModelAccountModes };
+      },
+      (deps, _scope, modes) => deps.config!.setModelAccountModes(modes),
     ),
   },
   {

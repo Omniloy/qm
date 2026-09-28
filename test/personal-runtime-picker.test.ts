@@ -40,6 +40,7 @@ test("personal API-key picker works without company keys and saves model, effort
   const s = await setup();
   try {
     await s.built.userModelCredentials.setApiKey("U1", "openai", "synthetic-openai");
+    await s.built.config.setModelAccountModes({ anthropic: "personal", openai: "personal" });
     await s.built.config.setPersonalModelAuth("U1", true, "openai");
     const before = await s.get();
     assert.ok(before.modelsByHarness.pi!.includes("gpt-5.6-terra"));
@@ -72,6 +73,7 @@ for (const provider of ["anthropic", "openai"] as const) {
         refreshToken: "synthetic-refresh",
         expiresAt: Date.now() + 3_600_000,
       });
+      await s.built.config.setModelAccountModes({ anthropic: "personal", openai: "personal" });
       await s.built.config.setPersonalModelAuth("U1", true, provider);
       const config = await s.get();
       if (provider === "anthropic") {
@@ -96,6 +98,7 @@ test("personal picker keeps org restrictions and shared-scope caller isolation",
   try {
     await s.built.userModelCredentials.setApiKey("U1", "openai", "synthetic-openai");
     await s.built.userModelCredentials.setApiKey("U2", "anthropic", "synthetic-anthropic");
+    await s.built.config.setModelAccountModes({ anthropic: "personal", openai: "personal" });
     await s.built.config.setPersonalModelAuth("U1", true, "openai");
     await s.built.config.setPersonalModelAuth("U2", true, "anthropic");
     await s.built.directory.replaceGroups([

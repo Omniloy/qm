@@ -241,3 +241,45 @@ test("purpose runtime cards independently set and clear overrides using the runt
     dom.window.close();
   }
 });
+test("personal AI account card edits one mode per provider and stays org-only", () => {
+  const dom = setup();
+  try {
+    const doc = dom.window.document;
+    const card = () => doc.getElementById("card-model-account-modes")!;
+    dom.window.eval(
+      "settingsUI.load(" +
+        JSON.stringify({ modelAccountModes: { anthropic: "org", openai: "personal" } }) +
+        ',"org:test","model-account-modes")',
+    );
+    assert.equal(card().classList.contains("hidden"), false);
+    assert.deepEqual(
+      [...card().querySelectorAll("legend")].map((legend) => legend.textContent),
+      ["Claude", "ChatGPT"],
+    );
+    const radio = (provider: string, value: string) =>
+      card().querySelector<HTMLInputElement>(`input[name="model-account-mode-${provider}"][value="${value}"]`)!;
+    assert.equal(radio("anthropic", "org").checked, true);
+    assert.equal(radio("openai", "personal").checked, true);
+    assert.equal((doc.querySelector('[data-save="model-account-modes"]') as HTMLButtonElement).disabled, true);
+    radio("anthropic", "personal").click();
+    assert.deepEqual(JSON.parse(String(dom.window.eval('JSON.stringify(settingsUI.collect("model-account-modes"))'))), {
+      anthropic: "personal",
+      openai: "personal",
+    });
+    assert.equal((doc.querySelector('[data-save="model-account-modes"]') as HTMLButtonElement).disabled, false);
+    dom.window.eval('settingsUI.load({},"org:test","model-account-modes")');
+    assert.deepEqual(JSON.parse(String(dom.window.eval('JSON.stringify(settingsUI.collect("model-account-modes"))'))), {
+      anthropic: "org",
+      openai: "org",
+    });
+    assert.equal(card().classList.contains("hidden"), true);
+    dom.window.eval(
+      "settingsUI.load(" +
+        JSON.stringify({ modelAccountModes: { anthropic: "org", openai: "org" } }) +
+        ',"channel:C1","model-account-modes")',
+    );
+    assert.equal(card().classList.contains("hidden"), true);
+  } finally {
+    dom.window.close();
+  }
+});

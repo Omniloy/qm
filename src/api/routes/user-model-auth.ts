@@ -1,4 +1,3 @@
-import type { ModelProvider } from "../../model/pi-models.ts";
 import { completeClaudeLogin, startClaudeLogin } from "../../model/subscription-oauth.ts";
 import { createCodexDeviceLogin } from "../../model/codex-device-login.ts";
 import { errMessage } from "../../util/errors.ts";
@@ -6,6 +5,7 @@ import { sendJson } from "../http.ts";
 import { validateProviderApiKey } from "./admin/model-providers.ts";
 import type { ApiCtx, Route } from "./route.ts";
 import { audit } from "./shared.ts";
+import { DEFAULT_MODEL_ACCOUNT_MODES, type PersonalModelProvider } from "../../resolution/config-store.ts";
 
 function caller(ctx: ApiCtx): string | null {
   return ctx.actor?.p ?? null;
@@ -15,20 +15,42 @@ function bodyObj(ctx: ApiCtx): Record<string, unknown> {
   return typeof ctx.body === "object" && ctx.body !== null ? (ctx.body as Record<string, unknown>) : {};
 }
 
-function connectProvider(raw: unknown): ModelProvider | null {
+function connectProvider(raw: unknown): PersonalModelProvider | null {
   if (raw === "anthropic" || raw === "claude") return "anthropic";
   if (raw === "openai" || raw === "chatgpt" || raw === "codex") return "openai";
   return null;
+}
+
+async function modelAccountModes(ctx: ApiCtx) {
+  return (await ctx.deps.config?.getModelAccountModesDurable()) ?? DEFAULT_MODEL_ACCOUNT_MODES;
+}
+
+async function personalConnections(ctx: ApiCtx, principal: string) {
+  const modes = await modelAccountModes(ctx);
+  const connections = (await ctx.deps.userModelCredentials?.connections(principal)) ?? [];
+  return connections.filter(
+    (c) => (c.provider === "anthropic" || c.provider === "openai") && modes[c.provider] === "personal",
+  );
+}
+
+async function refusePersonalProvider(ctx: ApiCtx, provider: PersonalModelProvider): Promise<boolean> {
+  if ((await modelAccountModes(ctx))[provider] === "personal") return false;
+  sendJson(ctx.res, 403, {
+    error: "personal_accounts_disabled",
+    message: "Your organization serves this provider through its own account.",
+  });
+  return true;
 }
 
 async function getStatus(ctx: ApiCtx): Promise<void> {
   const principal = caller(ctx);
   if (!principal) return sendJson(ctx.res, 401, { error: "unauthorized" });
   const required = (await ctx.deps.config?.getIndividualModelAuthDurable()) ?? false;
-  const connections = (await ctx.deps.userModelCredentials?.connections(principal)) ?? [];
+  const connections = await personalConnections(ctx, principal);
   const individualModelAuth = (await ctx.deps.config?.getIndividualModelAuthDurable(principal)) ?? false;
   const account = (await ctx.deps.config?.getModelAccountDurable(principal)) ?? "company";
-  return sendJson(ctx.res, 200, { individualModelAuth, required, account, connections });
+  const modes = await modelAccountModes(ctx);
+  return sendJson(ctx.res, 200, { individualModelAuth, required, account, connections, modes });
 }
 
 async function setAccount(ctx: ApiCtx): Promise<void> {
@@ -40,17 +62,15 @@ async function setAccount(ctx: ApiCtx): Promise<void> {
   if (account === "company" && (await ctx.deps.config.getIndividualModelAuthDurable())) {
     return sendJson(ctx.res, 403, { error: "Your organization requires a personal AI account." });
   }
-  if (account === "personal" && !(await ctx.deps.userModelCredentials.connections(principal)).length) {
-    return sendJson(ctx.res, 409, { error: "Connect an AI account first." });
-  }
   const provider = bodyObj(ctx).provider;
   if (provider !== undefined && provider !== "anthropic" && provider !== "openai")
     return sendJson(ctx.res, 400, { error: "bad_request" });
-  if (
-    account === "personal" &&
-    provider &&
-    !(await ctx.deps.userModelCredentials.connections(principal)).some((c) => c.provider === provider)
-  ) {
+  if (account === "personal" && provider && (await refusePersonalProvider(ctx, provider))) return;
+  const connections = await personalConnections(ctx, principal);
+  if (account === "personal" && !connections.length) {
+    return sendJson(ctx.res, 409, { error: "Connect an AI account first." });
+  }
+  if (account === "personal" && provider && !connections.some((c) => c.provider === provider)) {
     return sendJson(ctx.res, 409, { error: "Connect this AI account first." });
   }
   await ctx.deps.config.setPersonalModelAuth(principal, account === "personal", provider);
@@ -88,6 +108,7 @@ async function putApiKey(ctx: ApiCtx): Promise<void> {
   const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
   if (!provider) return sendJson(ctx.res, 400, { error: "bad_request", message: "provider must be claude or chatgpt" });
   if (!apiKey) return sendJson(ctx.res, 400, { error: "bad_request", message: "API key is required" });
+  if (await refusePersonalProvider(ctx, provider)) return;
   if (!(await validateProviderApiKey(ctx, provider, apiKey))) {
     return sendJson(ctx.res, 400, { error: "invalid_api_key", message: `${provider} rejected this API key` });
   }
@@ -108,6 +129,7 @@ const codexDeviceLogin = createCodexDeviceLogin();
 
 async function chatgptStart(ctx: ApiCtx): Promise<void> {
   if (!caller(ctx)) return sendJson(ctx.res, 401, { error: "unauthorized" });
+  if (await refusePersonalProvider(ctx, "openai")) return;
   try {
     const prompt = await codexDeviceLogin.start();
     return sendJson(ctx.res, 200, prompt);
@@ -123,6 +145,7 @@ async function chatgptPoll(ctx: ApiCtx): Promise<void> {
   const body = bodyObj(ctx);
   const deviceAuthId = typeof body.deviceAuthId === "string" ? body.deviceAuthId : "";
   if (!deviceAuthId) return sendJson(ctx.res, 400, { error: "bad_request" });
+  if (await refusePersonalProvider(ctx, "openai")) return;
   try {
     const result = await codexDeviceLogin.poll(deviceAuthId);
     if (result === "pending") return sendJson(ctx.res, 200, { status: "pending" });
@@ -141,6 +164,7 @@ async function chatgptPoll(ctx: ApiCtx): Promise<void> {
 
 async function claudeStart(ctx: ApiCtx): Promise<void> {
   if (!caller(ctx)) return sendJson(ctx.res, 401, { error: "unauthorized" });
+  if (await refusePersonalProvider(ctx, "anthropic")) return;
   return sendJson(ctx.res, 200, startClaudeLogin());
 }
 
@@ -152,6 +176,7 @@ async function claudeComplete(ctx: ApiCtx): Promise<void> {
   const code = typeof body.code === "string" ? body.code : "";
   const verifier = typeof body.verifier === "string" ? body.verifier : "";
   if (!code || !verifier) return sendJson(ctx.res, 400, { error: "bad_request" });
+  if (await refusePersonalProvider(ctx, "anthropic")) return;
   try {
     const tokens = await completeClaudeLogin(code, verifier);
     await ctx.deps.userModelCredentials.setOAuth(principal, "anthropic", tokens);

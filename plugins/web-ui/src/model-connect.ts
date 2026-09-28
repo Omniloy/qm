@@ -70,6 +70,14 @@ export interface StatusResponse {
   individualModelAuth: boolean;
   required: boolean;
   connections: { provider: "anthropic" | "openai"; kind: ConnKind }[];
+  modes?: Partial<Record<"anthropic" | "openai", "org" | "personal">>;
+}
+
+export function personalAllowed(
+  status: Pick<StatusResponse, "modes"> | null,
+  provider: "anthropic" | "openai",
+): boolean {
+  return status?.modes?.[provider] === "personal";
 }
 
 type Mode = "gate" | "manager";
@@ -91,6 +99,7 @@ interface State {
   required: boolean;
   personal: boolean;
   account: StatusResponse["account"];
+  modes: StatusResponse["modes"];
   loading: boolean;
   error: string;
   busy: boolean;
@@ -119,6 +128,7 @@ function fresh(mode: Mode): State {
     required: false,
     personal: false,
     account: "company",
+    modes: {},
     loading: true,
     error: "",
     busy: false,
@@ -159,6 +169,7 @@ function applyStatus(status: StatusResponse): void {
   s.required = status.required === true;
   s.personal = status.individualModelAuth === true;
   s.account = status.account;
+  s.modes = status.modes ?? {};
   s.connections = {};
   for (const c of status.connections ?? []) {
     s.connections[c.provider === "anthropic" ? "claude" : "chatgpt"] = c.kind;
@@ -668,7 +679,7 @@ function view(): TemplateResult {
       <p class="mc-account-hint">
         ${s.personal ? "Using a personal account. Choose a connected provider below." : "Or use your own account. Connect a provider, then choose Use account."}
       </p>
-      ${PROVIDERS.map((p) => providerRow(p))}
+      ${PROVIDERS.filter((p) => personalAllowed(s, p.apiName)).map((p) => providerRow(p))}
     </div>`;
   let title = s.mode === "gate" ? "Connect your AI account" : "AI accounts";
   if (s.intent) title = `Connect ${s.intent.name}`;

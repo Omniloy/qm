@@ -536,6 +536,7 @@ for (const personalSide of ["ambient", "mention"] as const) {
     const channel = `C-account-${personalSide}`;
     const askTs = "1600.2";
     const ambientRef = `slack:${channel}:ambient:${askTs}`;
+    await built.config.setModelAccountModes({ anthropic: "personal", openai: "personal" });
     await built.config.setPersonalModelAuth(personalSide === "ambient" ? "jordan@acme.test" : "U1", true, "openai");
     await built.sessions.getOrCreateByThread(ambientRef, "channel", `channel:${channel}`);
     const ambient = await built.app.turn(spawnedWorker(channel, askTs));

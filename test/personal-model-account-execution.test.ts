@@ -32,6 +32,7 @@ for (const provider of ["anthropic", "openai"] as const) {
     const built = buildApp(testConfig({ anthropicApiKey: "company-anthropic", openaiApiKey: "company-openai" }));
     await built.userModelCredentials.setApiKey("U1", "anthropic", "personal-anthropic");
     await built.userModelCredentials.setApiKey("U1", "openai", "personal-openai");
+    await built.config.setModelAccountModes({ anthropic: "personal", openai: "personal" });
     await built.config.setPersonalModelAuth("U1", true, provider);
     const submitted = await built.app.turn({
       surface: "slack",
@@ -61,6 +62,7 @@ test("disconnecting a queued personal account fails without invoking any main ha
   const built = buildApp(testConfig({ anthropicApiKey: "company-anthropic", openaiApiKey: "company-openai" }));
   await built.userModelCredentials.setApiKey("U1", "anthropic", "personal-anthropic");
   await built.userModelCredentials.setApiKey("U1", "openai", "personal-openai");
+  await built.config.setModelAccountModes({ anthropic: "personal", openai: "personal" });
   await built.config.setPersonalModelAuth("U1", true, "openai");
   const submitted = await built.app.turn({
     surface: "slack",
@@ -92,6 +94,7 @@ for (const account of ["personal", "openai", "anthropic"] as const) {
     built.config.setApprovedHarnesses(["pi"]);
     await built.config.flushScope("org:default-org");
     await built.userModelCredentials.setApiKey("U1", provider, `personal-${provider}`);
+    await built.config.setModelAccountModes({ anthropic: "personal", openai: "personal" });
     await built.config.setPersonalModelAuth("U1", true, account === "personal" ? undefined : account);
     const submitted = await built.app.turn({
       surface: "web",
@@ -127,11 +130,58 @@ for (const account of ["personal", "openai", "anthropic"] as const) {
   });
 }
 
+test("mixed provider modes run Claude on the personal key and ChatGPT on the org account", async () => {
+  const built = buildApp(testConfig({ anthropicApiKey: "company-anthropic", openaiApiKey: "company-openai" }));
+  built.config.setApprovedHarnesses(["pi"]);
+  await built.config.flushScope("org:default-org");
+  await built.userModelCredentials.setApiKey("U1", "anthropic", "personal-anthropic");
+  await built.userModelCredentials.setApiKey("U1", "openai", "personal-openai");
+  await built.config.setModelAccountModes({ anthropic: "personal", openai: "org" });
+  await built.config.setPersonalModelAuth("U1", true);
+  const run = async (surface: "web" | "slack", model: string) => {
+    turns.length = 0;
+    const submitted = await built.app.turn({
+      surface,
+      actor: { externalId: "U1" },
+      conversation: { kind: "dm", threadRef: `${surface === "web" ? "web:U1:" : ""}mixed-${crypto.randomUUID()}` },
+      text: "hello",
+      liveActor: true,
+      async: true,
+      model,
+      harness: "pi",
+    });
+    assert.ok(submitted.runId, JSON.stringify(submitted));
+    const finished = await built.runs.waitFor(submitted.runId!, 5_000);
+    assert.equal(finished.status, "done", JSON.stringify(finished.result));
+    assert.equal(turns.length, 1);
+    return turns[0]!;
+  };
+  built.runtime.start();
+  try {
+    const claude = await run("web", "claude-sonnet-5");
+    assert.deepEqual(claude.providerKeys, { anthropic: "personal-anthropic" });
+    assert.equal(claude.runtime?.modelId, "claude-sonnet-5");
+    const chatgpt = await run("web", "gpt-5.6-terra");
+    assert.notDeepEqual(chatgpt.providerKeys, { openai: "personal-openai" });
+    assert.ok(!JSON.stringify(chatgpt.providerKeys ?? {}).includes("personal-"));
+    assert.equal(chatgpt.runtime?.modelId, "gpt-5.6-terra");
+    const slack = await run("slack", "gpt-5.6-terra");
+    assert.deepEqual(slack.providerKeys, { anthropic: "personal-anthropic" });
+    await built.config.setModelAccountModes({ anthropic: "org", openai: "org" });
+    const company = await run("slack", "gpt-5.6-terra");
+    assert.ok(!JSON.stringify(company.providerKeys ?? {}).includes("personal-"));
+    assert.equal(await built.userModelCredentials.get("U1", "anthropic").then((c) => c?.apiKey), "personal-anthropic");
+  } finally {
+    await built.runtime.stop();
+  }
+});
+
 test("personal web selections reject wrong providers, harnesses, policy exclusions and disconnected keys", async () => {
   const built = buildApp(testConfig({ openaiApiKey: "company-openai", anthropicApiKey: "company-anthropic" }));
   built.config.setApprovedHarnesses(["pi", "claude"]);
   await built.config.flushScope("org:default-org");
   await built.userModelCredentials.setApiKey("U1", "openai", "personal-openai");
+  await built.config.setModelAccountModes({ anthropic: "personal", openai: "personal" });
   await built.config.setPersonalModelAuth("U1", true, "openai");
   const submit = (model: string, harness = "pi") =>
     built.app.turn({
@@ -164,6 +214,7 @@ test("a queued web selection cannot fall back to another personal provider after
   await built.config.flushScope("org:default-org");
   await built.userModelCredentials.setApiKey("U1", "anthropic", "personal-anthropic");
   await built.userModelCredentials.setApiKey("U1", "openai", "personal-openai");
+  await built.config.setModelAccountModes({ anthropic: "personal", openai: "personal" });
   await built.config.setPersonalModelAuth("U1", true);
   const submitted = await built.app.turn({
     surface: "web",
@@ -197,6 +248,7 @@ test("web subscription selections use the namespaced model and personal OAuth on
     accessToken: "personal-oauth",
     expiresAt: Date.now() + 3_600_000,
   });
+  await built.config.setModelAccountModes({ anthropic: "personal", openai: "personal" });
   await built.config.setPersonalModelAuth("U1", true, "openai");
   const submitted = await built.app.turn({
     surface: "web",
@@ -234,6 +286,7 @@ test("partial personal web choices queue the complete validated scoped runtime",
   await built.config.setRuntimeSelectionLatest("org:default-org", { harnessId: "pi", modelId: "gpt-5.6-sol" });
   await built.config.setRuntimeSelectionLatest("personal:U1", { harnessId: "pi", modelId: "gpt-5.6-terra" });
   await built.userModelCredentials.setApiKey("U1", "openai", "personal-openai");
+  await built.config.setModelAccountModes({ anthropic: "personal", openai: "personal" });
   await built.config.setPersonalModelAuth("U1", true, "openai");
   const submit = (choice: { harness?: string; model?: string }) =>
     built.app.turn({

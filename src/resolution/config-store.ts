@@ -61,6 +61,15 @@ export interface PersistedEgressPolicy {
   policy: EgressPolicy;
 }
 export type ModelAccount = "company" | "personal" | "anthropic" | "openai";
+export type PersonalModelProvider = "anthropic" | "openai";
+export type ModelAccountModes = Record<PersonalModelProvider, "org" | "personal">;
+export const PERSONAL_MODEL_PROVIDERS: readonly PersonalModelProvider[] = ["anthropic", "openai"];
+export const DEFAULT_MODEL_ACCOUNT_MODES: ModelAccountModes = { anthropic: "org", openai: "org" };
+
+export interface PersistedModelAccountModes {
+  scopeId: ScopeId;
+  modes: ModelAccountModes;
+}
 
 export interface PersistedModelAccount extends PersistedScopedFlag {
   provider?: "anthropic" | "openai";
@@ -250,6 +259,8 @@ export interface ScopedConfigStore {
   getIndividualModelAuthDurable(principalId?: string): Promise<boolean>;
   setPersonalModelAuth(principalId: string, on: boolean, provider?: "anthropic" | "openai"): Promise<void>;
   getModelAccountDurable(principalId: string): Promise<ModelAccount>;
+  getModelAccountModesDurable(): Promise<ModelAccountModes>;
+  setModelAccountModes(modes: ModelAccountModes): Promise<void>;
   getBaseModelOwnDurable(id: ScopeId): Promise<string | null>;
   getWebuiModels(id: ScopeId): string[] | null;
   setWebuiModels(id: ScopeId, ids: string[] | null): void;
@@ -309,6 +320,7 @@ export function createMemoryConfigStore(
     orgAmbient?: DurableMap<PersistedScopedFlag>;
     interactiveFastMode?: DurableMap<PersistedScopedFlag>;
     individualModelAuth?: DurableMap<PersistedModelAccount>;
+    modelAccountModes?: DurableMap<PersistedModelAccountModes>;
     webuiModels?: DurableMap<PersistedWebuiModels>;
     modelClassifications?: DurableMap<PersistedModelClassification>;
     peopleDirectoryUrls?: DurableMap<PersistedPeopleDirectoryUrl>;
@@ -370,6 +382,23 @@ export function createMemoryConfigStore(
   const orgAmbientStore = opts.orgAmbient ?? createMemoryMap<PersistedScopedFlag>();
   const interactiveFastModeStore = opts.interactiveFastMode ?? createMemoryMap<PersistedScopedFlag>();
   const individualModelAuthStore = opts.individualModelAuth ?? createMemoryMap<PersistedModelAccount>();
+  const modelAccountModesStore = opts.modelAccountModes ?? createMemoryMap<PersistedModelAccountModes>();
+  const modelAccountModes = async () => (await modelAccountModesStore.get(org))?.modes ?? DEFAULT_MODEL_ACCOUNT_MODES;
+  const personalModelProviders = async () => {
+    const modes = await modelAccountModes();
+    return PERSONAL_MODEL_PROVIDERS.filter((provider) => modes[provider] === "personal");
+  };
+  const modelAccountOf = async (principalId: string): Promise<ModelAccount> => {
+    const [row, orgRow, allowed] = await Promise.all([
+      individualModelAuthStore.get(scopeId("personal", principalId)),
+      individualModelAuthStore.get(org),
+      personalModelProviders(),
+    ]);
+    const chosen: ModelAccount | undefined = row?.on ? (row.provider ?? "personal") : undefined;
+    const account = chosen ?? (orgRow?.on ? "personal" : "company");
+    if (account === "company" || !allowed.length) return "company";
+    return account === "personal" || allowed.includes(account) ? account : "company";
+  };
   const webuiModelStore = opts.webuiModels ?? createMemoryMap<PersistedWebuiModels>();
   const modelClassificationStore = opts.modelClassifications ?? createMemoryMap<PersistedModelClassification>();
   const peopleDirectoryUrlStore = opts.peopleDirectoryUrls ?? createMemoryMap<PersistedPeopleDirectoryUrl>();
@@ -1013,15 +1042,16 @@ export function createMemoryConfigStore(
       );
     },
     async getIndividualModelAuthDurable(principalId) {
-      if ((await individualModelAuthStore.get(org))?.on) return true;
-      return principalId
-        ? ((await individualModelAuthStore.get(scopeId("personal", principalId)))?.on ?? false)
-        : false;
+      if (principalId) return (await modelAccountOf(principalId)) !== "company";
+      return !!(await individualModelAuthStore.get(org))?.on && (await personalModelProviders()).length > 0;
     },
-    async getModelAccountDurable(principalId) {
-      const row = await individualModelAuthStore.get(scopeId("personal", principalId));
-      if (row?.on) return row.provider ?? "personal";
-      return (await individualModelAuthStore.get(org))?.on ? "personal" : "company";
+    getModelAccountDurable: modelAccountOf,
+    getModelAccountModesDurable: modelAccountModes,
+    async setModelAccountModes(modes) {
+      await modelAccountModesStore.put(org, {
+        scopeId: org,
+        modes: { anthropic: modes.anthropic, openai: modes.openai },
+      });
     },
     async setPersonalModelAuth(principalId, on, provider) {
       const id = scopeId("personal", principalId);

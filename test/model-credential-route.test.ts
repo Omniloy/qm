@@ -677,6 +677,7 @@ test("company runtime reads exclude personal-only models without changing the re
     srv.built.config.setApprovedHarnesses(["pi"]);
     await srv.built.config.flushScope("org:default-org");
     await srv.built.userModelCredentials.setApiKey("alice", "openai", "synthetic-openai");
+    await srv.built.config.setModelAccountModes({ anthropic: "personal", openai: "personal" });
     await srv.built.config.setPersonalModelAuth("alice", true, "openai");
     const url = `${srv.base}/v1/runtime-config?principalId=alice&scopeId=personal%3Aalice`;
     const personal = (await (await fetch(url)).json()) as { modelsByHarness: Record<string, string[]> };

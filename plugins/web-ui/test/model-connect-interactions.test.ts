@@ -54,11 +54,16 @@ test("AI account modal interactions", async (t) => {
   const { appState } = await vite.ssrLoadModule("/src/shell-state.ts");
   appState.me = { user: "alice", org: "acme" };
   const doc = dom.window.document;
-  const status = (account = "company", connections: { provider: string; kind: string }[] = []) => ({
+  const status = (
+    account = "company",
+    connections: { provider: string; kind: string }[] = [],
+    modes: Record<string, string> = { anthropic: "personal", openai: "personal" },
+  ) => ({
     account,
     individualModelAuth: account !== "company",
     required: false,
     connections,
+    modes,
   });
   const pendingDevice = {
     deviceAuthId: "test-login",
@@ -508,6 +513,34 @@ test("AI account modal interactions", async (t) => {
     assert.equal(choice("Company").disabled, false);
     assert.equal(choice("ChatGPT / Codex").getAttribute("aria-pressed"), "true");
     assert.equal(manage().disabled, false);
+    appState.currentView = "chats";
+    appState.mainEl = null;
+  });
+
+  await t.test("only providers the org opens to personal accounts are offered", async () => {
+    const { renderSettings } = await vite.ssrLoadModule("/src/settings.ts");
+    let modes: Record<string, string> = { anthropic: "personal", openai: "org" };
+    fetcher = async (path) => (path.endsWith("/status") ? Response.json(status("company", [], modes)) : base(path));
+    await open();
+    assert.deepEqual(
+      [...doc.querySelectorAll(".mc-provider strong")].map((el) => el.textContent),
+      ["Claude"],
+    );
+    close();
+    appState.currentView = "settings";
+    appState.mainEl = doc.querySelector("#app");
+    renderSettings();
+    await tick();
+    const labels = () =>
+      [...doc.querySelectorAll<HTMLButtonElement>('[aria-label="AI access"] button')].map((el) =>
+        el.textContent?.trim(),
+      );
+    assert.deepEqual(labels(), ["Company", "Claude"]);
+    modes = { anthropic: "org", openai: "org" };
+    renderSettings();
+    await tick();
+    assert.deepEqual(labels(), []);
+    assert.ok(![...doc.querySelectorAll(".settings-row-title")].some((el) => el.textContent === "AI access"));
     appState.currentView = "chats";
     appState.mainEl = null;
   });
