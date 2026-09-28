@@ -36,8 +36,6 @@ test("a skill you own offers sharing and its undo, promotion, moving and archivi
 
 test("an org-wide skill offers only taking it back, and only to an admin", () => {
   const org = skill({ scope: "org", scopeId: "org:omniloy", editable: false });
-  // Core reports an org skill as nobody's to edit, including the promoter's, so
-  // this is the one action a row offers without being editable.
   assert.deepEqual(
     skillShareActions(org, { isAdmin: true, archived: false }).map((a) => a.id),
     ["demote"],
@@ -64,7 +62,6 @@ test("only an admin can promote org-wide, and a non-admin is told why", () => {
   const promote = skillShareActions(skill(), { isAdmin: false, archived: false }).find((a) => a.id === "promote");
   assert.equal(promote?.disabled, true);
   assert.equal(promote?.reason, NOT_ADMIN_REASON);
-  // Core refuses this too — the menu only avoids offering a certain failure.
   const asAdmin = skillShareActions(skill(), { isAdmin: true, archived: false }).find((a) => a.id === "promote");
   assert.equal(asAdmin?.disabled, false);
   assert.equal(asAdmin?.reason, undefined);
@@ -91,9 +88,7 @@ test("a skill's own home is never offered as a destination", () => {
 test("personal is a move destination but not a share one", () => {
   const forShare = shareTargets(CONTEXTS, skill({ scopeId: "group:P1" }), "share").map((t) => t.scopeId);
   const forMove = shareTargets(CONTEXTS, skill({ scopeId: "group:P1" }), "move").map((t) => t.scopeId);
-  // Sharing a skill back to yourself grants you what you already have.
   assert.deepEqual(forShare, ["channel:C1"]);
-  // Moving it there is how you take one back out of a project.
   assert.deepEqual(forMove, ["personal:u1", "channel:C1"]);
 });
 
@@ -104,8 +99,6 @@ test("promotion has a fixed destination, so it offers no picker", () => {
 test("the request body maps each mode onto what /v1/share dispatches on", () => {
   assert.deepEqual(shareRequest("share", "channel:C1", "write"), { toScope: "channel:C1", permission: "write" });
   assert.deepEqual(shareRequest("move", "channel:C1", "write"), { toScope: "channel:C1", move: true });
-  // Core turns "org" into the org scope itself, and promotion carries no
-  // permission — the whole org gets it on core's terms, not the sharer's.
   assert.deepEqual(shareRequest("promote", "channel:C1", "write"), { toScope: "org" });
 });
 
@@ -124,7 +117,6 @@ test("every mode names the skill in its heading and its confirmation", () => {
 
 test("the undo copy says what is kept, so it is not mistaken for deletion", () => {
   assert.match(unshareImpact("jira-triage", "#ops"), /You keep the skill/);
-  // Demoting archives the org copy; anyone who took their own keeps it.
   assert.match(demoteImpact("jira-triage"), /Anyone who kept their own copy still has it/);
 });
 
@@ -144,7 +136,6 @@ test("org detection reads either the scope word or the scope id", () => {
   assert.equal(isOrgScoped(skill({ scope: "org", scopeId: undefined })), true);
   assert.equal(isOrgScoped(skill({ scope: "personal", scopeId: "org:omniloy" })), true);
   assert.equal(isOrgScoped(skill()), false);
-  // "organisation" as a channel name must not read as the org scope.
   assert.equal(isOrgScoped(skill({ scope: "channel", scopeId: "channel:organisation" })), false);
 });
 

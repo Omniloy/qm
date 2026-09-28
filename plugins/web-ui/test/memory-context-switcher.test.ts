@@ -116,8 +116,8 @@ function switchTo(value: string): void {
 function draftTextarea(): HTMLTextAreaElement {
   const existing = document.querySelector<HTMLTextAreaElement>(".memory-text");
   if (existing) return existing;
-  [...document.querySelectorAll<HTMLButtonElement>('.memory-toolbar [role="tab"]')]
-    .find((b) => (b.textContent ?? "").includes("Notebook"))!
+  [...document.querySelectorAll<HTMLButtonElement>(".list-page-actions .btn")]
+    .find((b) => (b.textContent ?? "").includes("Edit notebook"))!
     .click();
   return document.querySelector<HTMLTextAreaElement>(".memory-text")!;
 }
@@ -168,7 +168,7 @@ test("switching notebooks scopes every call and names the project", async () => 
   });
 
   requests = [];
-  [...document.querySelectorAll<HTMLButtonElement>(".pane-head-actions .btn")]
+  [...document.querySelectorAll<HTMLButtonElement>(".list-page-actions .btn")]
     .find((b) => (b.textContent ?? "").includes("History"))!
     .click();
   await settle();
@@ -316,19 +316,14 @@ test("a save that answers after switching notebooks stays out of the new noteboo
   globalThis.fetch = async (input, init) => respond(input, init);
 });
 
-test("facts are the default view, with the notebook one tab away", async () => {
+test("facts are the default view, with the notebook one click away", async () => {
   resetMemoryState();
   requests = [];
   await renderMemory();
   await settle();
-  assert.equal(document.querySelector(".memory-text"), null, "the raw editor stays behind the Notebook tab");
+  assert.equal(document.querySelector(".memory-text"), null, "the raw editor stays behind Edit notebook");
   const factRows = [...document.querySelectorAll(".memory-fact")].map((f) => (f.textContent ?? "").trim());
   assert.ok(factRows.some((f) => f.includes("personal fact")));
-  const factsTab = [...document.querySelectorAll<HTMLButtonElement>('.memory-toolbar [role="tab"]')].find((b) =>
-    (b.textContent ?? "").includes("Facts"),
-  )!;
-  assert.ok(factsTab.classList.contains("active"));
-  assert.equal(factsTab.querySelector("span")?.textContent, "1", "the tab counts the facts");
   assert.equal(draftTextarea().value, "- personal fact");
 });
 
@@ -345,6 +340,7 @@ test("compacting stages the ask in a conversation in the notebook's context", as
     const u = new URL(String(input), "http://localhost");
     if (u.pathname.endsWith("/api/runtime-config")) {
       return Response.json({
+        scopeId: u.searchParams.get("scopeId"),
         approvedHarnesses: [],
         modelsByHarness: {},
         effective: { harnessId: "pi", modelId: "claude-opus-5" },
@@ -386,6 +382,7 @@ test("compacting a channel notebook carries the raw channel name, not the # titl
     const u = new URL(String(input), "http://localhost");
     if (u.pathname.endsWith("/api/runtime-config")) {
       return Response.json({
+        scopeId: u.searchParams.get("scopeId"),
         approvedHarnesses: [],
         modelsByHarness: {},
         effective: { harnessId: "pi", modelId: "claude-opus-5" },
@@ -432,7 +429,7 @@ test("a notebook holding non-fact text does not claim to be empty", async () => 
   await settle();
   assert.match(
     document.querySelector(".empty-state")?.textContent ?? "",
-    /Notebook tab shows the full text/u,
+    /Edit notebook shows the full text/u,
     "the facts view points at the notebook instead of calling the memory empty",
   );
   notebooks[""] = { content: "- personal fact", revision: "pr1" };
@@ -441,7 +438,12 @@ test("a notebook holding non-fact text does not claim to be empty", async () => 
 test("without shared contexts the pane keeps today's plain header", async () => {
   resetMemoryState();
   const all = contextsState.list;
-  contextsState.list = contexts.filter((c) => c.kind === "personal");
+  const personalOnly = contexts.filter((c) => c.kind === "personal");
+  contextsState.list = personalOnly;
+  globalThis.fetch = async (input, init) =>
+    new URL(String(input), "http://localhost").pathname.endsWith("/api/contexts")
+      ? Response.json({ contexts: personalOnly })
+      : respond(input, init);
   requests = [];
   await renderMemory();
   await settle();
@@ -449,4 +451,5 @@ test("without shared contexts the pane keeps today's plain header", async () => 
   assert.equal(subtitle(), "Facts the agent carries into your conversations.");
   assert.equal(draftTextarea().value, "- personal fact");
   contextsState.list = all;
+  globalThis.fetch = async (input, init) => respond(input, init);
 });

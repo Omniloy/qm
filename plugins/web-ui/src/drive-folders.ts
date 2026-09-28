@@ -2,7 +2,7 @@ import { html, nothing, type TemplateResult } from "lit";
 import { FolderOpen, Link, TriangleAlert } from "lucide";
 import { api } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
-import { icon, productName } from "./ui";
+import { brandName, icon } from "./ui";
 import { resetRowMenus, rowMenuTpl } from "./row-actions";
 import { openContextPicker, resetContextPicker } from "./context-picker";
 import {
@@ -22,14 +22,6 @@ import {
   type MountRow,
 } from "./drive-mount";
 
-/**
- * The Drive folders band on the Files page.
- *
- * Renders no host of its own — files.ts owns the host and lit patches this in.
- * Every decision about *what* to say lives in drive-mount.ts; this file is the
- * markup and the fetches.
- */
-
 let mounts: MountRow[] = [];
 let connector: ConnectorState = { configured: false, connected: false, needsReconnect: false };
 let notice = "";
@@ -41,7 +33,6 @@ interface PickerFolder {
   name: string;
 }
 
-/** Breadcrumb trail into Drive, so "back" is possible without re-opening. */
 let picker: {
   trail: PickerFolder[];
   folders: PickerFolder[];
@@ -74,19 +65,10 @@ interface ConnectorsResponse {
   providers?: Record<string, { connected?: boolean; needsReconnect?: boolean }>;
 }
 
-/**
- * `scopeId` is nullable because callers reach here before contexts have
- * loaded, when there is no personal scope to name yet. Loading nothing is the
- * right answer then — the band renders its own empty state and a later draw
- * picks it up.
- */
 export async function loadDriveMounts(scopeId: string | null, rerender: () => void): Promise<void> {
   if (!scopeId) return;
   loadedScope = scopeId;
   try {
-    // The connector shape tells us which of the unusable states applies:
-    // absent provider means the org never configured Google, present but
-    // unconnected means this person has not signed in.
     const [conn, list] = await Promise.all([
       api<ConnectorsResponse>("/api/connectors").catch(() => ({}) as ConnectorsResponse),
       api<MountsResponse>(`/api/mounts?scope=${encodeURIComponent(scopeId)}`).catch(() => ({}) as MountsResponse),
@@ -109,8 +91,6 @@ async function refreshOne(id: string, rerender: () => void): Promise<void> {
   busy = true;
   rerender();
   try {
-    // Only this person's view — the server invalidates the caller's cache
-    // entry alone, so a teammate's listing is untouched.
     await api(`/api/mounts/${encodeURIComponent(id)}/refresh`, { method: "POST" });
     await loadDriveMounts(loadedScope, rerender);
   } catch (e) {
@@ -125,8 +105,6 @@ async function refreshAll(rerender: () => void): Promise<void> {
   busy = true;
   rerender();
   try {
-    // Folders that are off are not listed for anyone, so re-listing them
-    // would spend Drive calls producing nothing.
     const live = mounts.filter((m) => m.enabled !== false);
     await Promise.all(live.map((m) => api(`/api/mounts/${encodeURIComponent(m.id)}/refresh`, { method: "POST" })));
     await loadDriveMounts(loadedScope, rerender);
@@ -148,7 +126,6 @@ function emptyCard(title: string, body: string, action?: TemplateResult): Templa
   </div>`;
 }
 
-/** Route an overflow-menu selection to the thing it does. */
 function onFolderAction(id: string, m: MountRow, rerender: () => void): void {
   switch (id) {
     case "open": {
@@ -170,7 +147,6 @@ function onFolderAction(id: string, m: MountRow, rerender: () => void): void {
               method: "POST",
               body: JSON.stringify({ scopeId }),
             });
-            // The folder now lives elsewhere, so it leaves this list entirely.
             await loadDriveMounts(loadedScope, rerender);
           },
         },
@@ -258,10 +234,9 @@ export function driveBandTpl(now: number, rerender: () => void, onAttach: () => 
   let body: TemplateResult;
   switch (state) {
     case "not-configured":
-      // No action offered: nothing this person can do resolves it.
       body = emptyCard(
         "Google Workspace is not set up here",
-        `An admin has to configure the Google connector before folders can be attached. Ask whoever runs your ${productName()} workspace.`,
+        `An admin has to configure the Google connector before folders can be attached. Ask whoever runs your ${brandName()} workspace.`,
       );
       break;
     case "not-connected":
@@ -294,8 +269,6 @@ export function driveBandTpl(now: number, rerender: () => void, onAttach: () => 
   </section>`;
 }
 
-/* ---------------------------------------------------------------- picker */
-
 interface BrowseResponse {
   folders?: PickerFolder[];
 }
@@ -308,7 +281,6 @@ function browseQuery(mode: { id?: string; q?: string; parent?: string }): string
   return `parent=${encodeURIComponent(mode.parent ?? "root")}`;
 }
 
-/** Fetch whichever view the picker is in: a pasted id, a search, or a folder's children. */
 async function fetchFolders(mode: { id?: string; q?: string; parent?: string }): Promise<PickerFolder[]> {
   const qs = browseQuery(mode);
   const r = await api<BrowseResponse>(`/api/mounts/browse?${qs}`);
@@ -334,7 +306,6 @@ async function browseInto(folder: PickerFolder, rerender: () => void, descend: b
   }
 }
 
-/** One box handles both pasting a link and searching by name. */
 async function runQuery(rerender: () => void): Promise<void> {
   if (!picker) return;
   const raw = picker.query.trim();
@@ -370,7 +341,6 @@ function closeAll(rerender: () => void): void {
   rerender();
 }
 
-/** Every dialog shares one scrim so it lands centred instead of mid-page. */
 function scrim(rerender: () => void, inner: TemplateResult): TemplateResult {
   return html`<div
     class="kc-dialog-scrim"
@@ -489,7 +459,7 @@ function attachConfirmTpl(scopeId: string, rerender: () => void): TemplateResult
     <header class="drive-picker-head"><h2>Attach “${p.folder.name}”</h2></header>
 
     <label class="drive-field">
-      <span>Name in ${productName()}</span>
+      <span>Name in ${brandName()}</span>
       <input
         type="text"
         .value=${p.name}
@@ -527,7 +497,7 @@ function attachConfirmTpl(scopeId: string, rerender: () => void): TemplateResult
     </div>
 
     <p class="drive-note">
-      ${productName()} may use your Google account to read${p.mode === "rw" ? ", create and edit" : ""} files in
+      ${brandName()} may use your Google account to read${p.mode === "rw" ? ", create and edit" : ""} files in
       <strong>${p.folder.name}</strong> on your behalf. Teammates use their own Google accounts, not yours.
     </p>
     ${p.error ? html`<p class="drive-note warning">${p.error}</p>` : ""}
@@ -544,7 +514,6 @@ function attachConfirmTpl(scopeId: string, rerender: () => void): TemplateResult
 async function doAttach(scopeId: string, rerender: () => void): Promise<void> {
   const p = pending;
   if (!p) return;
-  // Validate here as well as in core: a bad name should not cost a round trip.
   const nameError = mountNameError(p.name);
   if (nameError) {
     p.error = nameError;

@@ -1,11 +1,30 @@
 import { html, nothing, render } from "lit";
-import { ChevronRight, File, Folder, Image, Upload } from "lucide";
-import { api, reportSigninRequired, type SigninRequired, withBase } from "./core-bridge";
+import {
+  ChevronRight,
+  File,
+  FileArchive,
+  FileAudio,
+  FileCode,
+  FileImage,
+  FileJson,
+  FileSpreadsheet,
+  FileText,
+  FileVideo,
+  Folder,
+  Presentation,
+  Search,
+  Upload,
+  type IconNode,
+} from "lucide";
+import { api, fileContentUrl, webFetch, withBase } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
 import { browserRenderableImage, fieldSelect, formatBytes, icon, relTime } from "./ui";
-import { contextsState, ensureContexts, personalScopeId, scopeChip, scopeFilterControl } from "./contexts";
+import { contextsState, ensureContexts, personalScopeId, scopeTitle } from "./contexts";
 import { appState } from "./shell";
 import { fileListNeedsAllPages } from "./file-list";
+import { scopedSession, scopedViewTopbar } from "./session-scope";
+import { listRowsTpl } from "./list-page";
+import { isTouch } from "./viewport";
 import {
   driveBandTpl,
   drivePickerTpl,
@@ -41,7 +60,6 @@ let filesScope: string | null = null;
 let filesQuery = "";
 let filesType: "all" | "image" | "document" | "other" = "all";
 let filesOwnership: "all" | "owned" | "shared" = "all";
-let filesSort: "newest" | "oldest" | "name" = "newest";
 let filesDragActive = false;
 let filesUploading = false;
 let filesLoadingMore = false;
@@ -122,6 +140,44 @@ function typeOf(f: FileItem): "image" | "document" | "other" {
   return "other";
 }
 
+type FileVisualKind =
+  "image" | "pdf" | "spreadsheet" | "presentation" | "code" | "archive" | "audio" | "video" | "document" | "generic";
+
+function fileVisual(f: FileItem): { glyph: IconNode; kind: FileVisualKind } {
+  const name = f.name.toLowerCase();
+  const mime = f.mimetype.toLowerCase();
+  if (browserRenderableImage(mime)) return { glyph: FileImage, kind: "image" };
+  if (mime.includes("pdf") || name.endsWith(".pdf")) return { glyph: FileText, kind: "pdf" };
+  if (/(?:spreadsheet|excel|csv|tab-separated)/.test(mime) || /\.(?:csv|tsv|xls|xlsx|ods)$/.test(name))
+    return { glyph: FileSpreadsheet, kind: "spreadsheet" };
+  if (/(?:presentation|powerpoint)/.test(mime) || /\.(?:ppt|pptx|key|odp)$/.test(name))
+    return { glyph: Presentation, kind: "presentation" };
+  if (mime.includes("json") || name.endsWith(".json")) return { glyph: FileJson, kind: "code" };
+  if (/(?:zip|archive|compressed|tar|gzip)/.test(mime) || /\.(?:zip|tar|gz|tgz|rar|7z)$/.test(name))
+    return { glyph: FileArchive, kind: "archive" };
+  if (mime.startsWith("audio/")) return { glyph: FileAudio, kind: "audio" };
+  if (mime.startsWith("video/")) return { glyph: FileVideo, kind: "video" };
+  if (
+    /(?:javascript|typescript|xml|html|css|shell|python)/.test(mime) ||
+    /\.(?:js|ts|tsx|jsx|html|css|py|sh|sql|xml|yaml|yml)$/.test(name)
+  )
+    return { glyph: FileCode, kind: "code" };
+  if (mime.startsWith("text/") || typeOf(f) === "document") return { glyph: FileText, kind: "document" };
+  return { glyph: File, kind: "generic" };
+}
+
+function groupFilesByScope(files: FileRow[]): Array<{ scope: string | null; files: FileRow[] }> {
+  const groups = new Map<string, { scope: string | null; files: FileRow[] }>();
+  for (const file of files) {
+    const scope = fileScope(file);
+    const key = scope ?? "";
+    const group = groups.get(key) ?? { scope, files: [] };
+    group.files.push(file);
+    groups.set(key, group);
+  }
+  return [...groups.values()];
+}
+
 function selectControl(
   label: string,
   value: string,
@@ -145,21 +201,7 @@ function visibleFiles(): FileRow[] {
     .filter((f) => filesOwnership === "all" || (filesOwnership === "shared") === (f.kind === "Shared"))
     .filter((f) => filesType === "all" || typeOf(f) === filesType)
     .filter((f) => !q || `${f.name} ${f.mimetype}`.toLowerCase().includes(q))
-    .sort((a, b) => {
-      if (filesSort === "name") return a.name.localeCompare(b.name);
-      if (filesSort === "oldest") return a.createdAt - b.createdAt;
-      return b.createdAt - a.createdAt;
-    });
-}
-
-/**
- * Redraw the Files page from outside it — the document-level menu dismissal in
- * main.ts needs a way to reflect a closed row menu. A no-op when the page is
- * not mounted, so the global handler never has to know which view is showing.
- */
-export function redrawFilesPage(): void {
-  if (appState.currentView !== "files" || !filesHost) return;
-  drawFiles();
+    .sort((a, b) => b.createdAt - a.createdAt);
 }
 
 function drawFiles(loading = false): void {
@@ -170,29 +212,37 @@ function drawFiles(loading = false): void {
     appState.mainEl.replaceChildren(filesHost);
   }
   const visible = visibleFiles();
+  const groups = groupFilesByScope(visible);
   const filtered = Boolean(filesScope || filesQuery.trim() || filesType !== "all" || filesOwnership !== "all");
-  let dropLabel = "Drop files here or choose files";
+  let dropLabel = isTouch() ? "Choose files to upload" : "Drop files here or choose files";
   if (filesDragActive) dropLabel = "Drop files";
   else if (filesUploading) dropLabel = "Uploading…";
   const status = filesNotice || (loading && !fileRows.length ? "Loading files…" : "");
   const uploadTarget = filesScope ?? personalScopeId();
+  const scoped = Boolean(scopedSession.active);
+  filesHost.classList.toggle("scoped-view", scoped);
   render(
     html`
+      ${scopedViewTopbar("files", drawFiles)}
       <div class="list-page-head">
-        <div>
-          <h1 class="pane-title">Files</h1>
-          <div class="pane-subtitle">Files created, uploaded, or shared with you</div>
-        </div>
-        <div class="list-page-actions">
-          ${scopeFilterControl(filesScope, (s) => {
-            filesScope = s;
-            fileRows = [];
-            filesNextCursor = null;
-            void loadFiles(appState.viewRenderSeq);
-          })}<button class="btn primary" type="button" ?disabled=${filesUploading} @click=${pickFiles}>
-            ${icon(Upload, 15)}<span>Upload</span>
-          </button>
-        </div>
+        <h1 class="pane-title">Files</h1>
+        ${
+          filesTab === "delivered"
+            ? html`<label class="list-search"
+                >${icon(Search, 16)}<span class="sr-only">Search files</span
+                ><input
+                  type="search"
+                  aria-label="Search files"
+                  placeholder="Search file names and types…"
+                  .value=${filesQuery}
+                  @input=${(e: Event) => {
+                    filesQuery = (e.currentTarget as HTMLInputElement).value;
+                    drawFiles();
+                    void loadAllFiles();
+                  }}
+              /></label>`
+            : nothing
+        }
       </div>
       <div class="list-tabs" role="tablist">
         <button
@@ -221,49 +271,21 @@ function drawFiles(loading = false): void {
         </button>
       </div>
       ${status ? html`<div class="status" aria-live="polite">${status}</div>` : nothing}
-      ${filesTab === "workspace" ? workspaceTpl() : deliveredTpl(visible, filtered, dropLabel, uploadTarget)}
+      ${filesTab === "workspace" ? workspaceTpl() : deliveredTpl(visible, groups, filtered, dropLabel, uploadTarget)}
     `,
     filesHost,
   );
 }
 
-function deliveredTpl(visible: FileRow[], filtered: boolean, dropLabel: string, uploadTarget: string | null) {
+function deliveredTpl(
+  visible: FileRow[],
+  groups: Array<{ scope: string | null; files: FileRow[] }>,
+  filtered: boolean,
+  dropLabel: string,
+  uploadTarget: string | null,
+) {
   return html`
-    <button
-      class="file-drop ${filesDragActive ? "dragging" : ""}"
-      type="button"
-      ?disabled=${filesUploading}
-      @click=${pickFiles}
-      @dragenter=${onFileDrag}
-      @dragover=${onFileDrag}
-      @dragleave=${onFileDragLeave}
-      @drop=${onFileDrop}
-    >
-      ${icon(Upload, 18)}<span>${dropLabel}</span>${uploadTarget ? scopeChip(uploadTarget) : nothing}
-    </button>
-    ${
-      uploadTarget
-        ? driveBandTpl(
-            Date.now(),
-            () => drawFiles(),
-            () => openDrivePicker(() => drawFiles()),
-          )
-        : nothing
-    }
     <div class="list-toolbar">
-      <label class="list-search"
-        ><span class="sr-only">Search files</span
-        ><input
-          type="search"
-          aria-label="Search files"
-          placeholder="Search file names and types…"
-          .value=${filesQuery}
-          @input=${(e: Event) => {
-            filesQuery = (e.currentTarget as HTMLInputElement).value;
-            drawFiles();
-            void loadAllFiles();
-          }}
-      /></label>
       ${selectControl(
         "Ownership",
         filesOwnership,
@@ -293,22 +315,41 @@ function deliveredTpl(visible: FileRow[], filtered: boolean, dropLabel: string, 
           void loadAllFiles();
         },
       )}
-      ${selectControl(
-        "Sort",
-        filesSort,
-        [
-          ["newest", "Newest"],
-          ["oldest", "Oldest"],
-          ["name", "Name"],
-        ],
-        (v) => {
-          filesSort = v as typeof filesSort;
-          drawFiles();
-          void loadAllFiles();
-        },
-      )}
     </div>
-    ${visible.length ? html`<div class="list-rows file-list">${visible.map(fileRow)}</div>` : html`<div class="empty compact">${filtered ? "No files match these filters." : "No files yet. Upload one here or ask the agent to create one."}</div>`}
+    <button
+      class="file-drop ${filesDragActive ? "dragging" : ""}"
+      type="button"
+      ?disabled=${filesUploading}
+      @click=${pickFiles}
+      @dragenter=${onFileDrag}
+      @dragover=${onFileDrag}
+      @dragleave=${onFileDragLeave}
+      @drop=${onFileDrop}
+    >
+      ${icon(Upload, 16)}<span>${dropLabel}</span>
+    </button>
+    ${
+      uploadTarget
+        ? driveBandTpl(
+            Date.now(),
+            () => drawFiles(),
+            () => openDrivePicker(() => drawFiles()),
+          )
+        : nothing
+    }
+    ${
+      visible.length
+        ? html`<div class="file-groups">
+            ${groups.map(
+              (group) =>
+                html`<section class="file-scope-group">
+                  <h2>${scopeTitle(group.scope)}</h2>
+                  ${listRowsTpl(group.files.map(fileRow), "file-list")}
+                </section>`,
+            )}
+          </div>`
+        : html`<div class="empty compact">${filtered ? "No files match these filters." : "No files yet."}</div>`
+    }
     ${filesNextCursor ? html`<div class="list-footer"><button class="btn" type="button" ?disabled=${filesLoadingMore} @click=${() => void loadMoreFiles()}>${filesLoadingMore ? "Loading…" : "Load more"}</button></div>` : nothing}
     ${drivePickerTpl(uploadTarget ?? "", () => drawFiles())} ${contextPickerTpl(() => drawFiles())}
     ${deleteFileConfirmTpl()}
@@ -339,7 +380,6 @@ function onFileAction(id: string, f: FileRow): void {
       );
       return;
     case "unshare": {
-      // The same move, with the destination fixed to the person's own space.
       const personal = personalScopeId();
       if (personal)
         void moveFile(f, personal).catch((e: unknown) => {
@@ -357,6 +397,7 @@ function onFileAction(id: string, f: FileRow): void {
     }
     case "delete":
       deletingFile = f;
+      deleteError = "";
       drawFiles();
       return;
   }
@@ -445,23 +486,30 @@ function workspaceTpl(): ReturnType<typeof html> {
 }
 
 function fileRow(f: FileRow) {
-  const contentUrl = withBase(`/api/files/${encodeURIComponent(f.id)}/content`);
-  const isImage = f.openable && browserRenderableImage(f.mimetype);
-  const me = appState.me?.user ?? "";
-  return html`<article class="list-row file-row">
-    <span class="file-row-icon">${icon(isImage ? Image : File, 17)}</span>
-    <span class="list-row-title"><span>${f.name}</span><span class="file-row-type">${f.mimetype}</span></span>
+  const contentUrl = fileContentUrl(f.id, f.name);
+  const visual = fileVisual(f);
+  const content = html`
+    <span class="file-row-icon ${visual.kind}">${icon(visual.glyph, 18)}</span>
+    <span class="list-row-title" dir="auto">${f.name}</span>
     <span class="list-row-meta"
-      >${scopeChip(fileScope(f))}<span class="badge">${f.kind}</span><span>${formatBytes(f.sizeBytes)}</span
-      ><span>${relTime(f.createdAt)}</span
-      >${f.openable ? html`<a class="btn compact" href=${contentUrl} target="_blank" rel="noreferrer">Open</a>` : html`<span>Unavailable</span>`}${rowMenuTpl(
-        `file:${f.id}`,
-        f.name,
-        fileActions(f, me, personalScopeId()),
-        (id) => onFileAction(id, f),
-        () => drawFiles(),
-      )}</span
+      ><span>${formatBytes(f.sizeBytes)}</span><span>${relTime(f.createdAt)}</span>${
+        f.openable ? nothing : html`<span>Unavailable</span>`
+      }</span
     >
+  `;
+  return html`<article class="list-row file-row">
+    ${
+      f.openable
+        ? html`<a class="file-row-link" href=${contentUrl} target="_blank" rel="noreferrer">${content}</a>`
+        : html`<span class="file-row-link">${content}</span>`
+    }
+    ${rowMenuTpl(
+      `file:${f.id}`,
+      f.name,
+      fileActions(f, appState.me?.user ?? "", personalScopeId()),
+      (id) => onFileAction(id, f),
+      () => drawFiles(),
+    )}
   </article>`;
 }
 
@@ -470,6 +518,7 @@ function deleteFileConfirmTpl(): typeof nothing | ReturnType<typeof html> {
   if (!f) return nothing;
   const close = () => {
     deletingFile = null;
+    deleteError = "";
     drawFiles();
   };
   return html`<div
@@ -522,7 +571,7 @@ async function uploadOne(file: globalThis.File): Promise<void> {
   if (scope) q.set("scope", scope);
   q.set("sha", await fileSha256(file));
   q.set("name", file.name || "file");
-  const r = await fetch(withBase(`/api/files/upload?${q.toString()}`), {
+  const r = await webFetch(withBase(`/api/files/upload?${q.toString()}`), {
     method: "POST",
     headers: { "content-type": file.type || "application/octet-stream" },
     body: file,
@@ -531,8 +580,7 @@ async function uploadOne(file: globalThis.File): Promise<void> {
     const text = await r.text();
     let message = `Upload failed (${r.status})`;
     try {
-      const parsed = JSON.parse(text) as { message?: string; error?: string } & SigninRequired;
-      if (r.status === 401) reportSigninRequired(parsed);
+      const parsed = JSON.parse(text) as { message?: string; error?: string };
       message = parsed.message ?? parsed.error ?? message;
     } catch {
       if (text.trim()) message = text.trim();
@@ -573,9 +621,11 @@ function pickFiles(): void {
   input.onchange = () => void uploadFiles(Array.from(input.files ?? []));
   input.click();
 }
+
 function hasFiles(e: DragEvent): boolean {
   return Array.from(e.dataTransfer?.types ?? []).includes("Files");
 }
+
 function onFileDrag(e: DragEvent): void {
   if (!hasFiles(e)) return;
   e.preventDefault();
@@ -584,6 +634,7 @@ function onFileDrag(e: DragEvent): void {
     drawFiles();
   }
 }
+
 function onFileDragLeave(e: DragEvent): void {
   if (!hasFiles(e)) return;
   const current = e.currentTarget as HTMLElement;
@@ -591,6 +642,7 @@ function onFileDragLeave(e: DragEvent): void {
   filesDragActive = false;
   drawFiles();
 }
+
 function onFileDrop(e: DragEvent): void {
   if (!hasFiles(e)) return;
   e.preventDefault();
@@ -644,8 +696,7 @@ async function loadMoreFiles(): Promise<void> {
 }
 
 async function loadAllFiles(): Promise<void> {
-  if (!fileListNeedsAllPages({ query: filesQuery, type: filesType, ownership: filesOwnership, sort: filesSort }))
-    return;
+  if (!fileListNeedsAllPages({ query: filesQuery, type: filesType, ownership: filesOwnership, sort: "newest" })) return;
   if (filesLoadingMore) {
     filesLoadAllQueued = true;
     return;
@@ -679,8 +730,6 @@ async function loadFiles(seq: number): Promise<void> {
   filesLoadingMore = false;
   await ensureContexts();
   drawFiles(true);
-  // Fire and forget: the band renders its own loading/empty states, and a
-  // slow Drive listing must not hold up the file list.
   void loadDriveMounts(filesScope ?? personalScopeId(), () => drawFiles());
   try {
     const page = await fetchFilePage();
@@ -697,19 +746,28 @@ async function loadFiles(seq: number): Promise<void> {
 
 export async function renderFiles(): Promise<void> {
   if (appState.currentView !== "files") return;
-  // Transient per-visit state: a half-open menu or a delete confirm left over
-  // from last time would reappear over a different list.
   resetRowMenus();
   resetContextPicker();
   resetDriveFoldersState();
   deletingFile = null;
   deleteBusy = false;
   deleteError = "";
-  if (contextsState.selected) {
+  if (scopedSession.active) {
+    if (filesScope !== scopedSession.active.scopeId) {
+      filesScope = scopedSession.active.scopeId;
+      fileRows = [];
+      filesNextCursor = null;
+    }
+    contextsState.selected = null;
+  } else if (contextsState.selected) {
     filesScope = contextsState.selected;
     fileRows = [];
     filesNextCursor = null;
     contextsState.selected = null;
+  } else if (filesScope) {
+    filesScope = null;
+    fileRows = [];
+    filesNextCursor = null;
   }
   const seq = appState.viewRenderSeq;
   filesNotice = "";

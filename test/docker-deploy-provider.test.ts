@@ -1,292 +1,257 @@
-import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, chmodSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { createDockerDeployProvider } from "../src/deploy/docker-deploy-provider.ts";
-import type { Deployment } from "../src/deploy/deploy-store.ts";
+import { test } from "node:test";
+import { createDockerDeployProvider, dockerDaemonFailure } from "../src/deploy/docker-deploy-provider.ts";
+import { createDeployStore } from "../src/deploy/deploy-store.ts";
+import type { DockerExec } from "../src/sandbox/docker-exec.ts";
+import { scopeId } from "../src/types.ts";
 
-const fakeDocker = (): { bin: string; calls: () => string[][] } => {
-  const dir = mkdtempSync(join(tmpdir(), "qm-docker-"));
-  const bin = join(dir, "docker");
-  const log = join(dir, "calls.log");
-  const probes = join(dir, "probes.count");
-  writeFileSync(
-    bin,
-    [
-      "#!/bin/sh",
-      `printf '%s\\n' "$*" >> ${log}`,
-      'case "$1 $2" in',
-      '  "network create") [ "$FAKE_NET_EXISTS" = 1 ] && { echo "network with name agent-deploynet already exists" >&2; exit 1; }; exit 0 ;;',
-      '  "network connect") [ -n "$FAKE_CONNECT_ERR" ] && { echo "$FAKE_CONNECT_ERR" >&2; exit 1; }; exit 0 ;;',
-      '  "logs --tail") printf "%s\\n" "$FAKE_LOGS"; exit 0 ;;',
-      "esac",
-      'if [ "$1" = "port" ]; then [ -n "$FAKE_HOST_PORT" ] || exit 1; echo "127.0.0.1:$FAKE_HOST_PORT"; exit 0; fi',
-      'if [ "$1" = "exec" ]; then',
-      `  i=$(cat ${probes} 2>/dev/null || echo 0); i=$((i + 1)); echo $i > ${probes}`,
-      "  set -- $FAKE_LISTENING",
-      '  while [ "$i" -gt 1 ] && [ $# -gt 1 ]; do shift; i=$((i - 1)); done',
-      '  case "$1" in',
-      "    yes) exit 0 ;;",
-      "    unknown) exit 126 ;;",
-      "    *) exit 1 ;;",
-      "  esac",
-      "fi",
-      'if [ "$1" = "inspect" ]; then echo "$FAKE_RUNNING $FAKE_EXIT_CODE"; [ -n "$FAKE_RUNNING" ] || exit 1; fi',
-      "exit 0",
-    ].join("\n"),
-    { mode: 0o755 },
-  );
-  chmodSync(bin, 0o755);
-  return {
-    bin,
-    calls: () =>
-      existsSync(log)
-        ? readFileSync(log, "utf8")
-            .split("\n")
-            .filter(Boolean)
-            .map((l) => l.split(" "))
-        : [],
+const serving = (args: string[]) => {
+  if (args[0] === "inspect" && args[1] === "-f") return { code: 0, stdout: "true 0", stderr: "" };
+  if (args[0] === "port") return { code: 0, stdout: "127.0.0.1:9200\n", stderr: "" };
+  return undefined;
+};
+
+test("Docker deployments use isolated networks and remove them on destroy", async () => {
+  const calls: string[][] = [];
+  const dockerExec: DockerExec = async (args) => {
+    calls.push(args);
+    const ready = serving(args);
+    if (ready) return ready;
+    return {
+      code: args[1] === "inspect" ? 1 : 0,
+      stdout: "",
+      stderr: args[1] === "inspect" ? "No such network" : "",
+    };
   };
-};
+  const store = createDeployStore();
+  const first = await store.create({
+    ownerScopeId: scopeId("personal", "U1"),
+    createdBy: "U1",
+    entrypoint: "node server.js",
+    snapshotDir: "/snap/one",
+  });
+  const second = await store.create({
+    ownerScopeId: scopeId("personal", "U2"),
+    createdBy: "U2",
+    entrypoint: "node server.js",
+    snapshotDir: "/snap/two",
+  });
+  const provider = createDockerDeployProvider({ dockerExec });
 
-const deployment = (): Deployment => ({ id: "c7574bd2282f4a1b9d0e", ownerScopeId: "s1" }) as unknown as Deployment;
-const LIVE = "agent-deploy-c7574bd2282f";
-const version = { version: 1, createdAt: 0, entrypoint: "node server.js", snapshotDir: "/data/x" };
+  await provider.apply(first, first.versions[0]!);
+  await provider.apply(second, second.versions[0]!);
+  await provider.destroy(first);
 
-const clearFakes = (): void => {
-  for (const k of [
-    "FAKE_RUNNING",
-    "FAKE_EXIT_CODE",
-    "FAKE_LOGS",
-    "FAKE_HOST_PORT",
-    "FAKE_LISTENING",
-    "FAKE_CONNECT_ERR",
-    "FAKE_NET_EXISTS",
-  ])
-    delete process.env[k];
-};
-
-test("resolving an endpoint puts core back on the deploy network", async (t) => {
-  const docker = fakeDocker();
-  t.after(clearFakes);
-  process.env.FAKE_RUNNING = "true";
-
-  const p = createDockerDeployProvider({ docker: docker.bin, coreContainer: "qm-omniloy-core" });
-  assert.deepEqual(await p.resolveEndpoint!(deployment(), {} as never), { host: LIVE, port: 8080 });
-  assert.ok(
-    docker.calls().some((c) => c.join(" ") === "network connect agent-deploynet qm-omniloy-core"),
-    "expected core to be reconnected to the deploy network",
-  );
+  const firstName = `agent-deploy-${first.id.slice(0, 12)}`;
+  const secondName = `agent-deploy-${second.id.slice(0, 12)}`;
+  const creates = calls.filter((args) => args[0] === "network" && args[1] === "create");
+  for (const net of [`${firstName}-net`, `${secondName}-net`]) {
+    const create = creates.find((args) => args.at(-1) === net);
+    assert.ok(create, `${net} was created`);
+    assert.match(create.join(" "), /--subnet 198\.18\.\d+\.\d+\/28 --label qm\.deploy=1 --label qm\.org=\S+ /);
+  }
+  assert.ok(calls.some((args) => args.join(" ").includes(`--name ${firstName} --network ${firstName}-net`)));
+  assert.ok(calls.some((args) => args.join(" ").includes(`--name ${secondName} --network ${secondName}-net`)));
+  assert.ok(calls.some((args) => args.join(" ") === `network rm ${firstName}-net`));
 });
 
-test("an already-connected core is not an error", async (t) => {
-  const docker = fakeDocker();
-  t.after(clearFakes);
-  process.env.FAKE_RUNNING = "true";
-  process.env.FAKE_NET_EXISTS = "1";
-  process.env.FAKE_CONNECT_ERR =
-    "Error response from daemon: endpoint with name qm-omniloy-core already exists in network agent-deploynet";
+test("Docker provider migrates running deployments off the legacy shared network", async () => {
+  const calls: string[][] = [];
+  let containerName = "";
+  let connectAttempts = 0;
+  let targetAttached = false;
+  let legacyAttached = true;
+  const dockerExec: DockerExec = async (args) => {
+    calls.push(args);
+    const ready = serving(args);
+    if (ready) return ready;
+    if (args[0] === "network" && args[1] === "inspect") return { code: 1, stdout: "", stderr: "missing" };
+    if (args[0] === "network" && args[1] === "connect" && ++connectAttempts === 1) {
+      return { code: 1, stdout: "", stderr: "transient" };
+    }
+    if (args[0] === "network" && args[1] === "connect") targetAttached = true;
+    if (args[0] === "network" && args[1] === "disconnect") legacyAttached = false;
+    if (args[0] === "inspect") {
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          ...(legacyAttached ? { "agent-deploynet": {} } : {}),
+          ...(targetAttached ? { [`${containerName}-net`]: {} } : {}),
+        }),
+        stderr: "",
+      };
+    }
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  const store = createDeployStore();
+  const deployment = await store.create({
+    ownerScopeId: scopeId("personal", "U1"),
+    createdBy: "U1",
+    entrypoint: "node server.js",
+    snapshotDir: "/snap/legacy",
+  });
+  containerName = `agent-deploy-${deployment.id.slice(0, 12)}`;
+  await store.setEndpoint(deployment.id, { host: "127.0.0.1", port: 9200 });
+  const running = (await store.get(deployment.id))!;
+  const provider = createDockerDeployProvider({ dockerExec });
 
-  const p = createDockerDeployProvider({ docker: docker.bin, coreContainer: "qm-omniloy-core" });
-  assert.deepEqual(await p.resolveEndpoint!(deployment(), {} as never), { host: LIVE, port: 8080 });
+  assert.deepEqual(await provider.resolveEndpoint!(running, running.versions[0]!), running.endpoint);
+  assert.equal(connectAttempts, 2);
+  assert.ok(calls.some((args) => args.join(" ") === `network connect ${containerName}-net ${containerName}`));
+  assert.ok(calls.some((args) => args.join(" ") === `network disconnect agent-deploynet ${containerName}`));
 });
 
-test("a connect failure that is not 'already connected' is surfaced", async (t) => {
-  const docker = fakeDocker();
-  t.after(clearFakes);
-  process.env.FAKE_RUNNING = "true";
-  process.env.FAKE_CONNECT_ERR = "Error response from daemon: No such container: qm-omniloy-core";
+test("constructing a Docker provider does not inspect or migrate unrelated deployments", async () => {
+  const calls: string[][] = [];
+  const dockerExec: DockerExec = async (args) => {
+    calls.push(args);
+    return { code: 0, stdout: "", stderr: "" };
+  };
 
-  const p = createDockerDeployProvider({ docker: docker.bin, coreContainer: "qm-omniloy-core" });
-  await assert.rejects(() => p.resolveEndpoint!(deployment(), {} as never), /No such container/);
+  createDockerDeployProvider({ dockerExec });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, []);
 });
 
-test("a stopped app resolves to nothing rather than an unreachable address", async (t) => {
-  const docker = fakeDocker();
-  t.after(clearFakes);
-  process.env.FAKE_RUNNING = "false";
+test("an unrelated legacy migration failure does not block a new deployment", async () => {
+  const dockerExec: DockerExec = async (args) => {
+    const ready = serving(args);
+    if (ready) return ready;
+    if (args[0] === "inspect" && args[1] === "--format") return { code: 1, stdout: "", stderr: "daemon unavailable" };
+    if (args[0] === "network" && args[1] === "inspect") return { code: 1, stdout: "", stderr: "missing" };
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  const store = createDeployStore();
+  const deployment = await store.create({
+    ownerScopeId: scopeId("personal", "U1"),
+    createdBy: "U1",
+    entrypoint: "node server.js",
+    snapshotDir: "/snap/new",
+  });
+  const provider = createDockerDeployProvider({ dockerExec });
 
-  const p = createDockerDeployProvider({ docker: docker.bin, coreContainer: "qm-omniloy-core" });
-  assert.equal(await p.resolveEndpoint!(deployment(), {} as never), null);
+  await assert.doesNotReject(provider.apply(deployment, deployment.versions[0]!));
 });
 
-test("a host-side core resolves through the published loopback port", async (t) => {
-  const docker = fakeDocker();
-  t.after(clearFakes);
-  process.env.FAKE_RUNNING = "true";
-  process.env.FAKE_HOST_PORT = "32895";
+test("a transient target inspection failure does not report the deployment missing", async () => {
+  const dockerExec: DockerExec = async (args) => {
+    if (args[0] === "inspect") return { code: 1, stdout: "", stderr: "daemon unavailable" };
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  const store = createDeployStore();
+  const deployment = await store.create({
+    ownerScopeId: scopeId("personal", "U1"),
+    createdBy: "U1",
+    entrypoint: "node server.js",
+    snapshotDir: "/snap/running",
+  });
+  await store.setEndpoint(deployment.id, { host: "127.0.0.1", port: 9200 });
+  const running = (await store.get(deployment.id))!;
+  const provider = createDockerDeployProvider({ dockerExec });
 
-  const p = createDockerDeployProvider({ docker: docker.bin });
-  assert.deepEqual(await p.resolveEndpoint!(deployment(), {} as never), { host: "127.0.0.1", port: 32895 });
-  assert.ok(
-    !docker.calls().some((c) => c[0] === "network" && c[1] === "connect"),
-    "nothing should be connected to the deploy network when core is not a container",
-  );
+  await assert.rejects(provider.resolveEndpoint!(running, running.versions[0]!), /daemon unavailable/);
 });
 
-test("a running app whose port mapping cannot be read is not rebuilt", async (t) => {
-  const docker = fakeDocker();
-  t.after(clearFakes);
-  process.env.FAKE_RUNNING = "true";
+test("the daemon probe reports nothing when Docker answers", async () => {
+  const calls: string[][] = [];
+  const dockerExec: DockerExec = async (args) => {
+    calls.push(args);
+    return { code: 0, stdout: "29.1.3\n", stderr: "" };
+  };
 
-  const p = createDockerDeployProvider({ docker: docker.bin });
-  await assert.rejects(() => p.resolveEndpoint!(deployment(), {} as never), /could not read the published port/);
+  assert.equal(await dockerDaemonFailure({ dockerExec }), null);
+  assert.deepEqual(calls, [["version", "-f", "{{.Server.Version}}"]]);
 });
 
-test("the host port comes from docker, not from a counter this process keeps", async (t) => {
-  const docker = fakeDocker();
-  t.after(clearFakes);
-  process.env.FAKE_RUNNING = "true";
-  process.env.FAKE_HOST_PORT = "32901";
-  process.env.FAKE_LISTENING = "yes";
+test("the daemon probe reports why Docker is unreachable", async () => {
+  const dockerExec: DockerExec = async () => ({
+    code: 1,
+    stdout: "",
+    stderr: "dial unix /var/run/docker.sock: connect: no such file or directory\n",
+  });
 
-  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 0 });
-  assert.deepEqual(await p.apply(deployment(), version), { host: "127.0.0.1", port: 32901 });
-
-  const run = docker.calls().find((c) => c[0] === "run");
-  assert.ok(run, "expected a docker run");
-  assert.ok(run.includes("127.0.0.1::8080"), `expected docker to choose the host port: ${run.join(" ")}`);
-});
-
-test("an entrypoint that exits fails the deploy with its output", async (t) => {
-  const docker = fakeDocker();
-  t.after(clearFakes);
-  process.env.FAKE_RUNNING = "false";
-  process.env.FAKE_EXIT_CODE = "127";
-  process.env.FAKE_LOGS = "sh: server.js: not found";
-  process.env.FAKE_HOST_PORT = "32901";
-
-  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 500 });
-  await assert.rejects(
-    () => p.apply(deployment(), { ...version, entrypoint: "server.js" }),
-    /exited \(status 127\)[\s\S]*server\.js: not found/,
-  );
   assert.equal(
-    docker.calls().filter((c) => c[0] === "rm").length,
-    2,
-    "the corpse should be removed as well as the container this replaced",
+    await dockerDaemonFailure({ dockerExec }),
+    "dial unix /var/run/docker.sock: connect: no such file or directory",
   );
 });
 
-test("an app that binds the port is accepted", async (t) => {
-  const docker = fakeDocker();
-  t.after(clearFakes);
-  process.env.FAKE_RUNNING = "true";
-  process.env.FAKE_HOST_PORT = "32901";
-  process.env.FAKE_LISTENING = "yes";
+test("the daemon probe reports a failed probe rather than throwing", async () => {
+  const dockerExec: DockerExec = async () => {
+    throw new Error("spawn docker ENOENT");
+  };
 
-  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 5_000 });
-  assert.deepEqual(await p.apply(deployment(), version), { host: "127.0.0.1", port: 32901 });
+  assert.equal(await dockerDaemonFailure({ dockerExec }), "spawn docker ENOENT");
 });
 
-test("an app that binds only loopback, or nothing at all, fails the deploy", async (t) => {
-  const docker = fakeDocker();
-  t.after(clearFakes);
-  process.env.FAKE_RUNNING = "true";
-  process.env.FAKE_HOST_PORT = "32901";
-  process.env.FAKE_LISTENING = "no";
-  process.env.FAKE_LOGS = "listening on 127.0.0.1:3000";
+test("the daemon probe reports the exit code when Docker is silent", async () => {
+  const dockerExec: DockerExec = async () => ({ code: 7, stdout: "", stderr: "" });
 
-  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 500 });
-  await assert.rejects(() => p.apply(deployment(), version), /nothing is serving port 8080/);
-  assert.ok(
-    docker.calls().some((c) => c.join(" ") === `rm -f ${LIVE}`),
-    "the container that never served should be removed",
+  assert.equal(await dockerDaemonFailure({ dockerExec }), "exit 7");
+});
+
+test("the daemon probe reports a hung daemon as a timeout", async () => {
+  const dockerExec: DockerExec = async () => ({ code: -1, stdout: "", stderr: "" });
+
+  assert.equal(await dockerDaemonFailure({ dockerExec }), "no response within 10s");
+});
+
+test("Docker deployment networks come from a configured pool, and a failed network rm is reported", async () => {
+  const calls: string[][] = [];
+  const reported: Array<{ category: string; code: string; scopeLabel?: string }> = [];
+  const dockerExec: DockerExec = async (args) => {
+    calls.push(args);
+    const ready = serving(args);
+    if (ready) return ready;
+    if (args[0] === "network" && args[1] === "inspect") return { code: 1, stdout: "", stderr: "No such network" };
+    if (args[0] === "network" && args[1] === "rm") return { code: 1, stdout: "", stderr: "has active endpoints" };
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  const store = createDeployStore();
+  const deployment = await store.create({
+    ownerScopeId: scopeId("personal", "U1"),
+    createdBy: "U1",
+    entrypoint: "node server.js",
+    snapshotDir: "/snap/pool",
+  });
+  const provider = createDockerDeployProvider({
+    dockerExec,
+    networkPool: "10.77.0.0/24",
+    onError: (e) => reported.push(e),
+  });
+
+  await provider.apply(deployment, deployment.versions[0]!);
+  await provider.destroy(deployment);
+  const create = calls.find((args) => args[0] === "network" && args[1] === "create")!;
+  assert.match(create[create.indexOf("--subnet") + 1]!, /^10\.77\.0\.\d+\/28$/);
+  assert.deepEqual(
+    reported.map((e) => [e.category, e.code, e.scopeLabel]),
+    [["deploy_network", "network_rm_failed", deployment.ownerScopeId]],
   );
 });
 
-test("an image the probe cannot run in does not block the deploy", async (t) => {
-  const docker = fakeDocker();
-  t.after(clearFakes);
-  process.env.FAKE_RUNNING = "true";
-  process.env.FAKE_HOST_PORT = "32901";
-  process.env.FAKE_LISTENING = "unknown";
+test("an invalidated Docker endpoint is re-resolved instead of served from the cache", async () => {
+  let running = true;
+  const dockerExec: DockerExec = async (args) => {
+    if (args[0] === "inspect" && args[1] === "-f") return { code: 0, stdout: `${running} 0`, stderr: "" };
+    if (args[0] === "port") return { code: 0, stdout: "127.0.0.1:9200\n", stderr: "" };
+    if (args[0] === "inspect") return { code: 0, stdout: "{}", stderr: "" };
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  const store = createDeployStore();
+  const deployment = await store.create({
+    ownerScopeId: scopeId("personal", "U1"),
+    createdBy: "U1",
+    entrypoint: "node server.js",
+    snapshotDir: "/snap/cached",
+  });
+  await store.setEndpoint(deployment.id, { host: "127.0.0.1", port: 9200 });
+  const d = (await store.get(deployment.id))!;
+  const provider = createDockerDeployProvider({ dockerExec });
 
-  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 400 });
-  assert.deepEqual(await p.apply(deployment(), version), { host: "127.0.0.1", port: 32901 });
-});
-
-test("a probe that starts unknowable but then says nothing is listening fails the deploy", async (t) => {
-  const docker = fakeDocker();
-  t.after(clearFakes);
-  process.env.FAKE_RUNNING = "true";
-  process.env.FAKE_HOST_PORT = "32901";
-  process.env.FAKE_LISTENING = "unknown no";
-  process.env.FAKE_LOGS = "listening on 127.0.0.1:3000";
-
-  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 600 });
-  await assert.rejects(() => p.apply(deployment(), version), /nothing is serving port 8080/);
-});
-
-test("a relaunch may ask for a shorter ready window than a first deploy", async (t) => {
-  const docker = fakeDocker();
-  t.after(clearFakes);
-  process.env.FAKE_RUNNING = "true";
-  process.env.FAKE_HOST_PORT = "32901";
-  process.env.FAKE_LISTENING = "no";
-  process.env.FAKE_LOGS = "listening on 127.0.0.1:3000";
-
-  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 10_000 });
-  const started = Date.now();
-  await assert.rejects(() => p.apply(deployment(), version, { readyWindowMs: 200 }), /nothing is serving port 8080/);
-  assert.ok(Date.now() - started < 5_000, "the caller's window should bound the wait, not the provider default");
-});
-
-test("a docker that cannot be reached is neither a clean exit nor a successful deploy", async (t) => {
-  const docker = fakeDocker();
-  t.after(clearFakes);
-  process.env.FAKE_HOST_PORT = "32901";
-
-  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 400 });
-  await assert.rejects(
-    () => p.apply(deployment(), version),
-    (e: Error) => {
-      assert.match(e.message, /could not confirm/);
-      assert.doesNotMatch(e.message, /exited/);
-      return true;
-    },
-  );
-});
-
-test("a port read that keeps failing does not destroy the container the probe just cleared", async (t) => {
-  const docker = fakeDocker();
-  t.after(clearFakes);
-  process.env.FAKE_RUNNING = "true";
-  process.env.FAKE_LISTENING = "yes";
-
-  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 0 });
-  await assert.rejects(() => p.apply(deployment(), version), /could not read the published port/);
-  assert.ok(
-    docker.calls().filter((c) => c[0] === "port").length > 1,
-    "a transient read should be retried before giving up",
-  );
-  assert.equal(
-    docker.calls().filter((c) => c[0] === "rm").length,
-    1,
-    "only the container this replaced should be removed, not the one that is serving",
-  );
-});
-
-test("a container that is already dead is caught without waiting out the grace", async (t) => {
-  const docker = fakeDocker();
-  t.after(clearFakes);
-  process.env.FAKE_RUNNING = "false";
-  process.env.FAKE_EXIT_CODE = "127";
-  process.env.FAKE_HOST_PORT = "32901";
-
-  const p = createDockerDeployProvider({ docker: docker.bin, readyWindowMs: 0 });
-  await assert.rejects(() => p.apply(deployment(), version), /exited \(status 127\)/);
-});
-
-test("destroying a deployment does not delete its durable data", async (t) => {
-  const docker = fakeDocker();
-  t.after(clearFakes);
-
-  const p = createDockerDeployProvider({ docker: docker.bin });
-  await p.destroy(deployment());
-  assert.ok(
-    !docker.calls().some((c) => c[0] === "volume"),
-    "no volume should be removed when a deployment is stopped or archived",
-  );
+  assert.ok(await provider.resolveEndpoint!(d, d.versions[0]!));
+  running = false;
+  assert.ok(await provider.resolveEndpoint!(d, d.versions[0]!), "inside the TTL the cached endpoint is served");
+  provider.invalidateEndpoint!(d.id);
+  assert.equal(await provider.resolveEndpoint!(d, d.versions[0]!), null, "the stopped container is seen at once");
 });

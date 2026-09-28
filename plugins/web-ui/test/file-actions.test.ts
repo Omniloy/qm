@@ -14,8 +14,6 @@ const byId = (r: FileActionRow, me: string, personal?: string | null) =>
   Object.fromEntries(fileActions(r, me, personal).map((a) => [a.id, a]));
 
 test("only the uploader is offered a working delete", () => {
-  // Core refuses it either way, but a button that always fails reads as a bug
-  // rather than as a rule.
   assert.equal(byId(row(), "ada@example.com").delete?.disabled, false);
   const theirs = byId(row(), "sam@example.com").delete;
   assert.equal(theirs?.disabled, true);
@@ -34,9 +32,6 @@ test("a file with no stored bytes cannot be downloaded", () => {
 });
 
 test("an unknown uploader is treated as not-mine rather than mine", () => {
-  // Older rows predate createdBy reaching the page. Defaulting to "mine"
-  // would offer a delete that fails; defaulting to "theirs" merely withholds
-  // an action, which is the safe direction for something irreversible.
   assert.equal(byId(row({ createdBy: undefined }), "ada@example.com").delete?.disabled, true);
 });
 
@@ -58,8 +53,6 @@ test("changing context is the owner's alone, like deleting", () => {
 });
 
 test("without a known personal scope, no unshare entry is invented", () => {
-  // The contexts list can still be loading. Offering a move whose destination
-  // is unknown would produce a request with an empty scope.
   const actions = byId(row({ createdInScope: "project:sofia" }), "ada@example.com", null);
   assert.equal(actions.unshare, undefined);
 });

@@ -298,9 +298,6 @@ test("losing the context a conversation lives in ends the right to move it out",
   assert.equal(session.scopeId, scopeId("channel", "C-secret"));
 
   await built.app.upsertChannels([{ channelId: "C-secret", name: "secret", isPrivate: true }], []);
-  const minted = await built.app.createSessionShare(session.id, "owner");
-  assert.equal(minted.ok, false, "the share path already refuses an evicted sharer");
-
   const smuggled = await move(base, session.id, { principalId: "owner", scopeId: projectScopeId(project.id) });
   assert.equal(smuggled.status, 403, "a stale participant row is not a licence to relocate the transcript");
   assert.equal((await built.sessions.get(session.id))?.scopeId, scopeId("channel", "C-secret"));
@@ -335,11 +332,11 @@ test("a turn queued before a move cannot restore the roster the conversation lef
     const finished = await built.runs.waitFor(queued.runId!, 5_000);
     assert.equal(finished.result?.status, "refused");
     assert.match(finished.result?.reason ?? "", /different context/);
+    assert.equal((await personalTurn(built, "owner", threadRef, "AFTER_MOVE")).status, "ok");
   } finally {
     await built.runtime.stop();
   }
 
-  assert.equal((await personalTurn(built, "owner", threadRef, "AFTER_MOVE")).status, "ok");
   const stale = await seen(built, session.id, "member");
   assert.match(stale, /SHARED_LINE/);
   assert.doesNotMatch(stale, /AFTER_MOVE/, "the stale run did not re-admit the roster the move closed");
@@ -385,27 +382,26 @@ test("moving a conversation to the context it already lives in changes nothing",
   assert.deepEqual(await moves(built), [], "a move that did not happen is not audited");
 });
 
-test("a share link minted before a move stops resolving after it", async (t) => {
-  const { built, base } = await rig(t, "session-move-share");
+test("a conversation with persistent sub-agents cannot be moved away from them", async (t) => {
+  const { built, base } = await rig(t, "session-move-subagents");
   const project = await built.app.createProject("owner", "Launch");
   assert.ok(project);
 
-  const threadRef = "web:owner:share";
-  assert.equal((await personalTurn(built, "owner", threadRef, "PUBLISHED_LINE")).status, "ok");
-  const session = await built.sessions.getByThread(threadRef);
-  assert.ok(session);
+  const threadRef = "web:owner:parent";
+  assert.equal((await personalTurn(built, "owner", threadRef, "hello")).status, "ok");
+  const parent = await built.sessions.getByThread(threadRef);
+  assert.ok(parent);
+  const child = await built.sessions.getOrCreateByThread("web:owner:child", "dm", parent.scopeId, undefined, "web");
+  await built.sessions.addParticipant(child.id, "owner");
+  await built.sessions.setParentSession(child.id, parent.id);
 
-  const minted = await built.app.createSessionShare(session.id, "owner");
-  assert.ok(minted.ok);
-  assert.ok(await built.app.resolveSharedTranscript(minted.shareId, null), "the link resolves before the move");
-
-  const moved = await move(base, session.id, { principalId: "owner", scopeId: projectScopeId(project.id) });
-  assert.equal(moved.status, 200);
-  assert.equal(
-    await built.app.resolveSharedTranscript(minted.shareId, null),
-    null,
-    "the audience the sharer consented to is gone, so the link is too",
-  );
+  const fromParent = await move(base, parent.id, { principalId: "owner", scopeId: projectScopeId(project.id) });
+  assert.equal(fromParent.status, 403, "moving the parent would strand its sub-agents in the old context");
+  const fromChild = await move(base, child.id, { principalId: "owner", scopeId: projectScopeId(project.id) });
+  assert.equal(fromChild.status, 403, "a sub-agent lives in its parent's context");
+  assert.equal((await built.sessions.get(parent.id))?.scopeId, scopeId("personal", "owner"));
+  assert.equal((await built.sessions.get(child.id))?.scopeId, scopeId("personal", "owner"));
+  assert.deepEqual(await moves(built), [], "a refused move is not audited");
 });
 
 test("POST /v1/sessions/:id/move is registered as user-scoped on principalId", () => {

@@ -23,7 +23,7 @@ export interface BrowserProviderSpec {
 }
 
 /**
- * The person's own Chrome, reached through the MiniOmni Browser Bridge extension.
+ * The person's own Chrome, reached through the QM Browser Bridge extension.
  * Offered only where the relay is exposed — otherwise there is nothing to
  * connect to and the option would be a dead end.
  */

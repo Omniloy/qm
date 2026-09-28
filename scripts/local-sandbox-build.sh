@@ -5,11 +5,6 @@ cd "$(dirname "$0")/.."
 BASE_TAG="qm-sandbox-base:dev"
 LOCAL_TAG="${LOCAL_SANDBOX_IMAGE:-qm-sandbox-local:latest}"
 PLATFORM="linux/amd64"
-# On by default here, unlike the ARG's own default of 0. Three shipped skills
-# (taste-skill, popular-web-designs, and browse's own loopback fallback) call
-# `chromium --headless` to screenshot a dev server on the sandbox's loopback,
-# which no remote browser can reach. It costs ~700MB once in the shared image
-# layer — not per sandbox, since volumes hold /root and not image layers.
 INSTALL_BROWSER_ENGINE="${INSTALL_BROWSER_ENGINE:-1}"
 
 FINGERPRINT="$(node --input-type=module -e '

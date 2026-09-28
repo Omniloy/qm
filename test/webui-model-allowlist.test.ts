@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createInsecureTestServer } from "../src/api/server.ts";
 import { buildApp } from "../src/wiring.ts";
+import { availableRuntimeError } from "../src/api/runtime-config.ts";
 import { testConfig } from "./support/test-config.ts";
 
 const ADMIN = { "content-type": "application/json", "x-admin-actor": "admin-alice@default-org" };
@@ -230,7 +231,7 @@ test("the classification route validates the model id, the status, the scope, an
   }
 });
 
-test("a scope's chat picker grandfathers only the pairing it runs, not one it merely inherits", async () => {
+test("a scope's chat picker grandfathers the pairings it is configured with, and no other Anthropic model", async () => {
   const srv = startAnthropic();
   try {
     srv.built.config.setRuntimeSelection("org:default-org", { harnessId: "pi", modelId: "claude-opus-5" });
@@ -238,11 +239,39 @@ test("a scope's chat picker grandfathers only the pairing it runs, not one it me
     const runtime = await fetch(`${srv.base}/v1/runtime-config?principalId=alice&scopeId=personal%3Aalice`);
     const pi = ((await runtime.json()) as { modelsByHarness: Record<string, string[]> }).modelsByHarness.pi!;
     assert.ok(pi.includes("claude-sonnet-5"), "the scope keeps seeing what it is actually running");
-    assert.equal(
-      pi.includes("claude-opus-5"),
-      false,
-      "the org default it does not run must not become a second Anthropic option in its chat menu",
-    );
+    assert.ok(pi.includes("claude-opus-5"), "the org default stays reachable, so the scope can inherit it again");
+    assert.equal(pi.includes("claude-opus-4-8"), false, "no other Anthropic model is offered for pi");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("picker-only filters never refuse a scheduled or triggered runtime the deployment can serve", async () => {
+  const srv = startAnthropic();
+  try {
+    assert.equal((await classify(srv.base, "claude-opus-4-8", "hidden")).status, 200);
+    const runtime = await fetch(`${srv.base}/v1/runtime-config?principalId=alice&scopeId=personal%3Aalice`);
+    const pi = ((await runtime.json()) as { modelsByHarness: Record<string, string[]> }).modelsByHarness.pi!;
+    assert.equal(pi.includes("claude-sonnet-5"), false);
+    assert.equal(pi.includes("claude-opus-4-8"), false);
+
+    const ctx = {
+      deps: {
+        config: srv.built.config,
+        harnessId: "pi",
+        providerKeys: { anthropic: true, openai: false, openrouter: false },
+      },
+    };
+    for (const purpose of ["cron", undefined] as const) {
+      assert.equal(
+        await availableRuntimeError(ctx, "personal:alice", { harnessId: "pi", modelId: "claude-sonnet-5" }, purpose),
+        null,
+      );
+      assert.equal(
+        await availableRuntimeError(ctx, "personal:alice", { harnessId: "pi", modelId: "claude-opus-4-8" }, purpose),
+        null,
+      );
+    }
   } finally {
     await srv.close();
   }

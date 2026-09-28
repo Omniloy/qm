@@ -1,14 +1,3 @@
-# MiniOmni on Dokploy — single-host Docker target.
-#
-# Mirrors the wiring the `qm` CLI's docker backend applies
-# (cli/src/backends/docker.ts, cli/src/services.ts): core plus the four surface
-# plugins on a private network, Postgres for durable state, and the portal as
-# the only Internet-facing service. Traefik reaches the portal over Dokploy's
-# shared overlay; nothing else joins it.
-#
-# Every secret and the public URL come from the Dokploy application env — this
-# file holds no credentials. See ./README.md for the required keys.
-
 services:
   pg:
     image: postgres:16
@@ -29,76 +18,50 @@ services:
   core:
     build:
       context: ../..
-      dockerfile: deploy/dokploy/core.Dockerfile
-    # Pinned because CORE_CONTAINER below must name this
-    # container; keep the two in step.
+      dockerfile: deploy/core/Dockerfile
     container_name: qm-omniloy-core
     restart: unless-stopped
     depends_on:
       pg:
         condition: service_healthy
+    group_add:
+      - "${DOCKER_GID:-998}"
+    env_file:
+      - ../layers/omniloy/branding.conf
     environment:
       PORT: "8080"
-      # Deliberately the same value as the bind's host side below — core hands
-      # DATA_DIR paths to the host daemon, so the two must be one path, not two.
       DATA_DIR: ${DATA_HOST_DIR}
       ORG_ID: ${ORG_ID}
       HARNESS: ${HARNESS}
       HARNESS_SECURITY_POSTURE: ${HARNESS_SECURITY_POSTURE}
       MODEL_PROVIDER: anthropic
-      # GPT models resolve as built-ins whose base URL is overridden here, so
-      # they carry the names, context windows and prices the registry already
-      # models. Registering the proxy as a custom provider instead does not
-      # work: resolveModel reads the built-in registry first, and every
-      # gpt-5.6-* id is already in it, so the custom entry would never resolve.
-      #
-      # The key is the proxy's own, not an OpenAI one. It only proves that core
-      # is the caller; the ChatGPT credential never leaves the proxy.
       OPENAI_BASE_URL: ${OPENAI_BASE_URL}
       OPENAI_API_KEY: ${CODEX_PROXY_API_KEY}
-      # Lets the admin panel run the ChatGPT sign-in. Core drives the proxy's
-      # management API with this; it never holds the resulting credential.
       CODEX_PROXY_URL: ${CODEX_PROXY_URL}
       CODEX_PROXY_MANAGEMENT_KEY: ${CODEX_PROXY_MANAGEMENT_KEY}
       SESSION_STORE: postgres
       RUN_STORE: postgres
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@pg:5432/qm
-      # publicUrl is the portal origin; the portal proxies core's public API,
-      # which is what agent sandboxes call back on.
       PUBLIC_WEB_URL: ${PUBLIC_URL}
       WEB_UI_PUBLIC_URL: ${PUBLIC_URL}
       PUBLIC_API_URL: ${PUBLIC_URL}
-      # Agent computers are containers on this host's Docker daemon.
       SANDBOX_BACKEND: local
+      DOCKER_HOST: unix:///var/run/docker.sock
       LOCAL_SANDBOX_IMAGE: ${LOCAL_SANDBOX_IMAGE}
       LOCAL_SANDBOX_NETWORK_POOL: ${LOCAL_SANDBOX_NETWORK_POOL:-}
-      # Without these two, `docker run` gets no --cpus and no --memory and an
-      # agent computer is unbounded on a box that also runs core, Postgres and
-      # Traefik. One runaway loop then takes MiniOmni down with it. Sized to leave
-      # room for several concurrent sandboxes.
-      # 3 GB rather than 2: a real browsing session was measured at 1,253 MB
-      # across 14 processes, which leaves almost nothing for the agent's own
-      # work under a 2 GB cap. The cap still matters — it is what stops a
-      # runaway browser from reaching the other services on this host.
       LOCAL_SANDBOX_CPUS: ${LOCAL_SANDBOX_CPUS:-2}
       LOCAL_SANDBOX_MEMORY_MB: ${LOCAL_SANDBOX_MEMORY_MB:-3072}
-      # Sandboxes and deployed apps publish on the *host's* loopback, which only
-      # a core running on the host could dial. Naming core here makes it join
-      # their networks and address them by container name instead.
-      CORE_CONTAINER: qm-omniloy-core
-      # The one source of admin identity: `<principal>:org_admin`, comma
-      # separated. With OIDC_PRINCIPAL_CLAIM=email the principal is the
-      # lowercased email. Seeded only while admin_grants is empty — after that
-      # the roster is durable and changes go through /admin.
+      QM_CORE_CONTAINER: qm-omniloy-core
+      SWARMS_ENABLED: ${SWARMS_ENABLED:-false}
+      EAGER_PROVISION: ${EAGER_PROVISION:-false}
+      SUGGESTED_ACTIVITIES_ENABLED: ${SUGGESTED_ACTIVITIES_ENABLED:-false}
+      SECURITY_SCREEN_BACKEND: ${SECURITY_SCREEN_BACKEND:-model}
       ADMIN_GRANTS: ${ADMIN_GRANTS}
+      AUTH_ALLOWED_EMAIL_DOMAIN: ${AUTH_ALLOWED_EMAIL_DOMAIN}
+      AUTH_EMAIL_FROM: ${AUTH_EMAIL_FROM:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-      # Optional: runs the Claude harness on a Claude subscription instead of
-      # per-token API billing. The harness drops ANTHROPIC_API_KEY from the
-      # child when this is set, since Claude Code would otherwise prefer it.
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
-      # The public origin the browser extension dials. Only RELAY_PUBLIC_URL
-      # reaches core (it goes into the pairing response); RELAY_HOST is used by
-      # the Traefik label above at compose-render time and needs no runtime env.
       RELAY_PUBLIC_URL: ${RELAY_PUBLIC_URL:-}
       CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET}
       CAPABILITY_SECRET: ${CAPABILITY_SECRET}
@@ -106,36 +69,18 @@ services:
       CONNECTOR_SECRET_KEY: ${CONNECTOR_SECRET_KEY}
       SKILL_SIGNING_SECRET: ${SKILL_SIGNING_SECRET}
     volumes:
-      # A host bind at the identical path on both sides, NOT a named volume.
-      # Core hands DATA_DIR paths (a deployed app's snapshot dir) to the host
-      # daemon as bind sources, so they must mean the same thing to both —
-      # otherwise the daemon creates an empty dir and the app starts with
-      # nothing in /app. Mapping it to a different container path reintroduces
-      # exactly that bug, so both sides read from one variable.
       - ${DATA_HOST_DIR}:${DATA_HOST_DIR}
       - /var/run/docker.sock:/var/run/docker.sock
-    # dokploy-network only so Traefik can reach core for the relay route below.
-    # Nothing else about core is published: the router is scoped to one host
-    # AND one path prefix, and every endpoint under it refuses a request with
-    # no valid token. The rest of core stays reachable only inside `qm`.
     networks: [qm, dokploy-network]
     labels:
       - traefik.enable=true
       - traefik.docker.network=dokploy-network
-      # The browser-extension relay, on its own host. WebSocket upgrades are
-      # native to Traefik, so the CDP stream needs nothing special. Both the
-      # host and the path must match, so a stray request to the relay host on
-      # any other path never reaches core.
       - traefik.http.routers.qm-relay.rule=Host(`${RELAY_HOST}`) && PathPrefix(`/v1/browser-relay`)
       - traefik.http.routers.qm-relay.entrypoints=websecure
       - traefik.http.routers.qm-relay.tls.certresolver=letsencrypt
       - traefik.http.routers.qm-relay.priority=100
       - traefik.http.services.qm-relay.loadbalancer.server.port=8080
 
-  # Holds a container open on the agent sandbox image so `docker system prune
-  # --all` cannot reclaim it. Dokploy's nightly cleanup deleted it once, and
-  # every agent exec then failed with "sandbox image not found" until it was
-  # rebuilt by hand. Costs one sleeping process.
   sandbox-keepalive:
     image: ${LOCAL_SANDBOX_IMAGE}
     restart: unless-stopped
@@ -144,27 +89,12 @@ services:
     read_only: true
     mem_limit: 32m
 
-  # Serves an OpenAI-compatible endpoint backed by a ChatGPT subscription, so
-  # pi can run GPT models without a Platform API key. It holds the ChatGPT
-  # OAuth credential and refreshes it; core never sees a token and only ever
-  # talks to the endpoint, registered as a custom model provider in admin.
-  #
-  # Deliberately not on dokploy-network and publishing no ports: Traefik must
-  # not be able to route to it, and neither the API nor the management port
-  # belongs on the Internet. Core reaches it at http://codex-proxy:8317.
-  #
-  # Pinned by digest rather than a tag. This image holds a live credential for
-  # a personal ChatGPT account, so it does not get to change under us silently.
   codex-proxy:
     image: eceasy/cli-proxy-api@sha256:52282964dca47d4978aaffd7dd72d6ed5fb5e5b72acfcbcd1785cfb087d6bd8e
     restart: unless-stopped
     environment:
       CODEX_PROXY_API_KEY: ${CODEX_PROXY_API_KEY}
       CODEX_PROXY_MANAGEMENT_KEY: ${CODEX_PROXY_MANAGEMENT_KEY}
-    # The config carries both keys, so it is written at boot from the
-    # application env instead of being committed. The `$$` escapes keep
-    # Compose from interpolating them here — the shell expands them inside the
-    # container, which keeps the secrets out of `docker inspect`.
     entrypoint:
       - sh
       - -c
@@ -190,40 +120,6 @@ services:
     networks: [qm]
     mem_limit: 512m
 
-  auth:
-    build:
-      context: ../..
-      dockerfile: deploy/auth/Dockerfile
-    restart: unless-stopped
-    depends_on: [core]
-    environment:
-      PORT: "8080"
-      CORE_API_URL: http://core:8080
-      CORE_ORG_ID: ${ORG_ID}
-      AUTH_ISSUER: ${PUBLIC_URL}/idp
-      AUTH_CLIENT_ID: qm-portal
-      AUTH_REDIRECT_URI: ${PUBLIC_URL}/auth/callback
-      AUTH_BRAND_NAME: ${AUTH_BRAND_NAME}
-      AUTH_EMAIL_TRANSPORT: resend
-      AUTH_EMAIL_FROM: ${AUTH_EMAIL_FROM}
-      AUTH_ALLOWED_EMAIL_DOMAIN: ${AUTH_ALLOWED_EMAIL_DOMAIN}
-      RESEND_API_KEY: ${RESEND_API_KEY}
-      AUTH_SIGNING_JWK: ${AUTH_SIGNING_JWK}
-      AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET}
-      AUTH_CLIENT_SECRET: ${AUTH_CLIENT_SECRET}
-      CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET}
-      # Not in the CLI's secret table for auth, but the shared chassis signs
-      # portal identity with it and otherwise falls back to CORE_SIGNING_SECRET
-      # — which would not match what core verifies.
-      PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET}
-    networks:
-      qm:
-        # The portal refuses to address the broker over a name that could be
-        # public (plugins/portal/src/index.ts:isPrivateNetworkUrl). Compose's
-        # bare service name is not on its allowlist, so publish the broker
-        # under an unroutable `.internal` alias as well.
-        aliases: [auth.internal]
-
   web-ui:
     build:
       context: ../..
@@ -235,23 +131,13 @@ services:
       CORE_API_URL: http://core:8080
       CORE_ORG_ID: ${ORG_ID}
       WEB_UI_PUBLIC_URL: ${PUBLIC_URL}
-      CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET}
-      PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET}
-    networks: [qm]
-
-  admin:
-    build:
-      context: ../..
-      dockerfile: deploy/admin/Dockerfile
-    restart: unless-stopped
-    depends_on: [core]
-    environment:
-      PORT: "8080"
-      CORE_API_URL: http://core:8080
-      CORE_ORG_ID: ${ORG_ID}
+      ADMIN_ENABLED: "1"
       ADMIN_BASE_PATH: /admin
       CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET}
       PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET}
+      WEB_UI_FAVICON_SVG_FILE: /etc/qm/brand/logo.svg
+    volumes:
+      - ../layers/omniloy/logo.svg:/etc/qm/brand/logo.svg:ro
     networks: [qm]
 
   portal:
@@ -259,44 +145,48 @@ services:
       context: ../..
       dockerfile: deploy/portal/Dockerfile
     restart: unless-stopped
-    depends_on: [core, auth, web-ui, admin]
+    depends_on: [core, web-ui]
+    env_file:
+      - ../layers/omniloy/branding.conf
     environment:
       PORT: "8080"
       CORE_API_URL: http://core:8080
       CORE_ORG_ID: ${ORG_ID}
       PORTAL_PUBLIC_URL: ${PUBLIC_URL}
       WEB_UI_UPSTREAM: http://web-ui:8080
-      ADMIN_UPSTREAM: http://admin:8080
-      # Built-in sign-in broker. Browser-facing routes are republished under
-      # /idp on the portal's own origin; token/userinfo/JWKS stay private.
-      # These three must share one origin with AUTH_BROKER_UPSTREAM, and that
-      # origin must be unroutable — see the alias on the auth service.
-      AUTH_BROKER_UPSTREAM: http://auth.internal:8080
+      ADMIN_UPSTREAM: http://web-ui:8080/admin
+      AUTH_EMBEDDED: "1"
+      AUTH_BROKER_UPSTREAM: http://127.0.0.1:8099
       AUTH_BROKER_PREFIX: /idp
+      AUTH_ISSUER: ${PUBLIC_URL}/idp
+      AUTH_CLIENT_ID: qm-portal
+      AUTH_REDIRECT_URI: ${PUBLIC_URL}/auth/callback
+      AUTH_EMAIL_TRANSPORT: resend
+      AUTH_EMAIL_FROM: ${AUTH_EMAIL_FROM}
+      AUTH_ALLOWED_EMAIL_DOMAIN: ${AUTH_ALLOWED_EMAIL_DOMAIN}
+      RESEND_API_KEY: ${RESEND_API_KEY}
+      AUTH_SIGNING_JWK: ${AUTH_SIGNING_JWK}
+      AUTH_TOKEN_SECRET: ${AUTH_TOKEN_SECRET}
+      AUTH_CLIENT_SECRET: ${AUTH_CLIENT_SECRET}
       OIDC_CLIENT_ID: qm-portal
+      OIDC_CLIENT_SECRET: ${AUTH_CLIENT_SECRET}
       OIDC_ISSUER: ${PUBLIC_URL}/idp
       OIDC_AUTH_ENDPOINT: ${PUBLIC_URL}/idp/authorize
-      OIDC_TOKEN_ENDPOINT: http://auth.internal:8080/token
-      OIDC_USERINFO_ENDPOINT: http://auth.internal:8080/userinfo
-      OIDC_JWKS_URI: http://auth.internal:8080/.well-known/jwks.json
+      OIDC_TOKEN_ENDPOINT: http://127.0.0.1:8099/token
+      OIDC_USERINFO_ENDPOINT: http://127.0.0.1:8099/userinfo
+      OIDC_JWKS_URI: http://127.0.0.1:8099/.well-known/jwks.json
       OIDC_SCOPES: openid email
       OIDC_PRINCIPAL_CLAIM: email
       OIDC_ALLOWED_EMAIL_DOMAIN: ${AUTH_ALLOWED_EMAIL_DOMAIN}
-      # The portal reads the broker client credential under its OIDC name
-      # (cli/src/secrets.ts maps AUTH_CLIENT_SECRET -> OIDC_CLIENT_SECRET).
-      OIDC_CLIENT_SECRET: ${AUTH_CLIENT_SECRET}
-      # Without this the portal 404s /d/* itself and core never sees the
-      # request, so every app the agent publishes looks like it does not exist.
       PORTAL_DEPLOYMENTS_ENABLED: "1"
-      # Traefik terminates TLS in front of the portal, so the client address is
-      # the last hop of X-Forwarded-For rather than the socket. Public share
-      # links are rate limited per client, and the portal refuses to start
-      # rather than bound an anonymous surface on an address anyone can forge —
-      # so without this the whole portal stays down, not just sharing.
       PORTAL_XFF_TRUSTED_HOPS: "1"
       PORTAL_SESSION_SECRET: ${PORTAL_SESSION_SECRET}
       PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET}
       CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET}
+      PORTAL_FAVICON_SVG_FILE: /etc/qm/brand/logo.svg
+      AUTH_FAVICON_SVG_FILE: /etc/qm/brand/logo.svg
+    volumes:
+      - ../layers/omniloy/logo.svg:/etc/qm/brand/logo.svg:ro
     networks: [qm, dokploy-network]
     labels:
       - traefik.enable=true
@@ -308,8 +198,6 @@ services:
 
 volumes:
   pgdata:
-  # The ChatGPT credential the proxy signs in with. Losing this volume means
-  # signing in again, not losing data.
   codexproxyauth:
 
 networks:

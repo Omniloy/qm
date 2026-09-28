@@ -38,7 +38,6 @@ const row = (over: Partial<MountRow> = {}): MountRow => ({
 });
 
 test("an unconfigured provider outranks every other state", () => {
-  // Nothing the person does can fix this, so a Connect button would be a dead end.
   assert.equal(bandState(connector({ configured: false, connected: false }), []), "not-configured");
   assert.equal(bandState(connector({ configured: false, connected: true }), [row()]), "not-configured");
   assert.equal(
@@ -100,15 +99,12 @@ test("a folder URL is derived from the id, not fetched", () => {
   assert.equal(driveFolderUrl("a/b?c"), "https://drive.google.com/drive/folders/a%2Fb%3Fc", "ids are escaped");
 });
 
-test("request access points at Drive, since MiniOmni cannot grant it", () => {
+test("request access points at Drive, since qm cannot grant it", () => {
   assert.equal(
     requestAccessUrl({ externalId: "x", webViewLink: "https://drive.google.com/x" }),
     "https://drive.google.com/x",
     "Drive's own link wins when a listing supplied one",
   );
-  // Regression: this used to return null whenever webViewLink was absent,
-  // which is almost always — so the no-access state offered a link that
-  // never rendered. The id we already hold resolves the same folder.
   assert.equal(
     requestAccessUrl({ externalId: "1A2b3C4d5E6f7G8h9I0j" }),
     "https://drive.google.com/drive/folders/1A2b3C4d5E6f7G8h9I0j",
@@ -117,8 +113,6 @@ test("request access points at Drive, since MiniOmni cannot grant it", () => {
 });
 
 test("a healthy folder says nothing at all", () => {
-  // It used to report "Listed just now" forever. Nobody acts on that, and the
-  // column it occupied is what squeezed the row's actions at narrow widths.
   assert.equal(rowStatus(row(), "populated"), null);
   assert.equal(rowStatus(row({ listedAt: NOW - 3 * 86_400_000 }), "populated"), null, "age alone is not a status");
 });
@@ -144,16 +138,10 @@ test("the listing age survives in the tooltip", () => {
 });
 
 test("a folder with no listing explains what happens next", () => {
-  // Regression: this once read "Listed not listed yet" — a prefix glued onto a
-  // phrase — and then stated an absence the person could do nothing about.
-  // Nothing lists a folder until a conversation needs it.
   assert.equal(rowStatus(row({ listedAt: undefined }), "populated"), "Opens when the agent needs it");
 });
 
 test("the overflow menu always offers the one action that cannot fail", () => {
-  // Opening in Drive is a link. It works when the token is dead, when the
-  // folder is off, and when this person has no access — which is exactly when
-  // someone needs it most.
   for (const [r, state] of [
     [row(), "populated"],
     [row({ enabled: false }), "populated"],
@@ -192,8 +180,6 @@ test("rows are inert unless this person can actually open the folder", () => {
 });
 
 test("the browser rejects a bad mount name before a round trip", () => {
-  // Duplicated from core on purpose: the browser must be able to refuse
-  // early, and core must never trust that it did.
   for (const bad of ["", "-lead", "Upper", "has space", "dots.no", "a/b"]) {
     assert.ok(mountNameError(bad), `expected ${JSON.stringify(bad)} to be rejected`);
   }

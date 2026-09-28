@@ -14,26 +14,7 @@ import {
   type LiveSession,
 } from "./browser-pane-state";
 
-/**
- * The browser a person has open, shown where the conversation that opened it
- * is.
- *
- * Renders in the chat's bottom dock beside liveWorkDock, which is the existing
- * home for "what is happening right now" and behaves the same way: absent
- * until there is something to show, never an empty state. No browser means no
- * pane, so there is nothing to dismiss and nothing to explain.
- *
- * The body is a cross-origin iframe of the provider's own viewer. Pixels and
- * input go straight between the person's tab and the provider; MiniOmni carries
- * neither. Verified against production: SPA_CSP already allows it.
- */
-
 let session: LiveSession | null = null;
-/**
- * The last browser this conversation showed, kept after it goes so the pane can
- * say what happened instead of disappearing. Cleared when a new one opens or
- * the person dismisses it.
- */
 let ended: { threadRef: string; note: string } | null = null;
 let collapsed = false;
 let busy = false;
@@ -52,14 +33,6 @@ export function resetBrowserPane(): void {
   resetRowMenus();
 }
 
-/**
- * Watch for a browser appearing, and for control changing hands.
- *
- * Adaptive on purpose. A browser only ever appears because the agent just made
- * one, so a quiet conversation is checked rarely; once one is open, control can
- * change from either side and the pane has to keep up. Idempotent — every draw
- * calls it, and only the first one starts anything.
- */
 export function startBrowserPanePolling(rerender: () => void, streaming: boolean): void {
   const wanted = streaming || session ? 3000 : 20_000;
   if (timer && wanted === currentInterval) return;
@@ -67,6 +40,7 @@ export function startBrowserPanePolling(rerender: () => void, streaming: boolean
   currentInterval = wanted;
   void refreshBrowserPane(rerender);
   timer = setInterval(() => void refreshBrowserPane(rerender), wanted);
+  (timer as { unref?: () => void }).unref?.();
 }
 
 let currentInterval = 0;
@@ -81,22 +55,14 @@ interface LiveResponse {
   session?: LiveSession | null;
 }
 
-/**
- * Ask whether a browser is open.
- *
- * Called on mount and while a turn is streaming — a browser only ever appears
- * because the agent just made one, so there is no reason to poll a quiet
- * conversation.
- */
 async function refreshBrowserPane(rerender: () => void): Promise<void> {
   if (inFlight) return;
   inFlight = true;
   try {
-    const r = await api<LiveResponse>("/api/browser/live");
+    const r = await api<LiveResponse>("/api/browser/live").catch(() => null);
+    if (!r) return;
     const next = r.session ?? null;
     const changed = next?.sessionId !== session?.sessionId || next?.controlMode !== session?.controlMode;
-    // A browser that was here and is not any more gets a headstone rather than
-    // a silent removal — a crashed run should not look like a broken pane.
     if (session && !next) {
       ended = { threadRef: session.threadRef, note: endedNote(session.expiresAt <= Date.now() ? "expired" : "lost") };
     }
@@ -104,9 +70,6 @@ async function refreshBrowserPane(rerender: () => void): Promise<void> {
     session = next;
     if (next && changed) collapsed = false;
     if (changed) rerender();
-  } catch {
-    // A failed poll is not worth a banner: the pane simply does not change.
-    // Real failures surface on the actions, which a person is waiting on.
   } finally {
     inFlight = false;
   }
@@ -139,7 +102,6 @@ async function act(id: string, rerender: () => void): Promise<void> {
         { method: "POST", body: JSON.stringify({ mode }) },
       );
       session = r.session ?? session;
-      // Taking the wheel is pointless behind a collapsed strip.
       if (mode === "human_control") collapsed = false;
     }
   } catch (e) {

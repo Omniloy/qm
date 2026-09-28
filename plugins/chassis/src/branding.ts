@@ -1,11 +1,9 @@
-import { BRAND } from "./brand.ts";
-
 export interface OrgBranding {
+  orgName?: string;
   accent?: string;
   mark?: string;
+  markUrl?: string;
   selfLabel?: string;
-  productName?: string;
-  logoSvg?: string;
 }
 
 const REFRESH_MS = 30_000;
@@ -33,7 +31,7 @@ export function createBrandingCache(fetchBranding: () => Promise<OrgBranding>): 
         warmed = true;
         nextAt = Date.now() + REFRESH_MS;
       } catch (err) {
-        if (process.env.BRANDING_DEBUG) console.error("[branding] fetch failed:", err);
+        if (process.env.BRANDING_DEBUG) console.error("[branding] fetch failed:", String(err));
         nextAt = Date.now() + RETRY_MS;
       } finally {
         inflight = null;
@@ -63,40 +61,33 @@ export function createBrandingCache(fetchBranding: () => Promise<OrgBranding>): 
 const escapeAttr = (v: string): string =>
   v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-const escapeText = (v: string): string => v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const CSS_HOSTILE = /[<>{}"'();\\]/;
+const cssSafe = (v: string | undefined): v is string => !!v && !CSS_HOSTILE.test(v);
+const cssUrlSafe = (v: string | undefined): v is string => cssSafe(v) && /^https:\/\/\S+$/.test(v);
 
-const BRAND_TITLE_TOKEN = "__BRAND__";
-
-export function logoCssUrl(logoSvg: string): string {
-  return `url("data:image/svg+xml;charset=utf-8,${encodeURIComponent(logoSvg).replace(/'/g, "%27")}")`;
-}
-
-export function injectBranding(html: string, branding: OrgBranding): string {
-  const { accent, mark, selfLabel, productName, logoSvg } = branding;
+export function injectBranding(html: string, branding: OrgBranding, opts?: { titleSuffix?: string }): string {
+  const { accent, mark, markUrl, selfLabel } = branding;
   let out = html;
   if (selfLabel) {
     out = out.replace(
       /(<meta name="brand-self-label" content=")[^"]*(")/,
       (_m, pre: string, post: string) => `${pre}${escapeAttr(selfLabel)}${post}`,
     );
-  }
-  if (productName) {
     out = out.replace(
-      /(<meta name="brand-product-name" content=")[^"]*(")/,
-      (_m, pre: string, post: string) => `${pre}${escapeAttr(productName)}${post}`,
+      /(<meta name="apple-mobile-web-app-title" content=")[^"]*(")/,
+      (_m, pre: string, post: string) => `${pre}${escapeAttr(selfLabel)}${post}`,
     );
+    if (opts?.titleSuffix) {
+      const title = escapeAttr(`${selfLabel} ${opts.titleSuffix}`);
+      out = out.replace(/<title>[^<]*<\/title>/, () => `<title>${title}</title>`);
+    }
   }
-  const titleName = productName ?? BRAND.productName;
-  out = out.replace(/<title>([^<]*)<\/title>/, (_m, current: string) =>
-    current.includes(BRAND_TITLE_TOKEN)
-      ? `<title>${escapeText(current.replaceAll(BRAND_TITLE_TOKEN, titleName))}</title>`
-      : `<title>${escapeText(current)}</title>`,
-  );
-  const markDecls = logoSvg
-    ? [`--brand-logo:${logoCssUrl(logoSvg)}`, `--brand-mark:""`, "--brand-mark-bg:transparent"]
-    : [];
-  if (!logoSvg && mark) markDecls.push(`--brand-mark:"${mark}"`);
-  const decls = [...(accent ? [`--brand-accent:${accent}`] : []), ...markDecls].join(";");
+  const markImage = cssUrlSafe(markUrl);
+  const decls = [
+    ...(cssSafe(accent) ? [`--brand-accent:${accent}`] : []),
+    ...(markImage ? [`--brand-mark-image:url("${markUrl}")`] : []),
+    ...(!markImage && cssSafe(mark) ? [`--brand-mark:"${mark}"`] : []),
+  ].join(";");
   if (decls) out = out.replace("</head>", () => `<style>:root{${decls}}</style></head>`);
   return out;
 }

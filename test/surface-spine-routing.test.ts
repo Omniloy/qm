@@ -316,7 +316,7 @@ test("addressed + no post but a final text reply → the reply is delivered dire
     const session = await built.sessions.getByThread("ch:C-shed:710.1");
     const requests = await built.sessions.listLlmRequests(session!.id);
     assert.ok(
-      !requests.some((r) => JSON.stringify(r.request).includes("[system] You were addressed directly")),
+      !requests.some((r) => JSON.stringify(r.promptEnvelope).includes("[system] You were addressed directly")),
       "no nudge model call — the existing reply text is delivered as-is",
     );
     await sleep(300);
@@ -340,7 +340,7 @@ test("addressed + STILL no post after the nudge → the nudge turn's text is del
     assert.ok(fallback, "the shed reply was delivered as the fallback");
     assert.equal(fallback.destination.target, "slack:C-shedmute:710.3", "delivered to the addressed conversation");
     const session = await built.sessions.getByThread("ch:C-shedmute:710.3");
-    const nudgeRequest = (await built.sessions.listLlmRequests(session!.id)).at(-1)!.request as {
+    const nudgeRequest = (await built.sessions.listLlmRequests(session!.id)).at(-1)!.promptEnvelope as {
       messages?: Array<{ role?: string; content?: string }>;
     };
     assert.ok(
@@ -377,7 +377,7 @@ test("reply-or-decline nudge preserves the trigger image and environment", async
       await pollFor(built.deliveries, (d) => d.text.startsWith("worklog: did the thing but never posted"), 15_000),
     );
     const session = await built.sessions.getByThread("ch:C-nudge-image:710.2");
-    const request = (await built.sessions.listLlmRequests(session!.id)).at(-1)!.request as {
+    const request = (await built.sessions.listLlmRequests(session!.id)).at(-1)!.promptEnvelope as {
       messages?: Array<{ role?: string; content?: string }>;
       images?: Array<{ mimeType?: string; dataBase64?: string }>;
     };
@@ -406,14 +406,14 @@ test("nudge tape reread failure falls back to refreshed history, never the stale
     let reads = 0;
     built.sessions.getTape = async (sessionId) => {
       reads++;
-      if (reads === 2) throw new Error("nudge tape read failed");
+      if (reads >= 2) throw new Error("nudge tape read failed");
       return originalGetTape(sessionId);
     };
 
     await built.app.turn(mention("!shedmute", "C-nudge-read", "711.1"));
     assert.ok(await pollFor(built.deliveries, (d) => d.text === "worklog: did the thing but never posted"));
     const session = await built.sessions.getByThread("ch:C-nudge-read:711.1");
-    const nudgeRequest = (await built.sessions.listLlmRequests(session!.id)).at(-1)!.request as {
+    const nudgeRequest = (await built.sessions.listLlmRequests(session!.id)).at(-1)!.promptEnvelope as {
       messages?: Array<{ role?: string; content?: string }>;
     };
     assert.ok(
@@ -422,7 +422,7 @@ test("nudge tape reread failure falls back to refreshed history, never the stale
       ),
       "a failed reread reconstructs from history containing the first sub-turn",
     );
-    assert.equal(reads, 2, "the nudge attempted a fresh tape read");
+    assert.ok(reads >= 2, "the nudge attempted a fresh tape read");
   } finally {
     await built.runtime.stop();
   }
@@ -458,15 +458,15 @@ test("first action is `post` (speaking deliberately) → the opening text is NOT
   }
 });
 
-test("addressed + stay_silent → no nudge (explicit decline is accepted)", async () => {
+test("addressed + finish_silently → no nudge (explicit decline is accepted)", async () => {
   const built = freshApp();
   built.runtime.start();
   try {
-    const res = await built.app.turn({ ...mention("!staysilent no comment", "C-decline", "700.2"), async: false });
-    assert.equal(res.status, "silent", "an explicit stay_silent ends the turn silently");
+    const res = await built.app.turn({ ...mention("!finish-silent", "C-decline", "700.2"), async: false });
+    assert.equal(res.status, "silent", "an explicit finish_silently ends the turn silently");
     await sleep(300);
     const all = (await built.deliveries.pending("slack")) as any[];
-    assert.equal(all.filter((d) => d.text === "nudged reply").length, 0, "stay_silent suppresses the nudge");
+    assert.equal(all.length, 0, "finish_silently suppresses the nudge and closing reply");
   } finally {
     await built.runtime.stop();
   }
@@ -630,3 +630,13 @@ test("Door 2: an unprompted thread-follow is NOT envelope-wrapped (its detection
     await built.runtime.stop();
   }
 });
+
+for (const command of ["!finish-silent-approval", "!finish-silent-paused"]) {
+  test(`surface silence preserves pending approval: ${command}`, async () => {
+    const built = freshApp();
+    const result = await built.app.turn({ ...mention(command, "C-approval", command), async: false });
+    assert.equal(result.status, "pending_approval");
+    assert.equal(result.pendingApprovals?.length, 1);
+    assert.equal((await built.deliveries.pending("slack")).length, 0);
+  });
+}

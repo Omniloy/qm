@@ -1,7 +1,7 @@
 // QA: end-to-end custom-provider lifecycle against a REAL fake upstream.
 // Boots the app, registers a provider pointing at a local OpenAI-compatible
 // server, and proves: validation, catalog surfacing, key hygiene, a real
-// model call leaving MiniOmni and hitting the endpoint, edit-without-key, delete.
+// model call leaving QM and hitting the endpoint, edit-without-key, delete.
 import "./support/auto-fake-sprites.ts";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -19,6 +19,7 @@ import { setCustomProviders } from "../src/model/custom-providers.ts";
 import { createCustomProviderStore } from "../src/model/custom-provider-store.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import type { Api, Model } from "@earendil-works/pi-ai";
+import { verificationUpstream } from "./support/model-verification-upstream.ts";
 
 const ADMIN = { "content-type": "application/json", "x-admin-actor": "admin-alice@default-org" };
 
@@ -152,7 +153,7 @@ test("QA: full custom-provider lifecycle against a live fake upstream", async ()
     assert.equal(modelSupportedByHarness("qa-chat", "codex"), false);
     assert.equal(modelServiceable("qa-chat", { anthropic: false, openai: false, openrouter: false }), true);
 
-    // 6. REAL model call through MiniOmni's pi path → fake upstream answers
+    // 6. REAL model call through QM's pi path → fake upstream answers
     const reply = await oneShot(
       "qa",
       model as unknown as Model<Api>,
@@ -193,6 +194,78 @@ test("QA: full custom-provider lifecycle against a live fake upstream", async ()
   } finally {
     server.close();
     upstream.close();
+  }
+});
+
+test("QA: openai-responses custom provider serves a real turn through the generated Pi registry", async () => {
+  const upstream = await verificationUpstream();
+  const upstreamUrl = `${upstream.url}/v1`;
+  const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "qa-responses-")) }));
+  const server = createInsecureTestServer(built.app, {
+    config: built.config,
+    modelCredentials: built.modelCredentials,
+    customProviders: built.customProviders,
+    refreshCustomProviders: built.refreshCustomProviders,
+    admin: built.admin,
+    auditLog: built.auditLog,
+    harnessId: "pi",
+  });
+  server.listen(0);
+  const base = `http://localhost:${(server.address() as AddressInfo).port}`;
+  const api = (path: string, init?: RequestInit) => fetch(`${base}${path}`, { headers: ADMIN, ...init });
+  const spec = {
+    name: "Responses Provider",
+    protocol: "openai-responses",
+    baseUrl: upstreamUrl,
+    models: [{ id: "responses-custom-model", name: "Responses Custom Model" }],
+  };
+  try {
+    let response = await api("/v1/admin/custom-providers/responses-provider", {
+      method: "PUT",
+      body: JSON.stringify({ ...spec, apiKey: "sk-responses-test" }),
+    });
+    assert.equal(response.status, 200);
+    const validation = upstream.requests.find((request) => request.path === "/v1/models");
+    assert.equal(validation?.authorization, "Bearer sk-responses-test");
+    assert.equal(((await response.json()) as { status: { protocol: string } }).status.protocol, "openai-responses");
+
+    const model = resolveModel("responses-custom-model");
+    assert.ok(model);
+    assert.equal(model.api, "openai-responses");
+    const reply = await oneShot(
+      "qa-responses",
+      model as Model<Api>,
+      { "responses-provider": "sk-responses-test" },
+      "be terse",
+      "reply",
+    );
+    assert.equal(reply, "VERIFIED MODEL REPLY");
+    const request = upstream.requests.find((item) => item.path === "/v1/responses");
+    assert.ok(request);
+    assert.equal(request.body.model, "responses-custom-model");
+    assert.equal(request.body.stream, true);
+    assert.ok(Array.isArray(request.body.input));
+    assert.equal(
+      upstream.requests.some((item) => item.path.endsWith("/chat/completions")),
+      false,
+    );
+
+    response = await api("/v1/admin/custom-providers/responses-provider", {
+      method: "PUT",
+      body: JSON.stringify({ ...spec, name: "Responses Provider Edited" }),
+    });
+    assert.equal(response.status, 200);
+    response = await api("/v1/admin/custom-providers");
+    const providers = (await response.json()) as {
+      providers: Array<{ id: string; name: string; protocol: string; hasKey: boolean }>;
+    };
+    const saved = providers.providers.find((provider) => provider.id === "responses-provider");
+    assert.equal(saved?.name, "Responses Provider Edited");
+    assert.equal(saved?.protocol, "openai-responses");
+    assert.equal(saved?.hasKey, true);
+  } finally {
+    server.close();
+    await upstream.close();
   }
 });
 

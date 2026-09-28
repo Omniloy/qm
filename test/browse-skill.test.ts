@@ -138,7 +138,7 @@ test("registering a pane persists the session so the wheel guard can query core"
 
 test("an unknown control mode lets the agent carry on", () => {
   // A browser nobody registered still has to be drivable, and failing closed on
-  // a lookup error would strand every task whenever MiniOmni hiccups.
+  // a lookup error would strand every task whenever qm hiccups.
   const cm = /def control_mode\([\s\S]{0,700}/.exec(CLI)?.[0] ?? "";
   assert.match(cm, /return "agent"/);
 });
@@ -241,6 +241,12 @@ test("a relay with no shared tab stops the turn rather than switching browsers",
   assert.match(open, /not sharing a tab/);
   assert.match(open, /Do NOT quietly attach to a different browser/);
   assert.match(open, /clear_state\(\)/, "and it leaves no remote state behind to be reused");
+});
+
+test("the relay token is read from the current turn, never persisted to the state file", () => {
+  assert.match(CLI, /write_state\(\{"provider": "extension", "cdpUrl": "relay"/);
+  assert.match(CLI, /if state\.get\("provider"\) == "extension":\n\s+url = os\.environ\.get\("QM_RELAY_URL"/);
+  assert.match(SKILL, /only reachable on a live turn in their own DM/);
 });
 
 test("the skill tells the agent to ask rather than switch browsers on its own", () => {

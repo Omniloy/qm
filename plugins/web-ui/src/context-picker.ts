@@ -2,26 +2,12 @@ import { html, nothing, type TemplateResult } from "lit";
 import { errMessage } from "../../chassis/src/errors";
 import { contextsState, personalScopeId, scopeTitle } from "./contexts";
 
-/**
- * "Change context" for a Drive folder or a file.
- *
- * One dialog for both, because the question is identical — which conversations
- * can reach this thing — even though the two moves are implemented very
- * differently underneath. Two dialogs would drift in wording, and the wording
- * is the part that matters: moving a folder into a project does not lend
- * anyone your Google access, and people reasonably assume it does.
- */
-
 type MoveKind = "folder" | "file" | "conversation";
 
 export interface MoveTarget {
-  /** Shown in the heading. */
   label: string;
-  /** Where it is now. */
   current: string;
-  /** Performs the move. Rejects with a message the dialog will show. */
   move: (scopeId: string) => Promise<void>;
-  /** Folders carry the extra warning about whose Google account is used. */
   kind: MoveKind;
 }
 
@@ -45,7 +31,6 @@ export function resetContextPicker(): void {
   error = "";
 }
 
-/** Contexts this person could move something into, current one included. */
 function movableContexts(kind: MoveKind): Array<{ scopeId: string; title: string }> {
   const personal = personalScopeId();
   return contextsState.list

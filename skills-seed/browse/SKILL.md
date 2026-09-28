@@ -6,7 +6,7 @@ description: Drive a real browser one step at a time — act on websites (order 
 # Browse
 
 Browsing needs a browser to drive, and there are two: the person's own Chrome, reached through
-the MiniOmni Browser Bridge extension, and a hosted provider they have added a key for. There is
+the QM Browser Bridge extension, and a hosted provider they have added a key for. There is
 no browser of our own to fall back on — if neither is connected, `open` says so and tells you
 what to ask for.
 
@@ -24,10 +24,14 @@ submit a form, click through a flow, or when a plain fetch is genuinely blocked.
 first, because opening the wrong one wastes a minute and, on a paid provider, ignores a choice
 they made deliberately.
 
-- **`extension`** — the person's own Chrome, through the MiniOmni Browser Bridge extension. Plain
+- **`extension`** — the person's own Chrome, through the QM Browser Bridge extension. Plain
   `open` just works: it attaches to their browser over the relay, with their real sign-ins and
   none of the automation fingerprint that gets other browsers blocked. No doc, no create step.
   There is no pane to fill — they are watching their own screen.
+
+  Their own Chrome is only reachable on a live turn in their own DM. In a channel, a group, or
+  a scheduled run the relay is withheld on purpose; `open` says so, and you tell them to ask
+  from their DM instead of retrying or switching browsers.
 
   When `open` says their Chrome is not sharing a tab, **stop and ask**. Chrome stops the
   extension when it goes quiet, so this is ordinary rather than alarming: tell them plainly
@@ -126,7 +130,7 @@ saved, that is what the keychain is for.
 ## Your own Chrome, the primary browser
 
 The person's own Chrome is the one browser that both holds their real sign-ins and looks like
-them rather than like automation — so MiniOmni can drive a single tab in it through a small
+them rather than like automation — so QM can drive a single tab in it through a small
 extension the person installs. It holds their cookies because it _is_ their browser.
 
 When `$BROWSE_PROVIDER` is `extension` (or the person asks to use their own browser), plain

@@ -1,6 +1,6 @@
-# MiniOmni Browser Bridge
+# QM Browser Bridge
 
-Lets your MiniOmni agent drive **one tab** in your own Chrome, so it works with your real
+Lets your QM agent drive **one tab** in your own Chrome, so it works with your real
 sign-ins and doesn't look like automation. It exists because Chrome refuses
 `--remote-debugging-port` on a real profile on purpose — an extension using
 `chrome.debugger` is the only supported way into the browser where you are actually
@@ -22,21 +22,25 @@ the toolbar badge always mark the tab being driven. Stop sharing (or close the t
 agent is locked out again.
 
 Because that capability is real, treat the pairing token like a password: anyone holding it
-and able to reach your MiniOmni can pair _their_ agent to a browser you share. The token expires
-on its own, and you can revoke it in MiniOmni.
+and able to reach your QM can pair _their_ agent to a browser you share. The token expires
+on its own, and you can revoke it in QM.
 
 ## Install (unpacked, for now)
 
 1. Open `chrome://extensions`, turn on **Developer mode**.
 2. **Load unpacked**, and pick this `extension/` folder.
-3. Click the extension, enter your MiniOmni address and the pairing token from
-   **MiniOmni → Keychain → Browser → Your Chrome**, and Save.
+3. Click the extension, enter your QM address and the pairing token from
+   **QM → Keychain → Browser → Your Chrome**, and Save.
 4. On any tab you want the agent to use, click the extension and **Share this tab**. A green
    `ON` badge means it is live.
 
 ## How it connects
 
-The extension opens a WebSocket to MiniOmni's relay and speaks the Chrome DevTools Protocol over
-it. MiniOmni pairs your extension with your agent by the identity inside your token, and relays the
+The extension opens a WebSocket to QM's relay and speaks the Chrome DevTools Protocol over
+it. QM pairs your extension with your agent by the identity inside your token, and relays the
 protocol between them. Your agent points its existing `open --cdp` at the relay, so every
 browse verb works against your tab unchanged.
+
+Only your own agent, working live in your DM with QM, can reach the tab. Each such turn gets
+its own short-lived relay key; channel, group, and scheduled turns never get one, so nothing
+other people start, and nothing that runs on a timer, can drive your browser.

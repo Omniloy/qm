@@ -1,50 +1,57 @@
 import type { Server, IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
-import { verifyCapabilityToken } from "../auth/capability-token.ts";
+import { verifyCapabilityToken, type CapabilityClaims } from "../auth/capability-token.ts";
+import { personalScope } from "../types.ts";
 import { errMessage } from "../util/errors.ts";
 import { createRelayHub, relaySocket, type RelayHub, type RelaySide } from "./relay.ts";
 
-/** The audience a pairing token carries, so it cannot stand in for anything else. */
 export const BROWSER_RELAY_AUD = "browser-relay";
+export const BROWSER_RELAY_CDP_AUD = "browser-relay-cdp";
 
 const RELAY_EXTENSION_PATH = "/v1/browser-relay/extension";
 const RELAY_CDP_PATH = "/v1/browser-relay/cdp";
 
+type ScopeAuthorizer = (claims: CapabilityClaims) => Promise<boolean>;
+
 export interface BrowserRelayOptions {
   hub?: RelayHub;
   capabilitySecret?: string;
-  /** Sockets with nothing to say for this long are dropped. */
+  authorizesScope?: ScopeAuthorizer;
   idleMs?: number;
 }
 
 const DEFAULT_IDLE_MS = 10 * 60_000;
 
-/**
- * Which person a socket speaks for, or null.
- *
- * Both legs prove identity with a signed token and the relay pairs strictly on
- * the actor inside it. That is the whole access-control story here, and it has
- * to be: the socket on the other end can read every cookie its owner holds, so
- * a token that identified the wrong person would hand one person's signed-in
- * browser to somebody else's agent.
- */
+export function isLivePersonalClaim(claims: CapabilityClaims): boolean {
+  return (
+    claims.liveActor === true &&
+    claims.triggered !== true &&
+    claims.externalSlack !== true &&
+    claims.deployment === undefined &&
+    claims.scopeId === personalScope(claims.actorId)
+  );
+}
+
 function relaySideFor(pathname: string): RelaySide | null {
   if (pathname === RELAY_EXTENSION_PATH) return "extension";
   if (pathname === RELAY_CDP_PATH) return "cdp";
   return null;
 }
 
-async function principalFor(url: URL, side: RelaySide, secret: string): Promise<string | null> {
-  const token = url.searchParams.get("t");
+async function relayPrincipalFor(
+  token: string | null,
+  side: RelaySide,
+  secret: string,
+  authorizesScope?: ScopeAuthorizer,
+): Promise<string | null> {
   if (!token) return null;
   const claims = await verifyCapabilityToken(token, secret);
-  if (!claims) return null;
-  if (side === "extension" && claims.aud !== BROWSER_RELAY_AUD) return null;
-  // A pairing token is for pairing. Letting it drive CDP as well would mean a
-  // token pasted into an extension could also be replayed as the agent.
-  if (side === "cdp" && claims.aud === BROWSER_RELAY_AUD) return null;
-  return claims.actorId || null;
+  if (!claims?.actorId) return null;
+  if (side === "extension") return claims.aud === BROWSER_RELAY_AUD ? claims.actorId : null;
+  if (claims.aud !== BROWSER_RELAY_CDP_AUD || !isLivePersonalClaim(claims)) return null;
+  if (authorizesScope && !(await authorizesScope(claims))) return null;
+  return claims.actorId;
 }
 
 export function attachBrowserRelay(server: Server, opts: BrowserRelayOptions = {}): RelayHub {
@@ -66,15 +73,13 @@ export function attachBrowserRelay(server: Server, opts: BrowserRelayOptions = {
       return refuse(socket, 400, "Bad Request");
     }
     const side = relaySideFor(url.pathname);
-    // Anything else is not ours; leaving it alone lets other upgrade handlers
-    // (or none) deal with it rather than answering for them.
     if (!side) return;
     if (!secret) return refuse(socket, 503, "Service Unavailable");
 
     void (async () => {
       let principalId: string | null = null;
       try {
-        principalId = await principalFor(url, side, secret);
+        principalId = await relayPrincipalFor(url.searchParams.get("t"), side, secret, opts.authorizesScope);
       } catch (e) {
         console.error("[browser-relay] token check failed:", errMessage(e));
       }
@@ -102,9 +107,6 @@ export function attachBrowserRelay(server: Server, opts: BrowserRelayOptions = {
     })();
   });
 
-  // Chrome puts a service worker to sleep when it goes quiet, and a proxy in
-  // front of this will drop a silent connection long before that. A ping is
-  // what keeps a browser someone left open still reachable.
   const heartbeat = setInterval(() => {
     for (const client of wss.clients) if (client.readyState === client.OPEN) client.ping();
   }, 30_000);

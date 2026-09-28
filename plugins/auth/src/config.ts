@@ -1,5 +1,6 @@
+import { envOrFile } from "../../chassis/src/env.ts";
 import type { SmtpTlsMode } from "./smtp.ts";
-import { BRAND } from "../../chassis/src/brand.ts";
+import { parsePasswordHash } from "./password.ts";
 
 type EmailTransportKind = "resend" | "smtp";
 
@@ -21,11 +22,18 @@ export interface AuthConfig {
   tokenSecret: string;
   allowedEmails: readonly string[];
   allowedEmailDomain: string | undefined;
+  passwordUsers: ReadonlyMap<string, string>;
+  passwordUserProblems: readonly string[];
+  passwordLimitPerEmail: number;
+  passwordLimitPerIp: number;
   emailFrom: string;
   brandName: string;
+  faviconSvg: string | undefined;
   transport: EmailTransportKind;
   resendApiKey: string;
   smtp: SmtpSettings;
+  sessionIdleS: number;
+  sessionAbsoluteS: number;
   linkTtlS: number;
   codeTtlS: number;
   accessTtlS: number;
@@ -85,6 +93,7 @@ export function readConfig(env: NodeJS.ProcessEnv): AuthConfig {
   const issuer = (env.AUTH_ISSUER ?? `http://localhost:${env.PORT ?? 8099}`).replace(/\/$/, "");
   const publicPath = issuerPath(issuer);
   const transport: EmailTransportKind = env.AUTH_EMAIL_TRANSPORT?.trim() === "smtp" ? "smtp" : "resend";
+  const passwordUsers = parsePasswordUsers(env.AUTH_PASSWORD_USERS);
   return {
     issuer,
     publicPath,
@@ -95,8 +104,13 @@ export function readConfig(env: NodeJS.ProcessEnv): AuthConfig {
     tokenSecret: env.AUTH_TOKEN_SECRET ?? "",
     allowedEmails: listFrom(env.AUTH_ALLOWED_EMAILS),
     allowedEmailDomain: env.AUTH_ALLOWED_EMAIL_DOMAIN?.trim().toLowerCase() || undefined,
+    passwordUsers: passwordUsers.users,
+    passwordUserProblems: passwordUsers.problems,
+    passwordLimitPerEmail: numberFrom(env.AUTH_PASSWORD_LIMIT_PER_EMAIL, 10),
+    passwordLimitPerIp: numberFrom(env.AUTH_PASSWORD_LIMIT_PER_IP, 30),
     emailFrom: env.AUTH_EMAIL_FROM?.trim() ?? "",
-    brandName: env.AUTH_BRAND_NAME?.trim() || BRAND.productName,
+    brandName: env.AUTH_BRAND_NAME?.trim() || "qm",
+    faviconSvg: envOrFile("AUTH_FAVICON_SVG", env)?.trim() || undefined,
     transport,
     resendApiKey: env.RESEND_API_KEY ?? "",
     smtp: {
@@ -106,6 +120,8 @@ export function readConfig(env: NodeJS.ProcessEnv): AuthConfig {
       password: env.SMTP_PASSWORD ?? "",
       tls: smtpTlsFrom(env.SMTP_TLS, env.SMTP_PORT),
     },
+    sessionIdleS: numberFrom(env.AUTH_SESSION_IDLE_S, 30 * 86400),
+    sessionAbsoluteS: numberFrom(env.AUTH_SESSION_ABSOLUTE_S, 90 * 86400),
     linkTtlS: numberFrom(env.AUTH_LINK_TTL_S, 900),
     codeTtlS: numberFrom(env.AUTH_CODE_TTL_S, 120),
     accessTtlS: numberFrom(env.AUTH_ACCESS_TTL_S, 120),
@@ -129,6 +145,37 @@ function validEmailDomain(value: string): boolean {
 
 export function validEmail(value: string): boolean {
   return value.length <= 254 && /^[^@\s,;<>"]+@[^@\s,;<>"]+\.[^@\s,;<>"]+$/.test(value);
+}
+
+export function parsePasswordUsers(raw: string | undefined): { users: Map<string, string>; problems: string[] } {
+  const users = new Map<string, string>();
+  const problems: string[] = [];
+  for (const entry of (raw ?? "").split(/[,\s]+/).filter(Boolean)) {
+    const separator = entry.indexOf(":");
+    const email = separator > 0 ? entry.slice(0, separator).trim().toLowerCase() : "";
+    const hash = separator > 0 ? entry.slice(separator + 1).trim() : "";
+    if (!email || !validEmail(email)) {
+      problems.push("AUTH_PASSWORD_USERS entries must be <email>:<hash>");
+      continue;
+    }
+    if (!parsePasswordHash(hash)) {
+      problems.push(`AUTH_PASSWORD_USERS: the hash for ${email} was not produced by the password helper`);
+      continue;
+    }
+    if (users.has(email)) problems.push(`AUTH_PASSWORD_USERS lists ${email} more than once`);
+    users.set(email, hash);
+  }
+  return { users, problems };
+}
+
+export function passwordConfigured(cfg: AuthConfig): boolean {
+  return cfg.passwordUsers.size > 0;
+}
+
+export function emailConfigured(cfg: AuthConfig): boolean {
+  const credentials =
+    cfg.transport === "resend" ? [cfg.resendApiKey] : [cfg.smtp.host, cfg.smtp.username, cfg.smtp.password];
+  return [cfg.emailFrom, ...credentials].every((value) => Boolean(value.trim()));
 }
 
 function httpsUrlProblem(label: string, value: string, requireHttps: boolean): string | null {
@@ -157,7 +204,7 @@ export function bootProblems(cfg: AuthConfig, isProd: boolean): string[] {
     problems.push("AUTH_CLIENT_SECRET is required and may not be a placeholder");
   else if (cfg.clientSecret.trim().length < 32)
     problems.push(
-      "AUTH_CLIENT_SECRET must be at least 32 characters — it is the portal's only credential at the token endpoint",
+      "AUTH_CLIENT_SECRET must be at least 32 characters; it is the portal's only credential at the token endpoint",
     );
   if (isMissingOrPlaceholder(cfg.tokenSecret))
     problems.push("AUTH_TOKEN_SECRET is required and may not be a placeholder");
@@ -172,7 +219,7 @@ export function bootProblems(cfg: AuthConfig, isProd: boolean): string[] {
 
   if (!cfg.allowedEmails.length && !cfg.allowedEmailDomain) {
     problems.push(
-      "AUTH_ALLOWED_EMAILS or AUTH_ALLOWED_EMAIL_DOMAIN is required — without one, anybody with an inbox could sign in",
+      "AUTH_ALLOWED_EMAILS or AUTH_ALLOWED_EMAIL_DOMAIN is required; without one, anybody with an inbox could sign in",
     );
   }
   const badEmail = cfg.allowedEmails.find((email) => !validEmail(email) || isMissingOrPlaceholder(email));
@@ -185,29 +232,44 @@ export function bootProblems(cfg: AuthConfig, isProd: boolean): string[] {
     problems.push("AUTH_ALLOWED_EMAIL_DOMAIN must be a valid, non-placeholder email domain when set");
   }
 
-  if (isMissingOrPlaceholder(cfg.emailFrom) || !validEmail(senderAddress(cfg.emailFrom))) {
-    problems.push('AUTH_EMAIL_FROM must be a verified sender address, optionally as "Name <sender@example.com>"');
+  if (emailConfigured(cfg)) {
+    if (isMissingOrPlaceholder(cfg.emailFrom) || !validEmail(senderAddress(cfg.emailFrom))) {
+      problems.push('AUTH_EMAIL_FROM must be a verified sender address, optionally as "Name <sender@example.com>"');
+    }
+    if (cfg.transport === "resend") {
+      if (isMissingOrPlaceholder(cfg.resendApiKey))
+        problems.push("RESEND_API_KEY is required when AUTH_EMAIL_TRANSPORT is resend");
+    } else {
+      if (isMissingOrPlaceholder(cfg.smtp.host))
+        problems.push("SMTP_HOST is required when AUTH_EMAIL_TRANSPORT is smtp");
+      if (isMissingOrPlaceholder(cfg.smtp.username))
+        problems.push("SMTP_USERNAME is required when AUTH_EMAIL_TRANSPORT is smtp");
+      if (isMissingOrPlaceholder(cfg.smtp.password))
+        problems.push("SMTP_PASSWORD is required when AUTH_EMAIL_TRANSPORT is smtp");
+      if (!Number.isInteger(cfg.smtp.port) || cfg.smtp.port < 1 || cfg.smtp.port > 65535)
+        problems.push("SMTP_PORT must be a TCP port number");
+      if (isProd && cfg.smtp.tls === "none")
+        problems.push(
+          "SMTP_TLS=none may not be used in production — SMTP credentials would cross the network in cleartext",
+        );
+    }
   }
-  if (cfg.transport === "resend") {
-    if (isMissingOrPlaceholder(cfg.resendApiKey))
-      problems.push("RESEND_API_KEY is required when AUTH_EMAIL_TRANSPORT is resend");
-  } else {
-    if (isMissingOrPlaceholder(cfg.smtp.host)) problems.push("SMTP_HOST is required when AUTH_EMAIL_TRANSPORT is smtp");
-    if (isMissingOrPlaceholder(cfg.smtp.username))
-      problems.push("SMTP_USERNAME is required when AUTH_EMAIL_TRANSPORT is smtp");
-    if (isMissingOrPlaceholder(cfg.smtp.password))
-      problems.push("SMTP_PASSWORD is required when AUTH_EMAIL_TRANSPORT is smtp");
-    if (!Number.isInteger(cfg.smtp.port) || cfg.smtp.port < 1 || cfg.smtp.port > 65535)
-      problems.push("SMTP_PORT must be a TCP port number");
-    if (isProd && cfg.smtp.tls === "none")
+
+  problems.push(...cfg.passwordUserProblems);
+  for (const [name, limit] of [
+    ["AUTH_PASSWORD_LIMIT_PER_EMAIL", cfg.passwordLimitPerEmail],
+    ["AUTH_PASSWORD_LIMIT_PER_IP", cfg.passwordLimitPerIp],
+  ] as const) {
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAX_RATE_LIMIT_SLOTS) {
       problems.push(
-        "SMTP_TLS=none may not be used in production — SMTP credentials would cross the network in cleartext",
+        `${name} must be a whole number between 1 and ${MAX_RATE_LIMIT_SLOTS}; each unit is one durable claim slot`,
       );
+    }
   }
 
   if (isProd && isMissingOrPlaceholder(cfg.coreSigningSecret)) {
     problems.push(
-      "CORE_SIGNING_SECRET is required — single-use enforcement for links and codes is durable state held by core",
+      "CORE_SIGNING_SECRET is required; single-use enforcement for links and codes is durable state held by core",
     );
   }
   if (cfg.linkTtlS > 3600) problems.push("AUTH_LINK_TTL_S must be at most 3600 seconds");
@@ -221,10 +283,19 @@ export function bootProblems(cfg: AuthConfig, isProd: boolean): string[] {
   ] as const) {
     if (!Number.isInteger(limit) || limit < 1 || limit > MAX_RATE_LIMIT_SLOTS) {
       problems.push(
-        `${name} must be a whole number between 1 and ${MAX_RATE_LIMIT_SLOTS} — each unit is one durable claim slot`,
+        `${name} must be a whole number between 1 and ${MAX_RATE_LIMIT_SLOTS}; each unit is one durable claim slot`,
       );
     }
   }
+  if (
+    !Number.isInteger(cfg.sessionIdleS) ||
+    !Number.isInteger(cfg.sessionAbsoluteS) ||
+    cfg.sessionIdleS > cfg.sessionAbsoluteS ||
+    cfg.sessionAbsoluteS > 90 * 86400
+  )
+    problems.push(
+      "AUTH_SESSION_IDLE_S and AUTH_SESSION_ABSOLUTE_S must be whole seconds with idle <= absolute <= 90 days",
+    );
   return problems;
 }
 

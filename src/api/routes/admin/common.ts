@@ -10,6 +10,7 @@ export async function requireScopedResource<T>(
   load: () => Promise<T | null | undefined> | T | null | undefined,
   scopeOf: (record: T) => string,
   noun: string,
+  scopeMismatch: "forbid" | "fallback" = "forbid",
 ): Promise<{ actor: Principal; scope: string; record: T } | null> {
   const authz = await requireScopedAdmin(ctx);
   if (!authz) return null;
@@ -19,8 +20,11 @@ export async function requireScopedResource<T>(
     return null;
   }
   if (parseScopeId(authz.scope).kind !== "org" && scopeOf(record) !== authz.scope) {
-    sendJson(ctx.res, 403, { error: "forbidden", message: `${noun} is outside the requested scope` });
-    return null;
+    if (scopeMismatch === "forbid") {
+      sendJson(ctx.res, 403, { error: "forbidden", message: `${noun} is outside the requested scope` });
+      return null;
+    }
+    return { actor: authz.actor, scope: scopeOf(record), record };
   }
   return { ...authz, record };
 }
@@ -33,15 +37,17 @@ export async function discoverScopes(
   extraScopeIds: Iterable<string> = [],
 ): Promise<Map<string, string>> {
   const labels = new Map<string, string>([[orgScope(deps), "org-wide"]]);
-  for (const s of (await deps.sessions?.distinctScopes()) ?? []) {
+  const [scopes, participants, grants] = await Promise.all([
+    deps.sessions?.distinctScopes() ?? [],
+    deps.sessions?.distinctParticipants() ?? [],
+    deps.admin?.listGrants() ?? [],
+  ]);
+  for (const s of scopes) {
     if (!labels.has(s.scopeId) || (s.channelName && !labels.get(s.scopeId))) {
       labels.set(s.scopeId, s.channelName ? `#${s.channelName}` : "");
     }
   }
-  const people = [
-    ...((await deps.sessions?.listParticipants()) ?? []).map((w) => w.principalId),
-    ...((await deps.admin?.listGrants()) ?? []).map((g) => g.principalId),
-  ];
+  const people = [...participants, ...grants.map((g) => g.principalId)];
   for (const principalId of people) {
     const personal = makeScopeId("personal", principalId);
     if (!labels.has(personal)) labels.set(personal, "");
@@ -50,8 +56,9 @@ export async function discoverScopes(
     if (!labels.has(id)) labels.set(id, "");
   }
   if ([...labels.values()].some((l) => !l)) {
-    const membersById = new Map((await app.directoryMembers()).map((m) => [m.principalId, m.displayName]));
-    const channelsById = new Map((await app.directoryChannels()).map((c) => [c.channelId, c.name]));
+    const [members, channels] = await Promise.all([app.directoryMembers(), app.directoryChannels()]);
+    const membersById = new Map(members.map((m) => [m.principalId, m.displayName]));
+    const channelsById = new Map(channels.map((c) => [c.channelId, c.name]));
     for (const [id, label] of labels) {
       if (label) continue;
       const { kind, ref } = parseScopeId(id);

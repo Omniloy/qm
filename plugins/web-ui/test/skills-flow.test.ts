@@ -22,6 +22,13 @@ test("focused create/edit flows leave list search and filters untouched on open 
   );
 });
 
+test("skill rows omit redundant active, local-source, and box decorations", () => {
+  const variant = bodyOf("skillVariant");
+  assert.doesNotMatch(variant, /icon\(Box|>Active<|skill-active|skill-variant-icon/);
+  assert.doesNotMatch(source, /Created here/);
+  assert.match(variant, />Archived</);
+});
+
 test("closing a focused flow clears an unfinished edit loading notice", () => {
   assert.match(bodyOf("startEdit"), /skillsNotice = "Loading skill instructions…"/);
   assert.match(bodyOf("closeFocusedFlow"), /skillsNotice = ""/);
@@ -33,8 +40,6 @@ test("entering Skills clears overlay and menu state from an earlier visit", () =
       bodyOf("renderSkills"),
     )?.[1];
   assert.ok(teardown, "renderSkills must reset page state when the host is new");
-  // Every overlay that can outlive a view change: an unanswered dialog and an
-  // open row menu both reopen on return otherwise.
   for (const cleared of ["archiveConfirmation = null", "archiveFocusTarget = null", "sharing = null"]) {
     assert.match(teardown, new RegExp(cleared.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }

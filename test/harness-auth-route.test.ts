@@ -50,7 +50,7 @@ test("a subscription token is stored write-only and never echoed back", async ()
     assert.match(body, /"configured":true/);
     // The panel shows who and when; the token itself leaves only in the child env.
     assert.ok(!body.includes(TOKEN));
-    assert.equal(await srv.built.harnessAuth.resolve("claude"), TOKEN);
+    assert.deepEqual(await srv.built.harnessAuth.resolve("claude"), { kind: "token", token: TOKEN });
   } finally {
     await srv.close();
   }
@@ -66,7 +66,7 @@ test("a token Claude rejects is reported rather than stored", async () => {
     });
     assert.equal(res.status, 400);
     assert.match(String(((await res.json()) as { message?: string }).message), /rejected/);
-    assert.equal(await srv.built.harnessAuth.resolve("claude"), null);
+    assert.deepEqual(await srv.built.harnessAuth.resolve("claude"), { kind: "unset" });
   } finally {
     await srv.close();
   }
@@ -116,7 +116,7 @@ test("disabling a subscription clears it for the next turn", async () => {
     });
     const res = await fetch(`${srv.base}/v1/admin/harness-auth/claude`, { method: "DELETE", headers: ADMIN });
     assert.equal(res.status, 200);
-    assert.equal(await srv.built.harnessAuth.resolve("claude"), null);
+    assert.deepEqual(await srv.built.harnessAuth.resolve("claude"), { kind: "disabled" });
   } finally {
     await srv.close();
   }

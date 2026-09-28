@@ -2,9 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
-import { readFileSync } from "node:fs";
+import { readAdminSource } from "./admin-source.ts";
 
-const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+const html = readAdminSource();
 
 const calls: { method: string; url: string; actor: string | null; signed: boolean; body: string }[] = [];
 const core = createServer((req: IncomingMessage, res) => {

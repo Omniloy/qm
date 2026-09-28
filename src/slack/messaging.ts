@@ -1,3 +1,4 @@
+import { extractPrivateContinuation } from "./external-access.ts";
 import {
   type ActorAssertion,
   type AgentRequestDirective,
@@ -5,6 +6,7 @@ import {
   AGENT_REQUEST_INSTRUCTION,
   MAX_REACTIONS_PER_TURN,
   REACTION_INSTRUCTION,
+  SLACK_TEXT_LIMIT,
   applyReactions,
   botIdentityArgs,
   extractAgentRequests,
@@ -13,9 +15,8 @@ import {
   stripReactionDirectives,
 } from "./lib.ts";
 
-export type SlackConversationKind = "dm" | "channel" | "group";
-
-const SLACK_TEXT_LIMIT = 40000;
+import type { SlackConversationKind } from "./message-gating.ts";
+export type { SlackConversationKind } from "./message-gating.ts";
 
 export async function updateSlackMessage(
   client: any,
@@ -60,7 +61,7 @@ export function cleanAgentReplyForSlack(text: string): {
   const extractedReactions = extractReactions(text);
   const extractedRequests = extractAgentRequests(extractedReactions.text);
   return {
-    text: extractedRequests.text,
+    text: extractPrivateContinuation(extractedRequests.text).text,
     reactions: extractedReactions.reactions,
     agentRequests: extractedRequests.requests,
   };
@@ -71,7 +72,7 @@ export function slackSurfaceInstructions(kind: SlackConversationKind): string {
 }
 
 export function stripSlackDirectives(text: string): string {
-  return stripAgentRequestDirectives(stripReactionDirectives(text));
+  return extractPrivateContinuation(stripAgentRequestDirectives(stripReactionDirectives(text))).text;
 }
 
 export async function applyAndLogReactions(

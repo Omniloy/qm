@@ -1,19 +1,5 @@
 import type { RowActionSpec } from "./drive-mount";
 
-/**
- * DOM-free decisions for sharing a skill out of the scope it lives in.
- *
- * Every one of these actions already exists in core behind `POST /v1/share`,
- * which dispatches on the destination: an org target promotes, `move: true`
- * relocates, and anything else writes an ACL grant. None of it was reachable
- * without an agent holding a capability token, so the only way to share a skill
- * was to ask for it in chat.
- *
- * The rules below mirror core's refusals rather than inventing new ones. Core
- * still enforces all of them — this exists so the menu doesn't offer a button
- * that is certain to fail, which reads as a bug rather than as a permission.
- */
-
 export type SkillShareMode = "share" | "move" | "promote";
 
 export interface SkillShareRow {
@@ -21,7 +7,6 @@ export interface SkillShareRow {
   name: string;
   scope: string;
   scopeId?: string;
-  /** Core's own word for "you may change this one". */
   editable?: boolean;
   status?: string;
 }
@@ -34,17 +19,7 @@ export interface ShareScopeOption {
 
 export const NOT_ADMIN_REASON = "Only an org admin can give a skill to the whole organization";
 
-/**
- * The overflow menu for a skill row.
- *
- * Returns an empty list for a skill the viewer doesn't own — a row with a menu
- * that offers nothing is worse than a row with no menu.
- */
 export function skillShareActions(row: SkillShareRow, opts: { isAdmin: boolean; archived: boolean }): RowActionSpec[] {
-  // An org-wide skill belongs to the org rather than to whoever promoted it, so
-  // core reports it as nobody's to edit — including the promoter's. Taking it
-  // back is an admin action on the org's own copy, which makes it the one thing
-  // a row can offer without being editable.
   if (isOrgScoped(row)) {
     if (opts.archived || !row.id || !opts.isAdmin) return [];
     return [{ id: "demote", label: "Take back from everyone…", danger: true }];
@@ -52,8 +27,6 @@ export function skillShareActions(row: SkillShareRow, opts: { isAdmin: boolean; 
 
   if (row.editable !== true || !row.id) return [];
 
-  // An archived skill is out of circulation; sharing one would quietly put it
-  // back into someone else's chain under a name they never chose.
   if (opts.archived) return [{ id: "restore", label: "Restore" }];
 
   return [
@@ -74,14 +47,6 @@ export function isOrgScoped(row: SkillShareRow): boolean {
   return row.scope === "org" || row.scopeId?.startsWith("org:") === true;
 }
 
-/**
- * Where a skill can go.
- *
- * Its current home is dropped because both sharing and moving there are no-ops,
- * and personal scopes are offered only for a move: sharing a skill back to
- * yourself grants you what you already have, while moving it there is how you
- * take one back out of a project.
- */
 export function shareTargets(
   contexts: readonly ShareScopeOption[],
   row: SkillShareRow,
@@ -95,12 +60,6 @@ export function shareTargets(
   });
 }
 
-/**
- * The sentence under the destination picker.
- *
- * Stated as what happens to the copy the person is looking at, because that is
- * the question they actually have and the one the three verbs differ on.
- */
 export function shareImpact(mode: SkillShareMode, row: SkillShareRow, targetLabel: string): string {
   if (mode === "promote") {
     return (
@@ -133,7 +92,6 @@ export function shareConfirmLabel(mode: SkillShareMode, busy: boolean): string {
   return "Share";
 }
 
-/** The body for `POST /api/skills/:id/share`. */
 export function shareRequest(
   mode: SkillShareMode,
   toScope: string,
@@ -144,12 +102,6 @@ export function shareRequest(
   return { toScope, permission };
 }
 
-/**
- * Undoing a share.
- *
- * Separated from the three giving verbs because it answers a different
- * question: not "where should this go" but "who has it, and should they still".
- */
 export interface SkillGrantRow {
   granteeScopeId: string;
   permission: "read" | "write";

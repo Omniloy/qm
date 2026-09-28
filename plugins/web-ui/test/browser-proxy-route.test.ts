@@ -4,13 +4,6 @@ import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 import { mintPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
 
-/**
- * The browser proxy carries a live-view URL, which is bearer material: anyone
- * holding it can watch and drive someone's logged-in browser. So this is a
- * handful of named verbs rather than a passthrough, and the identity comes from
- * the signed-in cookie rather than anything the caller can state.
- */
-
 interface Call {
   method: string;
   url: string;
@@ -53,8 +46,6 @@ test("the pane asks core for the current browser, with no viewer it could forge"
   assert.equal(r.status, 200);
   const call = calls.slice(before).find((c) => c.url.startsWith("/v1/browser-sessions/current"));
   assert.ok(call, "forwarded to core");
-  // Core reads the owner from the portal identity coreFetch attaches. A viewer
-  // parameter here would imply the caller gets to choose who they are.
   assert.doesNotMatch(call.url, /viewer=/);
 });
 
@@ -80,10 +71,6 @@ test("ending a session reaches core as a DELETE", async () => {
 });
 
 test("nothing else on that router is reachable through the proxy", async () => {
-  // The guard that matters: /v1/browser-sessions vends bearer material, so a
-  // generic relay would expose every route on it to anything that can shape a
-  // path. The streamed pane's /frame and /input routes are gone with the
-  // built-in browser, so they must not be proxied either.
   const before = calls.length;
   for (const [method, path] of [
     ["GET", "/api/browser/session/s1/state"],

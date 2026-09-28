@@ -9,7 +9,10 @@ import { createAdminService } from "../src/admin/admin-service.ts";
 import { signRequest } from "../src/auth/source-auth.ts";
 
 function appWith(endpoint: Record<string, unknown>): App {
-  return { reachDeployment: async () => ({ status: "ok", endpoint }) } as unknown as App;
+  return {
+    reachDeployment: async () => ({ status: "ok", id: "some-id", endpoint }),
+    invalidateDeploymentEndpoint: () => undefined,
+  } as unknown as App;
 }
 
 test("/d/ proxy attaches the endpoint's proxyHeaders — the internal path authenticates to a token-gated deployment", async () => {
@@ -249,6 +252,7 @@ test("/d/ proxy keeps the shared HTTP/2 session when one request has invalid hea
         ...(invalidHeaders ? { proxyHeaders: { connection: "invalid" } } : {}),
       },
     }),
+    invalidateDeploymentEndpoint: () => undefined,
   } as unknown as App;
   const server = createInsecureTestServer(app);
   server.listen(0);
@@ -409,6 +413,7 @@ test("admin deployment proxy bypasses deployment ACL after admin auth and audits
         ? { status: "ok", endpoint: { host: "127.0.0.1", port: upstreamPort } }
         : { status: "denied" };
     },
+    invalidateDeploymentEndpoint: () => undefined,
   } as unknown as App;
   const SECRET = "admin-deploy-proxy-secret".repeat(3);
   const server = createServer(app, {

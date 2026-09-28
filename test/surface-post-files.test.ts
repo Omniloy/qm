@@ -1,21 +1,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { collectNamedOutbound, collectOutbound, type ArtifactRegistration } from "../src/core/attachments.ts";
+import { collectNamedOutbound, type ArtifactRegistration } from "../src/core/attachments.ts";
 import { createSurfaceToolDeps, type SurfaceToolsContext } from "../src/core/orchestrator/surface-tools.ts";
+import { turnPostKeys } from "../src/core/orchestrator/turn-helpers.ts";
 import { createMemoryBlobTransferStore } from "../src/persistence/blob-transfer.ts";
 import { createMemoryFileArtifactStore } from "../src/files/file-artifact-store.ts";
 import { createMemoryDurableByteStore } from "../src/files/durable-byte-store.ts";
 import { createAclStore } from "../src/acl/acl-store.ts";
 import { scopeId } from "../src/types.ts";
 import type { Sandbox, SandboxHandle } from "../src/sandbox/sandbox.ts";
+import { createMemoryChannelPolicyStore } from "../src/surface-cache/channel-policy-store.ts";
 
-function fakeSandbox(files: Record<string, Uint8Array>, outboxListing: string[]): Sandbox {
+function fakeSandbox(files: Record<string, Uint8Array>): Sandbox {
   return {
     async readFileBytes(_handle: SandboxHandle, p: string) {
       return files[p] ?? null;
-    },
-    async listDir(_handle: SandboxHandle, _dir: string) {
-      return outboxListing;
     },
   } as unknown as Sandbox;
 }
@@ -25,8 +24,8 @@ const bytes = (s: string): Uint8Array => new TextEncoder().encode(s);
 
 test("collectNamedOutbound: resolves workspace-relative paths into blob-backed attachments", async () => {
   const transfer = createMemoryBlobTransferStore();
-  const sandbox = fakeSandbox({ "outbox/cover.png": bytes("PNGDATA"), "report.pdf": bytes("PDF") }, []);
-  const r = await collectNamedOutbound(sandbox, handle, ["outbox/cover.png", "report.pdf"], transfer);
+  const sandbox = fakeSandbox({ "reports/cover.png": bytes("PNGDATA"), "report.pdf": bytes("PDF") });
+  const r = await collectNamedOutbound(sandbox, handle, ["reports/cover.png", "report.pdf"], transfer);
   assert.equal(r.attachments.length, 2, "both named files became attachments");
   assert.deepEqual(r.attachments.map((a) => a.name).sort(), ["cover.png", "report.pdf"]);
   assert.ok(
@@ -56,7 +55,7 @@ test("collectNamedOutbound: rejects parent traversal before reading outside the 
 test("collectNamedOutbound: preserves POSIX filenames containing backslashes", async () => {
   const path = String.raw`reports\..\final.txt`;
   const r = await collectNamedOutbound(
-    fakeSandbox({ [path]: bytes("report") }, []),
+    fakeSandbox({ [path]: bytes("report") }),
     handle,
     [path],
     createMemoryBlobTransferStore(),
@@ -96,6 +95,7 @@ test("surface post rejects traversal before provisioning or staging any attachme
         calls.grant += 1;
       },
     },
+    postKeys: turnPostKeys("run-test"),
     spine: { surfaceOutboundCount: 0, crossConversationPosts: 0 },
   } as unknown as SurfaceToolsContext);
   const r = await tools!.post("hello", undefined, ["report.pdf", "../.ssh/id_ed25519"]);
@@ -103,17 +103,50 @@ test("surface post rejects traversal before provisioning or staging any attachme
   assert.deepEqual(calls, { provision: 0, read: 0, put: 0, grant: 0 });
 });
 
+test("surface standing orders preserve and reset the stored ambient reply policy", async () => {
+  const channelPolicy = createMemoryChannelPolicyStore();
+  const tools = createSurfaceToolDeps({
+    deps: { deliveries: {}, channelPolicy, auditLog: { record() {} } },
+    input: { surfaceTools: true },
+    actor: { id: "U1" },
+    conversation: { kind: "channel", channelRef: "C1" },
+    session: { id: "S1" },
+    scopeId: "channel:C1",
+    defaultDestination: {},
+    strictReadOnly: false,
+    blobTransfer: {},
+    fileRegistration: {},
+    provision: async () => handle,
+    postProvenance() {
+      return {};
+    },
+    postKeys: turnPostKeys("run-test"),
+    spine: { surfaceOutboundCount: 0, crossConversationPosts: 0 },
+  } as unknown as SurfaceToolsContext)!;
+
+  await tools.setStandingOrder("watch", undefined, true);
+  assert.equal((await channelPolicy.get("C1"))?.ambientEnabled, true);
+  const enabledOrder = await tools.getStandingOrder();
+  assert.equal(enabledOrder.ok && enabledOrder.ambientEnabled, true);
+  await tools.setStandingOrder("keep watching");
+  assert.equal((await channelPolicy.get("C1"))?.ambientEnabled, true);
+  await tools.setStandingOrder("keep watching", undefined, null);
+  assert.equal((await channelPolicy.get("C1"))?.ambientEnabled, undefined);
+  const defaultOrder = await tools.getStandingOrder();
+  assert.equal(defaultOrder.ok && defaultOrder.ambientEnabled, undefined);
+});
+
 test("collectNamedOutbound: a missing/empty path is reported (so post can fail the WHOLE call)", async () => {
   const transfer = createMemoryBlobTransferStore();
-  const sandbox = fakeSandbox({ "outbox/there.png": bytes("X"), "outbox/blank.txt": bytes("") }, []);
+  const sandbox = fakeSandbox({ "reports/there.png": bytes("X"), "reports/blank.txt": bytes("") });
   const r = await collectNamedOutbound(
     sandbox,
     handle,
-    ["outbox/there.png", "outbox/gone.png", "outbox/blank.txt"],
+    ["reports/there.png", "reports/gone.png", "reports/blank.txt"],
     transfer,
   );
-  assert.deepEqual(r.missing, ["outbox/gone.png"], "the unresolvable path is surfaced");
-  assert.deepEqual(r.empty, ["outbox/blank.txt"], "the empty file is surfaced");
+  assert.deepEqual(r.missing, ["reports/gone.png"], "the unresolvable path is surfaced");
+  assert.deepEqual(r.empty, ["reports/blank.txt"], "the empty file is surfaced");
   assert.deepEqual(r.attachments, [], "no attachment survives a doomed call");
   assert.equal(await transfer.sweep(0), 0, "no orphaned transfer blob for the good file");
 });
@@ -127,13 +160,19 @@ test("collectNamedOutbound: a doomed call's rollback never deletes an artifact a
     createdBy: "U1",
     seed: "run-1",
   };
-  const sandbox = fakeSandbox({ "outbox/first.md": bytes("delivered earlier"), "outbox/kept.md": bytes("good") }, []);
-  const ok = await collectNamedOutbound(sandbox, handle, ["outbox/first.md"], transfer, register);
+  const sandbox = fakeSandbox({ "reports/first.md": bytes("delivered earlier"), "reports/kept.md": bytes("good") });
+  const ok = await collectNamedOutbound(sandbox, handle, ["reports/first.md"], transfer, register);
   assert.equal(ok.attachments.length, 1);
   const priorArtifactId = ok.attachments[0]!.artifactId!;
   assert.ok(await store.get(priorArtifactId), "post #1's artifact is registered");
-  const doomed = await collectNamedOutbound(sandbox, handle, ["outbox/kept.md", "outbox/gone.md"], transfer, register);
-  assert.deepEqual(doomed.missing, ["outbox/gone.md"]);
+  const doomed = await collectNamedOutbound(
+    sandbox,
+    handle,
+    ["reports/kept.md", "reports/gone.md"],
+    transfer,
+    register,
+  );
+  assert.deepEqual(doomed.missing, ["reports/gone.md"]);
   assert.deepEqual(doomed.attachments, [], "the doomed call stages nothing");
   assert.ok(await store.get(priorArtifactId), "post #1's artifact survives post #2's rollback");
 });
@@ -152,7 +191,7 @@ test("collectNamedOutbound: a doomed channel batch revokes the createdInScope gr
 
   const okAcl = createAclStore();
   const ok = await collectNamedOutbound(
-    fakeSandbox({ "outbox/kept.md": bytes("good") }, []),
+    fakeSandbox({ "outbox/kept.md": bytes("good") }),
     handle,
     ["outbox/kept.md"],
     transfer,
@@ -163,7 +202,7 @@ test("collectNamedOutbound: a doomed channel batch revokes the createdInScope gr
 
   const doomedAcl = createAclStore();
   const doomed = await collectNamedOutbound(
-    fakeSandbox({ "outbox/kept.md": bytes("good") }, []),
+    fakeSandbox({ "outbox/kept.md": bytes("good") }),
     handle,
     ["outbox/kept.md", "outbox/gone.md"],
     transfer,
@@ -174,78 +213,47 @@ test("collectNamedOutbound: a doomed channel batch revokes the createdInScope gr
   assert.deepEqual(await doomedAcl.list(), [], "and its rollback leaves no orphan channel grant behind");
 });
 
-test("collectOutbound: harvests every outbox file (the turn-result rail for a non-surfaceTools turn)", async () => {
-  const transfer = createMemoryBlobTransferStore();
-  const sandbox = fakeSandbox({ "outbox/cover.png": bytes("A"), "outbox/leftover.txt": bytes("B") }, [
-    "outbox/cover.png",
-    "outbox/leftover.txt",
-  ]);
-  const r = await collectOutbound(sandbox, handle, transfer);
-  assert.deepEqual(r.attachments.map((a) => a.name).sort(), ["cover.png", "leftover.txt"]);
-});
-
-// --- the transcript has to record what was sent ------------------------------
-// Files that ride on the turn's own result get a `delivery` entry from the
-// orchestrator, and that entry is the only thing the web transcript builds an
-// attachment block from. Files sent through the surface tool reached their
-// destination and the file library but never the transcript, so a web
-// conversation showed the message with no attachments — and no way to recover
-// them on reload, because nothing recorded that they were sent.
-
-function postingTools(recorded: Array<{ text: string; names: string[] }>) {
-  return createSurfaceToolDeps({
+test("surface post returns the sent attachments' metadata (so surfaces can render them)", async () => {
+  const enqueued: unknown[] = [];
+  const tools = createSurfaceToolDeps({
     deps: {
       deliveries: {
-        async enqueue() {
+        async enqueue(input: unknown) {
+          enqueued.push(input);
           return { id: "d1" };
         },
       },
-      sandbox: {
-        async readFileBytes() {
-          return bytes("file");
-        },
-      },
+      sandbox: fakeSandbox({ "qm-brand/cover.png": bytes("PNGDATA") }),
     },
     input: { surfaceTools: true },
-    defaultDestination: { type: "web", target: "web:u1" },
+    actor: { id: "U1" },
+    conversation: { kind: "group" },
+    session: { id: "S1" },
+    scopeId: scopeId("personal", "U1"),
+    defaultDestination: { type: "web", target: "web:thread" },
     strictReadOnly: false,
-    session: { id: "s1", threadRef: "web:u1:t1" },
-    scopeId: scopeId("personal", "u1"),
-    postProvenance: () => ({}),
     provision: async () => handle,
-    blobTransfer: {
-      async put() {
-        return { blobId: "blob" };
-      },
+    blobTransfer: createMemoryBlobTransferStore(),
+    fileRegistration: {
+      store: createMemoryFileArtifactStore(createMemoryDurableByteStore()),
+      ownerScopeId: scopeId("personal", "U1"),
+      createdBy: "U1",
+      seed: "run-post",
     },
-    fileRegistration: { async onRegistered() {} },
-    recordDelivery: async (text: string, attachments: ReadonlyArray<{ name: string }>) => {
-      recorded.push({ text, names: attachments.map((a) => a.name) });
+    postProvenance() {
+      return {};
     },
+    postKeys: turnPostKeys("run-test"),
     spine: { surfaceOutboundCount: 0, crossConversationPosts: 0 },
-  } as unknown as SurfaceToolsContext);
-}
-
-test("posting with files records a delivery entry naming each one", async () => {
-  const recorded: Array<{ text: string; names: string[] }> = [];
-  const r = await postingTools(recorded)!.post("here they are", undefined, ["cover.png", "report.pdf"]);
+  } as unknown as SurfaceToolsContext)!;
+  const r = await tools.post("Here they are", undefined, ["qm-brand/cover.png"]);
   assert.equal(r.ok, true);
-  assert.equal(recorded.length, 1, "one entry for the post");
-  assert.equal(recorded[0]!.text, "here they are");
-  assert.deepEqual(recorded[0]!.names.sort(), ["cover.png", "report.pdf"]);
-});
-
-test("posting without files records nothing — there is no attachment block to draw", async () => {
-  const recorded: Array<{ text: string; names: string[] }> = [];
-  const r = await postingTools(recorded)!.post("just words");
-  assert.equal(r.ok, true);
-  assert.deepEqual(recorded, []);
-});
-
-test("a post that never sends records nothing either", async () => {
-  const recorded: Array<{ text: string; names: string[] }> = [];
-  // Traversal is refused before anything is staged, so there is nothing to note.
-  const r = await postingTools(recorded)!.post("sneaky", undefined, ["../.ssh/id_ed25519"]);
-  assert.equal(r.ok, false);
-  assert.deepEqual(recorded, []);
+  assert.equal(enqueued.length, 1, "the delivery was enqueued");
+  assert.equal(r.attachments?.length, 1, "the post result names what it sent");
+  const a = r.attachments![0]!;
+  assert.equal(a.name, "cover.png");
+  assert.equal(a.mimetype, "image/png");
+  assert.ok(a.sizeBytes > 0);
+  assert.ok(a.artifactId, "artifact id present so the web surface can serve the bytes");
+  assert.ok(!("blobId" in a), "internal blob handle is not leaked to surfaces");
 });

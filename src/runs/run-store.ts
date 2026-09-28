@@ -1,3 +1,5 @@
+import type { SubscribeOptions } from "../util/event-bus.ts";
+import type { RunSignal, RunSignalStore } from "./run-signal-store.ts";
 import type { TurnResult } from "../types.ts";
 import type { OrchestratorInput } from "../core/orchestrator.ts";
 
@@ -23,6 +25,7 @@ export interface Run {
   request: OrchestratorInput;
   result: TurnResult | null;
   deliveryState: RunDeliveryState | null;
+  turnUserSeq: number | null;
   dedupKey: string | null;
   attempts: number;
   errorAttempts: number;
@@ -50,11 +53,16 @@ export interface EnqueueResult {
 export interface RunStore {
   readonly maxClaims?: number;
 
+  subscribeAvailable?(listener: () => void, options?: SubscribeOptions & { pollMs?: number }): () => void;
+
   enqueue(input: EnqueueInput): Promise<EnqueueResult>;
+  getByDedupKey(dedupKey: string): Promise<Run | null>;
 
   claim(workerId: string, ttlMs: number): Promise<Run | null>;
 
   claimById(runId: string, workerId: string, ttlMs: number): Promise<Run | null>;
+
+  claimForSession(sessionId: string, workerId: string, ttlMs: number): Promise<Run | null>;
 
   heartbeat(runId: string, leaseToken: string, ttlMs: number): Promise<boolean>;
 
@@ -62,32 +70,40 @@ export interface RunStore {
 
   complete(runId: string, leaseToken: string, result: TurnResult): Promise<boolean>;
 
-  fail(runId: string, leaseToken: string, error: string, opts?: { retry?: boolean }): Promise<{ requeued: boolean }>;
+  fail(
+    runId: string,
+    leaseToken: string,
+    error: string,
+    opts?: { retry?: boolean; retryAfterMs?: number },
+  ): Promise<{ requeued: boolean }>;
 
   setDeliveryState(runId: string, leaseToken: string | null, state: RunDeliveryState): Promise<boolean>;
+
+  noteTurnUserSeq(runId: string, seq: number): Promise<boolean>;
+
+  latestForThread(threadRef: string, opts?: { excludePrivateMessages?: boolean }): Promise<Run | null>;
+  pendingReturns(limit?: number, afterId?: string): Promise<Run[]>;
+  markReturned(runId: string): Promise<void>;
+  deferReturn(runId: string, delayMs: number): Promise<void>;
 
   onTerminal(listener: (run: Run) => void): void;
 
   get(runId: string): Promise<Run | null>;
 
-  /**
-   * End a run from outside, without its lease.
-   *
-   * A stop has to be final. Interrupting the harness is a request, not a
-   * guarantee: if the turn never returns, the worker keeps heartbeating and the
-   * run stays `running` — which holds the per-session claim lock and queues
-   * every later message in that conversation behind it forever.
-   *
-   * Parks rather than requeues. A run someone deliberately stopped must never
-   * come back on a retry.
-   */
   forceTerminal(runId: string, reason: string): Promise<boolean>;
 
   activeForThread(sessionId: string): Promise<Run | null>;
 
+  inFlightForThread(sessionId: string): Promise<Run[]>;
+
+  withdraw(runId: string, opts?: { unstartedOnly?: boolean }): Promise<boolean>;
+  steerQueued(queuedRunId: string, targetRunId: string, signal: RunSignal, signals: RunSignalStore): Promise<boolean>;
+
+  editPendingText(runId: string, text: string, expectedText: string): Promise<boolean>;
+
   activeSessionIds(): Promise<string[]>;
 
-  list(opts?: { limit?: number }): Promise<Run[]>;
+  list(opts?: { limit?: number; threadRef?: string }): Promise<Run[]>;
 
   reapExpired(
     onRetired?: (sessionIds: string[]) => Promise<void>,
@@ -102,6 +118,10 @@ export interface RunStore {
 const TERMINAL = new Set<Run["status"]>(["done", "failed"]);
 export function isTerminal(status: Run["status"]): boolean {
   return TERMINAL.has(status);
+}
+
+export function releasesDedupKey(result: TurnResult): boolean {
+  return result.refusalKind === "session_busy";
 }
 
 export function errorParks(run: Pick<Run, "errorAttempts" | "maxAttempts" | "attempts">, maxClaims?: number): boolean {

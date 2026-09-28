@@ -7,11 +7,8 @@ import { join } from "node:path";
 import { makeZip } from "../server/zip.ts";
 
 test("the archive is a real zip that unzip can extract byte-for-byte", () => {
-  // A hand-rolled writer is only worth trusting if the system `unzip` reads it,
-  // so this round-trips through the actual tool rather than re-parsing our own
-  // bytes with our own assumptions.
   const entries = [
-    { name: "manifest.json", data: Buffer.from('{"name":"MiniOmni"}\n', "utf8") },
+    { name: "manifest.json", data: Buffer.from('{"name":"QM Browser Bridge"}\n', "utf8") },
     { name: "background.js", data: Buffer.from("console.log('hi');\n", "utf8") },
   ];
   const zip = makeZip(entries);
@@ -21,7 +18,6 @@ test("the archive is a real zip that unzip can extract byte-for-byte", () => {
   try {
     const path = join(dir, "a.zip");
     writeFileSync(path, zip);
-    // `unzip -l` fails loudly on a malformed archive; extraction proves content.
     execFileSync("unzip", ["-o", "-q", path, "-d", join(dir, "out")]);
     for (const e of entries) {
       assert.deepEqual(readFileSync(join(dir, "out", e.name)), e.data, `${e.name} round-trips`);

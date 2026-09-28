@@ -1,6 +1,7 @@
+import { assertDocumentListing } from "./support/file-document-listing.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -9,7 +10,12 @@ import {
   ByteSourceTooLargeError,
   type DurableByteStore,
 } from "../src/files/durable-byte-store.ts";
-import { createMemoryFileArtifactStore, fileArtifactId, type PutFileInput } from "../src/files/file-artifact-store.ts";
+import {
+  ORPHANED_BLOB_GRACE_MS,
+  createMemoryFileArtifactStore,
+  fileArtifactId,
+  type PutFileInput,
+} from "../src/files/file-artifact-store.ts";
 import { scopeId } from "../src/types.ts";
 
 const owner = scopeId("channel", "C1");
@@ -71,6 +77,21 @@ test("DurableByteStore (local-fs) round-trips binary intact across a fresh store
     assert.deepEqual(back, PNG);
     const again = await w.put(PNG);
     assert.equal(again.blobKey, blobKey);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("DurableByteStore (local-fs) accepts concurrent identical writes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "docstore-"));
+  try {
+    const bytes = createLocalDurableByteStore(dir);
+    const big = Buffer.concat([PNG, Buffer.alloc(4 * 1024 * 1024, 7)]);
+    const results = await Promise.all(Array.from({ length: 8 }, () => bytes.put(big)));
+    for (const r of results) assert.equal(r.blobKey, results[0]!.blobKey);
+    assert.deepEqual(await drain(bytes as never, results[0]!.blobKey), big);
+    const leftovers = (await readdir(join(dir, "files"))).filter((name) => name.endsWith(".part"));
+    assert.deepEqual(leftovers, [], "no orphaned partial files survive the race");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -149,6 +170,21 @@ test("listOwnedByScopes: recency DESC, scope-filtered, keyset-paginated", async 
   assert.equal(p2.nextCursor, undefined, "last page has no cursor");
 });
 
+test("listOwnedByScopes: nameQuery matches names case-insensitively across the whole set", async () => {
+  const store = createMemoryFileArtifactStore(createMemoryDurableByteStore());
+  await store.put(put({ id: "a", name: "Quarterly Report.pdf", path: "p/a", data: Buffer.from("a"), createdAt: 100 }));
+  await store.put(put({ id: "b", name: "notes.txt", path: "p/b", data: Buffer.from("b"), createdAt: 200 }));
+  await store.put(put({ id: "c", name: "report-draft.txt", path: "p/c", data: Buffer.from("c"), createdAt: 300 }));
+
+  const hit = await store.listOwnedByScopes([owner], { nameQuery: "REPORT" });
+  assert.deepEqual(
+    hit.files.map((f) => f.id),
+    ["c", "a"],
+    "matches by name regardless of case, newest first",
+  );
+  assert.equal((await store.listOwnedByScopes([owner], { nameQuery: "missing" })).files.length, 0);
+});
+
 test("resolveByOwnerPaths returns the SHARED set by (owner, path); disabled excluded", async () => {
   const store = createMemoryFileArtifactStore(createMemoryDurableByteStore());
   await store.put(put({ id: "a", path: "p/a", data: Buffer.from("a") }));
@@ -170,34 +206,148 @@ test("resolveByOwnerPaths returns the SHARED set by (owner, path); disabled excl
   assert.ok(await store.get("a", { includeDisabled: true }), "get can surface disabled");
 });
 
-test("delete never reclaims bytes another row still points at", async () => {
-  // Blob keys are files/<sha256>, so byte-identical uploads dedup to one blob.
-  // Reclaiming it whenever any one row is deleted would silently empty every
-  // other artifact referencing it — data loss landing on a file nobody
-  // touched. The delete is therefore reference-counted.
+test("delete removes the ROW only — bytes shared with another row stay openable", async () => {
   const store = createMemoryFileArtifactStore(createMemoryDurableByteStore());
   const { artifact: out } = await store.put(put({ id: "out", direction: "out", path: "p/out", data: PNG }));
   const { artifact: inb } = await store.put(put({ id: "in", direction: "in", path: "p/in", data: PNG }));
-  assert.equal(out.blobKey, inb.blobKey, "the fixture must actually share a blob");
+  assert.equal(out.blobKey, inb.blobKey, "identical bytes dedup to one blob");
 
   await store.delete("out");
   assert.equal(await store.get("out"), null, "row gone");
+  assert.equal(await store.sweepOrphanedBlobs(Date.now() + ORPHANED_BLOB_GRACE_MS + 1), 0);
   const back = await drain(store, "in");
-  assert.deepEqual(back, PNG, "the surviving row still reads its contents");
+  assert.deepEqual(back, PNG, "the surviving row's bytes are intact");
 });
 
-test("deleting the last reference to a blob reclaims the bytes", async () => {
+test("the last reference's bytes are reclaimed by the orphan sweep once the grace passes", async () => {
   const bytes = createMemoryDurableByteStore();
   const store = createMemoryFileArtifactStore(bytes);
   const only = await store.put(put({ id: "art-only" }));
   const blobKey = only.artifact.blobKey!;
 
   await store.delete("art-only");
+  assert.equal(await store.sweepOrphanedBlobs(), 0, "inside the grace nothing is reclaimed");
+  assert.ok(await bytes.open(blobKey));
+  assert.equal(await store.sweepOrphanedBlobs(Date.now() + ORPHANED_BLOB_GRACE_MS + 1), 1);
+  assert.equal(await bytes.open(blobKey), null, "nothing references it, so it is not left behind");
+});
 
-  assert.equal(await bytes.open(blobKey), null, "nothing references it, so it should not be left behind");
+test("an identical upload racing a delete keeps its bytes", async () => {
+  const bytes = createMemoryDurableByteStore();
+  const store = createMemoryFileArtifactStore(bytes);
+  const first = await store.put(put({ id: "first", path: "p/first" }));
+  await store.delete("first");
+  const again = await store.put(put({ id: "again", path: "p/again" }));
+  assert.equal(again.artifact.blobKey, first.artifact.blobKey);
+  assert.equal(await store.sweepOrphanedBlobs(Date.now() + ORPHANED_BLOB_GRACE_MS + 1), 0);
+  assert.deepEqual(await drain(store, "again"), PNG, "the new row is never left dangling");
+});
+
+test("re-uploading orphaned bytes refreshes the orphan so a sweep mid-upload keeps them", async () => {
+  const bytes = createMemoryDurableByteStore();
+  let written!: () => void;
+  const paused = new Promise<void>((resolve) => (written = resolve));
+  let release!: () => void;
+  const publishing = new Promise<void>((resolve) => (release = resolve));
+  let gated = false;
+  const store = createMemoryFileArtifactStore({
+    ...bytes,
+    put: async (source, opts) => {
+      const stored = await bytes.put(source, opts);
+      if (gated) {
+        written();
+        await publishing;
+      }
+      return stored;
+    },
+  });
+  await store.put(put({ id: "first", path: "p/first" }));
+  await store.delete("first");
+  const orphanedBy = Date.now();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  gated = true;
+  const again = store.put(put({ id: "again", path: "p/again" }));
+  await paused;
+  try {
+    assert.equal(
+      await store.sweepOrphanedBlobs(orphanedBy + ORPHANED_BLOB_GRACE_MS),
+      0,
+      "a reserved upload's bytes are not due",
+    );
+  } finally {
+    release();
+  }
+  await again;
+  assert.deepEqual(await drain(store, "again"), PNG, "the new row opens after publish");
+});
+
+test("bytes stored for an upload that never publishes are reclaimed by the sweep", async () => {
+  const bytes = createMemoryDurableByteStore();
+  const store = createMemoryFileArtifactStore(bytes);
+  await store.delete("ghost");
+  await assert.rejects(store.put(put({ id: "ghost", data: Buffer.from("never published") })), /deleted/);
+  assert.equal(await store.sweepOrphanedBlobs(), 0, "inside the grace nothing is reclaimed");
+  assert.equal(await store.sweepOrphanedBlobs(Date.now() + ORPHANED_BLOB_GRACE_MS + 1), 1);
 });
 
 test("deleting a row with no stored bytes is not an error", async () => {
   const store = createMemoryFileArtifactStore(createMemoryDurableByteStore());
   await store.delete("never-existed");
+});
+
+test("document listing groups authorized copies before pagination", async () => {
+  await assertDocumentListing(createMemoryFileArtifactStore(createMemoryDurableByteStore()));
+});
+
+test("document listing keeps unknown hashes separate and picks deterministic representatives", async () => {
+  const store = createMemoryFileArtifactStore(createMemoryDurableByteStore());
+  for (const id of ["b", "a", "unknown-1", "unknown-2"]) {
+    const { artifact } = await store.put(put({ id, path: id, createdAt: 100 }));
+    if (id.startsWith("unknown")) artifact.sha256 = null;
+  }
+  assert.deepEqual(
+    (await store.listDocuments([owner], [])).files.map((f) => f.id),
+    ["unknown-2", "unknown-1", "a"],
+  );
+});
+
+test("local stream failure removes partial bytes and publishes nothing", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "qm-file-failure-"));
+  try {
+    const bytes = createLocalDurableByteStore(dir);
+    async function* failing() {
+      yield Buffer.alloc(1024);
+      throw new Error("source disconnected");
+    }
+    await assert.rejects(bytes.put(failing()), /source disconnected/);
+    assert.deepEqual(await readdir(join(dir, "files")), []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an identical upload landing while the sweep deletes that blob waits for it and keeps its bytes", async () => {
+  const bytes = createMemoryDurableByteStore();
+  let deleteStarted!: () => void;
+  const started = new Promise<void>((resolve) => (deleteStarted = resolve));
+  let finishDelete!: () => void;
+  const gate = new Promise<void>((resolve) => (finishDelete = resolve));
+  const store = createMemoryFileArtifactStore({
+    ...bytes,
+    delete: async (blobKey) => {
+      deleteStarted();
+      await gate;
+      await bytes.delete(blobKey);
+    },
+  });
+  await store.put(put({ id: "first", path: "p/first" }));
+  await store.delete("first");
+  const sweep = store.sweepOrphanedBlobs(Date.now() + ORPHANED_BLOB_GRACE_MS + 1);
+  await started;
+  const again = store.put(put({ id: "again", path: "p/again" }));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  finishDelete();
+  assert.equal(await sweep, 1);
+  await again;
+  assert.deepEqual(await drain(store, "again"), PNG, "the new row is never left dangling");
 });

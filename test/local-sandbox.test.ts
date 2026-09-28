@@ -95,6 +95,14 @@ test("a stopped Docker daemon fails provision with the actionable message", asyn
   );
 });
 
+test("a label-inspection error does not misreport an existing image as missing", async () => {
+  const fake = installFakeDocker(daemonPort);
+  fake.labelInspectFails = true;
+  const sb = makeSandbox(fake);
+  const handle = await sb.provision(rw(scopeId("personal", "attested-image")));
+  await sb.teardown(handle, { destroy: true });
+});
+
 test("a missing sandbox image fails provision with the build hint", async () => {
   const fake = installFakeDocker(daemonPort);
   fake.imageMissing = true;
@@ -555,6 +563,7 @@ test("a heal whose container reconnect fails removes the container so the next t
   fake.connectFail = { container: h1.id, stderr: "Error response from daemon: boom" };
   await assert.rejects(sb.provision(rw(scope)), /network connect .* failed: .*boom/);
   assert.equal(fake.containers.has(h1.id), false, "no zero-network container is left to start into nothing");
+  assert.deepEqual(qmNetworks(fake), [], "the network the heal created goes with the container");
   assert.equal(fake.volumes.has(localVolumeName(scope)), true);
 
   delete fake.connectFail;
@@ -562,6 +571,28 @@ test("a heal whose container reconnect fails removes the container so the next t
   assert.equal(h2.id, h1.id);
   assert.equal(h2.coldStart, false, "the home volume survived");
   assert.equal(fake.runCount, 2);
+});
+
+test("a heal racing destroyScope leaves no /28 network behind", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const scope = scopeId("personal", "U45");
+  const name = localContainerName(scope);
+  let pauseHeal = false;
+  const slowHeal: typeof fake.dockerExec = async (args, timeoutMs) => {
+    if (pauseHeal && args[0] === "network" && args[1] === "inspect" && args[2] === localNetworkName(name)) {
+      pauseHeal = false;
+      await sleep(30);
+    }
+    return fake.dockerExec(args, timeoutMs);
+  };
+  const sb = makeSandbox(fake, { dockerExec: slowHeal });
+  const h = await sb.provision(rw(scope));
+  fake.containers.get(h.id)!.running = false;
+  fake.networks.delete(localNetworkName(h.id));
+  pauseHeal = true;
+  await Promise.allSettled([sb.run(h, "echo ok"), sleep(5).then(() => sb.destroyScope!(scope))]);
+  assert.equal(fake.containers.has(name), false);
+  assert.deepEqual(qmNetworks(fake), []);
 });
 
 test("a network removed between create and run leaves no created container or network behind", async () => {
@@ -595,4 +626,36 @@ test("a failed network rm is reported; an already-missing network is not", async
   fake.networks.delete(localNetworkName(scratch.id));
   await sb.teardown(scratch);
   assert.deepEqual(reported, []);
+});
+
+test("a replacement core reattaches to an already-running sandbox", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const sb = makeSandbox(fake, { coreContainer: FAKE_CORE_CONTAINER, fetchImpl: viaCoreNetwork(fake) });
+  const layers = rw(scopeId("personal", "U46"));
+  const first = await sb.provision(layers);
+  const net = localNetworkName(first.id);
+  assert.equal(fake.coreNets.has(net), true);
+  fake.coreNets.delete(net);
+  const second = await sb.provision(layers);
+  assert.equal(second.id, first.id);
+  assert.equal(fake.coreNets.has(net), true);
+  await sb.teardown(first);
+  await sb.teardown(second, { destroy: true });
+});
+
+test("containerized core publishes no host port and reaches the daemon by container name", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const seen: string[] = [];
+  const route = viaCoreNetwork(fake);
+  const fetchImpl: typeof fetch = (input, init) => {
+    seen.push(String(input));
+    return route(input, init);
+  };
+  const sb = makeSandbox(fake, { coreContainer: FAKE_CORE_CONTAINER, fetchImpl });
+  const h = await sb.provision(rw(scopeId("personal", "U47")));
+  assert.equal(fake.containers.get(h.id)!.args.includes("-p"), false);
+  assert.equal(fake.coreNets.has(localNetworkName(h.id)), true);
+  assert.ok(seen.includes(`http://${h.id}:8080/health`));
+  await sb.teardown(h, { destroy: true });
+  assert.equal(fake.coreNets.has(localNetworkName(h.id)), false);
 });
