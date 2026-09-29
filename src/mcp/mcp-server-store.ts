@@ -22,6 +22,7 @@ export interface McpServer {
   clientSecret?: string;
   oauthScopes?: string[];
   iconUrl?: string;
+  resolvedIconUrl?: string;
   readOnly: boolean;
   enabled: boolean;
   updatedAt: number;
@@ -49,16 +50,8 @@ export function parseMcpIconUrl(value: unknown): string | undefined | null {
   }
 }
 
-export function mcpServerIcon(server: Pick<McpServer, "url" | "iconUrl">): string | undefined {
-  if (server.iconUrl) return server.iconUrl;
-  try {
-    const url = new URL(server.url);
-    if (url.protocol !== "https:" || !url.hostname.includes(".")) return undefined;
-    const site = url.hostname.replace(/^mcp\./, "");
-    return parseMcpIconUrl(`https://${site.includes(".") ? site : url.hostname}/favicon.ico`) ?? undefined;
-  } catch {
-    return undefined;
-  }
+export function mcpServerIcon(server: Pick<McpServer, "iconUrl" | "resolvedIconUrl">): string | undefined {
+  return server.iconUrl ?? server.resolvedIconUrl;
 }
 
 export function singleLineName(value: string): string {

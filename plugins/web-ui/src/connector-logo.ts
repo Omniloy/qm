@@ -28,6 +28,12 @@ const CONNECTOR_LOGOS: Record<string, string> = {
 
 const REMOTE_LOGO = /^https:\/\/[^\s"'<>\\`]{1,2040}$/;
 
+function settleRemoteLogo(event: Event): void {
+  const img = event.currentTarget as HTMLImageElement;
+  if (img.naturalWidth > 0) img.dataset.loaded = "";
+  else img.hidden = true;
+}
+
 export function connectorLogo(id: string, logoUrl?: string): TemplateResult {
   const path = CONNECTOR_LOGOS[id];
   if (!path && logoUrl && REMOTE_LOGO.test(logoUrl)) {
@@ -39,9 +45,8 @@ export function connectorLogo(id: string, logoUrl?: string): TemplateResult {
         height="18"
         loading="lazy"
         referrerpolicy="no-referrer"
-        @error=${(event: Event) => {
-          (event.currentTarget as HTMLImageElement).hidden = true;
-        }}
+        @load=${settleRemoteLogo}
+        @error=${settleRemoteLogo}
     /></span>`;
   }
   if (!path) return html`<span class="connector-logo">${icon(Plug, 18)}</span>`;

@@ -217,6 +217,12 @@ const PLUG = html`<svg
   <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z" />
 </svg>`;
 
+function settleIcon(event: Event) {
+  const img = event.currentTarget as HTMLImageElement;
+  if (img.naturalWidth > 0) img.style.background = "var(--surface, var(--bg, #fff))";
+  else img.hidden = true;
+}
+
 function mcpIcon(src: string | undefined) {
   return html`<span
     class="mcp-icon"
@@ -231,10 +237,9 @@ function mcpIcon(src: string | undefined) {
             height="20"
             loading="lazy"
             referrerpolicy="no-referrer"
-            style="position: absolute; inset: 0; margin: auto; object-fit: contain; background: var(--surface, var(--bg, #fff))"
-            @error=${(event: Event) => {
-              (event.currentTarget as HTMLImageElement).hidden = true;
-            }}
+            style="position: absolute; inset: 0; margin: auto; object-fit: contain"
+            @load=${settleIcon}
+            @error=${settleIcon}
           />`
         : nothing
     }</span

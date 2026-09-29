@@ -113,36 +113,40 @@ async function assertPublicHost(url: URL, net: McpOAuthNet): Promise<void> {
   if (addresses === "private") throw new McpOAuthError(`${url.host} must resolve to a public network address`);
 }
 
-async function readCapped(res: Response): Promise<string> {
+async function readCapped(res: Response, truncateAt: number | undefined): Promise<string> {
   if (!res.body) return "";
   const reader = res.body.getReader();
+  const limit = truncateAt ?? MAX_BODY_BYTES;
   const chunks: Uint8Array[] = [];
   let size = 0;
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
     size += value.byteLength;
-    if (size > MAX_BODY_BYTES) {
+    if (size > limit) {
       await reader.cancel().catch(() => undefined);
-      throw new McpOAuthError("response body is too large");
+      if (truncateAt === undefined) throw new McpOAuthError("response body is too large");
+      chunks.push(value.subarray(0, value.byteLength - (size - limit)));
+      break;
     }
     chunks.push(value);
   }
   return Buffer.concat(chunks).toString("utf8");
 }
 
-async function safeFetch(
+export async function safeFetch(
   raw: string,
-  init: { method: string; headers: Record<string, string>; body?: string },
+  init: { method: string; headers: Record<string, string>; body?: string; truncateAt?: number },
   net: McpOAuthNet,
   label: string,
 ): Promise<SafeResponse> {
+  const { truncateAt, ...request } = init;
   const url = assertSafeUrl(raw, net, label);
   await assertPublicHost(url, net);
   let res: Response;
   try {
     res = await (net.fetchImpl ?? fetch)(url.toString(), {
-      ...init,
+      ...request,
       redirect: "error",
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
@@ -150,7 +154,7 @@ async function safeFetch(
     throw new McpOAuthError(`${label} request to ${url.host} failed`);
   }
   if (res.status >= 300 && res.status < 400) throw new McpOAuthError(`${label} redirected, which is not allowed`);
-  return { status: res.status, ok: res.ok, headers: res.headers, body: await readCapped(res) };
+  return { status: res.status, ok: res.ok, headers: res.headers, body: await readCapped(res, truncateAt) };
 }
 
 function parseJsonObject(text: string): Record<string, unknown> | null {

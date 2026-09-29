@@ -4,6 +4,7 @@
 // HTTP destination every scope's agents can call, so it is governed like a
 // model-provider credential, not like a personal connector.
 
+import { resolveMcpSiteIcon } from "../../../mcp/mcp-icon.ts";
 import type { McpOAuthRegistration } from "../../../mcp/mcp-oauth.ts";
 import {
   isValidMcpServerId,
@@ -59,6 +60,12 @@ async function redactWithOAuth(ctx: ApiCtx, server: McpServer) {
     ctx.deps.mcpOAuth.catalogs.get(server.id),
   ]);
   return redact(server, registration, !!catalog);
+}
+
+async function siteIcon(ctx: ApiCtx, url: string, existing: McpServer | null, reregister: boolean) {
+  if (existing?.url === url && existing.resolvedIconUrl && !reregister) return existing.resolvedIconUrl;
+  const net = ctx.deps.mcpOAuth?.net;
+  return net ? resolveMcpSiteIcon(url, net) : undefined;
 }
 
 export async function getMcpServers(ctx: ApiCtx): Promise<void> {
@@ -206,6 +213,8 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
       message: "client-credentials auth requires clientId and clientSecret",
     });
   }
+  const resolvedIconUrl = iconUrl ? undefined : await siteIcon(ctx, url, existing, b.reregister === true);
+  if (resolvedIconUrl) server.resolvedIconUrl = resolvedIconUrl;
   if (oauth) {
     const result = await registerMcpOAuthClient(ctx.deps, {
       server,

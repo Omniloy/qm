@@ -164,6 +164,15 @@ test("MCP servers and Composio are managed from the Connectors view", async () =
     assert.equal(icon.getAttribute("referrerpolicy"), "no-referrer");
     assert.equal(icon.getAttribute("loading"), "lazy");
     assert.ok(doc.querySelector("#mcp-list .mcp-icon svg"));
+    assert.equal(icon.style.background, "");
+    Object.defineProperty(icon, "naturalWidth", { configurable: true, value: 32 });
+    icon.dispatchEvent(new dom.window.Event("load"));
+    assert.equal(icon.hidden, false);
+    assert.notEqual(icon.style.background, "");
+    Object.defineProperty(icon, "naturalWidth", { configurable: true, value: 0 });
+    icon.dispatchEvent(new dom.window.Event("load"));
+    assert.equal(icon.hidden, true);
+    icon.hidden = false;
     icon.dispatchEvent(new dom.window.Event("error"));
     assert.equal(icon.hidden, true);
     assert.match(doc.getElementById("composio-state")!.textContent!, /Not configured/);

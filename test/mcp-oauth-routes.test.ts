@@ -483,13 +483,14 @@ test("a callback for a server disabled after the flow started stores no token", 
 test("a connected person's status read retries a catalog capture that failed at sign-in", async () => {
   const srv = await start();
   try {
+    await srv.servers.put(mcpServer("granola", { resolvedIconUrl: "https://www.granola.ai/favicon/favicon.svg" }));
     await srv.oauth.tokens.set("granola", "internal:alice", { accessToken: "granola-at" }, "client-1");
     assert.equal(await srv.oauth.catalogs.get("granola"), null);
     const statusPath = "/v1/connectors/oauth/status?principalId=internal%3Aalice";
     const status = await fetch(`${srv.base}${statusPath}`, { headers: sign("GET", statusPath) });
     assert.equal(status.status, 200);
     const providers = ((await status.json()) as { providers: Record<string, { icon?: string }> }).providers;
-    assert.equal(providers["mcp-granola"]?.icon, "https://example.com/favicon.ico");
+    assert.equal(providers["mcp-granola"]?.icon, "https://www.granola.ai/favicon/favicon.svg");
     for (let i = 0; i < 50 && !(await srv.oauth.catalogs.get("granola")); i++)
       await new Promise((r) => setTimeout(r, 10));
     assert.deepEqual(

@@ -96,14 +96,22 @@ test("MCP admin validates and preserves credential scope, without returning secr
   assert.equal((await store.get("crm"))?.credentialAccountType, undefined);
 });
 
-test("MCP admin stores an optional https icon, defaults to the site favicon, and keeps names on one line", async (t) => {
+test("MCP admin stores an optional https icon, otherwise resolves the site icon once, and keeps names on one line", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "mcp-admin-icon-"));
   const built = buildApp(testConfig({ dataDir: dir }));
   const store = createMcpServerStore(createMemoryMap<McpServer>());
+  const homepages: string[] = [];
+  const fetchImpl = (async (input: string | URL | Request) => {
+    const href = String(input);
+    if (!href.endsWith(".example.com/")) return new Response("", { status: 404 });
+    homepages.push(href);
+    return new Response(`<head><link rel="icon" href="/brand-${homepages.length}.svg"></head>`);
+  }) as typeof fetch;
   const server = createInsecureTestServer(built.app, {
     admin: built.admin,
     auditLog: built.auditLog,
     mcpServers: store,
+    mcpOAuth: oauthStores({ fetchImpl, lookup: async () => ["34.1.2.3"] }),
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
@@ -135,12 +143,27 @@ test("MCP admin stores an optional https icon, defaults to the site favicon, and
   assert.equal(body.server.iconUrl, "https://cdn.example.com/crm.png");
   assert.equal(body.server.icon, "https://cdn.example.com/crm.png");
   assert.equal(body.server.name, "CRM - forged: line");
+  assert.deepEqual(homepages, []);
   assert.equal((await put({ name: "CRM" })).status, 200);
   assert.equal((await store.get("crm"))?.iconUrl, "https://cdn.example.com/crm.png");
   assert.equal((await put({ iconUrl: "" })).status, 200);
   assert.equal((await store.get("crm"))?.iconUrl, undefined);
-  const listed = (await (await fetch(base, { headers: ADMIN })).json()) as { servers: Array<{ icon?: string }> };
-  assert.equal(listed.servers[0]?.icon, "https://tools.example.com/favicon.ico");
+  assert.equal((await store.get("crm"))?.resolvedIconUrl, "https://tools.example.com/brand-1.svg");
+  assert.equal((await put({ name: "CRM 2" })).status, 200);
+  assert.deepEqual(homepages, ["https://tools.example.com/"]);
+  const listed = (await (await fetch(base, { headers: ADMIN })).json()) as {
+    servers: Array<{ icon?: string; resolvedIconUrl?: string }>;
+  };
+  assert.equal(listed.servers[0]?.icon, "https://tools.example.com/brand-1.svg");
+  assert.equal(listed.servers[0]?.resolvedIconUrl, "https://tools.example.com/brand-1.svg");
+  assert.equal((await put({ url: "https://mcp.other.example.com/mcp" })).status, 200);
+  assert.equal((await store.get("crm"))?.resolvedIconUrl, "https://other.example.com/brand-2.svg");
+  assert.equal(
+    (await put({ url: "https://mcp.other.example.com/mcp", iconUrl: "https://cdn.example.com/x.png" })).status,
+    200,
+  );
+  assert.equal((await store.get("crm"))?.resolvedIconUrl, undefined);
+  assert.equal(homepages.length, 2);
 });
 
 test("production wiring never uses operator fallback tokens for per-user MCP calls", async (t) => {
@@ -204,6 +227,7 @@ const GRANOLA_AS = "https://mcp-auth.granola.ai";
 
 function granolaNet() {
   const registrations: Array<Record<string, unknown>> = [];
+  const homepageFetches: string[] = [];
   const fetchImpl = (async (input: string | URL | Request, init: RequestInit = {}) => {
     const url = new URL(String(input));
     const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
@@ -214,6 +238,13 @@ function granolaNet() {
           "www-authenticate": `Bearer resource_metadata="${url.origin}/.well-known/oauth-protected-resource${url.pathname}"`,
         },
       });
+    }
+    if (String(input) === "https://granola.ai/") return new Response("", { status: 308 });
+    if (String(input) === "https://www.granola.ai/") {
+      homepageFetches.push(String(input));
+      return new Response(
+        '<head><link rel="icon" href="/favicon/favicon.ico" sizes="any"/><link rel="icon" href="/favicon/favicon.svg" type="image/svg+xml"/></head>',
+      );
     }
     if (url.pathname.startsWith("/.well-known/oauth-protected-resource/")) {
       const resource = `${url.origin}${url.pathname.slice("/.well-known/oauth-protected-resource".length)}`;
@@ -243,7 +274,7 @@ function granolaNet() {
     }
     return new Response("", { status: 404 });
   }) as typeof fetch;
-  return { net: { fetchImpl, lookup: async () => ["34.1.2.3"] }, registrations };
+  return { net: { fetchImpl, lookup: async () => ["34.1.2.3"] }, registrations, homepageFetches };
 }
 
 async function serveAdmin(t: { after: (fn: () => Promise<void>) => void }, deps: Record<string, unknown>) {
@@ -274,7 +305,7 @@ function oauthStores(net: ReturnType<typeof granolaNet>["net"]) {
 }
 
 test("OAuth MCP servers register via discovery and DCR, reuse the registration, and never return secrets", async (t) => {
-  const { net, registrations } = granolaNet();
+  const { net, registrations, homepageFetches } = granolaNet();
   const oauth = oauthStores(net);
   const store = createMcpServerStore(createMemoryMap<McpServer>());
   const { base, put } = await serveAdmin(t, {
@@ -292,8 +323,9 @@ test("OAuth MCP servers register via discovery and DCR, reuse the registration, 
   const body = JSON.parse(text) as {
     signInRequired: boolean;
     oauth: { clientId: string; redirectUri: string; issuer: string; source: string; scopes: string[] };
-    server: { credentialScope: string; credentialHost?: string; hasCatalog: boolean };
+    server: { credentialScope: string; credentialHost?: string; hasCatalog: boolean; icon?: string };
   };
+  assert.equal(body.server.icon, "https://www.granola.ai/favicon/favicon.svg");
   assert.equal(body.signInRequired, true);
   assert.equal(body.oauth.clientId, "dcr-client-1");
   assert.equal(body.oauth.issuer, GRANOLA_AS);
@@ -325,8 +357,10 @@ test("OAuth MCP servers register via discovery and DCR, reuse the registration, 
   assert.equal(row?.hasCatalog, true);
   assert.equal(row?.oauth?.clientId, "dcr-client-1");
 
+  assert.equal(homepageFetches.length, 1);
   assert.equal((await put("granola", { ...granola, reregister: true })).status, 200);
   assert.equal(registrations.length, 2);
+  assert.equal(homepageFetches.length, 2);
   assert.equal(await oauth.tokens.accessToken("granola", "internal:alice"), null);
   assert.equal(await oauth.catalogs.get("granola"), null);
 

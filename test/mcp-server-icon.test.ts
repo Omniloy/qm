@@ -7,6 +7,7 @@ import {
   singleLineName,
   type McpServer,
 } from "../src/mcp/mcp-server-store.ts";
+import { iconLinksFromHtml, resolveMcpSiteIcon } from "../src/mcp/mcp-icon.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
 
 test("icon URLs must be plain https image links", () => {
@@ -29,17 +30,116 @@ test("icon URLs must be plain https image links", () => {
     assert.equal(parseMcpIconUrl(bad), null, String(bad));
 });
 
-test("without an icon the site favicon is used, and only for public https servers", () => {
-  assert.equal(mcpServerIcon({ url: "https://mcp.linear.app/mcp" }), "https://linear.app/favicon.ico");
-  assert.equal(mcpServerIcon({ url: "https://tools.example.com/mcp" }), "https://tools.example.com/favicon.ico");
-  assert.equal(mcpServerIcon({ url: "https://mcp.io/mcp" }), "https://mcp.io/favicon.ico");
-  assert.equal(mcpServerIcon({ url: "http://tools.example.com/mcp" }), undefined);
-  assert.equal(mcpServerIcon({ url: "https://localhost:8080/mcp" }), undefined);
-  assert.equal(mcpServerIcon({ url: "not a url" }), undefined);
+test("an explicit icon wins over the resolved one, and nothing is guessed without either", () => {
+  assert.equal(mcpServerIcon({}), undefined);
   assert.equal(
-    mcpServerIcon({ url: "https://mcp.linear.app/mcp", iconUrl: "https://cdn.example.com/l.png" }),
+    mcpServerIcon({ resolvedIconUrl: "https://www.granola.ai/favicon/favicon.svg" }),
+    "https://www.granola.ai/favicon/favicon.svg",
+  );
+  assert.equal(
+    mcpServerIcon({ iconUrl: "https://cdn.example.com/l.png", resolvedIconUrl: "https://linear.app/icon.svg" }),
     "https://cdn.example.com/l.png",
   );
+});
+
+const GRANOLA_HOME = `<!DOCTYPE html><html><head><meta charset="utf-8"/>
+<link rel="stylesheet" href="/_next/static/css/app.css"/></head><body>${"x".repeat(300_000)}
+<link rel="manifest" href="/favicon/site.webmanifest"/>
+<link rel="icon" href="/favicon/favicon.ico" sizes="any"/>
+<link rel="icon" href="/favicon/favicon-96x96.png" sizes="96x96" type="image/png"/>
+<link rel="icon" href="/favicon/favicon.svg" type="image/svg+xml"/>
+<link rel="apple-touch-icon" href="/favicon/apple-touch-icon.png" sizes="180x180"/>
+</body></html>`;
+
+test("icon links are ranked svg, then raster of at least 32px, then ico, and only safe https links survive", () => {
+  assert.deepEqual(iconLinksFromHtml(GRANOLA_HOME, "https://www.granola.ai/"), [
+    "https://www.granola.ai/favicon/favicon.svg",
+    "https://www.granola.ai/favicon/favicon-96x96.png",
+    "https://www.granola.ai/favicon/apple-touch-icon.png",
+    "https://www.granola.ai/favicon/favicon.ico",
+  ]);
+  const page = `<head>
+    <LINK REL='Shortcut Icon' HREF='/s.ico?v=1&amp;x=2'>
+    <link rel="icon" sizes="16x16" href="/tiny.png">
+    <link rel="mask-icon" href="/mask.svg">
+    <link rel="icon" href="data:image/png;base64,AAAA">
+    <link rel="icon" href="http://cdn.example.com/plain.svg">
+    <link rel="icon" href="//cdn.example.com/proto.png" sizes="48x48">
+    <link rel="icon" href='/a"b.svg'>
+  </head>`;
+  assert.deepEqual(iconLinksFromHtml(page, "https://tools.example.com/"), [
+    "https://tools.example.com/a%22b.svg",
+    "https://cdn.example.com/proto.png",
+    "https://tools.example.com/s.ico?v=1&x=2",
+    "https://tools.example.com/tiny.png",
+  ]);
+  assert.deepEqual(iconLinksFromHtml("<html><body>no icons</body></html>", "https://tools.example.com/"), []);
+});
+
+function siteNet(routes: Record<string, () => Response>, lookup = async () => ["34.1.2.3"]) {
+  const requested: string[] = [];
+  const fetchImpl = (async (input: string | URL | Request, init: RequestInit = {}) => {
+    requested.push(String(input));
+    assert.equal(init.redirect, "error");
+    const route = routes[String(input)];
+    return route ? route() : new Response("", { status: 404 });
+  }) as typeof fetch;
+  return { net: { fetchImpl, lookup }, requested };
+}
+
+test("the site icon comes from the homepage, trying www when the bare domain redirects", async () => {
+  const { net, requested } = siteNet({
+    "https://granola.ai/": () => new Response("", { status: 308, headers: { location: "https://www.granola.ai/" } }),
+    "https://www.granola.ai/": () => new Response(GRANOLA_HOME, { headers: { "content-type": "text/html" } }),
+  });
+  assert.equal(
+    await resolveMcpSiteIcon("https://mcp.granola.ai/mcp", net),
+    "https://www.granola.ai/favicon/favicon.svg",
+  );
+  assert.deepEqual(requested, ["https://granola.ai/", "https://www.granola.ai/"]);
+});
+
+test("without icon links only a favicon.ico confirmed as an image is used", async () => {
+  const bare = () => new Response("<html><head></head></html>");
+  const image = siteNet({
+    "https://tools.example.com/": bare,
+    "https://tools.example.com/favicon.ico": () => new Response("ico", { headers: { "content-type": "image/x-icon" } }),
+  });
+  assert.equal(
+    await resolveMcpSiteIcon("https://mcp.tools.example.com/mcp", image.net),
+    "https://tools.example.com/favicon.ico",
+  );
+  const html = siteNet({
+    "https://tools.example.com/": bare,
+    "https://tools.example.com/favicon.ico": () => new Response("<html>", { headers: { "content-type": "text/html" } }),
+  });
+  assert.equal(await resolveMcpSiteIcon("https://mcp.tools.example.com/mcp", html.net), undefined);
+  assert.deepEqual(html.requested, [
+    "https://tools.example.com/",
+    "https://tools.example.com/favicon.ico",
+    "https://www.tools.example.com/",
+  ]);
+});
+
+test("site icon resolution never leaves https or the public network", async () => {
+  const home = { "https://tools.example.com/": () => new Response(GRANOLA_HOME) };
+  const privateNet = siteNet(home, async () => ["10.0.0.1"]);
+  assert.equal(await resolveMcpSiteIcon("https://mcp.tools.example.com/mcp", privateNet.net), undefined);
+  assert.deepEqual(privateNet.requested, []);
+  const loopback = siteNet(home);
+  assert.equal(
+    await resolveMcpSiteIcon("https://127.0.0.1/mcp", {
+      ...loopback.net,
+      lookup: async () => ["127.0.0.1"],
+      allowLoopbackHttp: true,
+    }),
+    undefined,
+  );
+  for (const url of ["http://tools.example.com/mcp", "https://localhost:8080/mcp", "not a url"]) {
+    const plain = siteNet(home);
+    assert.equal(await resolveMcpSiteIcon(url, plain.net), undefined, url);
+    assert.deepEqual(plain.requested, [], url);
+  }
 });
 
 test("the store serves every server name on one line, including names saved before the rule", async () => {

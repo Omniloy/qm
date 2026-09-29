@@ -61,7 +61,7 @@ test("MCP connector cards show their icon, start sign-in once per click, and fre
             available: true,
             connected,
             hosts: [],
-            icon: "https://granola.ai/favicon.ico",
+            icon: "https://www.granola.ai/favicon/favicon.svg",
           },
           "mcp-odd": { kind: "mcp", name: "Odd", available: true, hosts: [], icon: 'http://odd.example.com/"x".png' },
           google: { name: "Google Workspace", available: true, connected: false, hosts: [] },
@@ -85,10 +85,20 @@ test("MCP connector cards show their icon, start sign-in once per click, and fre
     await renderConnectors();
     await tick();
     const logo = card("mcp-granola").querySelector<HTMLImageElement>(".connector-logo-remote img")!;
-    assert.equal(logo.getAttribute("src"), "https://granola.ai/favicon.ico");
+    assert.equal(logo.getAttribute("src"), "https://www.granola.ai/favicon/favicon.svg");
     assert.equal(logo.getAttribute("referrerpolicy"), "no-referrer");
     assert.equal(logo.getAttribute("loading"), "lazy");
     assert.ok(card("mcp-granola").querySelector(".connector-logo-remote svg"));
+    Object.defineProperty(logo, "naturalWidth", { configurable: true, value: 96 });
+    logo.dispatchEvent(new dom.window.Event("load"));
+    assert.equal(logo.hidden, false);
+    assert.equal(logo.hasAttribute("data-loaded"), true);
+    Object.defineProperty(logo, "naturalWidth", { configurable: true, value: 0 });
+    logo.removeAttribute("data-loaded");
+    logo.dispatchEvent(new dom.window.Event("load"));
+    assert.equal(logo.hidden, true);
+    assert.equal(logo.hasAttribute("data-loaded"), false);
+    logo.hidden = false;
     logo.dispatchEvent(new dom.window.Event("error"));
     assert.equal(logo.hidden, true);
     assert.equal(card("mcp-odd").querySelector(".connector-logo img"), null);

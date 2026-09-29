@@ -12148,6 +12148,8 @@ h3.ambient-field-label {
   inset: 0;
   margin: auto;
   object-fit: contain;
+}
+.connector-logo-remote img[data-loaded] {
   background: var(--background);
 }
 
