@@ -8,13 +8,18 @@ export type McpServer = {
   id: string;
   name: string;
   url: string;
-  auth: "none" | "bearer" | "client-credentials";
+  auth: "none" | "bearer" | "client-credentials" | "oauth";
   credentialScope?: "shared" | "per-user";
   credentialHost?: string;
   credentialAccountType?: "default" | "personal" | "company";
   hasBearerToken?: boolean;
   hasClientSecret?: boolean;
   clientId?: string;
+  oauthScopes?: string[];
+  iconUrl?: string;
+  icon?: string;
+  oauth?: { issuer: string; clientId: string; redirectUri: string; scopes?: string[]; source: string };
+  hasCatalog?: boolean;
   readOnly: boolean;
   enabled: boolean;
   updatedBy?: string;
@@ -24,6 +29,7 @@ const blank = () => ({
   id: "",
   name: "",
   url: "",
+  iconUrl: "",
   auth: "none" as McpServer["auth"],
   bearerToken: "",
   clientId: "",
@@ -31,6 +37,7 @@ const blank = () => ({
   credentialScope: "shared" as NonNullable<McpServer["credentialScope"]>,
   credentialHost: "",
   credentialAccountType: "default" as NonNullable<McpServer["credentialAccountType"]>,
+  oauthScopes: "",
   readOnly: true,
   enabled: true,
 });
@@ -64,11 +71,13 @@ export class McpServersState {
           id: server.id,
           name: server.name,
           url: server.url,
+          iconUrl: server.iconUrl ?? "",
           auth: server.auth,
           clientId: server.clientId ?? "",
           credentialScope: server.credentialScope ?? "shared",
           credentialHost: server.credentialHost ?? "",
           credentialAccountType: server.credentialAccountType ?? "default",
+          oauthScopes: (server.oauthScopes ?? []).join(" "),
           readOnly: server.readOnly,
           enabled: server.enabled,
         }
@@ -99,9 +108,20 @@ export class McpServersState {
   }
   body() {
     const d = this.draft;
+    if (d.auth === "oauth")
+      return {
+        name: d.name.trim() || d.id,
+        url: d.url.trim(),
+        iconUrl: d.iconUrl.trim(),
+        auth: d.auth,
+        oauthScopes: d.oauthScopes.trim(),
+        readOnly: d.readOnly,
+        enabled: d.enabled,
+      };
     return {
       name: d.name.trim() || d.id,
       url: d.url.trim(),
+      iconUrl: d.iconUrl.trim(),
       auth: d.auth,
       credentialScope: d.credentialScope,
       ...(d.credentialScope === "per-user"
@@ -121,17 +141,49 @@ export class McpServersState {
     if (!/^[a-z][a-z0-9-]{1,39}$/.test(id))
       return this.setStatus("ID: 2-40 lowercase letters, digits, or hyphens, starting with a letter.", "err");
     if (!this.draft.url.trim()) return this.setStatus("Server URL is required.", "err");
+    const icon = this.draft.iconUrl.trim();
+    if (icon && (!/^https:\/\/[^\s"'<>\\`]+$/.test(icon) || icon.length > 2048))
+      return this.setStatus("Icon: an https image URL without spaces or quotes.", "err");
     this.saving = true;
-    this.setStatus("Connecting and listing tools…", "saving");
+    const oauth = this.draft.auth === "oauth";
+    this.setStatus(oauth ? "Discovering sign-in and registering…" : "Connecting and listing tools…", "saving");
     try {
       const result = await context.api("PUT", "/api/mcp-servers/" + encodeURIComponent(id), this.body());
       if (!result.ok) return this.setStatus(result.data?.message || "Save failed.", "err");
       const count = result.data?.tools?.length;
       this.close();
       await this.load();
-      this.setStatus(count === undefined ? "Saved" : `Saved · ${count} tool${count === 1 ? "" : "s"} found`, "ok");
+      let saved = count === undefined ? "Saved" : `Saved · ${count} tool${count === 1 ? "" : "s"} found`;
+      if (oauth) saved = "Saved · connect your account to load its tools";
+      this.setStatus(saved, "ok");
     } catch {
       this.setStatus("Save failed. Please try again.", "err");
+    } finally {
+      this.saving = false;
+      this.render();
+    }
+  }
+  async reregister(server: McpServer) {
+    if (this.saving) return;
+    if (!confirm(`Register QM again with ${server.name}? Everyone who connected it must connect again.`)) return;
+    this.saving = true;
+    this.setStatus("Registering…", "saving");
+    try {
+      const result = await context.api("PUT", "/api/mcp-servers/" + encodeURIComponent(server.id), {
+        name: server.name,
+        url: server.url,
+        iconUrl: server.iconUrl ?? "",
+        auth: "oauth",
+        oauthScopes: (server.oauthScopes ?? []).join(" "),
+        readOnly: server.readOnly,
+        enabled: server.enabled,
+        reregister: true,
+      });
+      if (!result.ok) return this.setStatus(result.data?.message || "Registration failed.", "err");
+      await this.load();
+      this.setStatus("Registered", "ok");
+    } catch {
+      this.setStatus("Registration failed. Please try again.", "err");
     } finally {
       this.saving = false;
       this.render();
@@ -148,8 +200,68 @@ export class McpServersState {
 }
 export const mcp = new McpServersState();
 
+const PLUG = html`<svg
+  width="18"
+  height="18"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+  aria-hidden="true"
+>
+  <path d="M12 22v-5" />
+  <path d="M9 8V2" />
+  <path d="M15 8V2" />
+  <path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z" />
+</svg>`;
+
+function settleIcon(event: Event) {
+  const img = event.currentTarget as HTMLImageElement;
+  const loaded = event.type === "load" && (img.naturalWidth > 0 || /\.svg$/i.test(new URL(img.src).pathname));
+  if (loaded) img.style.background = "var(--surface, var(--bg, #fff))";
+  else img.hidden = true;
+}
+
+function mcpIcon(src: string | undefined) {
+  return html`<span
+    class="mcp-icon"
+    aria-hidden="true"
+    style="position: relative; display: inline-flex; flex: none; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: 6px; border: 1px solid var(--border, #2a2a2a); overflow: hidden"
+    >${PLUG}${
+      src
+        ? html`<img
+            src=${src}
+            alt=""
+            width="20"
+            height="20"
+            loading="lazy"
+            referrerpolicy="no-referrer"
+            style="position: absolute; inset: 0; margin: auto; object-fit: contain"
+            @load=${settleIcon}
+            @error=${settleIcon}
+          />`
+        : nothing
+    }</span
+  >`;
+}
+
 const badge = (text: string, tone: string) => html`<span class=${"badge " + tone}>${text}</span>`;
-const AUTH_LABELS = { none: "No auth", bearer: "Bearer token", "client-credentials": "OAuth client credentials" };
+const AUTH_LABELS = {
+  none: "No auth",
+  bearer: "Bearer token",
+  "client-credentials": "OAuth client credentials",
+  oauth: "Each person signs in (OAuth)",
+};
+
+function hostOf(url: string) {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
 
 function rows() {
   if (!mcp.servers.length)
@@ -162,15 +274,24 @@ function rows() {
       const secretMissing =
         (s.auth === "bearer" && !s.hasBearerToken) || (s.auth === "client-credentials" && !s.hasClientSecret);
       return html`<div class=${classMap({ "credential-row": true, "is-editing": s.id === mcp.editing })}>
-        <div class="credential-main">
+        ${mcpIcon(s.icon)}
+        <div class="credential-main" style="flex: 1">
           <div class="credential-title"><strong>${s.name}</strong><span class="credential-slug">${s.id}</span></div>
           <div class="hint">${s.url}${s.updatedBy ? " · by " + s.updatedBy : ""}</div>
           <div class="credential-badges">
-            ${badge(s.enabled ? "Enabled" : "Disabled", s.enabled ? "ok" : "warn")}${badge(AUTH_LABELS[s.auth], "info")}${badge(s.credentialScope === "per-user" ? "Each person's account" : "Shared identity", "muted")}${badge(tools + " tool" + (tools === 1 ? "" : "s"), tools ? "ok" : "muted")}${s.readOnly ? badge("Read-only", "muted") : nothing}${secretMissing ? badge("Secret missing", "err") : nothing}
+            ${badge(s.enabled ? "Enabled" : "Disabled", s.enabled ? "ok" : "warn")}${badge(AUTH_LABELS[s.auth], "info")}${badge(s.credentialScope === "per-user" ? "Each person's account" : "Shared identity", "muted")}${badge(tools + " tool" + (tools === 1 ? "" : "s"), tools ? "ok" : "muted")}${s.readOnly ? badge("Read-only", "muted") : nothing}${secretMissing ? badge("Secret missing", "err") : nothing}${s.auth === "oauth" && s.oauth ? badge(hostOf(s.oauth.issuer), "muted") : nothing}${s.auth === "oauth" && !s.oauth ? badge("Not registered", "err") : nothing}${s.auth === "oauth" && !s.hasCatalog ? badge("No tools yet — connect or reconnect an account", "warn") : nothing}
           </div>
         </div>
         <div class="credential-actions">
-          <button type="button" @click=${() => mcp.open(s)}>Edit</button
+          ${
+            s.auth === "oauth"
+              ? html`<a class="rowbtn" href=${"/keychain?connect=" + encodeURIComponent("mcp-" + s.id)}
+                    >Connect my account</a
+                  ><button type="button" ?disabled=${mcp.saving} @click=${() => mcp.reregister(s)}>
+                    Re-register client
+                  </button>`
+              : nothing
+          }<button type="button" @click=${() => mcp.open(s)}>Edit</button
           ><button type="button" class="rowbtn danger" aria-label=${"Remove " + s.name} @click=${() => mcp.remove(s)}>
             Remove
           </button>
@@ -186,7 +307,11 @@ function field(label: string, input: unknown, hint?: string) {
   >`;
 }
 
-function text(key: "id" | "name" | "url" | "clientId" | "credentialHost", placeholder: string, disabled = false) {
+function text(
+  key: "id" | "name" | "url" | "iconUrl" | "clientId" | "credentialHost" | "oauthScopes",
+  placeholder: string,
+  disabled = false,
+) {
   return html`<input
     type="text"
     id=${"mcp-" + key}
@@ -245,28 +370,38 @@ function editor() {
     ${field("ID", text("id", "e.g. linear", !!mcp.editing), "Prefixes the tool names agents see. Can't be changed later.")}
     ${field("Name", text("name", "Display name"))}
     ${field("Server URL", text("url", "https://example.com/mcp"), "Streamable HTTP endpoint. Saving checks that it answers tools/list.")}
+    ${field("Icon URL", text("iconUrl", "https://example.com/logo.png"), "Optional https image shown next to the app. Leave blank to use the site's favicon.")}
     ${field(
       "Authentication",
       select("auth", [
         ["none", AUTH_LABELS.none],
         ["bearer", AUTH_LABELS.bearer],
         ["client-credentials", AUTH_LABELS["client-credentials"]],
+        ["oauth", AUTH_LABELS.oauth],
       ]),
-    )}
-    ${d.auth === "bearer" ? field("Bearer token", secret("bearerToken", existing?.hasBearerToken)) : nothing}
-    ${d.auth === "client-credentials" ? html`${field("Client ID", text("clientId", "OAuth client ID"))}${field("Client secret", secret("clientSecret", existing?.hasClientSecret))}` : nothing}
-    ${field(
-      "Whose identity calls tools",
-      select("credentialScope", [
-        ["shared", "Shared: every caller uses the credential above"],
-        ["per-user", "Per person: each caller's own connected account"],
-      ]),
-      d.credentialScope === "per-user"
-        ? "The credential above is only used to list tools. Each call uses the caller's token for the host below, from their connected accounts. Requires HTTPS."
+      d.auth === "oauth"
+        ? `Saving discovers sign-in and registers QM as a client, with the redirect URI ${existing?.oauth?.redirectUri ?? `${location.origin}/v1/connectors/oauth/mcp-${d.id || "<id>"}/callback`}. Each person then connects their own account.`
         : undefined,
     )}
+    ${d.auth === "oauth" ? field("Scopes", text("oauthScopes", "Leave blank to use what the server advertises"), "Optional, space-separated.") : nothing}
+    ${d.auth === "bearer" ? field("Bearer token", secret("bearerToken", existing?.hasBearerToken)) : nothing}
+    ${d.auth === "client-credentials" ? html`${field("Client ID", text("clientId", "OAuth client ID"))}${field("Client secret", secret("clientSecret", existing?.hasClientSecret))}` : nothing}
     ${
-      d.credentialScope === "per-user"
+      d.auth === "oauth"
+        ? nothing
+        : field(
+            "Whose identity calls tools",
+            select("credentialScope", [
+              ["shared", "Shared: every caller uses the credential above"],
+              ["per-user", "Per person: each caller's own connected account"],
+            ]),
+            d.credentialScope === "per-user"
+              ? "The credential above is only used to list tools. Each call uses the caller's token for the host below, from their connected accounts. Requires HTTPS."
+              : undefined,
+          )
+    }
+    ${
+      d.credentialScope === "per-user" && d.auth !== "oauth"
         ? html`${field("Account host", text("credentialHost", "accounts.example.com"), "The connected-account host whose token is sent to this server.")}${field(
             "Account slot",
             select("credentialAccountType", [

@@ -7,7 +7,7 @@ import { connectorLogo } from "./connector-logo";
 import { appState, replacePanePreservingFocus } from "./shell";
 import { scopedSession, scopedViewTopbar } from "./session-scope";
 import { focusDialogCancel, restoreDialogFocus, trapDialogFocus } from "./dialog-focus";
-import { isActiveGrant, isExpiredCredential, KeychainOperations } from "./keychain-state";
+import { connectorCardMeta, isActiveGrant, isExpiredCredential, KeychainOperations } from "./keychain-state";
 import { listPageTpl } from "./list-page";
 import {
   grantBlockedReason,
@@ -35,11 +35,14 @@ import {
 } from "./browser-picker-state";
 
 interface ConnectorProvider {
+  name?: string;
+  kind?: string;
   connected?: boolean;
   needsReconnect?: boolean;
   refreshError?: string;
   available?: boolean;
   hosts?: Array<{ host?: string } | string>;
+  icon?: string;
 }
 
 const CONNECTOR_LABELS: Record<string, { name: string; hosts: string }> = {
@@ -116,6 +119,9 @@ interface KeychainAsk {
 }
 
 let connectorProviders: Record<string, ConnectorProvider> = {};
+let pendingConnectorResult: { provider: string; status: string } | null = null;
+let focusedConnector = "";
+let focusScrollPending = false;
 let keychainCredentials: KeychainCredential[] = [];
 let keychainConnectorCredentials: KeychainConnectorCredential[] = [];
 let keychainGrants: KeychainGrant[] = [];
@@ -163,6 +169,7 @@ export function resetKeychainState(): void {
   relayChecking = false;
   browserConnect = null;
   connectorNotice = "";
+  pendingConnectorResult = null;
   loadNotice = "";
   connectorsLoading = false;
   keysLoading = false;
@@ -891,8 +898,24 @@ export function clearConnectorNotice(): void {
   connectorNotice = "";
 }
 
+export function focusConnector(provider: string): void {
+  focusedConnector = provider;
+  focusScrollPending = true;
+}
+
+function connectorName(id: string): string {
+  return connectorCardMeta(id, connectorProviders[id] ?? {}, CONNECTOR_LABELS[id]).name;
+}
+
 export function noteConnectorResult(provider: string, status: string): void {
-  const name = CONNECTOR_LABELS[provider]?.name ?? provider;
+  pendingConnectorResult = { provider, status };
+}
+
+function applyConnectorResult(): void {
+  if (!pendingConnectorResult) return;
+  const { provider, status } = pendingConnectorResult;
+  pendingConnectorResult = null;
+  const name = connectorName(provider);
   connectorNotice = status === "connected" ? `${name}: connected.` : `${name}: connection failed.`;
 }
 
@@ -907,7 +930,7 @@ function drawConnectors(): void {
   const loading = accountsLoading || keysLoadingFresh;
   const entries = Object.entries(connectorProviders);
   const connectorCards = entries.map(([id, p]) => {
-    const meta = CONNECTOR_LABELS[id] ?? { name: id, hosts: "" };
+    const meta = connectorCardMeta(id, p, CONNECTOR_LABELS[id]);
     const connected = Boolean(p.connected);
     const needsReconnect = Boolean(p.needsReconnect);
     const available = Boolean(p.available);
@@ -921,7 +944,9 @@ function drawConnectors(): void {
       credentials.map((credential) => [credential.credentialId, { id: credential.credentialId, kind: "connector" }]),
     );
     const grants = keychainGrants.filter((grant) => isActiveGrant(grant, credentialsById.get(grant.credentialId)));
-    const first = credentials.find((credential) => credential.connected && !credential.needsReconnect);
+    const first = meta.grantable
+      ? credentials.find((credential) => credential.connected && !credential.needsReconnect)
+      : undefined;
     const grantable: KeychainCredential | null = first
       ? { id: first.credentialId, service: meta.name, kind: "connector" }
       : null;
@@ -932,9 +957,12 @@ function drawConnectors(): void {
     if (needsReconnect) connectionState = html`<span class="kc-state warning">Reconnect needed</span>`;
     else if (connected) connectionState = "";
     return html`
-      <article class="kc-resource kc-account">
+      <article
+        class=${focusedConnector === id ? "kc-resource kc-account is-focused" : "kc-resource kc-account"}
+        data-connector=${id}
+      >
         <div class="kc-resource-main">
-          ${connectorLogo(id)}
+          ${connectorLogo(id, p.icon)}
           <div class="kc-resource-copy">
             <div class="kc-resource-title-row">
               <h3>${meta.name}</h3>
@@ -943,7 +971,8 @@ function drawConnectors(): void {
             ${meta.hosts ? html`<div class="kc-resource-meta">${meta.hosts}</div>` : ""}
           </div>
           <div class="kc-resource-actions">
-            ${available ? html`<button class="btn" type="button" @click=${() => void startConnector(id)}>${connected || needsReconnect ? "Reconnect" : "Connect account"}</button>` : ""}
+            ${available ? html`<button class="btn" type="button" ?disabled=${keychainOperations.mutationInFlight} @click=${() => void startConnector(id)}>${connected || needsReconnect ? "Reconnect" : "Connect account"}</button>` : ""}
+            ${available && p.kind === "mcp" ? html`<button class="kc-text-action" type="button" ?disabled=${keychainOperations.mutationInFlight} @click=${() => void startConnector(id, true)}>Use a different account</button>` : ""}
             ${
               connected && grantable && !grantableBlocked
                 ? html`<button
@@ -1081,6 +1110,13 @@ function drawConnectors(): void {
   );
   replacePanePreservingFocus(host);
   if (confirmation) focusDialogCancel(host);
+  const focused = focusScrollPending
+    ? host.querySelector<HTMLElement>(`[data-connector="${CSS.escape(focusedConnector)}"]`)
+    : null;
+  if (focused) {
+    focusScrollPending = false;
+    focused.scrollIntoView({ block: "center" });
+  }
 }
 
 export async function renderConnectors(): Promise<void> {
@@ -1106,6 +1142,7 @@ export async function renderConnectors(): Promise<void> {
       );
       connectorsEverLoaded = true;
       connectorsLoading = false;
+      applyConnectorResult();
       applyNotices();
       drawConnectors();
     },
@@ -1113,6 +1150,7 @@ export async function renderConnectors(): Promise<void> {
       if (!fresh()) return;
       notices.push(errMessage(reason, "Failed to load connectors."));
       connectorsLoading = false;
+      applyConnectorResult();
       applyNotices();
       drawConnectors();
     },
@@ -1278,24 +1316,45 @@ async function createDrop(): Promise<void> {
   }
 }
 
-async function startConnector(provider: string): Promise<void> {
-  const stateEpoch = keychainOperations.captureEpoch();
+const CONNECTOR_START_RELEASE_MS = 15_000;
+
+async function startConnector(provider: string, switchAccount = false): Promise<void> {
+  const operation = beginKeychainMutation();
+  if (!operation) return;
   connectorNotice = "";
+  drawConnectors();
+  let navigating = false;
   try {
     const r = await api<{ authorizeUrl?: string }>(`/api/connectors/${encodeURIComponent(provider)}/start`, {
       method: "POST",
+      body: JSON.stringify({ switchAccount }),
     });
-    if (!keychainOperations.isCurrentEpoch(stateEpoch)) return;
+    if (!keychainOperations.isCurrentEpoch(operation.epoch)) return;
     if (r.authorizeUrl) {
+      navigating = true;
+      let timer = 0;
+      const onVisible = () => {
+        if (document.visibilityState === "visible") release();
+      };
+      const release = () => {
+        window.clearTimeout(timer);
+        window.removeEventListener("pagehide", release);
+        document.removeEventListener("visibilitychange", onVisible);
+        if (keychainOperations.finishMutation(operation)) drawConnectors();
+      };
+      timer = window.setTimeout(release, CONNECTOR_START_RELEASE_MS);
+      window.addEventListener("pagehide", release);
+      document.addEventListener("visibilitychange", onVisible);
       location.href = r.authorizeUrl;
       return;
     }
     connectorNotice = "No authorization URL was returned.";
   } catch (e) {
-    if (!keychainOperations.isCurrentEpoch(stateEpoch)) return;
-    connectorNotice = errMessage(e, "Could not start the connector.");
+    if (keychainOperations.isCurrentEpoch(operation.epoch))
+      connectorNotice = errMessage(e, "Could not start the connector.");
+  } finally {
+    if (!navigating && keychainOperations.finishMutation(operation)) drawConnectors();
   }
-  drawConnectors();
 }
 
 async function revokeConnector(provider: string): Promise<void> {
@@ -1320,7 +1379,7 @@ async function revokeConnector(provider: string): Promise<void> {
     : "";
   confirmationOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   confirmation = {
-    title: `Disconnect ${CONNECTOR_LABELS[provider]?.name ?? provider}?`,
+    title: `Disconnect ${connectorName(provider)}?`,
     body: `${impact} Automations using this account may stop working.`.trim(),
     action: "Disconnect account",
     run: async () => {

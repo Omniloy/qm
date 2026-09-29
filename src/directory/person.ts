@@ -72,8 +72,12 @@ export async function samePersonMatcher(
   const row = await directory.get(actorId).catch(() => null);
   const keys = personKeys(row, actorId);
   return async (id) => {
-    if (keys.has(personKey(id))) return true;
+    const key = personKey(id);
+    if (!key) return false;
+    if (keys.has(key)) return true;
     if (row) return false;
-    return samePersonInDirectory(directory, id, actorId);
+    const member = await directory.get(id).catch(() => null);
+    for (const candidate of personKeys(member, id)) if (keys.has(candidate)) return true;
+    return false;
   };
 }

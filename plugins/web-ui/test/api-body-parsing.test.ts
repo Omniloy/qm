@@ -188,3 +188,26 @@ test("Composio verifier forwards only the opaque session and redirects safely", 
   );
   composioReturnTo = null;
 });
+
+test("connector start relays switch-account only as a boolean flag", async () => {
+  const startUrl = async (body?: string) => {
+    const response = await fetch(`${base}/api/connectors/mcp-granola/start`, {
+      method: "POST",
+      headers,
+      ...(body === undefined ? {} : { body }),
+    });
+    assert.equal(response.status, 200);
+    return new URL(calls.at(-1)!.url, "http://core");
+  };
+  assert.equal((await startUrl()).searchParams.has("switchAccount"), false);
+  assert.equal((await startUrl(JSON.stringify({ switchAccount: false }))).searchParams.has("switchAccount"), false);
+  for (const forged of [{ switchAccount: "login" }, { switchAccount: 1 }, { prompt: "consent" }]) {
+    const url = await startUrl(JSON.stringify(forged));
+    assert.equal(url.searchParams.has("switchAccount"), false);
+    assert.equal(url.searchParams.has("prompt"), false);
+  }
+  const switched = await startUrl(JSON.stringify({ switchAccount: true }));
+  assert.equal(switched.pathname, "/v1/connectors/oauth/mcp-granola/start");
+  assert.equal(switched.searchParams.get("switchAccount"), "1");
+  assert.equal(switched.searchParams.get("principalId"), "alice");
+});

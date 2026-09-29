@@ -89,7 +89,13 @@ import { setScopedSession } from "./session-scope";
 import { openChatSearch } from "./search";
 import { closeBrowse, openBrowse } from "./browse";
 import { attachTooltip, hideTooltip, tip } from "./tooltip";
-import { clearConnectorNotice, noteConnectorResult, renderConnectors, resetKeychainState } from "./connectors";
+import {
+  clearConnectorNotice,
+  focusConnector,
+  noteConnectorResult,
+  renderConnectors,
+  resetKeychainState,
+} from "./connectors";
 import { openDeployById, renderDeploys } from "./deploys";
 import { renderMemory, resetMemoryState } from "./memory";
 import { renderCalendar } from "./calendar";
@@ -1132,6 +1138,8 @@ export async function boot(): Promise<void> {
       const provider = params.get("connector");
       const status = params.get("status");
       if (provider && status) noteConnectorResult(provider, status);
+      const connect = params.get("connect");
+      if (connect) focusConnector(connect);
     }
     if (wanted === "contexts" || wanted === "files" || wanted === "deploys") {
       const scope =

@@ -3,10 +3,9 @@ import { promisify } from "node:util";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
-import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { errMessage } from "../util/errors.ts";
-import { isPrivateNetworkIp } from "../util/network.ts";
+import { bareHostname, lookupAddresses, publicAddresses, type HostLookup } from "../util/network.ts";
 import { isProbablyBinary } from "./seed.ts";
 import type { FetchedRepo, RepoFile } from "./ingest.ts";
 import type { SkillPack } from "./skill-pack-store.ts";
@@ -23,7 +22,7 @@ export interface GitFetcherOptions {
   maxFiles?: number;
   maxTotalBytes?: number;
   allowLocalRepos?: boolean;
-  lookup?: (host: string) => Promise<string[]>;
+  lookup?: HostLookup;
 }
 
 export interface PackTokenSources {
@@ -67,11 +66,7 @@ interface ValidatedRepo {
   gitConfig: Array<[string, string]>;
 }
 
-async function validateRepoUrl(
-  raw: string,
-  allowLocalRepos: boolean,
-  lookup: (host: string) => Promise<string[]>,
-): Promise<ValidatedRepo> {
+async function validateRepoUrl(raw: string, allowLocalRepos: boolean, lookup: HostLookup): Promise<ValidatedRepo> {
   if (typeof raw !== "string" || !raw.trim()) throw new Error("skill pack url is required");
   if (allowLocalRepos && raw.startsWith("/")) return { url: raw, gitConfig: [] };
   let url: URL;
@@ -83,17 +78,11 @@ async function validateRepoUrl(
   if (url.protocol !== "https:" || !url.hostname || url.username || url.password) {
     throw new Error("skill pack url must use credential-free https");
   }
-  const host = url.hostname.toLowerCase().replace(/^\[(.*)\]$/, "$1");
+  const host = bareHostname(url);
   const literal = isIP(host) !== 0;
-  let addresses: string[];
-  try {
-    addresses = literal ? [host] : await lookup(host);
-  } catch {
-    throw new Error("skill pack repository hostname could not be resolved");
-  }
-  if (!addresses.length || addresses.some((address) => isPrivateNetworkIp(address))) {
-    throw new Error("skill pack repository must resolve to a public network address");
-  }
+  const addresses = await publicAddresses(host, lookup);
+  if (addresses === "unresolvable") throw new Error("skill pack repository hostname could not be resolved");
+  if (addresses === "private") throw new Error("skill pack repository must resolve to a public network address");
   const port = url.port || "443";
   const resolved = addresses.map((address) => (isIP(address) === 6 ? `[${address}]` : address)).join(",");
   return {
@@ -156,10 +145,7 @@ export function createGitFetcher(opts: GitFetcherOptions = {}): SkillPackFetcher
   const maxFiles = opts.maxFiles ?? 5000;
   const maxTotalBytes = opts.maxTotalBytes ?? 32 * 1024 * 1024;
   const allowLocalRepos = opts.allowLocalRepos === true;
-  const lookup =
-    opts.lookup ??
-    ((host: string) =>
-      dnsLookup(host, { all: true, verbatim: true }).then((results) => results.map((result) => result.address)));
+  const lookup = opts.lookup ?? lookupAddresses;
 
   function gitEnv(cwd: string, auth: GitAuth | undefined, config: Array<[string, string]>): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = { ...globalThis.process.env };

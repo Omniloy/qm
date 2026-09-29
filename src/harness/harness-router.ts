@@ -246,10 +246,15 @@ export async function resolveRuntimeChoiceDurable(
   return resolveRuntimeChoice(view, orgScopeId, scope, fallback, requested, purpose);
 }
 
+function personallyBilled(input: HarnessTurnInput): boolean {
+  return !!(input.providerKeys || input.claudeOauthToken || input.codexAuth);
+}
+
 export function createHarnessRouter(
   adapters: ReadonlyMap<HarnessId, Harness>,
   utility: Harness,
   resolve: (input: HarnessTurnInput) => RuntimeChoice | Promise<RuntimeChoice>,
+  fastModeAllowed: (actorId: string | undefined) => Promise<boolean> = async () => true,
 ): Harness {
   const lastHarness = new Map<string, HarnessId>();
   return {
@@ -264,7 +269,11 @@ export function createHarnessRouter(
     tools: utility.tools,
     turns: {
       async runTurn(input) {
-        const choice = await resolve(input);
+        const resolved = await resolve(input);
+        const choice =
+          resolved.fastMode && !personallyBilled(input) && !(await fastModeAllowed(input.runtimeActorId))
+            ? { ...resolved, fastMode: false }
+            : resolved;
         const adapter = adapters.get(choice.harnessId);
         if (!adapter) throw new Error(`harness ${choice.harnessId} is unavailable`);
         const prior = lastHarness.get(input.session.id);

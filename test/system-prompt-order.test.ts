@@ -9,6 +9,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createOrchestrator, type OrchestratorInput } from "../src/core/orchestrator.ts";
+import type { McpToolService } from "../src/mcp/mcp-tool-service.ts";
 import { createIdentityService } from "../src/identity/identity-service.ts";
 import { createMemoryConfigStore } from "../src/resolution/config-store.ts";
 import { createAclStore } from "../src/acl/acl-store.ts";
@@ -104,6 +105,7 @@ function buildOrchestrator(
     securityScreener?: SecurityScreener;
     managedGroups?: Pick<ManagedGroupDirectory, "recognizes" | "members" | "version" | "withVersion" | "slackChannel">;
     isCurrentSharedScopeMember?: IsCurrentSharedScopeMember;
+    mcp?: McpToolService;
   } = {},
 ) {
   const config = createMemoryConfigStore(ORG);
@@ -1200,6 +1202,32 @@ test("profile and scheduled-work changes append fresh snapshots without rewritin
   assert.doesNotMatch(seen[3]!.environment!, /Other Linux|synthetic status|No active scheduled work/);
   assert.deepEqual(seen[1]!.history, originalHistory);
   assert.deepEqual((await sessions.getEntries(first.sessionId!)).slice(0, originalHistory.length), originalHistory);
+});
+
+test("MCP sign-in status rides the turn environment for the caller, outside the cached prefix", async () => {
+  const seen: HarnessTurnInput[] = [];
+  const harness = createMockHarness();
+  const runTurn = harness.turns.runTurn;
+  harness.turns.runTurn = async (turn) => {
+    seen.push(turn);
+    return runTurn(turn);
+  };
+  const asked: string[] = [];
+  const mcp = {
+    toolDefs: () => [],
+    signInContext: async (principalId: string) => {
+      asked.push(principalId);
+      return "## Sign-in apps\n- Granola: not connected. Connect at https://mo.example.com/keychain?connect=mcp-granola";
+    },
+  } as unknown as McpToolService;
+  const { orchestrator } = buildOrchestrator({ harness, mcp });
+  assert.equal((await orchestrator.handleTurn(dm("dm:U1:mcp-sign-in", "connect my granola"))).status, "ok");
+  assert.deepEqual(asked, [actor.id]);
+  assert.match(
+    seen[0]!.environment!,
+    /## Sign-in apps\n- Granola: not connected\. Connect at https:\/\/mo\.example\.com\/keychain\?connect=mcp-granola/,
+  );
+  assert.doesNotMatch(seen[0]!.systemPrompt, /Sign-in apps|mcp-granola/);
 });
 
 test("connector revocation still refreshes system-authority permissions", async () => {

@@ -9,14 +9,29 @@
 // policy. See mcp-tool-service.ts for the layer that turns registered
 // servers into agent tools.
 
+import { hostOf } from "../util/network.ts";
+
 const TOKEN_SKEW_MS = 60_000;
 const MCP_ACCEPT = "application/json, text/event-stream";
+export const MCP_PROTOCOL_VERSION = "2025-06-18";
+
+export class McpHttpError extends Error {
+  readonly status: number;
+  readonly wwwAuthenticate: string | undefined;
+  constructor(method: string, status: number, wwwAuthenticate?: string | null) {
+    super(`mcp ${method} failed (HTTP ${status})`);
+    this.name = "McpHttpError";
+    this.status = status;
+    this.wwwAuthenticate = wwwAuthenticate ?? undefined;
+  }
+}
 
 interface McpHttpResponse {
   ok: boolean;
   status: number;
   text(): Promise<string>;
   headers?: { get(name: string): string | null };
+  body?: { cancel(): Promise<void> } | null;
 }
 
 export type McpFetch = (
@@ -26,16 +41,13 @@ export type McpFetch = (
 
 const realFetch: McpFetch = (url, init) => fetch(url, { ...init, redirect: "error" });
 
-function baseUrl(mcpUrl: string): string {
-  return mcpUrl.replace(/\/+$/g, "").replace(/\/mcp$/g, "");
+interface McpSession {
+  id?: string;
+  version: string;
 }
 
-function hostOf(base: string): string {
-  try {
-    return new URL(base).host;
-  } catch {
-    return base;
-  }
+function baseUrl(mcpUrl: string): string {
+  return mcpUrl.replace(/\/+$/g, "").replace(/\/mcp$/g, "");
 }
 
 function safeJson(text: string): unknown {
@@ -124,13 +136,16 @@ export function createMcpClient(opts: {
   auth: McpAuth;
   fetchImpl?: McpFetch;
   now?: () => number;
+  session?: boolean;
 }): McpClient {
   const fetchImpl = opts.fetchImpl ?? realFetch;
   const now = opts.now ?? (() => Date.now());
   const base = baseUrl(opts.url);
   const host = hostOf(base);
+  const endpoint = opts.session ? opts.url : `${base}/mcp`;
   let cached: CachedToken | null = null;
   let rpcId = 0;
+  let session: Promise<McpSession> | null = null;
 
   async function mintToken(clientId: string, clientSecret: string): Promise<string> {
     if (cached && now() < cached.expiresAt - TOKEN_SKEW_MS) return cached.accessToken;
@@ -159,22 +174,69 @@ export function createMcpClient(opts: {
     return { authorization: `Bearer ${await mintToken(auth.clientId, auth.clientSecret)}` };
   }
 
-  async function rpc(method: string, params: Record<string, unknown>): Promise<unknown> {
-    const id = ++rpcId;
-    const res = await fetchImpl(`${base}/mcp`, {
+  async function post(message: Record<string, unknown>, extra: Record<string, string>): Promise<McpHttpResponse> {
+    return fetchImpl(endpoint, {
       method: "POST",
       headers: {
         ...(await authHeaders()),
+        ...extra,
         "content-type": "application/json",
         accept: MCP_ACCEPT,
       },
-      body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+      body: JSON.stringify(message),
     });
-    if (!res.ok) throw new Error(`mcp ${method} failed (HTTP ${res.status})`);
+  }
+
+  async function exchange(method: string, params: Record<string, unknown>, extra: Record<string, string>) {
+    const id = ++rpcId;
+    const res = await post({ jsonrpc: "2.0", id, method, params }, extra);
+    if (!res.ok) throw new McpHttpError(method, res.status, res.headers?.get("www-authenticate"));
     const parsed = parseMcpEnvelope(await res.text(), res.headers?.get("content-type"), id);
     if (!parsed) throw new Error(`mcp ${method} returned non-JSON`);
     if (parsed.error) throw new Error(`mcp ${method} error: ${parsed.error.message ?? "unknown"}`);
-    return parsed.result ?? {};
+    return { result: parsed.result ?? {}, res };
+  }
+
+  function sessionHeaders(s: McpSession): Record<string, string> {
+    return { "mcp-protocol-version": s.version, ...(s.id ? { "mcp-session-id": s.id } : {}) };
+  }
+
+  async function initialize(): Promise<McpSession> {
+    const { result, res } = await exchange(
+      "initialize",
+      { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "qm", version: "1" } },
+      {},
+    );
+    const version = (result as { protocolVersion?: unknown }).protocolVersion;
+    const id = res.headers?.get("mcp-session-id");
+    const next: McpSession = {
+      version: typeof version === "string" && version ? version : MCP_PROTOCOL_VERSION,
+      ...(id ? { id } : {}),
+    };
+    const ack = await post({ jsonrpc: "2.0", method: "notifications/initialized" }, sessionHeaders(next));
+    await ack.body?.cancel().catch(() => undefined);
+    if (!ack.ok) throw new McpHttpError("notifications/initialized", ack.status, ack.headers?.get("www-authenticate"));
+    return next;
+  }
+
+  function openSession(): Promise<McpSession> {
+    session ??= initialize().catch((e: unknown) => {
+      session = null;
+      throw e;
+    });
+    return session;
+  }
+
+  async function rpc(method: string, params: Record<string, unknown>): Promise<unknown> {
+    if (!opts.session) return (await exchange(method, params, {})).result;
+    const current = await openSession();
+    try {
+      return (await exchange(method, params, sessionHeaders(current))).result;
+    } catch (e) {
+      if (!(e instanceof McpHttpError) || e.status !== 404 || !current.id) throw e;
+      session = null;
+      return (await exchange(method, params, sessionHeaders(await openSession()))).result;
+    }
   }
 
   return {

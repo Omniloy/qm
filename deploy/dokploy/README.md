@@ -378,6 +378,16 @@ admin console at `https://<host>/admin`, and core stores it in Postgres:
   reach. With **Per person**, each call uses the caller's own connected account for the
   host you name, which needs `CONNECTOR_SECRET_KEY` (already a required secret). See
   [`docs/mcp-connectors.md`](../../docs/mcp-connectors.md).
+- **MCP servers where each person signs in** (for example Granola): choose
+  **Each person signs in (OAuth)** as the auth. Saving discovers the server's sign-in
+  and registers the instance as an OAuth client with the redirect URI
+  `https://<host>/v1/connectors/oauth/mcp-<id>/callback`, so `PUBLIC_URL` must be the
+  public host and `CONNECTOR_SECRET_KEY` must be set. Core needs outbound HTTPS to the
+  MCP server and its authorization server (for Granola, `mcp.granola.ai` and
+  `mcp-auth.granola.ai`). After saving, click **Connect my account** on the server's row
+  and sign in: that loads the server's tools for everyone. Other people connect from
+  **Keychain**, and an agent that needs the server sends an unconnected person the link.
+  **Re-register client** registers again and disconnects everyone.
 - **Composio**: **Connectors** → **Composio**. Paste the Composio project API key. Core
   stores it as the org credential `composio` (env key `COMPOSIO_API_KEY`), granted to the
   whole organization, and it stays in the backend. A narrower grant set under

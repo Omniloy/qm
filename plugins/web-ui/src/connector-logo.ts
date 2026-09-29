@@ -26,9 +26,18 @@ const CONNECTOR_LOGOS: Record<string, string> = {
   x: "M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z",
 };
 
+const REMOTE_LOGO = /^https:\/\/[^\s"'<>\\`]{1,2040}$/;
+
+function settleRemoteLogo(event: Event): void {
+  const img = event.currentTarget as HTMLImageElement;
+  const loaded = event.type === "load" && (img.naturalWidth > 0 || /\.svg$/i.test(new URL(img.src).pathname));
+  if (loaded) img.dataset.loaded = "";
+  else img.hidden = true;
+}
+
 export function connectorLogo(id: string, logoUrl?: string): TemplateResult {
   const path = CONNECTOR_LOGOS[id];
-  if (!path && logoUrl && /^https:\/\/logos\.composio\.dev\/api\/[a-z0-9_-]{1,100}$/.test(logoUrl)) {
+  if (!path && logoUrl && REMOTE_LOGO.test(logoUrl)) {
     return html`<span class="connector-logo connector-logo-remote" aria-hidden="true"
       >${icon(Plug, 18)}<img
         src=${logoUrl}
@@ -37,9 +46,8 @@ export function connectorLogo(id: string, logoUrl?: string): TemplateResult {
         height="18"
         loading="lazy"
         referrerpolicy="no-referrer"
-        @error=${(event: Event) => {
-          (event.currentTarget as HTMLImageElement).hidden = true;
-        }}
+        @load=${settleRemoteLogo}
+        @error=${settleRemoteLogo}
     /></span>`;
   }
   if (!path) return html`<span class="connector-logo">${icon(Plug, 18)}</span>`;

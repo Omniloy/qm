@@ -415,7 +415,8 @@ export function createModelPicker<T>(bindings: ModelPickerBindings<T>) {
     const entries = seededLoadout(selected);
     const modelSupportsFast = modelSupportsFastMode(scopeKey(), selected.model.id);
     const fastAvailable = !!choice && harnessSupportsFastMode(selected.harnessId) && modelSupportsFast;
-    const fastUnsupportedReason = modelSupportsFast ? "Not supported by this harness" : "Not supported by this model";
+    let fastUnsupportedReason = modelSupportsFast ? "Not supported by this harness" : "Not supported by this model";
+    if (getRuntimeConfig(scopeKey())?.fastModeRestricted) fastUnsupportedReason = "Limited to specific people";
     const fastOn = fastAvailable && effectiveFastMode();
     return html`<div
       class="menu-control loadout-control"

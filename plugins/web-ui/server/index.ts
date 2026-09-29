@@ -2282,10 +2282,13 @@ const apiRoutes: readonly WebRoute[] = [
     method: "POST",
     path: "/api/connectors/:provider/start",
     handle: async (c) => {
-      const { res, user } = c;
+      const { req, res, user } = c;
+      const body = await readJson<{ switchAccount?: unknown }>(req, res);
+      if (!body) return;
       const provider = c.params.provider!;
       const callback = `${PUBLIC_URL}/v1/connectors/oauth/${encodeURIComponent(provider)}/callback`;
       const params = new URLSearchParams({ principalId: user, redirectUri: callback, returnTo: "/keychain" });
+      if (body.switchAccount === true) params.set("switchAccount", "1");
       const corePath = `/v1/connectors/oauth/${encodeURIComponent(provider)}/start?${params.toString()}`;
       return relayCore(res, "GET", corePath);
     },

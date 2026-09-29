@@ -18,6 +18,13 @@ import { testConfig } from "./support/test-config.ts";
 
 const CATALOG_HOSTS = Object.values(PROVIDERS).flatMap((p) => p.hosts);
 
+test("no built-in OAuth provider claims the mcp- prefix reserved for MCP server sign-in", () => {
+  assert.deepEqual(
+    Object.keys(PROVIDERS).filter((name) => name.startsWith("mcp-")),
+    [],
+  );
+});
+
 test("C3 — no catalog host appears in serviceHosts / egressServiceHosts (least privilege)", () => {
   const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "c3-")) }));
   return Promise.all(CATALOG_HOSTS.map((h) => built.connectorTokens.connectorAccessToken(h, "nobody"))).then(

@@ -9,6 +9,8 @@ Use this skill for app discovery, consent, and execution through QM's authentica
 
 ## Show setup in web chat
 
+An app listed under Sign-in apps in your turn context connects only through the Keychain link given there; for that app, give the link instead of this picker or a Composio authorization.
+
 When the user asks to connect apps, browse integrations, or show setup again in web chat, include the following directive as its own paragraph in your reply, with blank lines around it:
 
 ```text

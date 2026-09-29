@@ -10,6 +10,7 @@ import {
 import { livePersonCapability } from "../api/artifact-share.ts";
 import { parseScopeId } from "../types.ts";
 import { isHarnessId, thinkingLevelsForHarness } from "../model/pi-models.ts";
+import { scopeFastModeAllowed } from "../core/turn-options.ts";
 
 export function createRuntimeService(deps: RuntimeDeps, app: Pick<App, "authorizesCapabilityScope">): RuntimeService {
   return async (
@@ -105,7 +106,13 @@ export function createRuntimeService(deps: RuntimeDeps, app: Pick<App, "authoriz
     const authError = await authorizeChoice?.(choice);
     if (authError) return { ok: false, error: "account_runtime_unavailable", message: authError };
     if (signal?.aborted) return { ok: false, error: "cancelled" };
-    if (lifetime === "scope") await deps.config.setRuntimeSelectionLatest(claims.scopeId, choice);
+    if (lifetime === "scope")
+      await deps.config.setRuntimeSelectionLatest(claims.scopeId, {
+        ...choice,
+        fastMode:
+          choice.fastMode === true &&
+          (await scopeFastModeAllowed(deps.config, deps.directory, claims.actorId, claims.scopeId)),
+      });
     return { ok: true, handoff: { choice, lifetime } };
   };
 }

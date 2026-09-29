@@ -772,6 +772,7 @@ export interface RuntimeConfig {
   effective: { harnessId: string; modelId: string; effortLevel?: string; fastMode?: boolean };
   upgradeAvailable: boolean;
   fastModeModelIds?: string[];
+  fastModeRestricted?: boolean;
 }
 
 export async function fetchRuntimeConfig(scopeId?: string | null, account?: "company"): Promise<RuntimeConfig | null> {

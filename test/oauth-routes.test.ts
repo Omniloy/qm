@@ -241,3 +241,28 @@ test("authorize state stays inside the tightest provider limit and still carries
     await srv.close();
   }
 });
+
+test("a built-in provider's returnTo that normalizes to another origin is dropped", async () => {
+  const srv = start(async () => ({ ok: true, status: 200, json: async () => ({ access_token: "at-x" }) }), {
+    oauthEnv: X_ENV,
+  });
+  try {
+    const redirectUri = "https://acme-portal.fly.dev/v1/connectors/oauth/x/callback";
+    for (const returnTo of ["/.//evil.com", "/a/..//evil.com"]) {
+      const query = `principalId=${encodeURIComponent("person@acme-corp.com")}&redirectUri=${encodeURIComponent(redirectUri)}&returnTo=${encodeURIComponent(returnTo)}`;
+      const startPath = `/v1/connectors/oauth/x/start?${query}`;
+      const startRes = await fetch(`${srv.base}${startPath}`, { headers: sign("GET", startPath) });
+      const state = new URL(((await startRes.json()) as { authorizeUrl: string }).authorizeUrl).searchParams.get(
+        "state",
+      );
+      const cb = await fetch(
+        `${srv.base}/v1/connectors/oauth/x/callback?code=c&state=${encodeURIComponent(state ?? "")}`,
+        { redirect: "manual" },
+      );
+      assert.equal(cb.status, 200, returnTo);
+      assert.equal(cb.headers.get("location"), null, returnTo);
+    }
+  } finally {
+    await srv.close();
+  }
+});

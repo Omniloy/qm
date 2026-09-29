@@ -1,6 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { BlockList, isIP } from "node:net";
-import { lookup as dnsLookup } from "node:dns/promises";
 import { EGRESS_PROXY_AUD, verifyCapabilityToken, type CapabilityClaims } from "./auth/capability-token.ts";
 import { egressDecision, hostMatches, isHostDenied, type EgressVerdict } from "./resolution/egress-policy.ts";
 import { createEgressAuditSink, type EgressAuditRecord, type EgressAuditSink } from "./admin/egress-audit-sink.ts";
@@ -11,7 +10,7 @@ import { errMessage } from "./util/errors.ts";
 import { shutdownOnUncaught } from "./util/process-guard.ts";
 import { numEnv } from "./config.ts";
 import type { EgressPolicy, ScopeId } from "./types.ts";
-import { isPrivateNetworkIp } from "./util/network.ts";
+import { isPrivateNetworkIp, lookupAddresses } from "./util/network.ts";
 
 const OPEN: EgressPolicy = { allowedHosts: [], deniedHosts: [] };
 
@@ -83,11 +82,6 @@ export interface EgressAuthzDeps {
   lookup?: (host: string) => Promise<string[]>;
 }
 
-function defaultLookup(host: string): Promise<string[]> {
-  if (isIP(host)) return Promise.resolve([host]);
-  return dnsLookup(host, { all: true, verbatim: true }).then((rs) => rs.map((r) => r.address));
-}
-
 async function claimsFor(token: string | null, deps: EgressAuthzDeps): Promise<CapabilityClaims | null> {
   const claims =
     token && deps.capabilitySecret ? await verifyCapabilityToken(token, deps.capabilitySecret, deps.now?.()) : null;
@@ -124,7 +118,7 @@ async function decide(
 }
 
 export function buildEgressAuthzServer(deps: EgressAuthzDeps): Server {
-  const lookup = deps.lookup ?? defaultLookup;
+  const lookup = deps.lookup ?? lookupAddresses;
   async function checkStatus(
     req: IncomingMessage,
     authority: string,

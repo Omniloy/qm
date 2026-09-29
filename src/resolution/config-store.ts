@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { DurableMap } from "../persistence/durable-map.ts";
 import { createMemoryMap } from "../persistence/durable-map.ts";
 import { createKeyedQueue } from "../util/async.ts";
+import { foldPrincipalId } from "../directory/person.ts";
 import { isHarnessId, modelSupportedByHarness } from "../model/pi-models.ts";
 import type { ModelStatus } from "../model/model-classification.ts";
 import { composeSecurityPosture, type SecurityPosture } from "../security/security-posture.ts";
@@ -81,6 +82,11 @@ const DEFAULT_SKILL_SHARING_POLICY: SkillSharingPolicy = { contexts: "everyone",
 export interface PersistedSkillSharingPolicy {
   scopeId: ScopeId;
   policy: SkillSharingPolicy;
+}
+
+export interface PersistedFastModeAccess {
+  scopeId: ScopeId;
+  people: string[];
 }
 
 export interface PersistedModelAccount extends PersistedScopedFlag {
@@ -275,6 +281,8 @@ export interface ScopedConfigStore {
   setModelAccountModes(modes: ModelAccountModes): Promise<void>;
   getSkillSharingPolicy(): Promise<SkillSharingPolicy>;
   setSkillSharingPolicy(policy: SkillSharingPolicy): Promise<void>;
+  getFastModeAccess(): Promise<string[] | null>;
+  setFastModeAccess(people: string[] | null): Promise<void>;
   getBaseModelOwnDurable(id: ScopeId): Promise<string | null>;
   getWebuiModels(id: ScopeId): string[] | null;
   setWebuiModels(id: ScopeId, ids: string[] | null): void;
@@ -336,6 +344,7 @@ export function createMemoryConfigStore(
     individualModelAuth?: DurableMap<PersistedModelAccount>;
     modelAccountModes?: DurableMap<PersistedModelAccountModes>;
     skillSharing?: DurableMap<PersistedSkillSharingPolicy>;
+    fastModeAccess?: DurableMap<PersistedFastModeAccess>;
     webuiModels?: DurableMap<PersistedWebuiModels>;
     modelClassifications?: DurableMap<PersistedModelClassification>;
     peopleDirectoryUrls?: DurableMap<PersistedPeopleDirectoryUrl>;
@@ -400,6 +409,7 @@ export function createMemoryConfigStore(
   const modelAccountModesStore = opts.modelAccountModes ?? createMemoryMap<PersistedModelAccountModes>();
   const modelAccountModes = async () => (await modelAccountModesStore.get(org))?.modes ?? DEFAULT_MODEL_ACCOUNT_MODES;
   const skillSharingStore = opts.skillSharing ?? createMemoryMap<PersistedSkillSharingPolicy>();
+  const fastModeAccessStore = opts.fastModeAccess ?? createMemoryMap<PersistedFastModeAccess>();
   const personalModelProviders = async () => {
     const modes = await modelAccountModes();
     return PERSONAL_MODEL_PROVIDERS.filter((provider) => modes[provider] === "personal");
@@ -1076,6 +1086,15 @@ export function createMemoryConfigStore(
     }),
     async setSkillSharingPolicy(policy) {
       await skillSharingStore.put(org, { scopeId: org, policy: { contexts: policy.contexts, org: policy.org } });
+    },
+    getFastModeAccess: async () => (await fastModeAccessStore.get(org))?.people ?? null,
+    async setFastModeAccess(people) {
+      if (people === null) await fastModeAccessStore.delete(org);
+      else
+        await fastModeAccessStore.put(org, {
+          scopeId: org,
+          people: [...new Set(people.map(foldPrincipalId).filter(Boolean))],
+        });
     },
     async setPersonalModelAuth(principalId, on, provider) {
       const id = scopeId("personal", principalId);

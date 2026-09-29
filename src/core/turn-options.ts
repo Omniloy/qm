@@ -1,4 +1,6 @@
-import type { RuntimePurpose } from "../resolution/config-store.ts";
+import type { RuntimePurpose, ScopedConfigStore } from "../resolution/config-store.ts";
+import { samePersonMatcher, type RosterPerson } from "../directory/person.ts";
+import { parseScopeId, type ScopeId } from "../types.ts";
 import {
   defaultWebuiModelIds,
   THINKING_LEVELS,
@@ -28,6 +30,28 @@ export function resolveTurnFastMode(
 ): boolean | undefined {
   if (typeof requested === "boolean") return requested;
   return humanTurn && interactiveDefault ? true : undefined;
+}
+
+export async function fastModeAllowed(
+  config: Pick<ScopedConfigStore, "getFastModeAccess"> | undefined,
+  directory: { get(principalId: string): Promise<RosterPerson | null> } | undefined,
+  actorId: string | undefined,
+): Promise<boolean> {
+  const people = (await config?.getFastModeAccess()) ?? null;
+  if (people === null) return true;
+  if (!actorId || !people.length) return false;
+  const matches = await samePersonMatcher(directory ?? { get: async () => null }, actorId);
+  return (await Promise.all(people.map(matches))).some(Boolean);
+}
+
+export async function scopeFastModeAllowed(
+  config: Pick<ScopedConfigStore, "getFastModeAccess"> | undefined,
+  directory: { get(principalId: string): Promise<RosterPerson | null> } | undefined,
+  actorId: string,
+  scope: ScopeId,
+): Promise<boolean> {
+  const parsed = parseScopeId(scope);
+  return (parsed.kind === "personal" && parsed.ref === actorId) || fastModeAllowed(config, directory, actorId);
 }
 
 export function turnModelOptions(input: {

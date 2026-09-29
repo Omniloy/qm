@@ -147,7 +147,7 @@ test("MCP servers and Composio are managed from the Connectors view", async () =
   try {
     dom.window.eval(
       `ui.configure({orgScope:()=>"org:test",connectorName:x=>x,fmtTime:x=>x,api:async(method,path,body)=>{window.calls.push({method,path,body});
-        if(path==="/api/mcp-servers")return{ok:true,data:{servers:[{id:"linear",name:"Linear",url:"https://mcp.linear.app/mcp",auth:"bearer",hasBearerToken:true,credentialScope:"shared",readOnly:false,enabled:true}],tools:[{name:"linear_list",serverId:"linear"}]}};
+        if(path==="/api/mcp-servers")return{ok:true,data:{servers:[{id:"linear",name:"Linear",url:"https://mcp.linear.app/mcp",icon:"https://linear.app/favicon.ico",auth:"bearer",hasBearerToken:true,credentialScope:"shared",readOnly:false,enabled:true}],tools:[{name:"linear_list",serverId:"linear"}]}};
         if(path==="/api/connector-catalog")return{ok:true,data:{catalog:[]}};
         if(path.includes("?view=connectors"))return{ok:true,data:{connectors:[],serviceCredentials:[]}};
         return{ok:true,data:{tools:["a","b"]}};}})`,
@@ -159,6 +159,26 @@ test("MCP servers and Composio are managed from the Connectors view", async () =
     assert.ok(view.querySelector("#card-mcp-servers"));
     assert.ok(view.querySelector("#card-composio"));
     assert.match(doc.getElementById("mcp-list")!.textContent!, /Linear[\s\S]*1 tool/);
+    const icon = doc.querySelector<HTMLImageElement>("#mcp-list .mcp-icon img")!;
+    assert.equal(icon.getAttribute("src"), "https://linear.app/favicon.ico");
+    assert.equal(icon.getAttribute("referrerpolicy"), "no-referrer");
+    assert.equal(icon.getAttribute("loading"), "lazy");
+    assert.ok(doc.querySelector("#mcp-list .mcp-icon svg"));
+    assert.equal(icon.style.background, "");
+    Object.defineProperty(icon, "naturalWidth", { configurable: true, value: 32 });
+    icon.dispatchEvent(new dom.window.Event("load"));
+    assert.equal(icon.hidden, false);
+    assert.notEqual(icon.style.background, "");
+    Object.defineProperty(icon, "naturalWidth", { configurable: true, value: 0 });
+    icon.dispatchEvent(new dom.window.Event("load"));
+    assert.equal(icon.hidden, true);
+    icon.hidden = false;
+    icon.src = "https://linear.app/icon.svg";
+    icon.dispatchEvent(new dom.window.Event("load"));
+    assert.equal(icon.hidden, false);
+    Object.defineProperty(icon, "naturalWidth", { configurable: true, value: 32 });
+    icon.dispatchEvent(new dom.window.Event("error"));
+    assert.equal(icon.hidden, true);
     assert.match(doc.getElementById("composio-state")!.textContent!, /Not configured/);
 
     doc.getElementById("mcp-add")!.click();
@@ -174,6 +194,12 @@ test("MCP servers and Composio are managed from the Connectors view", async () =
     auth.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
     type("mcp-bearerToken", "tok");
     assert.equal((doc.getElementById("mcp-readOnly") as HTMLInputElement).checked, true);
+    type("mcp-iconUrl", 'https://cdn.example.com/"x".png');
+    doc.getElementById("mcp-save")!.click();
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(calls.filter((c) => c.method === "PUT").length, 0);
+    assert.match(doc.getElementById("st-mcp-servers")!.textContent!, /Icon: an https image URL/);
+    type("mcp-iconUrl", " https://cdn.example.com/notion.png ");
     doc.getElementById("mcp-save")!.click();
     await new Promise((r) => setTimeout(r, 0));
     const put = calls.find((c) => c.method === "PUT")!;
@@ -181,6 +207,7 @@ test("MCP servers and Composio are managed from the Connectors view", async () =
     assert.deepEqual(put.body, {
       name: "notion",
       url: "https://mcp.notion.com/mcp",
+      iconUrl: "https://cdn.example.com/notion.png",
       auth: "bearer",
       credentialScope: "shared",
       bearerToken: "tok",
@@ -224,6 +251,7 @@ test("editing an MCP server keeps its stored secret unless a new one is typed", 
     id: "tools",
     name: "Tools",
     url: "https://tools.example.com/mcp",
+    iconUrl: "https://cdn.example.com/tools.png",
     auth: "client-credentials",
     clientId: "cid",
     hasClientSecret: true,
@@ -238,6 +266,7 @@ test("editing an MCP server keeps its stored secret unless a new one is typed", 
     {
       name: "Tools",
       url: "https://tools.example.com/mcp",
+      iconUrl: "https://cdn.example.com/tools.png",
       auth: "client-credentials",
       credentialScope: "per-user",
       credentialHost: "accounts.example.com",

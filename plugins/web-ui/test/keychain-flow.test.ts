@@ -1,7 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { isActiveGrant, isExpiredCredential, KeychainOperations, keychainSummary } from "../src/keychain-state.ts";
+import {
+  connectorCardMeta,
+  isActiveGrant,
+  isExpiredCredential,
+  KeychainOperations,
+  keychainSummary,
+} from "../src/keychain-state.ts";
 
 const connectorsSource = readFileSync(new URL("../src/connectors.ts", import.meta.url), "utf8");
 const shellSource = readFileSync(new URL("../src/shell.ts", import.meta.url), "utf8");
@@ -74,7 +80,7 @@ test("identity reset invalidates a pending connector start", async () => {
   assert.equal(navigated, false);
   assert.match(
     connectorsSource,
-    /const stateEpoch = keychainOperations\.captureEpoch\(\);[\s\S]*api<\{ authorizeUrl\?: string \}>[\s\S]*isCurrentEpoch\(stateEpoch\)/,
+    /const operation = beginKeychainMutation\(\);[\s\S]*api<\{ authorizeUrl\?: string \}>[\s\S]*isCurrentEpoch\(operation\.epoch\)/,
   );
 });
 
@@ -141,10 +147,10 @@ test("keychain overview wires managed connector grants into account controls", (
 test("destructive controls settle duplicate attempts while a mutation is busy", () => {
   assert.match(connectorsSource, /\?disabled=\$\{keychainOperations\.mutationInFlight\}/);
   assert.match(connectorsSource, /connectorNotice = "Another keychain change is still in progress\."/);
-  assert.equal(connectorsSource.match(/const operation = beginKeychainMutation\(\)/g)?.length, 4);
+  assert.equal(connectorsSource.match(/const operation = beginKeychainMutation\(\)/g)?.length, 5);
   assert.equal(
     connectorsSource.match(/if \(keychainOperations\.finishMutation\(operation\)\) drawConnectors\(\)/g)?.length,
-    4,
+    5,
   );
 });
 
@@ -211,4 +217,34 @@ test("resetting keychain state drops an open grant dialog and its contexts", () 
   ]) {
     assert.ok(body.includes(cleared), cleared);
   }
+});
+
+test("MCP sign-in accounts render by server name and host and never offer Give access", () => {
+  assert.deepEqual(
+    connectorCardMeta("mcp-granola", { kind: "mcp", name: "Granola", hosts: [{ host: "mcp.granola.ai" }] }),
+    { name: "Granola", hosts: "MCP server · mcp.granola.ai", grantable: false },
+  );
+  assert.deepEqual(connectorCardMeta("mcp-x", { kind: "mcp" }), {
+    name: "mcp-x",
+    hosts: "MCP server",
+    grantable: false,
+  });
+  assert.deepEqual(connectorCardMeta("google", {}, { name: "Google Workspace", hosts: "Gmail" }), {
+    name: "Google Workspace",
+    hosts: "Gmail",
+    grantable: true,
+  });
+  assert.match(connectorsSource, /const first = meta\.grantable/);
+  assert.match(shellSource, /focusConnector\(connect\)/);
+});
+
+test("the disconnect dialog and the sign-in return notice name MCP servers by their server name", () => {
+  assert.match(connectorsSource, /title: `Disconnect \$\{connectorName\(provider\)\}\?`/);
+  assert.match(
+    connectorsSource,
+    /function connectorName\(id: string\): string \{\n\s+return connectorCardMeta\(id, connectorProviders\[id\]/,
+  );
+  const loaded = connectorsSource.slice(connectorsSource.indexOf("connectorProviders = Object.fromEntries("));
+  assert.ok(loaded.indexOf("applyConnectorResult();") < loaded.indexOf("drawConnectors();"));
+  assert.doesNotMatch(connectorsSource, /CONNECTOR_LABELS\[provider\]\?\.name \?\? provider/);
 });

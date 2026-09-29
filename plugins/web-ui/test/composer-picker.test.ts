@@ -682,6 +682,17 @@ test("the personal-account picker preserves composer choices and saves context d
     await tick();
     assert.equal(updates.at(-1)?.effortLevel, "adaptive");
     assert.equal(context.contextModelState.config.effective.effortLevel, "adaptive");
+    config.effective = { harnessId: "claude", modelId: "alpha" };
+    config.fastModeModelIds = [];
+    config.fastModeRestricted = true;
+    context.resetContextModel();
+    (await vite.ssrLoadModule("/src/runtime-config-store.ts")).invalidateRuntimeConfigs();
+    await context.loadContextModel(config.scopeId, drawContext);
+    contextButton(".loadout-button").click();
+    const restrictedFast = contextButton('[aria-label="Fast"][role="menuitemcheckbox"]');
+    assert.equal(restrictedFast.disabled, true);
+    assert.equal(restrictedFast.getAttribute("aria-checked"), "false");
+    assert.equal(restrictedFast.querySelector(".loadout-shortcut")?.textContent, "Limited to specific people");
   } finally {
     resetContext?.();
     composer?.dispose();

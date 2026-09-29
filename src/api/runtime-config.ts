@@ -26,6 +26,7 @@ import {
 import { builtInModelCatalog, selectableCatalogForHarness, selectableModelCatalog } from "../model/model-catalog.ts";
 import { dropHidden } from "../model/model-classification.ts";
 import type { RuntimeChoice } from "../harness/harness.ts";
+import { fastModeAllowed } from "../core/turn-options.ts";
 
 export type RuntimeDeps = Partial<
   Pick<
@@ -37,6 +38,7 @@ export type RuntimeDeps = Partial<
     | "modelCredentialFetch"
     | "refreshModels"
     | "userModelCredentials"
+    | "directory"
   >
 > & { baseModelDefault?: string };
 
@@ -94,15 +96,41 @@ export async function userRuntimeConfigBody(ctx: { deps: RuntimeDeps }, scope: S
   return (await personalRuntimeConfig(ctx, scope, actorId))?.snapshot ?? runtimeConfigBody(ctx, scope);
 }
 
-export async function userPickerRuntimeConfig(ctx: { deps: RuntimeDeps }, scope: ScopeId, actorId: string) {
-  const personal = await personalRuntimeConfig(ctx, scope, actorId);
-  if (!personal) return pickerRuntimeConfig(ctx, await runtimeConfigBody(ctx, scope));
-  return pickerRuntimeConfig(
-    ctx,
-    personal.snapshot,
-    (id, harnessId) =>
-      routePersonalModelAccess(personal.access, id, harnessId) !== "org" || modelSelectableForHarness(id, harnessId),
-  );
+export async function userPickerRuntimeConfig(
+  ctx: { deps: RuntimeDeps },
+  scope: ScopeId,
+  actorId: string,
+  companyOnly = false,
+) {
+  const personal = companyOnly ? undefined : await personalRuntimeConfig(ctx, scope, actorId);
+  const snapshot = personal
+    ? await pickerRuntimeConfig(
+        ctx,
+        personal.snapshot,
+        (id, harnessId) =>
+          routePersonalModelAccess(personal.access, id, harnessId) !== "org" ||
+          modelSelectableForHarness(id, harnessId),
+      )
+    : await pickerRuntimeConfig(ctx, await runtimeConfigBody(ctx, scope));
+  if (await fastModeAllowed(ctx.deps.config, ctx.deps.directory, actorId)) return snapshot;
+  if (personal) {
+    const billedPersonally = (modelId: string) => routePersonalModelAccess(personal.access, modelId) !== "org";
+    return {
+      ...snapshot,
+      effective: {
+        ...snapshot.effective,
+        fastMode: snapshot.effective.fastMode === true && billedPersonally(snapshot.effective.modelId),
+      },
+      fastModeModelIds: snapshot.fastModeModelIds.filter(billedPersonally),
+    };
+  }
+  return {
+    ...snapshot,
+    effective: { ...snapshot.effective, fastMode: false },
+    fastModeModelIds: [] as string[],
+    interactiveFastMode: false,
+    fastModeRestricted: true,
+  };
 }
 
 export async function runtimeConfigBody(
@@ -244,7 +272,7 @@ export async function runtimeConfigBody(
   };
 }
 
-export async function pickerRuntimeConfig<
+async function pickerRuntimeConfig<
   T extends Pick<
     Awaited<ReturnType<typeof runtimeConfigBody>>,
     "modelsByHarness" | "modelCatalog" | "orgDefault" | "scopeOverride" | "effective"
