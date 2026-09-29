@@ -246,6 +246,10 @@ export async function resolveRuntimeChoiceDurable(
   return resolveRuntimeChoice(view, orgScopeId, scope, fallback, requested, purpose);
 }
 
+function personallyBilled(input: HarnessTurnInput): boolean {
+  return !!(input.providerKeys || input.claudeOauthToken || input.codexAuth);
+}
+
 export function createHarnessRouter(
   adapters: ReadonlyMap<HarnessId, Harness>,
   utility: Harness,
@@ -267,7 +271,7 @@ export function createHarnessRouter(
       async runTurn(input) {
         const resolved = await resolve(input);
         const choice =
-          resolved.fastMode && !(await fastModeAllowed(input.runtimeActorId))
+          resolved.fastMode && !personallyBilled(input) && !(await fastModeAllowed(input.runtimeActorId))
             ? { ...resolved, fastMode: false }
             : resolved;
         const adapter = adapters.get(choice.harnessId);

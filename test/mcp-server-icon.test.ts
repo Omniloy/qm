@@ -44,6 +44,7 @@ test("without an icon the site favicon is used, and only for public https server
 
 test("the store serves every server name on one line, including names saved before the rule", async () => {
   assert.equal(singleLineName("  A\n\tB​ C\u0007 "), "A B C");
+  assert.equal(singleLineName(`${"a".repeat(79)}😀tail`), `${"a".repeat(79)}😀`);
   const backing = createMemoryMap<McpServer>();
   const legacy: McpServer = {
     id: "crm",

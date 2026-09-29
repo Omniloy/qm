@@ -113,6 +113,17 @@ export async function userPickerRuntimeConfig(
       )
     : await pickerRuntimeConfig(ctx, await runtimeConfigBody(ctx, scope));
   if (await fastModeAllowed(ctx.deps.config, ctx.deps.directory, actorId)) return snapshot;
+  if (personal) {
+    const billedPersonally = (modelId: string) => routePersonalModelAccess(personal.access, modelId) !== "org";
+    return {
+      ...snapshot,
+      effective: {
+        ...snapshot.effective,
+        fastMode: snapshot.effective.fastMode === true && billedPersonally(snapshot.effective.modelId),
+      },
+      fastModeModelIds: snapshot.fastModeModelIds.filter(billedPersonally),
+    };
+  }
   return {
     ...snapshot,
     effective: { ...snapshot.effective, fastMode: false },

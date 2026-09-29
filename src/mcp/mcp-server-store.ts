@@ -62,10 +62,9 @@ export function mcpServerIcon(server: Pick<McpServer, "url" | "iconUrl">): strin
 }
 
 export function singleLineName(value: string): string {
-  return value
-    .replace(/[\s\p{Cc}\p{Cf}]+/gu, " ")
-    .trim()
-    .slice(0, 80);
+  return Array.from(value.replace(/[\s\p{Cc}\p{Cf}]+/gu, " ").trim())
+    .slice(0, 80)
+    .join("");
 }
 
 export interface McpServerStore {
