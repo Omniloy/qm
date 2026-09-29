@@ -506,16 +506,28 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     return principalManagesArtifactHome(skill.scopeId, skill.createdBy, principalId);
   }
 
-  async function skillEditAccess(
-    skill: Pick<Skill, "scopeId" | "createdBy">,
+  function skillEditAccessFor(
     principalId: string,
     liveActor: boolean,
-  ): Promise<SkillEditAccess> {
-    if (!(await canManageSkill(skill, principalId)))
-      return parseScopeId(skill.scopeId).kind === "org" ? "org_admins" : "not_yours";
-    if (triggerBlocksSharedSkill(skill.scopeId, liveActor)) return "needs_live_person";
-    if (!(await maySkillLiveIn(skill.scopeId, principalId))) return "admins_only";
-    return "editable";
+  ): (skill: Pick<Skill, "scopeId" | "createdBy">) => Promise<SkillEditAccess> {
+    let contextsAllowed: Promise<boolean> | undefined;
+    const byHome = new Map<string, Promise<SkillEditAccess>>();
+    const evaluate = async (skill: Pick<Skill, "scopeId" | "createdBy">): Promise<SkillEditAccess> => {
+      if (!(await canManageSkill(skill, principalId)))
+        return parseScopeId(skill.scopeId).kind === "org" ? "org_admins" : "not_yours";
+      if (triggerBlocksSharedSkill(skill.scopeId, liveActor)) return "needs_live_person";
+      if (!isSharedScope(skill.scopeId)) return "editable";
+      contextsAllowed ??= skillSharingAllows(principalId, "contexts");
+      return (await contextsAllowed) ? "editable" : "admins_only";
+    };
+    return (skill) => {
+      const key = `${skill.scopeId}\n${samePerson(skill.createdBy, principalId)}`;
+      const known = byHome.get(key);
+      if (known) return known;
+      const access = evaluate(skill);
+      byHome.set(key, access);
+      return access;
+    };
   }
 
   async function republishIfShared(skill: Skill, editorId: string): Promise<Skill> {
@@ -783,7 +795,7 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     principalManagesArtifactHome,
     artifactAuthor,
     canManageSkill,
-    skillEditAccess,
+    skillEditAccessFor,
     isOrgAdmin,
     skillSharingAllows,
     maySkillLiveIn,

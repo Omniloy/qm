@@ -1,13 +1,13 @@
 import type { ScopeId } from "../types.ts";
 import { parseScopeId, scopeId } from "../types.ts";
 import { orgId as orgIdOf } from "../config.ts";
-import type { Skill, SkillManifest, SkillStanding } from "../skills/skill-store.ts";
+import { managesSkill, type Skill, type SkillManifest, type SkillStanding } from "../skills/skill-store.ts";
 import type { SkillPack, SkillPackStore } from "../skills/skill-pack-store.ts";
 import type { SkillPackFetcher } from "../skills/pack-fetcher.ts";
 import { planIngest, importPack, collectSharedBundle, type ImportResult } from "../skills/ingest.ts";
 import { computeBundleHash } from "../skills/skill-bundle-store.ts";
 import { persistedSkillRecordPaths, SKILL_MATERIALIZATION_LOCK } from "../skills/skill-collision.ts";
-import { livePersonCapability, triggerBlocksSharedSkill } from "./artifact-share.ts";
+import { livePersonCapability } from "./artifact-share.ts";
 import { conversationLabelFor } from "../core/orchestrator/turn-helpers.ts";
 import { samePerson } from "../directory/person.ts";
 
@@ -47,16 +47,31 @@ export async function skillVisibilityContext(
   return { ordered, granted };
 }
 
-async function skillHomeLabel(deps: AppDeps, home: ScopeId, viewerId: string): Promise<string> {
+async function skillHomeLabel(deps: AppDeps, home: ScopeId, viewer: SkillViewer): Promise<string> {
   const { kind, ref } = parseScopeId(home);
   if (kind === "org") return "org";
-  if (kind === "personal") return samePerson(ref, viewerId) ? "personal (yours)" : `personal (${ref})`;
+  if (kind === "personal" && samePerson(ref, viewer.actorId)) return "personal (yours)";
+  if (home !== viewer.scopeId) return "shared from another conversation";
   if (kind === "group") {
     const name = await deps.projects?.name(ref).catch(() => undefined);
-    return name ? `project ${name}` : home;
+    return name ? `project ${name}` : "this conversation";
   }
-  if (kind === "channel") return (await conversationLabelFor(deps.directory, home, undefined)) ?? home;
-  return home;
+  if (kind === "channel") return (await conversationLabelFor(deps.directory, home, undefined)) ?? "this conversation";
+  return "this conversation";
+}
+
+function skillStandingsFor(
+  deps: AppDeps,
+  h: AppHelpers,
+  viewer: SkillViewer,
+): (skill: Skill) => Promise<Required<SkillStanding>> {
+  const access = h.skillEditAccessFor(viewer.actorId, livePersonCapability(viewer));
+  const labels = new Map<ScopeId, Promise<string>>();
+  return async (skill) => {
+    const label = labels.get(skill.scopeId) ?? skillHomeLabel(deps, skill.scopeId, viewer);
+    labels.set(skill.scopeId, label);
+    return { id: skill.id, home: await label, edit: await access(skill) };
+  };
 }
 
 function requireRegistry(deps: AppDeps): { packs: SkillPackStore; fetcher: SkillPackFetcher } {
@@ -239,7 +254,7 @@ export function createSkillMethods(
   | "getSkill"
   | "archiveSkill"
   | "listVisibleSkills"
-  | "canManageSkill"
+  | "skillEditAccess"
   | "skillStanding"
   | "listTurnSkills"
   | "updateOwnedSkill"
@@ -255,12 +270,7 @@ export function createSkillMethods(
   | "createOwnedSkill"
   | "deleteOwnedSkill"
 > {
-  const { canManageSkill, skillEditAccess, maySkillLiveIn, republishIfShared } = h;
-  const skillStanding = async (skill: Skill, viewer: SkillViewer): Promise<Required<SkillStanding>> => ({
-    id: skill.id,
-    home: await skillHomeLabel(deps, skill.scopeId, viewer.actorId),
-    edit: await skillEditAccess(skill, viewer.actorId, livePersonCapability(viewer)),
-  });
+  const { skillEditAccessFor, maySkillLiveIn, republishIfShared } = h;
   return {
     listSkills() {
       return deps.skills.list();
@@ -280,30 +290,31 @@ export function createSkillMethods(
       );
       return deps.skills.visibleFor(ordered, granted);
     },
-    canManageSkill(skill, principalId) {
-      return canManageSkill(skill, principalId);
+    skillEditAccess(skills, principalId, liveActor) {
+      const access = skillEditAccessFor(principalId, liveActor);
+      return Promise.all(skills.map(access));
     },
-    skillStanding,
+    skillStanding(skill, viewer) {
+      return skillStandingsFor(deps, h, viewer)(skill);
+    },
     async listTurnSkills(viewer) {
       const org = scopeId("org", orgIdOf());
       const actor = deps.identity.classify(viewer.actorId);
       const own = viewer.scopeId === scopeId("personal", viewer.actorId);
-      const external = viewer.externalSlack === true;
-      const teams = own && !external ? (actor.teamIds ?? []).map((t) => scopeId("team", t)) : [];
-      const ordered = [...new Set([viewer.scopeId, ...teams, ...(external ? [] : [org])])];
-      const granted = external
-        ? []
-        : (
-            await deps.acl
-              .sharedOfKindForAudience("skill", [actor], viewer.scopeId, org, (p, label, sess, orgScope) =>
-                own ? principalEntitledToScope(p, label, sess, orgScope) : label === sess || label === orgScope,
-              )
-              .catch(() => [])
-          ).map((g) => ({ id: parseRef(g.ref).id, ownerScopeId: g.ownerScopeId }));
+      const teams = own ? (actor.teamIds ?? []).map((t) => scopeId("team", t)) : [];
+      const ordered = [...new Set([viewer.scopeId, ...teams, org])];
+      const granted = (
+        await deps.acl
+          .sharedOfKindForAudience("skill", [actor], viewer.scopeId, org, (p, label, sess, orgScope) =>
+            own ? principalEntitledToScope(p, label, sess, orgScope) : label === sess || label === orgScope,
+          )
+          .catch(() => [])
+      ).map((g) => ({ id: parseRef(g.ref).id, ownerScopeId: g.ownerScopeId }));
       const visible = (await deps.skills.visibleFor(ordered, granted)).flatMap((r) => (r.skill ? [r.skill] : []));
+      const standingOf = skillStandingsFor(deps, h, viewer);
       return Promise.all(
         visible.map(async (skill) => {
-          const standing = await skillStanding(skill, viewer);
+          const standing = await standingOf(skill);
           return {
             id: skill.id,
             name: skill.manifest.name,
@@ -318,8 +329,8 @@ export function createSkillMethods(
     async updateOwnedSkill(id, principalId, patch, opts) {
       const skill = await deps.skills.get(id);
       if (!skill) return null;
-      const access = await skillEditAccess(skill, principalId, opts?.liveActor === true);
-      if (access === "not_yours" || access === "org_admins") return null;
+      const access = await skillEditAccessFor(principalId, opts?.liveActor === true)(skill);
+      if (!managesSkill(access)) return null;
       if (access === "needs_live_person") return "trigger_blocked";
       if (skill.status === "archived") return null;
       if (access === "admins_only") return "forbidden";
@@ -342,8 +353,8 @@ export function createSkillMethods(
     async restoreOwnedSkill(id, principalId, opts) {
       const skill = await deps.skills.get(id);
       if (!skill || skill.status !== "archived") return null;
-      const access = await skillEditAccess(skill, principalId, opts?.liveActor === true);
-      if (access === "not_yours" || access === "org_admins") return null;
+      const access = await skillEditAccessFor(principalId, opts?.liveActor === true)(skill);
+      if (!managesSkill(access)) return null;
       if (access === "needs_live_person") return "trigger_blocked";
       if (access === "admins_only") return "forbidden";
       await deps.skills.review(id, principalId, skill.manifest.requiredCapabilities);
@@ -482,8 +493,10 @@ export function createSkillMethods(
     async deleteOwnedSkill({ principalId, id, liveActor }) {
       const skill = await deps.skills.get(id);
       if (!skill) return "missing";
-      if (!(await canManageSkill(skill, principalId))) return "forbidden";
-      if (triggerBlocksSharedSkill(skill.scopeId, liveActor === true)) return "trigger_blocked";
+      const access = await skillEditAccessFor(principalId, liveActor === true)(skill);
+      if (!managesSkill(access)) return "forbidden";
+      if (access === "needs_live_person") return "trigger_blocked";
+      if (access === "admins_only") return "admins_only";
       await deps.skills.archive(id);
       deps.auditLog.record({
         at: Date.now(),

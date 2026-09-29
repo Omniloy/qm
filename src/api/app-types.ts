@@ -205,7 +205,7 @@ export type ReachNowResult =
 
 export type VisibleCron = Cron & { scopeName?: string };
 
-export type SkillViewer = Pick<CapabilityClaims, "actorId" | "scopeId" | "externalSlack" | "liveActor" | "liveAuthor">;
+export type SkillViewer = Pick<CapabilityClaims, "actorId" | "scopeId" | "liveActor" | "liveAuthor">;
 
 interface TurnSkill {
   id: string;
@@ -596,7 +596,7 @@ export interface App {
   getSkill(id: string): Promise<Skill | null>;
   archiveSkill(id: string): Promise<Skill>;
   listVisibleSkills(principalId: string): Promise<SkillResolution[]>;
-  canManageSkill(skill: Skill, principalId: string): Promise<boolean>;
+  skillEditAccess(skills: Skill[], principalId: string, liveActor: boolean): Promise<SkillEditAccess[]>;
   skillStanding(skill: Skill, viewer: SkillViewer): Promise<Required<SkillStanding>>;
   listTurnSkills(viewer: SkillViewer): Promise<TurnSkill[]>;
   updateOwnedSkill(
@@ -630,7 +630,7 @@ export interface App {
     principalId: string;
     id: string;
     liveActor?: boolean;
-  }): Promise<"missing" | "forbidden" | "trigger_blocked" | "deleted">;
+  }): Promise<"missing" | "forbidden" | "trigger_blocked" | "admins_only" | "deleted">;
   rollbackDeployment(id: string, version: number): Promise<void>;
   archiveDeployment(id: string): Promise<void>;
   restoreDeployment(id: string, actorId?: string): Promise<Deployment>;

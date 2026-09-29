@@ -183,7 +183,7 @@ test("skills: a member who manages a teammate's shared skill cannot promote it o
   const admin = { adminStatusOf: async () => ({ isAdmin: false }) };
   const app = createApp({ ...deps, admin } as unknown as AppDeps);
   const org = scopeId("org", ORG);
-  assert.equal(await app.canManageSkill(planted, PRIV_MEMBER), true);
+  assert.deepEqual(await app.skillEditAccess([planted], PRIV_MEMBER, true), ["editable"]);
   await assert.rejects(app.promoteSkill(planted.id, org, PRIV_MEMBER, true, true), /isn't yours to share/);
   assert.equal((await app.promoteSkill(planted.id, org, OWNER, true, true)).scopeId, org);
 });
