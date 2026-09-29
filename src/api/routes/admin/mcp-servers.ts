@@ -75,13 +75,11 @@ async function refreshSiteIcon(ctx: ApiCtx, saved: McpServer): Promise<void> {
   const store = ctx.deps.mcpServers;
   if (!net || !store) return;
   const resolvedIconUrl = (await resolveMcpSiteIcon(saved.url, net)) ?? saved.resolvedIconUrl;
-  const current = await store.get(saved.id);
-  if (!current || current.url !== saved.url || current.iconUrl) return;
-  await store.put({
-    ...current,
-    ...(resolvedIconUrl ? { resolvedIconUrl } : {}),
-    resolvedIconCheckedAt: Date.now(),
-  });
+  await store.updateIf(saved.id, (current) =>
+    current.url !== saved.url || current.iconUrl || current.updatedAt !== saved.updatedAt
+      ? null
+      : { ...current, ...(resolvedIconUrl ? { resolvedIconUrl } : {}), resolvedIconCheckedAt: Date.now() },
+  );
 }
 
 function refreshSiteIconIfDue(ctx: ApiCtx, server: McpServer, existing: McpServer | null, reregister: boolean) {

@@ -203,3 +203,29 @@ test("the store serves every server name on one line, including names saved befo
   await store.put({ ...legacy, name: "New\r\nName" });
   assert.equal((await backing.get("crm"))?.name, "New Name");
 });
+
+test("updateIf never resurrects a deleted server and skips a server changed since it was read", async () => {
+  const store = createMcpServerStore(createMemoryMap<McpServer>());
+  const base: McpServer = {
+    id: "crm",
+    name: "CRM",
+    url: "https://mcp.tools.example.com/mcp",
+    auth: "none",
+    readOnly: true,
+    enabled: true,
+    updatedAt: 1,
+    updatedBy: "admin",
+  };
+  await store.put(base);
+  await store.delete("crm");
+  await store.updateIf("crm", (current) => ({ ...current, resolvedIconUrl: "https://tools.example.com/a.svg" }));
+  assert.equal(await store.get("crm"), null);
+
+  await store.put({ ...base, updatedAt: 2, name: "Newer" });
+  await store.updateIf("crm", (current) =>
+    current.updatedAt !== 1 ? null : { ...current, resolvedIconUrl: "https://tools.example.com/a.svg" },
+  );
+  const kept = await store.get("crm");
+  assert.equal(kept?.name, "Newer");
+  assert.equal(kept?.resolvedIconUrl, undefined);
+});

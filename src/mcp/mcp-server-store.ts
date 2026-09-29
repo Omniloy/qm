@@ -65,6 +65,7 @@ export interface McpServerStore {
   list(): Promise<McpServer[]>;
   get(id: string): Promise<McpServer | null>;
   put(server: McpServer): Promise<void>;
+  updateIf(id: string, fn: (server: McpServer) => McpServer | null): Promise<void>;
   delete(id: string): Promise<void>;
   onChange(listener: () => void): () => void;
 }
@@ -87,6 +88,24 @@ export function createMcpServerStore(backing: DurableMap<McpServer>): McpServerS
     put: async (server) => {
       await backing.put(server.id, clean(server));
       emit();
+    },
+    updateIf: async (id, fn) => {
+      let changed = false;
+      const apply = (current: McpServer): McpServer => {
+        const next = fn(current);
+        if (!next) return current;
+        changed = true;
+        return clean(next);
+      };
+      if (backing.update) await backing.update(id, apply);
+      else {
+        const current = await backing.get(id);
+        if (current) {
+          const next = apply(current);
+          if (changed) await backing.put(id, next);
+        }
+      }
+      if (changed) emit();
     },
     delete: async (id) => {
       await backing.delete(id);
