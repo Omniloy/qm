@@ -820,18 +820,24 @@ const FAMILIES: AgentApiFamily[] = [
   },
   {
     match: (m, p) =>
-      (m === "POST" && p === "/v1/skills") ||
+      ((m === "POST" || m === "GET") && p === "/v1/skills") ||
       (m === "GET" && p.startsWith("/v1/skills/")) ||
       ((m === "PUT" || m === "DELETE") && p.startsWith("/v1/skills/")) ||
       (m === "POST" && /^\/v1\/skills\/[^/]+\/(restore|unshare|demote)$/.test(p)),
     guidance:
-      "Save a skill when you've worked out a repeatable procedure worth keeping (a checklist, a multi-step flow, a house style) — it is advertised in the skill index and loaded with the skills tool on future turns. The skill homes in THIS conversation's scope: in a 1:1 DM it's yours alone; in a private channel or group DM it's owned by that room and every member can edit or delete it (the audit trail records who changed what); a public channel stays owner-only. Write the `body` as a plain-step recipe addressed to your future self; edit or delete it as it goes stale.",
+      "Save a skill when you've worked out a repeatable procedure worth keeping (a checklist, a multi-step flow, a house style) — it is advertised in the skill index and loaded with the skills tool on future turns. The skill homes in THIS conversation's scope: in a 1:1 DM it's yours alone; in a private channel or group DM it's owned by that room and every member can edit or delete it (the audit trail records who changed what); a public channel stays owner-only. Write the `body` as a plain-step recipe addressed to your future self; edit or delete it as it goes stale. To improve an existing skill, edit it in place with PUT /v1/skills/:id using the id the skills tool reports when you load it (or GET /v1/skills) — never publish a \"-v2\" or renamed copy. POST only a genuinely new skill; a 409 on a taken name means edit the existing one instead.",
     routes: [
+      {
+        method: "GET",
+        path: "/v1/skills",
+        summary:
+          "list the skills this conversation can see → {skills:[{id, name, description, home, editable, edit}]}; editable says whether PUT /v1/skills/:id will work for you on this turn",
+      },
       {
         method: "POST",
         path: "/v1/skills",
         summary:
-          "save a NEW skill in this conversation's scope — {name, description, body} (the SKILL.md). Auto review+published; a name already taken in this scope is a 409 (edit it instead).",
+          "save a NEW skill in this conversation's scope — {name, description, body} (the SKILL.md). Auto review+published; a name already taken in this scope is a 409 (edit it instead with PUT).",
       },
       {
         method: "GET",
@@ -842,7 +848,7 @@ const FAMILIES: AgentApiFamily[] = [
         method: "PUT",
         path: "/v1/skills/:id",
         summary:
-          "edit a skill you manage — {description?, body?} (the name is fixed; create a new skill to rename). 404 if it isn't yours to edit",
+          "edit a skill you manage in place — {description?, body?}; the id comes from the skills tool header or GET /v1/skills. The name is fixed. 404 if it isn't yours to edit",
       },
       {
         method: "DELETE",

@@ -945,7 +945,8 @@ async function agentMemory(ctx: ApiCtx): Promise<void> {
 }
 
 async function listSkills(ctx: ApiCtx): Promise<void> {
-  const { res, app, url } = ctx;
+  const { res, app, url, capability } = ctx;
+  if (capability) return sendJson(res, 200, { skills: await app.listTurnSkills(capability) });
   const principalId = url.searchParams.get("principalId");
   if (!principalId) return sendJson(res, 400, { error: "bad_request", message: "principalId required" });
   const includeShadowed = url.searchParams.get("includeShadowed") === "1";
@@ -1610,7 +1611,7 @@ export const surfaceRoutes: ReadonlyArray<Route<ApiCtx>> = [
     auth: "source",
     handle: agentMemory,
   },
-  { method: "GET", path: "/v1/skills", auth: "source", handle: listSkills },
+  { method: "GET", path: "/v1/skills", auth: "either", handle: listSkills },
   { method: "GET", path: "/v1/skills/:id", auth: "either", handle: getSkillDetail },
   { method: "POST", path: "/v1/skills", auth: "either", handle: createSkill },
   { method: "PUT", path: "/v1/skills/:id", auth: "either", handle: updateSkill },

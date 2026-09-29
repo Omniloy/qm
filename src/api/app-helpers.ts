@@ -16,7 +16,8 @@ import { sleep } from "../util/async.ts";
 import type { RunSignal } from "../runs/run-signal-store.ts";
 import { processRun } from "../runs/worker.ts";
 import { deployRef, encodeRef, parseRef } from "../acl/resource-ref.ts";
-import type { Skill } from "../skills/skill-store.ts";
+import type { Skill, SkillEditAccess } from "../skills/skill-store.ts";
+import { triggerBlocksSharedSkill } from "./artifact-share.ts";
 import type { CapabilityClaims } from "../auth/capability-token.ts";
 import type { SkillSharingPolicy } from "../resolution/config-store.ts";
 import {
@@ -505,6 +506,18 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     return principalManagesArtifactHome(skill.scopeId, skill.createdBy, principalId);
   }
 
+  async function skillEditAccess(
+    skill: Pick<Skill, "scopeId" | "createdBy">,
+    principalId: string,
+    liveActor: boolean,
+  ): Promise<SkillEditAccess> {
+    if (!(await canManageSkill(skill, principalId)))
+      return parseScopeId(skill.scopeId).kind === "org" ? "org_admins" : "not_yours";
+    if (triggerBlocksSharedSkill(skill.scopeId, liveActor)) return "needs_live_person";
+    if (!(await maySkillLiveIn(skill.scopeId, principalId))) return "admins_only";
+    return "editable";
+  }
+
   async function republishIfShared(skill: Skill, editorId: string): Promise<Skill> {
     if (skill.status === "published") return skill;
     const { kind } = parseScopeId(skill.scopeId);
@@ -770,6 +783,7 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     principalManagesArtifactHome,
     artifactAuthor,
     canManageSkill,
+    skillEditAccess,
     isOrgAdmin,
     skillSharingAllows,
     maySkillLiveIn,

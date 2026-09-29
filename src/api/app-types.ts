@@ -49,7 +49,7 @@ import type { CustomProviderStore } from "../model/custom-provider-store.ts";
 import type { McpServerStore } from "../mcp/mcp-server-store.ts";
 import type { McpToolService } from "../mcp/mcp-tool-service.ts";
 import type { AclStore } from "../acl/acl-store.ts";
-import type { SkillStore, Skill, SkillResolution } from "../skills/skill-store.ts";
+import type { SkillStore, Skill, SkillEditAccess, SkillResolution, SkillStanding } from "../skills/skill-store.ts";
 import type { SkillPack, NewSkillPack, SkillPackStore } from "../skills/skill-pack-store.ts";
 import type { SkillPackFetcher } from "../skills/pack-fetcher.ts";
 import { type IngestPlan, type ImportResult } from "../skills/ingest.ts";
@@ -204,6 +204,17 @@ export type ReachNowResult =
     };
 
 export type VisibleCron = Cron & { scopeName?: string };
+
+export type SkillViewer = Pick<CapabilityClaims, "actorId" | "scopeId" | "externalSlack" | "liveActor" | "liveAuthor">;
+
+interface TurnSkill {
+  id: string;
+  name: string;
+  description: string;
+  home: string;
+  editable: boolean;
+  edit: SkillEditAccess;
+}
 
 export type ProjectView = Project & {
   scopeId: ScopeId;
@@ -586,6 +597,8 @@ export interface App {
   archiveSkill(id: string): Promise<Skill>;
   listVisibleSkills(principalId: string): Promise<SkillResolution[]>;
   canManageSkill(skill: Skill, principalId: string): Promise<boolean>;
+  skillStanding(skill: Skill, viewer: SkillViewer): Promise<Required<SkillStanding>>;
+  listTurnSkills(viewer: SkillViewer): Promise<TurnSkill[]>;
   updateOwnedSkill(
     id: string,
     principalId: string,

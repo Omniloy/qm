@@ -3967,3 +3967,33 @@ test("thrown execution errors leave pending child messages for the next delivere
     assert.equal(pending, false);
   }
 });
+
+test("skills read opens with the skill's id, home, and whether the turn may edit it in place", async () => {
+  const withStanding = (standing: Awaited<ReturnType<ToolContext["skill"]>>["standing"]) =>
+    tool("skills", {
+      ...fakeToolContext(),
+      async skill() {
+        return { content: "# Videos\nsteps", sourceScopeId: "channel:C9", ...(standing ? { standing } : {}) };
+      },
+    });
+  const editable = textOut(
+    await call(withStanding({ id: "sk-1", home: "#videos", edit: "editable" }), { action: "read", name: "videos" }),
+  );
+  assert.equal(
+    editable,
+    "[skill id sk-1 · home #videos · editable by you. Edit it in place with PUT /v1/skills/sk-1 {description?, body?} — don't create a new copy]\n# Videos\nsteps",
+  );
+  const readOnly = textOut(
+    await call(withStanding({ id: "sk-2", home: "#general", edit: "not_yours" }), { action: "read", name: "videos" }),
+  );
+  assert.match(readOnly, /^\[skill id sk-2 · home #general · read-only for you/);
+  assert.doesNotMatch(readOnly, /PUT/);
+  const org = textOut(
+    await call(withStanding({ id: "sk-3", home: "org", edit: "org_admins" }), { action: "read", name: "videos" }),
+  );
+  assert.match(org, /^\[skill id sk-3 · home org · org-wide: only an org admin can change it\]/);
+  assert.match(
+    textOut(await call(withStanding({ id: "sk-4" }), { action: "read", name: "videos" })),
+    /^\[skill id sk-4\]\n# Videos/,
+  );
+});

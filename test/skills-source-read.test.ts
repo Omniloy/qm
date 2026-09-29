@@ -136,6 +136,13 @@ test("a body read avoids sandbox work and a file request materializes that skill
   const turn = createTurnSandboxes({
     deps: {
       skills: { recordUse: async () => {} },
+      control: {
+        skillStanding: async (skill: { id: string }, claims: { liveActor?: boolean }) => ({
+          id: skill.id,
+          home: "personal (yours)",
+          edit: claims.liveActor ? "editable" : "needs_live_person",
+        }),
+      },
       sandboxResources: { access: async () => ({ id: "resource-1", ownerScopeId: "personal:U1" }) },
       sandbox: {
         provision: async (_layers: unknown, options?: { sandboxId?: string }) => {
@@ -162,6 +169,7 @@ test("a body read avoids sandbox work and a file request materializes that skill
     connectorEnv: {},
     credentialCutoverServices: [],
     visibleSkillsForTurn: async () => visible,
+    controlClaims: { actorId: "U1", scopeId: "personal:U1", liveActor: true },
     emitGapWork: () => {},
     perf: { credsMs: 0 },
   } as unknown as TurnSandboxContext);
@@ -171,7 +179,11 @@ test("a body read avoids sandbox work and a file request materializes that skill
   bodyOnly.skill!.manifest.files = [];
   delete bodyOnly.skill!.pack;
   visible.push(bodyOnly);
-  assert.deepEqual(await turn.useSkill("body-only", "SKILL.md"), { content: "BODY", sourceScopeId: "personal:U1" });
+  assert.deepEqual(await turn.useSkill("body-only", "SKILL.md"), {
+    content: "BODY",
+    sourceScopeId: "personal:U1",
+    standing: { id: "body-only", home: "personal (yours)", edit: "editable" },
+  });
   await turn.provision();
   assert.equal(provisions, 1);
   assert.equal(files.size, 0);

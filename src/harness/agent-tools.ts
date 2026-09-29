@@ -32,6 +32,7 @@ import {
 import { SANDBOX_CAPABILITY_TTL_MS } from "../auth/capability-token.ts";
 import { CRON_FIRE_NOTE_MAX_CHARS } from "../api/control-service.ts";
 import { utcMinute } from "../util/time.ts";
+import type { SkillEditAccess, SkillStanding } from "../skills/skill-store.ts";
 
 function describePublishAudience(a: PublishAudienceDescriptor | undefined): string {
   if (!a) return "Owned by you.";
@@ -99,6 +100,19 @@ export interface ToolContextRef {
   goalMeter?: import("./grind.ts").GrindMeter;
   screenToolResult?: (input: ToolResultScreenInput) => Promise<ToolResultScreen>;
   toolApprovalGate?: (tool: string) => boolean;
+}
+
+const SKILL_EDIT_NOTES: Record<SkillEditAccess, (id: string) => string> = {
+  editable: (id) =>
+    `editable by you. Edit it in place with PUT /v1/skills/${id} {description?, body?} — don't create a new copy`,
+  not_yours: () => "read-only for you: only its author or a manager of its home can change it",
+  org_admins: () => "org-wide: only an org admin can change it",
+  needs_live_person: () => "read-only this turn: a shared-context skill changes only on a turn a person is present for",
+  admins_only: () => "read-only for you: this org lets only admins change skills in shared contexts",
+};
+
+function skillStandingLine(s: SkillStanding): string {
+  return `[skill id ${s.id}${s.home ? ` · home ${s.home}` : ""}${s.edit ? ` · ${SKILL_EDIT_NOTES[s.edit](s.id)}` : ""}]`;
 }
 
 function text(s: string) {
@@ -1010,7 +1024,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     name: "skill",
     label: "skill",
     description:
-      "Load a skill from the Skills index before relying on it. Returns its SKILL.md instructions (or the relative file named by `path`) straight from the published source, without starting a sandbox. When the skill ships scripts or supporting files, this call also syncs them into a directory that lives for this turn and reports it; run and read them there with execute and files action read, in this turn.",
+      "Load a skill from the Skills index before relying on it. Returns its SKILL.md instructions (or the relative file named by `path`) straight from the published source, without starting a sandbox. When the skill ships scripts or supporting files, this call also syncs them into a directory that lives for this turn and reports it; run and read them there with execute and files action read, in this turn. The result opens with the skill's id, its home, and whether you can edit it in place.",
     parameters: Type.Object({
       name: Type.String({ description: "Skill name exactly as listed in the Skills index." }),
       path: Type.Optional(
@@ -1031,7 +1045,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       await recordCall(callId, { tool: "skills", action: "read", name: p.name, ...(p.path ? { path: p.path } : {}) });
       const signal = ref.abortSignal;
       signal?.throwIfAborted();
-      const { content, sourceScopeId, dir, packDir } = await tc.skill(p.name, {
+      const { content, sourceScopeId, dir, packDir, standing } = await tc.skill(p.name, {
         ...(p.path ? { path: p.path } : {}),
         ...(p.sandbox_id ? { sandboxId: p.sandbox_id } : {}),
         ...(signal ? { signal } : {}),
@@ -1054,7 +1068,11 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           ...(content !== null ? { bytes: content.length, sourceScopeId } : {}),
           ...(dir ? { dir } : {}),
         },
-        text(content === null ? `[no such skill file: ${p.name}/${p.path ?? "SKILL.md"}]` : `${where}${content}`),
+        text(
+          content === null
+            ? `[no such skill file: ${p.name}/${p.path ?? "SKILL.md"}]`
+            : `${standing ? `${skillStandingLine(standing)}\n` : ""}${where}${content}`,
+        ),
         content === null,
         sourceScopeId,
       );
