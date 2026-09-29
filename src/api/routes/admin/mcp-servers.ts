@@ -14,6 +14,7 @@ import {
   type McpServer,
   type McpServerAuthMode,
 } from "../../../mcp/mcp-server-store.ts";
+import { swallow } from "../../../util/errors.ts";
 import { sendJson } from "../../http.ts";
 import { mcpOAuthView, purgeMcpOAuth, registerMcpOAuthClient } from "../mcp-oauth.ts";
 import type { ApiCtx } from "../route.ts";
@@ -22,6 +23,7 @@ import { audit, authorizeAdmin, orgScope } from "../shared.ts";
 const AUTH_MODES: McpServerAuthMode[] = ["none", "bearer", "client-credentials", "oauth"];
 const SCOPE_TOKEN = /^[\x21\x23-\x5B\x5D-\x7E]+$/;
 const MAX_SCOPES = 20;
+const ICON_RECHECK_MS = 24 * 60 * 60 * 1000;
 
 function parseScopes(value: unknown): string[] | undefined | null {
   if (value === undefined || value === null || value === "") return undefined;
@@ -62,10 +64,29 @@ async function redactWithOAuth(ctx: ApiCtx, server: McpServer) {
   return redact(server, registration, !!catalog);
 }
 
-async function siteIcon(ctx: ApiCtx, url: string, existing: McpServer | null, reregister: boolean) {
-  if (existing?.url === url && existing.resolvedIconUrl && !reregister) return existing.resolvedIconUrl;
+function siteIconDue(server: McpServer, existing: McpServer | null, reregister: boolean): boolean {
+  if (server.iconUrl) return false;
+  const checkedAt = existing?.url === server.url ? existing.resolvedIconCheckedAt : undefined;
+  return reregister || checkedAt === undefined || server.updatedAt - checkedAt >= ICON_RECHECK_MS;
+}
+
+async function refreshSiteIcon(ctx: ApiCtx, saved: McpServer): Promise<void> {
   const net = ctx.deps.mcpOAuth?.net;
-  return net ? resolveMcpSiteIcon(url, net) : undefined;
+  const store = ctx.deps.mcpServers;
+  if (!net || !store) return;
+  const resolvedIconUrl = (await resolveMcpSiteIcon(saved.url, net)) ?? saved.resolvedIconUrl;
+  const current = await store.get(saved.id);
+  if (!current || current.url !== saved.url || current.iconUrl) return;
+  await store.put({
+    ...current,
+    ...(resolvedIconUrl ? { resolvedIconUrl } : {}),
+    resolvedIconCheckedAt: Date.now(),
+  });
+}
+
+function refreshSiteIconIfDue(ctx: ApiCtx, server: McpServer, existing: McpServer | null, reregister: boolean) {
+  if (!siteIconDue(server, existing, reregister)) return;
+  void refreshSiteIcon(ctx, server).catch((e: unknown) => swallow(`mcp site icon for ${server.id}`, e));
 }
 
 export async function getMcpServers(ctx: ApiCtx): Promise<void> {
@@ -186,6 +207,9 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
     name: (typeof b.name === "string" && singleLineName(b.name)) || id,
     url,
     ...(iconUrl ? { iconUrl } : {}),
+    ...(!iconUrl && existing?.url === url
+      ? { resolvedIconUrl: existing.resolvedIconUrl, resolvedIconCheckedAt: existing.resolvedIconCheckedAt }
+      : {}),
     auth,
     credentialScope,
     ...(credentialScope === "per-user" && !oauth ? { credentialHost, credentialAccountType } : {}),
@@ -213,8 +237,6 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
       message: "client-credentials auth requires clientId and clientSecret",
     });
   }
-  const resolvedIconUrl = iconUrl ? undefined : await siteIcon(ctx, url, existing, b.reregister === true);
-  if (resolvedIconUrl) server.resolvedIconUrl = resolvedIconUrl;
   if (oauth) {
     const result = await registerMcpOAuthClient(ctx.deps, {
       server,
@@ -227,6 +249,7 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
     if (result.registered || (existing && existing.url !== url)) await purgeMcpOAuth(ctx.deps, id);
     await ctx.deps.mcpOAuth!.clients.put(result.registration);
     await ctx.deps.mcpServers.put(server);
+    refreshSiteIconIfDue(ctx, server, existing, b.reregister === true);
     audit(ctx.deps, {
       principalId: authorized.id,
       action: "mcp-servers.update",
@@ -262,6 +285,7 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
   }
   if (existing?.auth === "oauth") await purgeMcpOAuth(ctx.deps, id);
   await ctx.deps.mcpServers.put(server);
+  refreshSiteIconIfDue(ctx, server, existing, b.reregister === true);
   audit(ctx.deps, {
     principalId: authorized.id,
     action: "mcp-servers.update",

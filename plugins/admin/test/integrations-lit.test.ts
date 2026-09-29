@@ -173,6 +173,10 @@ test("MCP servers and Composio are managed from the Connectors view", async () =
     icon.dispatchEvent(new dom.window.Event("load"));
     assert.equal(icon.hidden, true);
     icon.hidden = false;
+    icon.src = "https://linear.app/icon.svg";
+    icon.dispatchEvent(new dom.window.Event("load"));
+    assert.equal(icon.hidden, false);
+    Object.defineProperty(icon, "naturalWidth", { configurable: true, value: 32 });
     icon.dispatchEvent(new dom.window.Event("error"));
     assert.equal(icon.hidden, true);
     assert.match(doc.getElementById("composio-state")!.textContent!, /Not configured/);

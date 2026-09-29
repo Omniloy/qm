@@ -21,6 +21,15 @@ import {
   type McpUserToken,
 } from "../src/mcp/mcp-oauth-store.ts";
 
+async function until<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T> {
+  for (let i = 0; i < 400; i++) {
+    const value = await read();
+    if (done(value)) return value;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("condition not reached");
+}
+
 const ADMIN = { "content-type": "application/json", "x-admin-actor": "admin-alice@default-org" };
 
 test("MCP admin validates and preserves credential scope, without returning secrets", async (t) => {
@@ -146,24 +155,85 @@ test("MCP admin stores an optional https icon, otherwise resolves the site icon 
   assert.deepEqual(homepages, []);
   assert.equal((await put({ name: "CRM" })).status, 200);
   assert.equal((await store.get("crm"))?.iconUrl, "https://cdn.example.com/crm.png");
-  assert.equal((await put({ iconUrl: "" })).status, 200);
-  assert.equal((await store.get("crm"))?.iconUrl, undefined);
-  assert.equal((await store.get("crm"))?.resolvedIconUrl, "https://tools.example.com/brand-1.svg");
+  const checked = (after = 0) =>
+    until(
+      () => store.get("crm"),
+      (s) => (s?.resolvedIconCheckedAt ?? 0) > after,
+    );
+  const cleared = await put({ iconUrl: "" });
+  assert.equal(cleared.status, 200);
+  assert.equal(((await cleared.json()) as { server: { icon?: string } }).server.icon, undefined);
+  const first = await checked();
+  assert.equal(first?.iconUrl, undefined);
+  assert.equal(first?.resolvedIconUrl, "https://tools.example.com/brand-1.svg");
   assert.equal((await put({ name: "CRM 2" })).status, 200);
-  assert.deepEqual(homepages, ["https://tools.example.com/"]);
   const listed = (await (await fetch(base, { headers: ADMIN })).json()) as {
     servers: Array<{ icon?: string; resolvedIconUrl?: string }>;
   };
   assert.equal(listed.servers[0]?.icon, "https://tools.example.com/brand-1.svg");
   assert.equal(listed.servers[0]?.resolvedIconUrl, "https://tools.example.com/brand-1.svg");
-  assert.equal((await put({ url: "https://mcp.other.example.com/mcp" })).status, 200);
-  assert.equal((await store.get("crm"))?.resolvedIconUrl, "https://other.example.com/brand-2.svg");
+  assert.deepEqual(homepages, ["https://tools.example.com/"]);
+  const stale = first!.resolvedIconCheckedAt! - 25 * 60 * 60 * 1000;
+  await store.put({ ...(await store.get("crm"))!, resolvedIconCheckedAt: stale });
+  assert.equal((await put({ name: "CRM 3" })).status, 200);
+  assert.equal((await checked(stale))?.resolvedIconUrl, "https://tools.example.com/brand-2.svg");
+  const movedSave = await put({ url: "https://mcp.other.example.com/mcp" });
+  assert.equal(((await movedSave.json()) as { server: { icon?: string } }).server.icon, undefined);
+  const moved = await until(
+    () => store.get("crm"),
+    (s) => s?.resolvedIconUrl !== undefined,
+  );
+  assert.equal(moved?.resolvedIconUrl, "https://other.example.com/brand-3.svg");
   assert.equal(
     (await put({ url: "https://mcp.other.example.com/mcp", iconUrl: "https://cdn.example.com/x.png" })).status,
     200,
   );
   assert.equal((await store.get("crm"))?.resolvedIconUrl, undefined);
-  assert.equal(homepages.length, 2);
+  assert.equal((await store.get("crm"))?.resolvedIconCheckedAt, undefined);
+  assert.equal(homepages.length, 3);
+});
+
+test("a site icon lookup that finishes after an explicit icon was saved is discarded", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "mcp-admin-icon-race-"));
+  const built = buildApp(testConfig({ dataDir: dir }));
+  const store = createMcpServerStore(createMemoryMap<McpServer>());
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const homepages: string[] = [];
+  const fetchImpl = (async (input: string | URL | Request) => {
+    homepages.push(String(input));
+    await gate;
+    return new Response('<head><link rel="icon" href="/late.svg"></head>');
+  }) as typeof fetch;
+  const server = createInsecureTestServer(built.app, {
+    admin: built.admin,
+    auditLog: built.auditLog,
+    mcpServers: store,
+    mcpOAuth: oauthStores({ fetchImpl, lookup: async () => ["34.1.2.3"] }),
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(dir, { recursive: true, force: true });
+  });
+  const put = (body: object) =>
+    fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/v1/admin/mcp-servers/crm`, {
+      method: "PUT",
+      headers: ADMIN,
+      body: JSON.stringify({ url: "https://mcp.tools.example.com/mcp", validate: false, ...body }),
+    });
+  assert.equal((await put({ name: "First" })).status, 200);
+  await until(
+    async () => homepages.length,
+    (n) => n === 1,
+  );
+  assert.equal((await put({ name: "Second", iconUrl: "https://cdn.example.com/x.png" })).status, 200);
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const stored = await store.get("crm");
+  assert.equal(stored?.name, "Second");
+  assert.equal(stored?.resolvedIconUrl, undefined);
 });
 
 test("production wiring never uses operator fallback tokens for per-user MCP calls", async (t) => {
@@ -325,8 +395,12 @@ test("OAuth MCP servers register via discovery and DCR, reuse the registration, 
     oauth: { clientId: string; redirectUri: string; issuer: string; source: string; scopes: string[] };
     server: { credentialScope: string; credentialHost?: string; hasCatalog: boolean; icon?: string };
   };
-  assert.equal(body.server.icon, "https://www.granola.ai/favicon/favicon.svg");
   assert.equal(body.signInRequired, true);
+  const iconed = await until(
+    () => store.get("granola"),
+    (s) => s?.resolvedIconUrl !== undefined,
+  );
+  assert.equal(iconed?.resolvedIconUrl, "https://www.granola.ai/favicon/favicon.svg");
   assert.equal(body.oauth.clientId, "dcr-client-1");
   assert.equal(body.oauth.issuer, GRANOLA_AS);
   assert.equal(body.oauth.source, "dcr");
@@ -360,7 +434,10 @@ test("OAuth MCP servers register via discovery and DCR, reuse the registration, 
   assert.equal(homepageFetches.length, 1);
   assert.equal((await put("granola", { ...granola, reregister: true })).status, 200);
   assert.equal(registrations.length, 2);
-  assert.equal(homepageFetches.length, 2);
+  await until(
+    async () => homepageFetches.length,
+    (n) => n === 2,
+  );
   assert.equal(await oauth.tokens.accessToken("granola", "internal:alice"), null);
   assert.equal(await oauth.catalogs.get("granola"), null);
 

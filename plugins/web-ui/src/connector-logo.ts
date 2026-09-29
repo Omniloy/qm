@@ -30,7 +30,8 @@ const REMOTE_LOGO = /^https:\/\/[^\s"'<>\\`]{1,2040}$/;
 
 function settleRemoteLogo(event: Event): void {
   const img = event.currentTarget as HTMLImageElement;
-  if (img.naturalWidth > 0) img.dataset.loaded = "";
+  const loaded = event.type === "load" && (img.naturalWidth > 0 || /\.svg$/i.test(new URL(img.src).pathname));
+  if (loaded) img.dataset.loaded = "";
   else img.hidden = true;
 }
 

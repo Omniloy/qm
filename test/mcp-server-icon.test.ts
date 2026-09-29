@@ -64,16 +64,56 @@ test("icon links are ranked svg, then raster of at least 32px, then ico, and onl
     <link rel="mask-icon" href="/mask.svg">
     <link rel="icon" href="data:image/png;base64,AAAA">
     <link rel="icon" href="http://cdn.example.com/plain.svg">
-    <link rel="icon" href="//cdn.example.com/proto.png" sizes="48x48">
+    <link rel="icon" href="//static.tools.example.com/proto.png" sizes="48x48">
     <link rel="icon" href='/a"b.svg'>
   </head>`;
   assert.deepEqual(iconLinksFromHtml(page, "https://tools.example.com/"), [
     "https://tools.example.com/a%22b.svg",
-    "https://cdn.example.com/proto.png",
+    "https://static.tools.example.com/proto.png",
     "https://tools.example.com/s.ico?v=1&x=2",
     "https://tools.example.com/tiny.png",
   ]);
   assert.deepEqual(iconLinksFromHtml("<html><body>no icons</body></html>", "https://tools.example.com/"), []);
+});
+
+test("only icons on the homepage's own site or its subdomains are accepted", () => {
+  const page = [
+    "https://granola.ai/apex.svg",
+    "https://cdn.granola.ai/cdn.svg",
+    "https://www.granola.ai/www.svg",
+    "https://evil.example.com/tracker.svg",
+    "https://notgranola.ai/x.svg",
+    "https://granola.ai.evil.com/x.svg",
+  ]
+    .map((href) => `<link rel="icon" href="${href}">`)
+    .join("");
+  assert.deepEqual(iconLinksFromHtml(page, "https://www.granola.ai/"), [
+    "https://granola.ai/apex.svg",
+    "https://cdn.granola.ai/cdn.svg",
+    "https://www.granola.ai/www.svg",
+  ]);
+  assert.deepEqual(iconLinksFromHtml(page, "https://granola.ai/"), [
+    "https://granola.ai/apex.svg",
+    "https://cdn.granola.ai/cdn.svg",
+    "https://www.granola.ai/www.svg",
+  ]);
+});
+
+test("hostile pages parse in linear time", () => {
+  const size = 1024 * 1024;
+  for (const page of [
+    "<link ".repeat(size / 6),
+    "<link ".repeat(size / 6) + ">",
+    `<link ${"a".repeat(size)}>`,
+    `<link ${"a".repeat(2000)}>`.repeat(size / 2007),
+    `<link${" ".repeat(2000)}>`.repeat(size / 2006),
+    `<link ${'a="'.repeat(660)}>`.repeat(size / 1987),
+    `<link ${"a = ".repeat(500)}>`.repeat(size / 2007),
+  ]) {
+    const start = performance.now();
+    assert.deepEqual(iconLinksFromHtml(page, "https://tools.example.com/"), []);
+    assert.ok(performance.now() - start < 100, `${page.slice(0, 20)} took ${performance.now() - start}ms`);
+  }
 });
 
 function siteNet(routes: Record<string, () => Response>, lookup = async () => ["34.1.2.3"]) {
@@ -99,7 +139,7 @@ test("the site icon comes from the homepage, trying www when the bare domain red
   assert.deepEqual(requested, ["https://granola.ai/", "https://www.granola.ai/"]);
 });
 
-test("without icon links only a favicon.ico confirmed as an image is used", async () => {
+test("without icon links only a favicon.ico confirmed as an image is used, and www is skipped once the apex answers", async () => {
   const bare = () => new Response("<html><head></head></html>");
   const image = siteNet({
     "https://tools.example.com/": bare,
@@ -114,11 +154,7 @@ test("without icon links only a favicon.ico confirmed as an image is used", asyn
     "https://tools.example.com/favicon.ico": () => new Response("<html>", { headers: { "content-type": "text/html" } }),
   });
   assert.equal(await resolveMcpSiteIcon("https://mcp.tools.example.com/mcp", html.net), undefined);
-  assert.deepEqual(html.requested, [
-    "https://tools.example.com/",
-    "https://tools.example.com/favicon.ico",
-    "https://www.tools.example.com/",
-  ]);
+  assert.deepEqual(html.requested, ["https://tools.example.com/", "https://tools.example.com/favicon.ico"]);
 });
 
 test("site icon resolution never leaves https or the public network", async () => {

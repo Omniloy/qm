@@ -219,7 +219,8 @@ const PLUG = html`<svg
 
 function settleIcon(event: Event) {
   const img = event.currentTarget as HTMLImageElement;
-  if (img.naturalWidth > 0) img.style.background = "var(--surface, var(--bg, #fff))";
+  const loaded = event.type === "load" && (img.naturalWidth > 0 || /\.svg$/i.test(new URL(img.src).pathname));
+  if (loaded) img.style.background = "var(--surface, var(--bg, #fff))";
   else img.hidden = true;
 }
 

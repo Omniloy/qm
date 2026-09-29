@@ -23,6 +23,7 @@ export interface McpServer {
   oauthScopes?: string[];
   iconUrl?: string;
   resolvedIconUrl?: string;
+  resolvedIconCheckedAt?: number;
   readOnly: boolean;
   enabled: boolean;
   updatedAt: number;
