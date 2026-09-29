@@ -30,6 +30,7 @@ import {
 } from "./artifact-share.ts";
 import { isSharedScope, parseScopeId, type Permission, type ScopeId } from "../types.ts";
 import type { App, VisibleCron } from "./app.ts";
+import type { Skill, SkillStanding } from "../skills/skill-store.ts";
 
 export interface CronCreateRequest {
   runtime?: Cron["runtime"];
@@ -176,6 +177,7 @@ export interface ControlService {
     expectedVersion?: number,
   ): Promise<ControlOk<{ version: number }> | ControlErr<"soul_update_denied">>;
   shareArtifact(req: ShareArtifactRequest, claims: CapabilityClaims): Promise<ShareArtifactResult>;
+  skillStanding(skill: Skill, claims: CapabilityClaims): Promise<SkillStanding>;
 }
 
 export async function canAdministerCron(
@@ -874,6 +876,10 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
       } catch (e) {
         return { ok: false, code: "soul_update_denied", message: errMessage(e) };
       }
+    },
+
+    skillStanding(skill, claims) {
+      return app.skillStanding(skill, claims);
     },
 
     async shareArtifact(req, capability): Promise<ShareArtifactResult> {

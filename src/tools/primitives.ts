@@ -76,6 +76,7 @@ import type {
   ControlErr,
 } from "../api/control-service.ts";
 import type { ShareArtifactRequest, ShareArtifactResult } from "../api/artifact-share.ts";
+import type { SkillStanding } from "../skills/skill-store.ts";
 import type { Cron, Webhook } from "../types.ts";
 import type { CapabilityClaims } from "../auth/capability-token.ts";
 import type { VisibleCron } from "../api/app.ts";
@@ -157,6 +158,7 @@ interface ReadResult {
 export interface SkillResult {
   content: string | null;
   sourceScopeId: ScopeId | null;
+  standing?: SkillStanding;
   dir?: string;
   packDir?: string;
 }

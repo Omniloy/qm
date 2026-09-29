@@ -22,6 +22,7 @@ import {
   SKILLS_DIR,
 } from "../../skills/materialize.ts";
 import { safeSkillFilePath, type SkillResolution } from "../../skills/skill-store.ts";
+import type { CapabilityClaims } from "../../auth/capability-token.ts";
 import { isSafeSkillName } from "../../skills/skill-name.ts";
 import type { SkillResult } from "../../tools/primitives.ts";
 import { TURN_FILES_DIR } from "../attachments.ts";
@@ -56,6 +57,7 @@ export interface TurnSandboxContext {
   quarantinedServices: string[];
   cutoverModeOf: (service: string) => DeviceFlowCutoverMode;
   visibleSkillsForTurn: () => Promise<SkillResolution[]>;
+  controlClaims?: CapabilityClaims;
   emitGapWork: (phase: GapPhase, start: number, end: number) => void;
   perf: { credsMs: number };
 }
@@ -85,6 +87,7 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
     quarantinedServices,
     cutoverModeOf,
     visibleSkillsForTurn,
+    controlClaims,
     emitGapWork,
     perf,
   } = ctx;
@@ -384,15 +387,23 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
     if (content === undefined) return missing;
     if (deps.skills)
       void deps.skills.recordUse(resolution.skill.id).catch((e) => swallow("orchestrator: skill recordUse", e));
-    if (!shipsFiles) return { content, sourceScopeId: resolution.skill.scopeId };
+    const standing = {
+      id: resolution.skill.id,
+      ...(deps.control && controlClaims
+        ? await deps.control
+            .skillStanding(resolution.skill, controlClaims)
+            .catch(swallowAs("orchestrator: skill standing", undefined))
+        : undefined),
+    };
+    const found = { content, sourceScopeId: resolution.skill.scopeId, standing };
+    if (!shipsFiles) return found;
     const access = sandboxId ? await accessResource(sandboxId) : undefined;
-    if (access?.crossScope) return { content, sourceScopeId: resolution.skill.scopeId };
+    if (access?.crossScope) return found;
     const handle = access ? await provisionResource(access) : await provision();
     await materializeSkillTree(handle, resolution, sandboxId);
     const pack = packRoot(skillsRoot, resolution);
     return {
-      content,
-      sourceScopeId: resolution.skill.scopeId,
+      ...found,
       dir: skillDir(skillsRoot, resolution),
       ...(pack ? { packDir: pack } : {}),
     };

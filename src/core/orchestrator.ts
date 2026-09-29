@@ -2041,6 +2041,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         quarantinedServices,
         cutoverModeOf,
         visibleSkillsForTurn,
+        ...(controlClaims ? { controlClaims } : {}),
         emitGapWork,
         perf,
       });

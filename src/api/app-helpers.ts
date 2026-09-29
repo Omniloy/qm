@@ -16,7 +16,8 @@ import { sleep } from "../util/async.ts";
 import type { RunSignal } from "../runs/run-signal-store.ts";
 import { processRun } from "../runs/worker.ts";
 import { deployRef, encodeRef, parseRef } from "../acl/resource-ref.ts";
-import type { Skill } from "../skills/skill-store.ts";
+import type { Skill, SkillEditAccess } from "../skills/skill-store.ts";
+import { triggerBlocksSharedSkill } from "./artifact-share.ts";
 import type { CapabilityClaims } from "../auth/capability-token.ts";
 import type { SkillSharingPolicy } from "../resolution/config-store.ts";
 import {
@@ -505,6 +506,30 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     return principalManagesArtifactHome(skill.scopeId, skill.createdBy, principalId);
   }
 
+  function skillEditAccessFor(
+    principalId: string,
+    liveActor: boolean,
+  ): (skill: Pick<Skill, "scopeId" | "createdBy">) => Promise<SkillEditAccess> {
+    let contextsAllowed: Promise<boolean> | undefined;
+    const byHome = new Map<string, Promise<SkillEditAccess>>();
+    const evaluate = async (skill: Pick<Skill, "scopeId" | "createdBy">): Promise<SkillEditAccess> => {
+      if (!(await canManageSkill(skill, principalId)))
+        return parseScopeId(skill.scopeId).kind === "org" ? "org_admins" : "not_yours";
+      if (triggerBlocksSharedSkill(skill.scopeId, liveActor)) return "needs_live_person";
+      if (!isSharedScope(skill.scopeId)) return "editable";
+      contextsAllowed ??= skillSharingAllows(principalId, "contexts");
+      return (await contextsAllowed) ? "editable" : "admins_only";
+    };
+    return (skill) => {
+      const key = `${skill.scopeId}\n${samePerson(skill.createdBy, principalId)}`;
+      const known = byHome.get(key);
+      if (known) return known;
+      const access = evaluate(skill);
+      byHome.set(key, access);
+      return access;
+    };
+  }
+
   async function republishIfShared(skill: Skill, editorId: string): Promise<Skill> {
     if (skill.status === "published") return skill;
     const { kind } = parseScopeId(skill.scopeId);
@@ -770,6 +795,7 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     principalManagesArtifactHome,
     artifactAuthor,
     canManageSkill,
+    skillEditAccessFor,
     isOrgAdmin,
     skillSharingAllows,
     maySkillLiveIn,

@@ -10,7 +10,7 @@ import { scopeFastModeAllowed } from "../../core/turn-options.ts";
 import { sessionSharingRoutes } from "./session-sharing.ts";
 import type { Grant, ScopeId, Session } from "../../types.ts";
 import { parseScopeId, scopeId as makeScopeId } from "../../types.ts";
-import type { Skill, SkillResolution } from "../../skills/skill-store.ts";
+import { managesSkill, type Skill, type SkillResolution } from "../../skills/skill-store.ts";
 import { ByteSourceTooLargeError } from "../../files/durable-byte-store.ts";
 import {
   defaultModelForHarness,
@@ -945,40 +945,50 @@ async function agentMemory(ctx: ApiCtx): Promise<void> {
 }
 
 async function listSkills(ctx: ApiCtx): Promise<void> {
-  const { res, app, url } = ctx;
+  const { res, app, url, capability } = ctx;
+  if (capability) return sendJson(res, 200, { skills: await app.listTurnSkills(capability) });
   const principalId = url.searchParams.get("principalId");
   if (!principalId) return sendJson(res, 400, { error: "bad_request", message: "principalId required" });
   const includeShadowed = url.searchParams.get("includeShadowed") === "1";
   const resolved = (await app.listVisibleSkills(principalId)).filter(
     (r): r is SkillResolution & { skill: Skill } => r.skill !== null,
   );
-  const archivedChecks = await Promise.all(
-    (await app.listSkills())
-      .filter((skill) => skill.status === "archived")
-      .map(async (skill) => ({ skill, manageable: await app.canManageSkill(skill, principalId) })),
-  );
-  const archived = archivedChecks.filter((row) => row.manageable).map(({ skill }) => ({ skill, shadowed: [] }));
   const visible = resolved.flatMap((row) => [
     { skill: row.skill, shadowed: row.shadowed },
     ...(includeShadowed ? row.shadowed.map((skill) => ({ skill, shadowed: [] })) : []),
   ]);
-  const skills = await Promise.all(
-    [...visible, ...archived].map(async (r) => ({
-      id: r.skill.id,
-      name: r.skill.manifest.name,
-      description: r.skill.manifest.description,
-      scope: parseScopeId(r.skill.scopeId).kind ?? r.skill.scopeId,
-      scopeId: r.skill.scopeId,
-      shadowed: r.shadowed.length > 0,
-      status: r.skill.status,
-      version: r.skill.version,
-      source: r.skill.pack ? "pack" : "native",
-      pack: r.skill.pack,
-      assetCount: r.skill.manifest.files?.length ?? 0,
-      requiredCapabilities: r.skill.manifest.requiredCapabilities,
-      editable: await app.canManageSkill(r.skill, principalId),
-      createdByViewer: samePerson(r.skill.createdBy, principalId),
-    })),
+  const candidates = [
+    ...visible,
+    ...(await app.listSkills())
+      .filter((skill) => skill.status === "archived")
+      .map((skill) => ({ skill, shadowed: [] })),
+  ];
+  const access = await app.skillEditAccess(
+    candidates.map((r) => r.skill),
+    principalId,
+    true,
+  );
+  const skills = candidates.flatMap((r, i) =>
+    i >= visible.length && !managesSkill(access[i]!)
+      ? []
+      : [
+          {
+            id: r.skill.id,
+            name: r.skill.manifest.name,
+            description: r.skill.manifest.description,
+            scope: parseScopeId(r.skill.scopeId).kind ?? r.skill.scopeId,
+            scopeId: r.skill.scopeId,
+            shadowed: r.shadowed.length > 0,
+            status: r.skill.status,
+            version: r.skill.version,
+            source: r.skill.pack ? "pack" : "native",
+            pack: r.skill.pack,
+            assetCount: r.skill.manifest.files?.length ?? 0,
+            requiredCapabilities: r.skill.manifest.requiredCapabilities,
+            editable: access[i] === "editable",
+            createdByViewer: samePerson(r.skill.createdBy, principalId),
+          },
+        ],
   );
   return sendJson(res, 200, { skills });
 }
@@ -991,13 +1001,18 @@ async function getSkillDetail(ctx: ApiCtx): Promise<void> {
   }
   if (!principalId) return sendJson(res, 400, { error: "bad_request", message: "principalId required" });
   const skill = await app.getSkill(ctx.params.id!);
-  if (
-    !skill ||
-    (!(await app.canManageSkill(skill, principalId)) &&
-      !(await app.listVisibleSkills(principalId)).some((row) => row.skill?.id === skill.id))
-  ) {
-    return sendJson(res, 404, { error: "not_found" });
-  }
+  if (!skill) return sendJson(res, 404, { error: "not_found" });
+  const [access] = await app.skillEditAccess(
+    [skill],
+    principalId,
+    capability ? livePersonCapability(capability) : true,
+  );
+  const manages = managesSkill(access!);
+  const visible = capability
+    ? (manages && skill.scopeId === capability.scopeId) ||
+      (await app.listTurnSkills(capability)).some((row) => row.id === skill.id)
+    : manages || (await app.listVisibleSkills(principalId)).some((row) => row.skill?.id === skill.id);
+  if (!visible) return sendJson(res, 404, { error: "not_found" });
   return sendJson(res, 200, {
     skill: {
       id: skill.id,
@@ -1015,7 +1030,7 @@ async function getSkillDetail(ctx: ApiCtx): Promise<void> {
       grantedCapabilities: skill.grantedCapabilities,
       createdAt: skill.createdAt,
       updatedAt: skill.updatedAt,
-      editable: await app.canManageSkill(skill, principalId),
+      editable: access === "editable",
     },
   });
 }
@@ -1071,7 +1086,7 @@ async function updateSkill(ctx: ApiCtx): Promise<void> {
       id: updated.id,
       name: updated.manifest.name,
       description: updated.manifest.description,
-      body: updated.manifest.body,
+      ...(capability ? {} : { body: updated.manifest.body }),
       status: updated.status,
       version: updated.version,
     },
@@ -1097,6 +1112,7 @@ async function deleteSkill(ctx: ApiCtx): Promise<void> {
   if (outcome === "missing") return sendJson(res, 404, { error: "not_found", message: "no such skill" });
   if (outcome === "trigger_blocked")
     return sendJson(res, 403, { error: "forbidden", message: SHARED_SKILL_TRIGGER_REFUSAL });
+  if (outcome === "admins_only") return sendJson(res, 403, { error: "forbidden", message: SKILL_CONTEXTS_ADMIN_ONLY });
   if (outcome === "forbidden")
     return sendJson(res, 403, { error: "forbidden", message: "that skill isn't yours to archive" });
   return sendJson(res, 200, { ok: true });
@@ -1610,7 +1626,7 @@ export const surfaceRoutes: ReadonlyArray<Route<ApiCtx>> = [
     auth: "source",
     handle: agentMemory,
   },
-  { method: "GET", path: "/v1/skills", auth: "source", handle: listSkills },
+  { method: "GET", path: "/v1/skills", auth: "either", handle: listSkills },
   { method: "GET", path: "/v1/skills/:id", auth: "either", handle: getSkillDetail },
   { method: "POST", path: "/v1/skills", auth: "either", handle: createSkill },
   { method: "PUT", path: "/v1/skills/:id", auth: "either", handle: updateSkill },
