@@ -11,6 +11,7 @@ import { createCronStore } from "../src/cron/cron-store.ts";
 import { createWebhookStore } from "../src/webhooks/webhook-store.ts";
 import { createAclStore } from "../src/acl/acl-store.ts";
 import { createSkillStore } from "../src/skills/skill-store.ts";
+import { SKILL_MATERIALIZATION_LOCK } from "../src/skills/skill-collision.ts";
 import { createMemoryConfigStore, type PersistedSoul, type ScopedConfigStore } from "../src/resolution/config-store.ts";
 import { createMemoryMap, type DurableMap } from "../src/persistence/durable-map.ts";
 import { createMemoryAdvisoryLock, type AdvisoryLock } from "../src/persistence/advisory-lock.ts";
@@ -147,6 +148,66 @@ test("skills: a private-channel member may edit + delete a shared skill; provena
   assert.ok(edited && edited !== "trigger_blocked", "a private-channel member edits the scope's skill");
   assert.equal((edited as { createdBy: string }).createdBy, OWNER, "createdBy is never rewritten on a member edit");
   assert.equal(await app.deleteOwnedSkill({ principalId: PRIV_MEMBER, id: planted.id, liveActor: true }), "deleted");
+});
+
+test("skills: a source-managed skill reads as managed and refuses edits a sync would revert", async () => {
+  const deps = makeDeps();
+  const app = createApp(deps as unknown as AppDeps);
+  const plant = async (
+    name: string,
+    createdBy: string,
+    pack?: { packId: string; commit: string; upstreamName: string },
+  ) => {
+    const skill = await deps.skills.create({
+      scopeId: privScope,
+      manifest: { name, description: "d", requiredCapabilities: [], body: "# source" },
+      createdBy,
+      ...(pack ? { pack } : {}),
+    });
+    await deps.skills.review(skill.id, "system:test", []);
+    return deps.skills.publish(skill.id);
+  };
+  const managed = [
+    await plant("seeded", "system:skills-seed"),
+    await plant("layered", "system:deployment-layer"),
+    await plant("packed", "pack:p1", { packId: "p1", commit: "c", upstreamName: "packed" }),
+  ];
+  const native = await plant("native", OWNER);
+  assert.deepEqual(await app.skillEditAccess([...managed, native], PRIV_MEMBER, true), [
+    "managed",
+    "managed",
+    "managed",
+    "editable",
+  ]);
+  for (const skill of managed) {
+    assert.equal(
+      await app.updateOwnedSkill(skill.id, PRIV_MEMBER, { body: "# local" }, { liveActor: true }),
+      "managed",
+    );
+    assert.equal(await app.editSkill(skill.id, { body: "# local" }), "managed");
+    assert.equal((await deps.skills.get(skill.id))?.manifest.body, "# source");
+  }
+  assert.deepEqual(await app.skillEditAccess([managed[0]!], OUTSIDER, true), ["not_yours"]);
+  assert.deepEqual(await app.skillEditAccess([managed[0]!], PRIV_MEMBER, false), ["needs_live_person"]);
+});
+
+test("skills: an in-place edit runs under the skill materialization lock", async () => {
+  const keys: string[] = [];
+  const advisoryLock: AdvisoryLock = {
+    withLock: (key, fn) => {
+      keys.push(key);
+      return fn();
+    },
+  };
+  const deps = makeDeps({ advisoryLock });
+  const planted = await deps.skills.create({
+    scopeId: privScope,
+    manifest: { name: "locked", description: "d", requiredCapabilities: [], body: "# b" },
+    createdBy: OWNER,
+  });
+  const app = createApp(deps as unknown as AppDeps);
+  await app.editSkill(planted.id, { body: "# edited" });
+  assert.deepEqual(keys, [SKILL_MATERIALIZATION_LOCK]);
 });
 
 test("skills: when only admins may share skills, a member cannot edit a shared-home skill but an admin can", async () => {

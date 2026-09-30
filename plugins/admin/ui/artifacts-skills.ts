@@ -36,7 +36,9 @@ export async function removeSkill(s: Data, c: Context) {
     alert("Could not remove skill.");
   }
 }
+let detailRequestSeq = 0;
 export async function skillDetail(root: HTMLElement, rep: Data, group: Data[], c: Context) {
+  const request = ++detailRequestSeq;
   root.replaceChildren();
   const paint = renderer(root);
   paint(html`<div class="loadingline">${"Loading " + (rep.name || rep.id) + "…"}</div>`);
@@ -44,6 +46,7 @@ export async function skillDetail(root: HTMLElement, rep: Data, group: Data[], c
     "GET",
     "/api/skills/" + encodeURIComponent(rep.id) + "?scope=" + encodeURIComponent(rep.ownerScopeId || c.scope),
   );
+  if (request !== detailRequestSeq) return;
   if (!response.ok || !response.data) {
     paint(
       html`<p class="empty">
@@ -53,11 +56,13 @@ export async function skillDetail(root: HTMLElement, rep: Data, group: Data[], c
     return;
   }
   const k = response.data;
-  const by = (() => {
+  const source = (() => {
     if (k.pack) return "from " + (c.packRepoLabel(k.pack.url) || "pack " + c.shortId(k.pack.id, 8));
-    return k.createdBy?.startsWith("system:") ? "built-in" : "by " + (k.createdBy || "None");
+    if (k.createdBy?.startsWith("pack:")) return "from pack " + c.shortId(k.createdBy.slice(5), 8);
+    return k.createdBy?.startsWith("system:") ? "built-in" : "";
   })();
-  const editable = c.scopeKind(k.ownerScopeId) === "org" && k.status !== "archived";
+  const by = source || "by " + (k.createdBy || "None");
+  const editable = !source && c.scopeKind(k.ownerScopeId) === "org" && k.status !== "archived";
   let edit: { description: string; body: string; saving: boolean; message: string } | null = null;
   const startEdit = () => {
     edit = { description: k.description || "", body: k.body || "", saving: false, message: "" };
@@ -75,7 +80,7 @@ export async function skillDetail(root: HTMLElement, rep: Data, group: Data[], c
         body: current.body,
       })
       .catch(() => ({ ok: false, data: null }));
-    if (edit !== current) return;
+    if (edit !== current || request !== detailRequestSeq) return;
     if (!result.ok) {
       current.saving = false;
       current.message = result.data?.message || "Save failed.";

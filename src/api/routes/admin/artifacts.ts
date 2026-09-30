@@ -8,6 +8,7 @@ import { audit, requireScopedAdmin } from "../shared.ts";
 import { type ApiCtx } from "../route.ts";
 import { notifyOwnerOfCronEdit } from "../../../triggers/edit-notice.ts";
 import { requireScopedResource } from "./common.ts";
+import { SOURCE_MANAGED_SKILL_REFUSAL } from "../../artifact-share.ts";
 
 function isAdminCronDestination(v: unknown): v is Destination {
   if (typeof v !== "object" || v === null) return false;
@@ -245,6 +246,7 @@ export async function updateAdminSkill(ctx: ApiCtx): Promise<void> {
     return sendJson(res, 400, { error: "bad_request", message: "send a non-empty description and/or body" });
   }
   const updated = await app.editSkill(id, patch);
+  if (updated === "managed") return sendJson(res, 409, { error: "managed", message: SOURCE_MANAGED_SKILL_REFUSAL });
   if (!updated) return sendJson(res, 409, { error: "archived", message: "restore the skill before editing it" });
   audit(deps, { principalId: actor.id, action: "skill.update", resource: id, scopeLabel: skill.scopeId });
   return sendJson(res, 200, {

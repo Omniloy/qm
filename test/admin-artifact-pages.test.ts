@@ -441,6 +441,25 @@ test("an admin edits an org-wide skill in place: it stays published, the version
 
     await s.built.skills.archive(org.id);
     assert.equal((await put(ALICE_ADMIN, { body: "Zombie." })).status, 409);
+
+    for (const [i, createdBy] of ["system:skills-seed", "system:deployment-layer", "pack:p1"].entries()) {
+      const managed = await s.built.skills.create({
+        scopeId: "org:default-org",
+        manifest: { name: `managed-${i}`, description: "d", requiredCapabilities: [], body: "Source." },
+        createdBy,
+      });
+      const refused = await fetch(`${s.base}/v1/admin/skills/${managed.id}?scope=org:default-org`, {
+        method: "PUT",
+        headers: { ...ALICE_ADMIN, "content-type": "application/json" },
+        body: JSON.stringify({ body: "Reverted soon." }),
+      });
+      assert.equal(refused.status, 409, `${createdBy} skills are changed at their source`);
+      assert.deepEqual(await refused.json(), {
+        error: "managed",
+        message: "This skill is managed by its source (built-in / skill pack / deployment layer) — change it there",
+      });
+      assert.equal((await s.built.skills.get(managed.id))?.manifest.body, "Source.");
+    }
   } finally {
     await s.close();
   }

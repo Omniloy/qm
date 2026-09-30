@@ -595,7 +595,7 @@ export interface App {
   listSkills(): Promise<Skill[]>;
   getSkill(id: string): Promise<Skill | null>;
   archiveSkill(id: string): Promise<Skill>;
-  editSkill(id: string, patch: { description?: string; body?: string }): Promise<Skill | null>;
+  editSkill(id: string, patch: { description?: string; body?: string }): Promise<Skill | "managed" | null>;
   listVisibleSkills(principalId: string): Promise<SkillResolution[]>;
   skillEditAccess(skills: Skill[], principalId: string, liveActor: boolean): Promise<SkillEditAccess[]>;
   skillStanding(skill: Skill, viewer: SkillViewer): Promise<Required<SkillStanding>>;
@@ -605,12 +605,12 @@ export interface App {
     principalId: string,
     patch: { description?: string; body?: string },
     opts?: { liveActor?: boolean },
-  ): Promise<Skill | "trigger_blocked" | "forbidden" | null>;
+  ): Promise<Skill | "trigger_blocked" | "forbidden" | "managed" | null>;
   restoreOwnedSkill(
     id: string,
     principalId: string,
     opts?: { liveActor?: boolean },
-  ): Promise<Skill | "trigger_blocked" | "forbidden" | null>;
+  ): Promise<Skill | "trigger_blocked" | "forbidden" | "managed" | null>;
   listSkillPacks(): Promise<SkillPack[]>;
   getSkillPack(id: string): Promise<SkillPack | null>;
   registerSkillPack(input: NewSkillPack): Promise<SkillPack>;

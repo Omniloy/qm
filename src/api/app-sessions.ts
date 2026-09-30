@@ -18,6 +18,7 @@ import { swallowAs } from "../util/errors.ts";
 import { processIsGone } from "../sandbox/process-poll.ts";
 import { NoDefaultSandboxError } from "../sandbox/sandbox-routing.ts";
 import { cronRef, deployRef, encodeRef, fileRef, parseRef, skillRef } from "../acl/resource-ref.ts";
+import { isSourceManagedSkill } from "../skills/skill-store.ts";
 import { revokeAllGrants } from "../acl/acl-store.ts";
 import { samePerson } from "../directory/person.ts";
 import { AdminError } from "../admin/admin-service.ts";
@@ -74,8 +75,6 @@ async function provisionScopeWorkspace(
 function releaseWorkspaceHandle(sandbox: Sandbox, handle: SandboxHandle): Promise<void> {
   return sandbox.teardown(handle, { keepWarm: true }).catch(swallowAs("workspace browse teardown", undefined));
 }
-
-const PLATFORM_SKILL_AUTHOR = /^(system|pack):/;
 
 export function createSessionMethods(
   deps: AppDeps,
@@ -1241,7 +1240,7 @@ export function createSessionMethods(
             s.scopeId === targetScopeId &&
             s.manifest.name === skill.manifest.name &&
             !samePerson(s.createdBy, actorId) &&
-            (s.status === "published" || PLATFORM_SKILL_AUTHOR.test(s.createdBy)),
+            (s.status === "published" || isSourceManagedSkill(s)),
         );
         if (taken)
           throw new AdminError(

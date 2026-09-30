@@ -8,6 +8,8 @@ import type { RecipientResolution } from "../directory/directory-store.ts";
 export const UNATTESTED_TURN_CAUSE =
   "this request came from an automated trigger or from a conversation whose audience can't be verified; ask again from a DM or project conversation";
 
+export const SOURCE_MANAGED_SKILL_REFUSAL =
+  "This skill is managed by its source (built-in / skill pack / deployment layer) — change it there";
 export const SHARED_SKILL_TRIGGER_REFUSAL = `a skill in a shared scope can only be changed by a person the platform can attest is present — ${UNATTESTED_TURN_CAUSE}`;
 
 export const SKILL_CONTEXTS_ADMIN_ONLY =

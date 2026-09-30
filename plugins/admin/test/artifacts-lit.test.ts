@@ -397,6 +397,44 @@ test("the org skills index mounts the sharing card alongside skill packs", async
   dom.window.close();
 });
 
+test("a save that lands after the admin opened another skill does not repaint the old one", async () => {
+  const { dom, root, c, skills } = fixture();
+  c.statusBadge = (s: string) => s;
+  c.scopeCell = (s: string) => ({ text: s });
+  const first = {
+    id: "k1",
+    ownerScopeId: "org:acme",
+    name: "first",
+    body: "First body.",
+    status: "published",
+    version: 1,
+  };
+  const second = {
+    id: "k2",
+    ownerScopeId: "org:acme",
+    name: "second",
+    body: "Second body.",
+    status: "published",
+    version: 1,
+  };
+  let finishPut: (value: unknown) => void = () => {};
+  c.api = (method: string, path: string) => {
+    if (method === "PUT") return new Promise((resolve) => (finishPut = resolve));
+    return Promise.resolve({ ok: true, data: path.includes("/k2") ? second : first });
+  };
+  await skills.skillDetail(root, first, [first], c);
+  root.querySelector<HTMLButtonElement>(".skill-edit")!.click();
+  [...root.querySelectorAll<HTMLButtonElement>(".skill-edit-form button")]
+    .find((b) => b.textContent!.trim() === "Save")!
+    .click();
+  await skills.skillDetail(root, second, [second], c);
+  finishPut({ ok: true, data: first });
+  await tick();
+  await tick();
+  assert.match(root.querySelector(".skillbody")!.textContent!, /Second body\./);
+  dom.window.close();
+});
+
 test("an org-wide skill can be edited in place from its admin detail; other homes stay read-only", async () => {
   const { dom, root, c, skills } = fixture();
   c.statusBadge = (s: string) => s;
@@ -446,5 +484,15 @@ test("an org-wide skill can be edited in place from its admin detail; other home
   current = { ...org, status: "archived" };
   await skills.skillDetail(root, current, [current], c);
   assert.equal(root.querySelector(".skill-edit"), null, "an archived org skill is not editable");
+  for (const managed of [
+    { createdBy: "system:skills-seed" },
+    { createdBy: "system:deployment-layer" },
+    { createdBy: "pack:p1" },
+    { createdBy: "admin", pack: { id: "p1", url: "https://github.com/acme/pack.git" } },
+  ]) {
+    current = { ...org, ...managed };
+    await skills.skillDetail(root, current, [current], c);
+    assert.equal(root.querySelector(".skill-edit"), null, `${managed.createdBy} skills are edited at their source`);
+  }
   dom.window.close();
 });

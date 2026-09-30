@@ -74,7 +74,11 @@ export interface SkillResolution {
   shadowed: Skill[];
 }
 
-export type SkillEditAccess = "editable" | "not_yours" | "org_admins" | "needs_live_person" | "admins_only";
+export type SkillEditAccess = "editable" | "not_yours" | "org_admins" | "needs_live_person" | "admins_only" | "managed";
+
+export function isSourceManagedSkill(skill: Pick<Skill, "createdBy" | "pack">): boolean {
+  return skill.pack !== undefined || /^(system|pack):/.test(skill.createdBy);
+}
 
 export function managesSkill(access: SkillEditAccess): boolean {
   return access !== "not_yours" && access !== "org_admins";
