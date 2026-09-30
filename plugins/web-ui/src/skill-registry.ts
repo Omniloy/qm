@@ -29,6 +29,24 @@ export function isArchivedSkill(skill: SkillItem): boolean {
   return skill.status === "archived";
 }
 
+export interface SkillMatch {
+  skill: SkillItem;
+  start: number;
+  end: number;
+}
+
+export function matchSkills(query: string, skills: readonly SkillItem[]): SkillMatch[] {
+  const q = query.toLowerCase();
+  const active = skills.filter((skill) => !isArchivedSkill(skill));
+  if (!q) return active.map((skill) => ({ skill, start: -1, end: -1 }));
+  const out: SkillMatch[] = [];
+  for (const skill of active) {
+    const at = skill.name.toLowerCase().indexOf(q);
+    if (at >= 0) out.push({ skill, start: at, end: at + q.length });
+  }
+  return out.sort((a, b) => a.start - b.start || a.skill.name.localeCompare(b.skill.name));
+}
+
 export function filterSkills(skills: readonly SkillItem[], filters: SkillRegistryFilters): SkillItem[] {
   const query = filters.query.trim().toLowerCase();
   return skills.filter((skill) => {

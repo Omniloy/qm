@@ -210,3 +210,48 @@ export async function archiveAdminSkill(ctx: ApiCtx): Promise<void> {
   audit(deps, { principalId: actor.id, action: "skill.archive", resource: id, scopeLabel: skill.scopeId });
   return sendJson(res, 200, { ok: true });
 }
+
+function skillEditPatch(body: unknown): { description?: string; body?: string } | null {
+  if (typeof body !== "object" || body === null) return null;
+  const entries = Object.entries(body);
+  if (!entries.length) return null;
+  const patch: { description?: string; body?: string } = {};
+  for (const [key, value] of entries) {
+    if ((key !== "description" && key !== "body") || typeof value !== "string" || !value.trim()) return null;
+    patch[key] = value.trim();
+  }
+  return patch;
+}
+
+export async function updateAdminSkill(ctx: ApiCtx): Promise<void> {
+  const { res, app, deps, params, body } = ctx;
+  const id = params.id!;
+  const scoped = await requireScopedResource(
+    ctx,
+    () => app.getSkill(id),
+    (s) => s.scopeId,
+    "skill",
+  );
+  if (!scoped) return;
+  const { actor, record: skill } = scoped;
+  if (parseScopeId(skill.scopeId).kind !== "org") {
+    return sendJson(res, 403, {
+      error: "forbidden",
+      message: "only org-wide skills are edited here; other skills are edited by whoever manages their home",
+    });
+  }
+  const patch = skillEditPatch(body);
+  if (!patch) {
+    return sendJson(res, 400, { error: "bad_request", message: "send a non-empty description and/or body" });
+  }
+  const updated = await app.editSkill(id, patch);
+  if (!updated) return sendJson(res, 409, { error: "archived", message: "restore the skill before editing it" });
+  audit(deps, { principalId: actor.id, action: "skill.update", resource: id, scopeLabel: skill.scopeId });
+  return sendJson(res, 200, {
+    id: updated.id,
+    description: updated.manifest.description,
+    body: updated.manifest.body,
+    status: updated.status,
+    version: updated.version,
+  });
+}

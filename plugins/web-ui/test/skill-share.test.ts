@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   demoteImpact,
   demoteSuccessNotice,
@@ -96,16 +97,30 @@ test("promotion has a fixed destination, so it offers no picker", () => {
   assert.deepEqual(shareTargets(CONTEXTS, skill(), "promote"), []);
 });
 
-test("the request body maps each mode onto what /v1/share dispatches on", () => {
-  assert.deepEqual(shareRequest("share", "channel:C1", "write"), { toScope: "channel:C1", permission: "write" });
-  assert.deepEqual(shareRequest("move", "channel:C1", "write"), { toScope: "channel:C1", move: true });
-  assert.deepEqual(shareRequest("promote", "channel:C1", "write"), { toScope: "org" });
+test("the request body maps each mode onto what /v1/share dispatches on, and a share only ever grants use", () => {
+  assert.deepEqual(shareRequest("share", "channel:C1"), { toScope: "channel:C1", permission: "read" });
+  assert.deepEqual(shareRequest("move", "channel:C1"), { toScope: "channel:C1", move: true });
+  assert.deepEqual(shareRequest("promote", "channel:C1"), { toScope: "org" });
 });
 
-test("share says the copy is kept; move says it is not", () => {
-  assert.match(shareImpact("share", skill(), "#ops"), /You keep it/);
-  assert.match(shareImpact("move", skill(), "#ops"), /stops being available where it lives now/);
-  assert.match(shareImpact("promote", skill(), "everyone in the organization"), /You keep your own copy/);
+test("share copy says a share is live — later edits reach them — and never promises re-sharing", () => {
+  const share = shareImpact("share", skill(), "#ops");
+  assert.match(share, /stays yours to edit/);
+  assert.match(share, /always get your latest version/);
+  assert.doesNotMatch(share, /not pushed|share again to update/);
+});
+
+test("move copy says it leaves its current home and that existing shares stop working", () => {
+  const move = shareImpact("move", skill(), "#ops");
+  assert.match(move, /stops being available where it lives now/);
+  assert.match(move, /lose access/);
+});
+
+test("promote copy says the org gets a separate copy your edits don't reach, which only admins edit", () => {
+  const promote = shareImpact("promote", skill(), "everyone in the organization");
+  assert.match(promote, /gets a copy of \/jira-triage/);
+  assert.match(promote, /edits to it don't reach the org copy/);
+  assert.match(promote, /only org admins can edit/);
 });
 
 test("every mode names the skill in its heading and its confirmation", () => {
@@ -117,7 +132,7 @@ test("every mode names the skill in its heading and its confirmation", () => {
 
 test("the undo copy says what is kept, so it is not mistaken for deletion", () => {
   assert.match(unshareImpact("jira-triage", "#ops"), /You keep the skill/);
-  assert.match(demoteImpact("jira-triage"), /Anyone who kept their own copy still has it/);
+  assert.match(demoteImpact("jira-triage"), /The org copy is archived; the skill it was shared from keeps working/);
 });
 
 test("an unshared skill explains what sharing would do rather than just saying none", () => {
@@ -159,4 +174,9 @@ test("when the org lets everyone promote, a member can promote and take back the
   assert.deepEqual(skillShareActions(own, { isAdmin: false, canPromote: false, archived: false }), []);
   const others = skill({ scope: "org", scopeId: "org:omniloy", editable: false, createdByViewer: false });
   assert.deepEqual(skillShareActions(others, { isAdmin: false, canPromote: true, archived: false }), []);
+});
+
+test("the share dialog offers no edit permission, since write grants are not enforced", () => {
+  const source = readFileSync(new URL("../src/skills.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /Use and edit it|skill-share-permission|Can use and edit it/);
 });

@@ -50,6 +50,8 @@ import { modelSupportsFastMode } from "./pi-models";
 import type { ComposerSurface, ConvCtx } from "./conv-types";
 import { bumpSessionActivity, dropPendingSession, renderList } from "./sessions";
 import { appState } from "./shell";
+import { matchSkills, skillHomeLabel, type SkillMatch } from "./skill-registry";
+import { scopeTitle } from "./contexts";
 import { base64ToText, bytesToBase64, insertIntoDraft, pasteChipLabel } from "./paste-text";
 import { clearDraft, newChatDraftKey, saveDraft } from "./drafts";
 import { tip } from "./tooltip";
@@ -151,12 +153,8 @@ export interface SkillItem {
   assetCount?: number;
   requiredCapabilities?: string[];
   createdBy?: string;
+  updatedAt?: number;
   files?: Array<{ path: string; executable?: boolean }>;
-}
-interface SkillMatch {
-  skill: SkillItem;
-  start: number;
-  end: number;
 }
 
 let skillsCache: SkillItem[] | null = null;
@@ -1094,17 +1092,6 @@ export function createComposerSurface(ctx: ConvCtx, options: ComposerOptions = {
     composerState.menuQuery = "";
   }
 
-  function matchSkills(query: string, skills: SkillItem[]): SkillMatch[] {
-    const q = query.toLowerCase();
-    if (!q) return skills.map((skill) => ({ skill, start: -1, end: -1 }));
-    const out: SkillMatch[] = [];
-    for (const skill of skills) {
-      const at = skill.name.toLowerCase().indexOf(q);
-      if (at >= 0) out.push({ skill, start: at, end: at + q.length });
-    }
-    return out.sort((a, b) => a.start - b.start || a.skill.name.localeCompare(b.skill.name));
-  }
-
   function currentSlashMenu(): { open: boolean; loading: boolean; matches: SkillMatch[] } {
     const query = slashQuery(composerState.draft);
     if (query === null || composerState.slashDismissed) return { open: false, loading: false, matches: [] };
@@ -1210,7 +1197,7 @@ export function createComposerSurface(ctx: ConvCtx, options: ComposerOptions = {
         <span class="slash-icon">${icon(Box, 16)}</span>
         <span class="slash-name">${highlightName(m)}</span>
         <span class="slash-desc">${m.skill.description}</span>
-        <span class="slash-scope">${scopeBadge(m.skill.scope)}</span>
+        <span class="slash-scope">${skillHomeLabel(m.skill, appState.me?.user ?? null, (id) => scopeTitle(id))}</span>
       </button>
     `;
   }
@@ -1219,10 +1206,6 @@ export function createComposerSurface(ctx: ConvCtx, options: ComposerOptions = {
     const { name } = m.skill;
     if (m.start < 0 || m.end <= m.start) return html`${name}`;
     return html`${name.slice(0, m.start)}<b>${name.slice(m.start, m.end)}</b>${name.slice(m.end)}`;
-  }
-
-  function scopeBadge(scope: string): string {
-    return scope ? scope.charAt(0).toUpperCase() + scope.slice(1) : "";
   }
 
   function submitComposer(e: Event, agent: Agent): void {

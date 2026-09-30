@@ -595,6 +595,7 @@ export interface App {
   listSkills(): Promise<Skill[]>;
   getSkill(id: string): Promise<Skill | null>;
   archiveSkill(id: string): Promise<Skill>;
+  editSkill(id: string, patch: { description?: string; body?: string }): Promise<Skill | null>;
   listVisibleSkills(principalId: string): Promise<SkillResolution[]>;
   skillEditAccess(skills: Skill[], principalId: string, liveActor: boolean): Promise<SkillEditAccess[]>;
   skillStanding(skill: Skill, viewer: SkillViewer): Promise<Required<SkillStanding>>;

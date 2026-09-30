@@ -253,6 +253,7 @@ export function createSkillMethods(
   | "listSkills"
   | "getSkill"
   | "archiveSkill"
+  | "editSkill"
   | "listVisibleSkills"
   | "skillEditAccess"
   | "skillStanding"
@@ -270,8 +271,18 @@ export function createSkillMethods(
   | "createOwnedSkill"
   | "deleteOwnedSkill"
 > {
-  const { skillEditAccessFor, maySkillLiveIn, republishIfShared } = h;
+  const { skillEditAccessFor, maySkillLiveIn } = h;
+  async function editSkill(id: string, patch: { description?: string; body?: string }): Promise<Skill | null> {
+    const skill = await deps.skills.get(id);
+    if (!skill || skill.status === "archived") return null;
+    return deps.skills.update(id, {
+      ...skill.manifest,
+      description: patch.description ?? skill.manifest.description,
+      body: patch.body ?? skill.manifest.body,
+    });
+  }
   return {
+    editSkill,
     listSkills() {
       return deps.skills.list();
     },
@@ -334,13 +345,8 @@ export function createSkillMethods(
       if (access === "needs_live_person") return "trigger_blocked";
       if (skill.status === "archived") return null;
       if (access === "admins_only") return "forbidden";
-      const manifest = {
-        ...skill.manifest,
-        description: patch.description ?? skill.manifest.description,
-        body: patch.body ?? skill.manifest.body,
-      };
-      const updated = await deps.skills.update(id, manifest);
-      const live = await republishIfShared(updated, principalId);
+      const updated = await editSkill(id, patch);
+      if (!updated) return null;
       deps.auditLog.record({
         at: Date.now(),
         principalId,
@@ -348,7 +354,7 @@ export function createSkillMethods(
         resource: id,
         scopeLabel: skill.scopeId,
       });
-      return live;
+      return updated;
     },
     async restoreOwnedSkill(id, principalId, opts) {
       const skill = await deps.skills.get(id);

@@ -530,22 +530,6 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     };
   }
 
-  async function republishIfShared(skill: Skill, editorId: string): Promise<Skill> {
-    if (skill.status === "published") return skill;
-    const { kind } = parseScopeId(skill.scopeId);
-    if (kind !== "channel" && kind !== "group") return skill;
-    await deps.skills.review(skill.id, "system:skill-authoring", skill.manifest.requiredCapabilities);
-    const published = await deps.skills.publish(skill.id);
-    deps.auditLog.record({
-      at: Date.now(),
-      principalId: editorId,
-      action: "skill_review",
-      resource: skill.id,
-      scopeLabel: skill.scopeId,
-    });
-    return published;
-  }
-
   async function effectiveDeploymentPermission(d: Deployment, principalId: string): Promise<Permission | null> {
     if (!principalId || deps.identity.deactivationSource?.(principalId) === "manual") return null;
     if (await principalCanWriteScope(principalId, d.ownerScopeId)) return "write";
@@ -799,7 +783,6 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     isOrgAdmin,
     skillSharingAllows,
     maySkillLiveIn,
-    republishIfShared,
     effectiveDeploymentPermission,
     principalCanReadDeployment,
     principalGitPermission,

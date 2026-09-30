@@ -41,6 +41,7 @@ import {
   type SkillStatusFilter,
 } from "./skill-registry";
 import { listBackLink, listPageTpl } from "./list-page";
+import { renderSkillDetail } from "./skill-detail";
 import { scopeTitle } from "./contexts";
 import { scopedSession, scopedViewTopbar } from "./session-scope";
 import { focusDialogCancel, restoreDialogFocus, trapDialogFocus } from "./dialog-focus";
@@ -86,7 +87,7 @@ let createError = "";
 let deleting: string | null = null;
 let archiveConfirmation: SkillItem | null = null;
 let shareScopes: ShareScopeOption[] = [];
-let sharing: { skill: SkillItem; mode: SkillShareMode; toScope: string; permission: "read" | "write" } | null = null;
+let sharing: { skill: SkillItem; mode: SkillShareMode; toScope: string } | null = null;
 let shareBusy = false;
 let shareError = "";
 let shareFocusTarget: HTMLElement | null = null;
@@ -279,44 +280,14 @@ function openSkill(s: SkillItem, opts: { push?: boolean } = {}): void {
   if (!appState.mainEl) return;
   activeSkillId = s.id ?? null;
   syncSkillUrl(activeSkillId, opts.push);
-  const archived = isArchivedSkill(s);
   const host = document.createElement("div");
   host.className = "resource-pane skill-pane";
-  render(
-    html`<div class="resource-detail">
-      ${listBackLink("Skills", () => drawSkills())}
-      <div class="resource-heading">
-        <h2 dir="auto">/${s.name}</h2>
-        ${archived ? html`<span class="badge">Archived</span>` : nothing}
-      </div>
-      <div class="field">
-        <label>Description</label>
-        <div class="value" dir="auto">${s.description}</div>
-      </div>
-      <div class="field">
-        <label>Scope</label>
-        <div class="value">${skillHome(s)}</div>
-      </div>
-      <div class="field">
-        <label>Version</label>
-        <div class="value">${s.version ?? 1}</div>
-      </div>
-      <div class="field">
-        <label>Source</label>
-        <div class="value">${s.source === "pack" ? `Pack ${s.pack?.upstreamName ?? "source"}` : "Local"}</div>
-      </div>
-      <div class="field">
-        <label>Capabilities</label>
-        <div class="value">${s.requiredCapabilities?.length ? s.requiredCapabilities.join(", ") : "None required"}</div>
-      </div>
-      <div class="field">
-        <label>Assets</label>
-        <div class="value">${s.assetCount ?? 0}</div>
-      </div>
-    </div>`,
-    host,
-  );
   appState.mainEl.replaceChildren(host);
+  void renderSkillDetail(host, s, {
+    home: skillHome,
+    onBack: () => drawSkills(),
+    onEdit: (skill) => void startEdit(skill),
+  });
 }
 
 function skillGroup(skills: SkillItem[], variants: readonly SkillItem[]): TemplateResult {
@@ -911,7 +882,7 @@ function unshareBody(u: NonNullable<typeof unsharing>): TemplateResult {
         html`<div class="skill-unshare-row">
           <div>
             <strong>${scopeTitle(g.granteeScopeId)}</strong>
-            <div class="card-meta">${g.permission === "write" ? "Can use and edit it" : "Can use it"}</div>
+            <div class="card-meta">Can use it</div>
           </div>
           <button
             class="btn skill-unshare-revoke"
@@ -1064,7 +1035,7 @@ function startShare(s: SkillItem, mode: SkillShareMode): void {
   if (!s.id || sharing) return;
   shareFocusTarget = menuButtonFor(s.id);
   const targets = shareTargets(shareScopes, s, mode);
-  sharing = { skill: s, mode, toScope: targets[0]?.scopeId ?? "", permission: "read" };
+  sharing = { skill: s, mode, toScope: targets[0]?.scopeId ?? "" };
   shareError = "";
   shareBusy = false;
   drawSkills();
@@ -1134,34 +1105,6 @@ function shareDialog(): TemplateResult {
               }
             </label>`
       }
-      ${
-        sh.mode === "share"
-          ? html`<fieldset class="skill-share-permission">
-              <legend>Access</legend>
-              ${(
-                [
-                  ["read", "Use it", "They can invoke the skill."],
-                  ["write", "Use and edit it", "They can also change the instructions."],
-                ] as const
-              ).map(
-                ([value, label, hint]) =>
-                  html`<label class="skill-share-choice">
-                    <input
-                      type="radio"
-                      name="skill-share-permission"
-                      value=${value}
-                      .checked=${sh.permission === value}
-                      ?disabled=${shareBusy}
-                      @change=${() => {
-                        sh.permission = value;
-                        drawSkills();
-                      }}
-                    /><span><strong>${label}</strong><small class="card-meta">${hint}</small></span>
-                  </label>`,
-              )}
-            </fieldset>`
-          : nothing
-      }
       <p id="skill-share-impact">${shareImpact(sh.mode, sh.skill, targetLabel)}</p>
       ${shareError ? html`<div class="form-error" role="alert">${shareError}</div>` : nothing}
       <div class="project-dialog-actions actions">
@@ -1193,7 +1136,7 @@ async function performShare(): Promise<void> {
   try {
     await api(`/api/skills/${encodeURIComponent(sh.skill.id)}/share`, {
       method: "POST",
-      body: JSON.stringify(shareRequest(sh.mode, sh.toScope, sh.permission)),
+      body: JSON.stringify(shareRequest(sh.mode, sh.toScope)),
     });
     const opener = shareFocusTarget;
     const skillId = sh.skill.id;

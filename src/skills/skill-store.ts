@@ -220,7 +220,6 @@ export function createSkillStore(opts: SkillStoreOptions = {}): SkillStore {
       if (manifest.name !== s.manifest.name) throw new Error("skill update cannot rename — create a new skill instead");
       s.manifest = manifest;
       s.signature = sign(manifest);
-      if (scopeKind(s.scopeId) !== "personal") s.status = "draft";
       s.version += 1;
       s.updatedAt = Date.now();
       await skills.put(s.id, s);
