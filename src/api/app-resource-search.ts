@@ -63,10 +63,13 @@ export function createResourceSearchMethods(
       let person: ReturnType<App["personMatcher"]> | undefined;
       const canSee = async (kind: ResourceKind, row: ResourceCandidate): Promise<boolean> => {
         switch (kind) {
-          case "skills":
-            if (await helpers.canManageSkill(row, principalId)) return true;
-            if (row.status !== "published") return false;
-            return visibleSkills.has(row.id);
+          case "skills": {
+            if (visibleSkills.has(row.id)) return true;
+            const skill = await deps.skills.get(row.id);
+            if (!skill || skill.supersededBy) return false;
+            const role = await helpers.skillRoleFor(skill, principalId);
+            return role !== null && role !== "admin";
+          }
           case "crons":
             crons ??= cronVisibility(deps, helpers, principalId);
             return (await crons).canSee(row);

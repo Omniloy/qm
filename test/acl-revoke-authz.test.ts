@@ -75,3 +75,41 @@ test("POST /v1/grants/revoke requires revokedBy and rejects a non-owner", async 
     await new Promise<void>((r) => server.close(() => r()));
   }
 });
+
+test("a managesResource hook decides skill grants and revokes; undefined falls back to the scope rule", async () => {
+  const decided: string[] = [];
+  const acl = createAclStore(undefined, {
+    managesResource: async (principalId, _ownerScopeId, ref) => {
+      decided.push(ref);
+      if (!ref.startsWith("skill:")) return undefined;
+      return principalId === "admin";
+    },
+  });
+  const skill = grant({ ref: "skill:s1", grantedBy: "admin" });
+  await acl.grant(skill);
+  await assert.rejects(acl.grant({ ...skill, granteeScopeId: org, grantedBy: "U1" }), /only a manager/);
+  await assert.rejects(
+    acl.revoke(owner, "skill:s1", carol, "U1"),
+    /only a manager/,
+    "the hook overrides the owner rule",
+  );
+  await acl.revoke(owner, "skill:s1", carol, "admin");
+  await acl.grant(grant());
+  await assert.rejects(acl.revoke(owner, "redline.md", carol, "U2"), /only a manager/);
+  await acl.revoke(owner, "redline.md", carol, "U1");
+  assert.ok(decided.includes("redline.md"), "the hook is asked about every ref and may pass");
+});
+
+test("in the wired app an org admin revokes a shared personal skill's grant, and a stranger cannot", async () => {
+  const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "acl-skill-hook-")) }));
+  const s = await built.skills.create({
+    scopeId: owner,
+    manifest: { name: "digest", description: "d", requiredCapabilities: [], body: "# d" },
+    createdBy: "U1",
+  });
+  const ref = `skill:${s.id}`;
+  await built.acl.grant(grant({ ref }));
+  await assert.rejects(built.acl.revoke(owner, ref, carol, "U3"), /only a manager/);
+  await built.acl.revoke(owner, ref, carol, "admin-alice");
+  assert.deepEqual(await built.acl.grantsFor(owner, ref), []);
+});

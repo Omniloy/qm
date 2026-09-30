@@ -54,6 +54,8 @@ import type { SkillPack, NewSkillPack, SkillPackStore } from "../skills/skill-pa
 import type { SkillPackFetcher } from "../skills/pack-fetcher.ts";
 import { type IngestPlan, type ImportResult } from "../skills/ingest.ts";
 import { type SkillBundleStore } from "../skills/skill-bundle-store.ts";
+import type { DuplicateReport } from "../skills/skill-namespace.ts";
+import type { SkillOutcome, SkillSharing } from "./app-skill-ownership.ts";
 import type { AuditLog } from "../audit/audit-log.ts";
 import type { CapabilityClaims } from "../auth/capability-token.ts";
 import type { ScopedConfigStore } from "../resolution/config-store.ts";
@@ -214,6 +216,8 @@ interface TurnSkill {
   home: string;
   editable: boolean;
   edit: SkillEditAccess;
+  owner?: string;
+  orgWide?: boolean;
 }
 
 export type ProjectView = Project & {
@@ -476,6 +480,52 @@ export interface App {
   demoteSkill(id: string, actorId: string, liveActor: boolean): Promise<void>;
   /** Which scopes hold a grant on a skill — what "shared with" means, listed. */
   listSkillGrants(id: string): Promise<Array<{ granteeScopeId: ScopeId; permission: Permission }>>;
+  canManageSkill(id: string, principalId: string): Promise<boolean>;
+  shareSkill(input: {
+    id: string;
+    toScope: ScopeId;
+    permission: Permission;
+    actorId: string;
+    liveActor: boolean;
+  }): Promise<SkillOutcome<{ skill: Skill }>>;
+  unshareSkill(input: { id: string; scope: ScopeId; actorId: string }): Promise<SkillOutcome<{ skill: Skill }>>;
+  setSkillOrgWide(input: {
+    id: string;
+    on: boolean;
+    actorId: string;
+    liveActor: boolean;
+    portalSession?: boolean;
+  }): Promise<SkillOutcome<{ skill: Skill }>>;
+  moveSkillHome(input: {
+    id: string;
+    toScope: ScopeId;
+    actorId: string;
+    liveActor: boolean;
+    asAdmin?: boolean;
+  }): Promise<SkillOutcome<{ skill: Skill }>>;
+  transferSkillOwner(input: {
+    id: string;
+    newOwnerId: string;
+    homeScope?: ScopeId;
+    actorId: string;
+    liveActor: boolean;
+    asAdmin?: boolean;
+  }): Promise<SkillOutcome<{ skill: Skill }>>;
+  mergeSkill(input: {
+    fromId: string;
+    intoId: string;
+    actorId: string;
+    force?: boolean;
+  }): Promise<SkillOutcome<{ retired: string; into: string; regranted: number; orgWide: boolean }>>;
+  purgeArchivedSkill(input: { id: string; actorId: string }): Promise<SkillOutcome<{ skill: Skill }>>;
+  skillDuplicateReport(): Promise<DuplicateReport>;
+  backfillSkillOwners(input: { dryRun: boolean; actorId: string }): Promise<{
+    updated: string[];
+    skipped: number;
+    personalHomeMismatch: Array<{ id: string; scopeId: ScopeId; createdBy: string }>;
+  }>;
+  resolveSkillId(id: string): Promise<{ skill: Skill; supersededFrom?: string } | null>;
+  skillSharingFor(skills: readonly Skill[], principalId: string): Promise<SkillSharing[]>;
   belongsToScope(principalId: string, scope: ScopeId): Promise<boolean>;
   canManageArtifactHome(homeScopeId: ScopeId, createdBy: string, principalId: string): Promise<boolean>;
   getArtifactHome(type: ArtifactType, idOrName: string): Promise<ArtifactHome | null>;
@@ -610,7 +660,7 @@ export interface App {
     id: string,
     principalId: string,
     opts?: { liveActor?: boolean },
-  ): Promise<Skill | "trigger_blocked" | "forbidden" | "managed" | null>;
+  ): Promise<Skill | "trigger_blocked" | "forbidden" | "managed" | "superseded" | "name_conflict" | null>;
   listSkillPacks(): Promise<SkillPack[]>;
   getSkillPack(id: string): Promise<SkillPack | null>;
   registerSkillPack(input: NewSkillPack): Promise<SkillPack>;
@@ -631,7 +681,7 @@ export interface App {
     principalId: string;
     id: string;
     liveActor?: boolean;
-  }): Promise<"missing" | "forbidden" | "trigger_blocked" | "admins_only" | "deleted">;
+  }): Promise<"missing" | "forbidden" | "trigger_blocked" | "admins_only" | "superseded" | "deleted">;
   rollbackDeployment(id: string, version: number): Promise<void>;
   archiveDeployment(id: string): Promise<void>;
   restoreDeployment(id: string, actorId?: string): Promise<Deployment>;

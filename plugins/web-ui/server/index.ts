@@ -1886,6 +1886,29 @@ const apiRoutes: readonly WebRoute[] = [
   },
   {
     method: "POST",
+    path: "/api/skills/:id/owner",
+    handle: async (c) => {
+      const { req, res, user } = c;
+      const id = c.params.id!;
+      const p = await readJson<{ ownerId?: unknown; homeScope?: unknown }>(req, res);
+      if (!p) return;
+      if (typeof p.ownerId !== "string" || !p.ownerId) {
+        return json(res, 400, { error: "bad_request", message: "ownerId required" });
+      }
+      return relayCore(
+        res,
+        "POST",
+        `/v1/skills/${encodeURIComponent(id)}/owner`,
+        JSON.stringify({
+          principalId: user,
+          ownerId: p.ownerId,
+          ...(typeof p.homeScope === "string" ? { homeScope: p.homeScope } : {}),
+        }),
+      );
+    },
+  },
+  {
+    method: "POST",
     path: "/api/sessions/:id/share",
     handle: async ({ req, res, user, params }: WebCtx) => {
       res.setHeader("Cache-Control", "no-store");

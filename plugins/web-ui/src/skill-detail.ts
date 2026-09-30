@@ -9,6 +9,7 @@ import { relTime } from "./ui";
 
 export interface SkillDetailActions {
   home: (skill: SkillItem) => string;
+  scopeLabel?: (scopeId: string) => string;
   onBack: () => void;
   onEdit: (skill: SkillItem) => void;
 }
@@ -48,6 +49,19 @@ function authorLabel(createdBy: string | undefined): string {
   if (createdBy.startsWith("system:")) return "Built-in";
   if (createdBy.startsWith("pack:")) return "Skill pack";
   return createdBy;
+}
+
+export function ownerLabel(skill: Pick<SkillItem, "ownerName" | "ownedByViewer">): string {
+  if (skill.ownedByViewer) return "You";
+  return skill.ownerName ?? "Unknown";
+}
+
+function sharedWithTpl(skill: SkillItem, actions: SkillDetailActions): TemplateResult | typeof nothing {
+  const label = actions.scopeLabel ?? ((scopeId: string) => scopeId);
+  const shares = (skill.sharedWith ?? []).filter((g) => !g.scopeId.startsWith("org:"));
+  const chips = [...(skill.orgWide ? ["Everyone"] : []), ...shares.map((g) => label(g.scopeId))];
+  if (!chips.length) return nothing;
+  return field("Shared with", chips.join(", "));
 }
 
 function field(label: string, value: unknown): TemplateResult {
@@ -98,7 +112,8 @@ function detailTpl(row: SkillItem, load: DetailLoad, actions: SkillDetailActions
       <label>Description</label>
       <div class="value" dir="auto">${skill.description}</div>
     </div>
-    ${field("Scope", actions.home(skill))} ${field("Version", skill.version ?? 1)}
+    ${field("Home", actions.home(skill))} ${field("Owner", ownerLabel(skill))} ${sharedWithTpl(skill, actions)}
+    ${field("Version", skill.version ?? 1)}
     ${field("Source", skill.source === "pack" ? `Pack ${skill.pack?.upstreamName ?? "source"}` : "Local")}
     ${field("Capabilities", skill.requiredCapabilities?.length ? skill.requiredCapabilities.join(", ") : "None required")}
     ${field("Files", filesValue(skill, load))} ${loadedTpl(skill, load)}

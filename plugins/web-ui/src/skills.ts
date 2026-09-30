@@ -1,13 +1,17 @@
 import { html, nothing, render, type TemplateResult } from "lit";
-import { api, type CoreContext } from "./core-bridge";
+import { api, ApiError, type CoreContext } from "./core-bridge";
 import type { SkillItem } from "./composer";
 import { errMessage } from "../../chassis/src/errors";
 import { fieldSelect } from "./ui";
 import { appState, can } from "./shell";
 import { skillActions } from "./skill-actions";
 import {
+  conflictFrom,
   demoteImpact,
   demoteSuccessNotice,
+  isOrgScoped,
+  nameConflictMessage,
+  permissionLabel,
   shareConfirmLabel,
   shareImpact,
   shareRequest,
@@ -15,12 +19,17 @@ import {
   shareTargets,
   shareTitle,
   skillShareActions,
+  transferImpact,
+  transferSuccessNotice,
   unshareEmptyState,
   unshareSuccessNotice,
   type ShareScopeOption,
   type SkillGrantRow,
+  type SkillPermission,
   type SkillShareMode,
 } from "./skill-share";
+import { ownerLabel } from "./skill-detail";
+import type { DirectoryMatch } from "./people-results";
 import { resetRowMenus, rowMenuTpl } from "./row-actions";
 import {
   createReviewMatches,
@@ -87,7 +96,7 @@ let createError = "";
 let deleting: string | null = null;
 let archiveConfirmation: SkillItem | null = null;
 let shareScopes: ShareScopeOption[] = [];
-let sharing: { skill: SkillItem; mode: SkillShareMode; toScope: string } | null = null;
+let sharing: { skill: SkillItem; mode: SkillShareMode; toScope: string; permission: SkillPermission } | null = null;
 let shareBusy = false;
 let shareError = "";
 let shareFocusTarget: HTMLElement | null = null;
@@ -100,6 +109,16 @@ let unsharing: {
 let unshareFocusTarget: HTMLElement | null = null;
 let demoting: { skill: SkillItem; busy: boolean; error: string } | null = null;
 let demoteFocusTarget: HTMLElement | null = null;
+let transferring: {
+  skill: SkillItem;
+  query: string;
+  matches: DirectoryMatch[];
+  pick: DirectoryMatch | null;
+  home: string;
+  busy: boolean;
+  error: string;
+} | null = null;
+let transferFocusTarget: HTMLElement | null = null;
 let editRequestSeq = 0;
 const skillsRefreshes = new SkillsRefreshSequence();
 const skillMutations = new SkillsMutationSequence();
@@ -256,6 +275,9 @@ function skillVariant(s: SkillItem, variants: readonly SkillItem[]): TemplateRes
       <div class="skill-variant-state">
         <span class="badge skill-home" ${tip(`Lives in ${skillHome(s)}`)}>${skillHome(s)}</span>
         ${also.length ? html`<span class="badge skill-also" ${tip(`Also in ${also.join(", ")}`)}>also in ${also.join(", ")}</span>` : nothing}
+        <span class="badge skill-owner" ${tip(`Owner: ${ownerLabel(s)}`)}>${ownerLabel(s)}</span>
+        ${s.orgWide && !isOrgScoped(s) ? html`<span class="badge skill-everyone">Everyone</span>` : nothing}
+        ${actions.edit && s.canManage !== true && !archived ? html`<span class="badge">You can edit</span>` : nothing}
         ${archived ? html`<span class="badge">Archived</span>` : nothing}
         ${actions.edit && !archived ? html`<button class="btn skill-edit-trigger" data-skill-id=${s.id ?? ""} type="button" ?disabled=${busy} @click=${() => void startEdit(s)}>Edit</button>` : nothing}
         ${
@@ -285,6 +307,7 @@ function openSkill(s: SkillItem, opts: { push?: boolean } = {}): void {
   appState.mainEl.replaceChildren(host);
   void renderSkillDetail(host, s, {
     home: skillHome,
+    scopeLabel: (scopeId) => scopeTitle(scopeId, shareScopes.find((scope) => scope.scopeId === scopeId)?.name),
     onBack: () => drawSkills(),
     onEdit: (skill) => void startEdit(skill),
   });
@@ -655,7 +678,7 @@ function drawSkills(loading = false): void {
         ${skillsNotice ? html`<div class="status">${skillsNotice}</div>` : nothing}`,
       rows,
       empty,
-    })}${archiveConfirmation ? archiveDialog(archiveConfirmation) : nothing}${sharing ? shareDialog() : nothing}${unsharing ? unshareDialog() : nothing}${demoting ? demoteDialog() : nothing}`,
+    })}${archiveConfirmation ? archiveDialog(archiveConfirmation) : nothing}${sharing ? shareDialog() : nothing}${unsharing ? unshareDialog() : nothing}${demoting ? demoteDialog() : nothing}${transferring ? transferDialog() : nothing}`,
     skillsPageHost,
   );
 }
@@ -829,6 +852,7 @@ function onSkillMenu(s: SkillItem, action: string): void {
   if (action === "share" || action === "move" || action === "promote") startShare(s, action);
   if (action === "unshare") void startUnshare(s);
   if (action === "demote") startDemote(s);
+  if (action === "transfer") startTransfer(s);
 }
 
 function startUnshare(s: SkillItem): Promise<void> {
@@ -882,7 +906,7 @@ function unshareBody(u: NonNullable<typeof unsharing>): TemplateResult {
         html`<div class="skill-unshare-row">
           <div>
             <strong>${scopeTitle(g.granteeScopeId)}</strong>
-            <div class="card-meta">Can use it</div>
+            <div class="card-meta">${permissionLabel(g.permission)}</div>
           </div>
           <button
             class="btn skill-unshare-revoke"
@@ -975,6 +999,7 @@ function closeDemote(): void {
 
 function demoteDialog(): TemplateResult {
   const d = demoting!;
+  const confirmLabel = isOrgScoped(d.skill) ? "Take it back" : "Stop sharing";
   return html`<div
     class="project-dialog-backdrop"
     @click=${(event: MouseEvent) => event.target === event.currentTarget && closeDemote()}
@@ -988,9 +1013,13 @@ function demoteDialog(): TemplateResult {
       @keydown=${(event: KeyboardEvent) => trapDialogFocus(event, closeDemote)}
     >
       <div class="project-dialog-head">
-        <div><h2 id="skill-demote-title">Take /${d.skill.name} back from everyone?</h2></div>
+        <div>
+          <h2 id="skill-demote-title">
+            ${isOrgScoped(d.skill) ? `Take /${d.skill.name} back from everyone?` : `Stop sharing /${d.skill.name} with everyone?`}
+          </h2>
+        </div>
       </div>
-      <p id="skill-demote-impact">${demoteImpact(d.skill.name)}</p>
+      <p id="skill-demote-impact">${demoteImpact(d.skill.name, isOrgScoped(d.skill))}</p>
       ${d.error ? html`<div class="form-error" role="alert">${d.error}</div>` : nothing}
       <div class="project-dialog-actions actions">
         <button class="btn" type="button" data-dialog-cancel ?disabled=${d.busy} @click=${closeDemote}>Cancel</button
@@ -1000,7 +1029,7 @@ function demoteDialog(): TemplateResult {
           ?disabled=${d.busy}
           @click=${() => void performDemote()}
         >
-          ${d.busy ? "Working…" : "Take it back"}
+          ${d.busy ? "Working…" : confirmLabel}
         </button>
       </div>
     </div>
@@ -1035,7 +1064,7 @@ function startShare(s: SkillItem, mode: SkillShareMode): void {
   if (!s.id || sharing) return;
   shareFocusTarget = menuButtonFor(s.id);
   const targets = shareTargets(shareScopes, s, mode);
-  sharing = { skill: s, mode, toScope: targets[0]?.scopeId ?? "" };
+  sharing = { skill: s, mode, toScope: targets[0]?.scopeId ?? "", permission: "read" };
   shareError = "";
   shareBusy = false;
   drawSkills();
@@ -1105,7 +1134,35 @@ function shareDialog(): TemplateResult {
               }
             </label>`
       }
-      <p id="skill-share-impact">${shareImpact(sh.mode, sh.skill, targetLabel)}</p>
+      ${
+        sh.mode === "share"
+          ? html`<fieldset class="skill-share-permission">
+              <legend>Access</legend>
+              ${(
+                [
+                  ["read", "Use it", "They can invoke the skill."],
+                  ["write", "Use and edit it", "They can also edit the instructions; edits reach everyone who has it."],
+                ] as const
+              ).map(
+                ([value, label, hint]) =>
+                  html`<label class="skill-share-choice">
+                    <input
+                      type="radio"
+                      name="skill-share-permission"
+                      value=${value}
+                      .checked=${sh.permission === value}
+                      ?disabled=${shareBusy}
+                      @change=${() => {
+                        sh.permission = value;
+                        drawSkills();
+                      }}
+                    /><span><strong>${label}</strong><small class="card-meta">${hint}</small></span>
+                  </label>`,
+              )}
+            </fieldset>`
+          : nothing
+      }
+      <p id="skill-share-impact">${shareImpact(sh.mode, sh.skill, targetLabel, sh.permission)}</p>
       ${shareError ? html`<div class="form-error" role="alert">${shareError}</div>` : nothing}
       <div class="project-dialog-actions actions">
         <button class="btn" type="button" data-dialog-cancel ?disabled=${shareBusy} @click=${closeShareDialog}>
@@ -1136,7 +1193,7 @@ async function performShare(): Promise<void> {
   try {
     await api(`/api/skills/${encodeURIComponent(sh.skill.id)}/share`, {
       method: "POST",
-      body: JSON.stringify(shareRequest(sh.mode, sh.toScope)),
+      body: JSON.stringify(shareRequest(sh.mode, sh.toScope, sh.permission)),
     });
     const opener = shareFocusTarget;
     const skillId = sh.skill.id;
@@ -1153,7 +1210,10 @@ async function performShare(): Promise<void> {
     );
   } catch (e) {
     if (!sharing) return;
-    shareError = errMessage(e, "Failed to share skill.");
+    const conflict = e instanceof ApiError ? conflictFrom(e.body) : null;
+    shareError = conflict
+      ? nameConflictMessage(sh.skill.name, targetLabel, conflict)
+      : errMessage(e, "Failed to share skill.");
     shareBusy = false;
     drawSkills();
   }
@@ -1220,6 +1280,196 @@ async function performArchive(s: SkillItem): Promise<void> {
   }
 }
 
+function isPersonalHome(s: SkillItem): boolean {
+  return s.scopeId?.startsWith("personal:") === true;
+}
+
+function startTransfer(s: SkillItem): void {
+  if (!s.id || transferring) return;
+  transferFocusTarget = menuButtonFor(s.id);
+  transferring = { skill: s, query: "", matches: [], pick: null, home: "", busy: false, error: "" };
+  drawSkills();
+  setSkillsBackgroundInert(true);
+  queueMicrotask(() => {
+    if (transferring && skillsPageHost) focusDialogCancel(skillsPageHost);
+  });
+}
+
+function closeTransfer(): void {
+  if (transferring?.busy) return;
+  const target = transferFocusTarget;
+  const skillId = transferring?.skill.id;
+  transferring = null;
+  transferFocusTarget = null;
+  drawSkills();
+  setSkillsBackgroundInert(false);
+  queueMicrotask(() => restoreDialogFocus(target, () => menuButtonFor(skillId)));
+}
+
+async function searchTransferPeople(): Promise<void> {
+  const t = transferring;
+  if (!t || t.busy) return;
+  const query = t.query.trim();
+  if (query.length < 2) {
+    t.error = "Enter at least two characters.";
+    return drawSkills();
+  }
+  t.error = "";
+  try {
+    const r = await api<{ matches?: DirectoryMatch[] }>(`/api/directory/resolve?q=${encodeURIComponent(query)}`);
+    if (transferring !== t) return;
+    t.matches = (r.matches ?? []).filter((m) => m.type === "internal" && m.principalId !== appState.me?.user);
+    if (!t.matches.length) t.error = "No teammate matches that name.";
+  } catch (e) {
+    if (transferring !== t) return;
+    t.error = errMessage(e, "Couldn't search for people.");
+  }
+  drawSkills();
+}
+
+function transferHomeLabel(t: NonNullable<typeof transferring>): string {
+  if (t.home) return shareScopes.find((scope) => scope.scopeId === t.home)?.name ?? t.home;
+  return t.pick ? `${t.pick.displayName}'s personal skills` : "the new owner's personal skills";
+}
+
+function transferDialog(): TemplateResult {
+  const t = transferring!;
+  const personal = isPersonalHome(t.skill);
+  const homes = shareScopes.filter((scope) => scope.kind !== "personal");
+  return html`<div
+    class="project-dialog-backdrop"
+    @click=${(event: MouseEvent) => event.target === event.currentTarget && closeTransfer()}
+  >
+    <div
+      class="project-dialog skill-share-dialog skill-transfer-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="skill-transfer-title"
+      aria-describedby="skill-transfer-impact"
+      @keydown=${(event: KeyboardEvent) => trapDialogFocus(event, closeTransfer)}
+    >
+      <div class="project-dialog-head">
+        <div><h2 id="skill-transfer-title">Transfer /${t.skill.name}</h2></div>
+      </div>
+      <label class="skill-field">
+        <span>New owner</span>
+        <input
+          class="skill-transfer-query"
+          type="search"
+          placeholder="Search teammates"
+          .value=${t.query}
+          ?disabled=${t.busy}
+          @input=${(event: Event) => {
+            t.query = (event.target as HTMLInputElement).value;
+          }}
+          @keydown=${(event: KeyboardEvent) => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            void searchTransferPeople();
+          }}
+        />
+      </label>
+      <button
+        class="btn skill-transfer-search"
+        type="button"
+        ?disabled=${t.busy}
+        @click=${() => void searchTransferPeople()}
+      >
+        Search
+      </button>
+      ${
+        t.matches.length
+          ? html`<fieldset class="skill-share-permission">
+              <legend>Pick a teammate</legend>
+              ${t.matches.map(
+                (m) =>
+                  html`<label class="skill-share-choice">
+                    <input
+                      type="radio"
+                      name="skill-transfer-owner"
+                      .checked=${t.pick?.principalId === m.principalId}
+                      ?disabled=${t.busy}
+                      @change=${() => {
+                        t.pick = m;
+                        drawSkills();
+                      }}
+                    /><span><strong>${m.displayName}</strong></span>
+                  </label>`,
+              )}
+            </fieldset>`
+          : nothing
+      }
+      ${
+        personal
+          ? html`<label class="skill-field">
+              <span>New home</span>
+              ${fieldSelect({
+                className: "skill-transfer-home",
+                value: t.home,
+                disabled: t.busy,
+                onChange: (value) => {
+                  t.home = value;
+                  drawSkills();
+                },
+                options: [
+                  html`<option value="">
+                    ${t.pick ? `${t.pick.displayName}'s personal skills` : "Their personal skills"}
+                  </option>`,
+                  ...homes.map((scope) => html`<option value=${scope.scopeId}>${scope.name}</option>`),
+                ],
+              })}
+            </label>`
+          : nothing
+      }
+      <p id="skill-transfer-impact">
+        ${transferImpact(t.skill.name, t.pick?.displayName ?? "The new owner", personal, transferHomeLabel(t))}
+      </p>
+      ${t.error ? html`<div class="form-error" role="alert">${t.error}</div>` : nothing}
+      <div class="project-dialog-actions actions">
+        <button class="btn" type="button" data-dialog-cancel ?disabled=${t.busy} @click=${closeTransfer}>Cancel</button
+        ><button
+          class="btn danger skill-transfer-confirm"
+          type="button"
+          ?disabled=${t.busy || !t.pick}
+          @click=${() => void performTransfer()}
+        >
+          ${t.busy ? "Working…" : "Transfer"}
+        </button>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function performTransfer(): Promise<void> {
+  const t = transferring;
+  if (!t?.skill.id || !t.pick || t.busy) return;
+  t.busy = true;
+  t.error = "";
+  drawSkills();
+  try {
+    await api(`/api/skills/${encodeURIComponent(t.skill.id)}/owner`, {
+      method: "POST",
+      body: JSON.stringify({ ownerId: t.pick.principalId, ...(t.home ? { homeScope: t.home } : {}) }),
+    });
+    const opener = transferFocusTarget;
+    transferring = null;
+    transferFocusTarget = null;
+    setSkillsBackgroundInert(false);
+    await renderSkills();
+    skillsNotice = transferSuccessNotice(t.skill.name, t.pick.displayName);
+    drawSkills();
+    restoreDialogFocus(opener, () => skillsPageHost?.querySelector<HTMLElement>(".list-search input") ?? null);
+  } catch (e) {
+    if (transferring !== t) return;
+    t.busy = false;
+    const conflict = e instanceof ApiError ? conflictFrom(e.body) : null;
+    t.error = conflict
+      ? nameConflictMessage(t.skill.name, transferHomeLabel(t), conflict)
+      : errMessage(e, "Failed to transfer the skill.");
+    drawSkills();
+  }
+}
+
 export async function renderSkills(): Promise<void> {
   if (appState.currentView !== "skills") return;
   if (!skillsPageHost || skillsPageHost.parentElement !== appState.mainEl) {
@@ -1233,6 +1483,8 @@ export async function renderSkills(): Promise<void> {
     unshareFocusTarget = null;
     demoting = null;
     demoteFocusTarget = null;
+    transferring = null;
+    transferFocusTarget = null;
     resetRowMenus();
     setSkillsBackgroundInert(false);
   }

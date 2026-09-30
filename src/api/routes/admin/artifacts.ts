@@ -4,7 +4,10 @@ import { errMessage } from "../../../util/errors.ts";
 import { parseScopeId, type Destination } from "../../../types.ts";
 import { publicUrlOf } from "../../../deploy/deploy-store.ts";
 import { sendJson } from "../../http.ts";
-import { audit, requireScopedAdmin } from "../shared.ts";
+import { audit, orgScope, requireScopedAdmin } from "../shared.ts";
+import { effectiveSkillOwner } from "../../../skills/skill-rights.ts";
+import { isSourceManagedSkill } from "../../../skills/skill-store.ts";
+import { skillGrantsOf } from "../../../skills/skill-namespace.ts";
 import { type ApiCtx } from "../route.ts";
 import { notifyOwnerOfCronEdit } from "../../../triggers/edit-notice.ts";
 import { requireScopedResource } from "./common.ts";
@@ -71,10 +74,14 @@ export async function listAdminArtifacts(ctx: ApiCtx): Promise<void> {
     return sendJson(res, 200, { scopeId: scope, deployments });
   }
   const packsById = new Map((await app.listSkillPacks()).map((p) => [p.id, p]));
+  const grants = (await deps.acl?.list().catch(() => [])) ?? [];
+  const org = orgScope(deps);
   const skills = (await app.listSkills())
     .filter((s) => orgWide || s.scopeId === scope)
     .map((s) => {
       const provenancePack = s.pack ? packsById.get(s.pack.packId) : undefined;
+      const live = skillGrantsOf(s, grants);
+      const ownerId = effectiveSkillOwner(s);
       return {
         id: s.id,
         ownerScopeId: s.scopeId,
@@ -86,6 +93,11 @@ export async function listAdminArtifacts(ctx: ApiCtx): Promise<void> {
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
         lastUsedAt: s.lastUsedAt,
+        ...(ownerId ? { ownerId } : {}),
+        ...(s.supersededBy ? { supersededBy: s.supersededBy } : {}),
+        sourceManaged: isSourceManagedSkill(s),
+        orgWide: s.scopeId === org || live.some((g) => g.granteeScopeId === org),
+        sharedWith: live.map((g) => ({ scopeId: g.granteeScopeId, permission: g.permission })),
         ...(provenancePack ? { pack: { id: provenancePack.id, url: provenancePack.url } } : {}),
       };
     });
@@ -179,6 +191,8 @@ export async function getAdminSkill(ctx: ApiCtx): Promise<void> {
   const provenance = skill.pack;
   const provenancePack = provenance ? ((await app.getSkillPack(provenance.packId)) ?? undefined) : undefined;
   audit(deps, { principalId: actor.id, action: "skill.read", resource: id, scopeLabel: skill.scopeId });
+  const live = skillGrantsOf(skill, (await deps.acl?.list().catch(() => [])) ?? []);
+  const ownerId = effectiveSkillOwner(skill);
   return sendJson(res, 200, {
     id: skill.id,
     ownerScopeId: skill.scopeId,
@@ -192,6 +206,11 @@ export async function getAdminSkill(ctx: ApiCtx): Promise<void> {
     status: skill.status,
     version: skill.version,
     createdBy: skill.createdBy,
+    ...(ownerId ? { ownerId } : {}),
+    ...(skill.supersededBy ? { supersededBy: skill.supersededBy } : {}),
+    sourceManaged: isSourceManagedSkill(skill),
+    orgWide: skill.scopeId === orgScope(deps) || live.some((g) => g.granteeScopeId === orgScope(deps)),
+    sharedWith: live.map((g) => ({ scopeId: g.granteeScopeId, permission: g.permission })),
     ...(provenancePack ? { pack: { id: provenancePack.id, url: provenancePack.url } } : {}),
   });
 }
@@ -235,12 +254,6 @@ export async function updateAdminSkill(ctx: ApiCtx): Promise<void> {
   );
   if (!scoped) return;
   const { actor, record: skill } = scoped;
-  if (parseScopeId(skill.scopeId).kind !== "org") {
-    return sendJson(res, 403, {
-      error: "forbidden",
-      message: "only org-wide skills are edited here; other skills are edited by whoever manages their home",
-    });
-  }
   const patch = skillEditPatch(body);
   if (!patch) {
     return sendJson(res, 400, { error: "bad_request", message: "send a non-empty description and/or body" });

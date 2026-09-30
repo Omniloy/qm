@@ -22,6 +22,7 @@ import {
   putAdminCronRuntime,
 } from "./admin/artifacts.ts";
 import { getAdminMemory, listMemoryScopes, putAdminMemory } from "./admin/memory.ts";
+import { adminSkillOwnershipRoutes } from "./admin/skills-ownership.ts";
 import { listSandboxRoutes, migrateSandboxScope, manageSandboxResources } from "./admin/sandbox.ts";
 import {
   createAdminGrant,
@@ -160,6 +161,7 @@ const routes: ReadonlyArray<Route<ApiCtx>> = [
   },
   { method: "PUT", path: "/v1/admin/crons/:id/runtime", auth: "either", handle: putAdminCronRuntime },
   { method: "PUT", path: "/v1/admin/crons/:id/destination", auth: "either", handle: putAdminCronDestination },
+  ...adminSkillOwnershipRoutes,
   { method: "GET", path: "/v1/admin/skills/:id", auth: "either", handle: getAdminSkill },
   { method: "PUT", path: "/v1/admin/skills/:id", auth: "either", handle: updateAdminSkill },
   { method: "DELETE", path: "/v1/admin/skills/:id", auth: "either", handle: archiveAdminSkill },

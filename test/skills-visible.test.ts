@@ -121,3 +121,38 @@ test("visibleFor reads the full skills table once, not once per skill name", asy
   assert.equal(shadowed.shadowed.length, 1);
   assert.equal(shadowed.shadowed[0]!.scopeId, org);
 });
+
+test("an org-wide skill is one grant visible in a DM, a channel and the web, listed once even when also shared", async () => {
+  const built = freshApp();
+  const { app, skills } = built;
+  const slides = await publish(skills, scopeId("personal", "U1"), "slides", "build a deck");
+  await app.setSkillOrgWide({ id: slides.id, on: true, actorId: "admin-alice", liveActor: true });
+  await app.shareSkill({
+    id: slides.id,
+    toScope: scopeId("channel", "C9"),
+    permission: "read",
+    actorId: "admin-alice",
+    liveActor: true,
+  });
+  const web = (await app.listVisibleSkills("U2")).filter((r) => r.skill?.manifest.name === "slides");
+  assert.deepEqual(
+    web.map((r) => r.skill!.id),
+    [slides.id],
+  );
+  const dm = await app.listTurnSkills({ actorId: "U2", scopeId: scopeId("personal", "U2"), liveActor: true });
+  assert.deepEqual(
+    dm.filter((s) => s.name === "slides").map((s) => [s.id, s.orgWide]),
+    [[slides.id, true]],
+  );
+  const channel = await app.listTurnSkills({ actorId: "U2", scopeId: scopeId("channel", "C9"), liveActor: true });
+  assert.deepEqual(
+    channel.filter((s) => s.name === "slides").map((s) => s.id),
+    [slides.id],
+  );
+  assert.match(dm.find((s) => s.name === "slides")!.home, /^org-wide \(home /);
+
+  await publish(skills, scopeId("personal", "U2"), "slides", "my own deck skill");
+  const shadowed = (await app.listVisibleSkills("U2")).find((r) => r.skill?.manifest.name === "slides")!;
+  assert.equal(shadowed.skill!.scopeId, scopeId("personal", "U2"), "a genuine personal clash still wins");
+  assert.equal(shadowed.shadowed[0]!.id, slides.id);
+});

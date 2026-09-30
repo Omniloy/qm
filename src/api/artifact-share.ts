@@ -1,7 +1,7 @@
 import type { DeploymentInvitation } from "../deploy/email-access.ts";
 import { validEmail } from "../identity/external-members.ts";
 import { orgId as configOrgId } from "../config.ts";
-import { isSharedScope, parseScopeId, scopeId, type Permission, type ScopeId } from "../types.ts";
+import { parseScopeId, scopeId, type Permission, type ScopeId } from "../types.ts";
 import type { ResourceKind } from "../acl/resource-ref.ts";
 import type { RecipientResolution } from "../directory/directory-store.ts";
 
@@ -14,10 +14,6 @@ export const SHARED_SKILL_TRIGGER_REFUSAL = `a skill in a shared scope can only 
 
 export const SKILL_CONTEXTS_ADMIN_ONLY =
   "only an org admin can put a skill into a shared conversation or give it to someone else in this organization";
-
-export function triggerBlocksSharedSkill(homeScope: ScopeId, liveActor: boolean): boolean {
-  return isSharedScope(homeScope) && !liveActor;
-}
 
 export function livePersonCapability(c: { liveActor?: boolean; liveAuthor?: boolean } | undefined): boolean {
   return c?.liveAuthor === true || c?.liveActor === true;
@@ -104,7 +100,15 @@ export type ShareArtifactResult =
     }
   | {
       ok: false;
-      code: "bad_request" | "not_found" | "forbidden" | "recipient_not_found" | "ambiguous_recipient" | "share_failed";
+      code:
+        | "bad_request"
+        | "not_found"
+        | "forbidden"
+        | "recipient_not_found"
+        | "ambiguous_recipient"
+        | "share_failed"
+        | "name_conflict";
       message: string;
       candidates?: Array<{ id: string; label: string }>;
+      conflict?: { id: string; name: string; home: ScopeId; owner: string };
     };

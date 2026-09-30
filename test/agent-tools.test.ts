@@ -3991,7 +3991,14 @@ test("skills read opens with the skill's id, home, and whether the turn may edit
   const org = textOut(
     await call(withStanding({ id: "sk-3", home: "org", edit: "org_admins" }), { action: "read", name: "videos" }),
   );
-  assert.match(org, /^\[skill id sk-3 · home org · org-wide: only an org admin can change it\]/);
+  assert.match(org, /^\[skill id sk-3 · home org · org skill: only its owner or an org admin can change it\]/);
+  const owned = textOut(
+    await call(withStanding({ id: "sk-4", home: "org-wide (home #videos)", owner: "Ana", edit: "not_yours" }), {
+      action: "read",
+      name: "videos",
+    }),
+  );
+  assert.match(owned, /^\[skill id sk-4 · home org-wide \(home #videos\) · owner Ana · read-only for you/);
   const managed = textOut(
     await call(withStanding({ id: "sk-5", home: "org", edit: "managed" }), { action: "read", name: "videos" }),
   );

@@ -382,7 +382,7 @@ const FAMILIES: AgentApiFamily[] = [
         method: "POST",
         path: "/v1/share",
         summary:
-          'share or move one of YOUR artifacts to another context — body {type:"file"|"skill"|"deploy"|"cron", id, toScope:"org"|<scope id>|a teammate\'s name, permission?:"read"(default)|"write", move?:false}. For app sharing only, `email` may replace `toScope` to grant view access to an exact email outside the directory. Default (share) adds a grant — the artifact keeps its home and creator. move:true changes its home scope instead (skills only today). Frictionless into any context you belong to; allowed for anyone who manages the artifact\'s home (its owner, or a current member of its private-channel/group home), from any conversation; ceding a skill to the org is admin-gated (a live org admin only); the org skill sharing setting can also limit sharing skills into other contexts to org admins.',
+          'share or move an artifact you manage to another context — body {type:"file"|"skill"|"deploy"|"cron", id, toScope:"org"|<scope id>|a teammate\'s name, permission?:"read"(default)|"write", move?:false}. For app sharing only, `email` may replace `toScope` to grant view access to an exact email outside the directory. Default (share) adds a grant — the artifact keeps its home and owner, and later edits reach everyone it is shared with. move:true changes its home scope instead (skills and apps). Skills: anyone who manages the skill (its owner, a current member of its home channel or group, or an org admin) can share it into a context they belong to, from a turn a person is present for; a write grant lets that context\'s members edit it too. toScope "org" makes the skill available to everyone as a visibility grant — the id stays the same and edits propagate (org admins, or the owner in the web app when the org allows it). Moving a skill is owner- or admin-only, the actor must belong to the target, and its grants move with it. A 409 name_conflict means another skill with that name is already visible there — rename, archive, or ask an admin to merge. The org skill sharing setting can limit sharing skills into other contexts to org admins.',
       },
     ],
   },
@@ -823,15 +823,15 @@ const FAMILIES: AgentApiFamily[] = [
       ((m === "POST" || m === "GET") && p === "/v1/skills") ||
       (m === "GET" && p.startsWith("/v1/skills/")) ||
       ((m === "PUT" || m === "DELETE") && p.startsWith("/v1/skills/")) ||
-      (m === "POST" && /^\/v1\/skills\/[^/]+\/(restore|unshare|demote)$/.test(p)),
+      (m === "POST" && /^\/v1\/skills\/[^/]+\/(restore|unshare|demote|owner)$/.test(p)),
     guidance:
-      "Save a skill when you've worked out a repeatable procedure worth keeping (a checklist, a multi-step flow, a house style) — it is advertised in the skill index and loaded with the skills tool on future turns. The skill homes in THIS conversation's scope: in a 1:1 DM it's yours alone; in a private channel or group DM it's owned by that room and every member can edit or delete it (the audit trail records who changed what); a public channel stays owner-only. Write the `body` as a plain-step recipe addressed to your future self; edit or delete it as it goes stale. To improve an existing skill, edit it in place with PUT /v1/skills/:id using the id the skills tool reports when you load it (or GET /v1/skills) — never publish a \"-v2\" or renamed copy. POST only a genuinely new skill; a 409 on a taken name means edit the existing one instead.",
+      "Save a skill when you've worked out a repeatable procedure worth keeping (a checklist, a multi-step flow, a house style) — it is advertised in the skill index and loaded with the skills tool on future turns. The skill homes in THIS conversation's scope and you become its owner: in a 1:1 DM it's yours alone; in a channel (public or private) or group any current member of its home can edit or archive it, and edits go live immediately for everyone it is shared with (the audit trail records who changed what). Personal skills: owner only. Org-wide means shared with everyone, not copied. Write the `body` as a plain-step recipe addressed to your future self; edit or delete it as it goes stale. Improve a skill by editing it in place, never by copying it: edit it in place with PUT /v1/skills/:id using the id the skills tool reports when you load it (or GET /v1/skills) — never publish a \"-v2\" or renamed copy. POST only a genuinely new skill; a 409 on a taken name means edit the existing one instead.",
     routes: [
       {
         method: "GET",
         path: "/v1/skills",
         summary:
-          "list the skills this conversation can see → {skills:[{id, name, description, home, editable, edit}]}; editable says whether PUT /v1/skills/:id will work for you on this turn",
+          "list the skills this conversation can see → {skills:[{id, name, description, home, owner, orgWide, editable, edit}]}; editable says whether PUT /v1/skills/:id will work for you on this turn",
       },
       {
         method: "POST",
@@ -876,7 +876,13 @@ const FAMILIES: AgentApiFamily[] = [
         method: "POST",
         path: "/v1/skills/:id/demote",
         summary:
-          "take an org-wide skill back out of circulation (org admins only, and only on a turn the admin sent themselves). Anyone who kept their own copy still has it",
+          "stop sharing a skill with everyone: revokes its org-wide grant and it stays in its home and other shares (its owner or an org admin, only on a turn they sent themselves). A legacy skill living in the org home is archived instead",
+      },
+      {
+        method: "POST",
+        path: "/v1/skills/:id/owner",
+        summary:
+          "transfer a skill you own to another active teammate (org admins can also transfer skills that live in a shared home or are shared) — {ownerId, homeScope?}. A personal skill moves to the new owner's personal space unless homeScope names a channel or group you both belong to. Grants move with it; 409 name_conflict if that home already has a skill of the same name",
       },
     ],
   },

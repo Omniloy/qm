@@ -18,11 +18,9 @@ import { swallowAs } from "../util/errors.ts";
 import { processIsGone } from "../sandbox/process-poll.ts";
 import { NoDefaultSandboxError } from "../sandbox/sandbox-routing.ts";
 import { cronRef, deployRef, encodeRef, fileRef, parseRef, skillRef } from "../acl/resource-ref.ts";
-import { isSourceManagedSkill } from "../skills/skill-store.ts";
 import { revokeAllGrants } from "../acl/acl-store.ts";
 import { samePerson } from "../directory/person.ts";
-import { AdminError } from "../admin/admin-service.ts";
-import { type ArtifactHome, UNATTESTED_TURN_CAUSE } from "./artifact-share.ts";
+import { type ArtifactHome } from "./artifact-share.ts";
 import { randomUUID } from "node:crypto";
 import { isOpenScopeMember } from "../resolution/sharing-access.ts";
 import { grantSharedContextRead, MAX_ATTACHMENT_BYTES, mimeFromName, safeAttachmentName } from "../core/attachments.ts";
@@ -123,8 +121,6 @@ export function createSessionMethods(
   | "grant"
   | "revokeGrant"
   | "skillSharingAllows"
-  | "promoteSkill"
-  | "demoteSkill"
   | "listSkillGrants"
   | "belongsToScope"
   | "canManageArtifactHome"
@@ -1212,76 +1208,6 @@ export function createSessionMethods(
     },
     skillSharingAllows: h.skillSharingAllows,
 
-    async promoteSkill(id, targetScopeId, actorId, liveActor, portalSession = false) {
-      if (parseScopeId(targetScopeId).kind !== "org")
-        throw new Error("promote targets the org scope — use share or move for anything narrower");
-      if (liveActor !== true)
-        throw new AdminError(
-          403,
-          `promoting a skill org-wide takes a live person the platform can attest is present — ${UNATTESTED_TURN_CAUSE}`,
-        );
-      if (!(await h.isOrgAdmin(actorId))) {
-        if (!(await h.skillSharingAllows(actorId, "org")))
-          throw new AdminError(403, "only an org admin can promote a skill org-wide");
-        if (!portalSession)
-          throw new AdminError(
-            403,
-            "giving a skill to the whole organization takes you, in the web app — the agent can't do it for you",
-          );
-        const skill = await deps.skills.get(id);
-        if (
-          !skill ||
-          !samePerson(skill.createdBy, actorId) ||
-          !(await principalManagesArtifactHome(skill.scopeId, skill.createdBy, actorId))
-        )
-          throw new AdminError(403, "that skill isn't yours to share");
-        const taken = (await deps.skills.list()).find(
-          (s) =>
-            s.scopeId === targetScopeId &&
-            s.manifest.name === skill.manifest.name &&
-            !samePerson(s.createdBy, actorId) &&
-            (s.status === "published" || isSourceManagedSkill(s)),
-        );
-        if (taken)
-          throw new AdminError(
-            403,
-            `the organization already has a /${skill.manifest.name} skill — only an org admin can replace it`,
-          );
-      }
-      const promoted = await deps.skills.promote(id, targetScopeId);
-      deps.auditLog.record({
-        at: Date.now(),
-        principalId: actorId,
-        action: "skill_promote",
-        resource: id,
-        scopeLabel: targetScopeId,
-      });
-      return promoted;
-    },
-
-    async demoteSkill(id, actorId, liveActor) {
-      const skill = await deps.skills.get(id);
-      if (!skill) throw new AdminError(404, "no such skill");
-      if (parseScopeId(skill.scopeId).kind !== "org")
-        throw new Error("only an org-wide skill is taken back this way — archive anything narrower");
-      if (liveActor !== true)
-        throw new AdminError(
-          403,
-          `taking a skill back from the org takes a live person the platform can attest is present — ${UNATTESTED_TURN_CAUSE}`,
-        );
-      const ownPromotion = samePerson(skill.createdBy, actorId) && (await h.skillSharingAllows(actorId, "org"));
-      if (!ownPromotion && !(await h.isOrgAdmin(actorId)))
-        throw new AdminError(403, "only an org admin can take a skill back from the org");
-      await deps.skills.archive(id);
-      deps.auditLog.record({
-        at: Date.now(),
-        principalId: actorId,
-        action: "skill_demote",
-        resource: id,
-        scopeLabel: skill.scopeId,
-      });
-    },
-
     async listSkillGrants(id) {
       const skill = await deps.skills.get(id);
       if (!skill) return [];
@@ -1327,17 +1253,7 @@ export function createSessionMethods(
         await deps.deploy.transferDeploymentOwner(id, toScope, { callerId: movedBy });
         return;
       }
-      if (type !== "skill") {
-        throw new Error(`moving a ${type}'s home isn't supported — share it instead (add a grant)`);
-      }
-      await deps.skills.move(id, toScope);
-      deps.auditLog.record({
-        at: Date.now(),
-        principalId: movedBy,
-        action: "skill_move",
-        resource: id,
-        scopeLabel: toScope,
-      });
+      throw new Error(`moving a ${type}'s home isn't supported — share it instead (add a grant)`);
     },
 
     getSoul(scopeIdValue) {

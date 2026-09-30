@@ -18,17 +18,11 @@ import { consentRequiredRecipient } from "../triggers/trigger-store.ts";
 import { sendConsentNotice } from "../triggers/consent-notice.ts";
 import { notifyOwnerOfCronEdit, type CronEditDetail } from "../triggers/edit-notice.ts";
 import { errMessage } from "../util/errors.ts";
+import { shareSkillArtifact } from "./skill-share-verb.ts";
 import { AdminError } from "../admin/admin-service.ts";
 import type { AdminService } from "../admin/admin-service.ts";
-import {
-  livePersonCapability,
-  resolveShareTarget,
-  SHARED_SKILL_TRIGGER_REFUSAL,
-  SKILL_CONTEXTS_ADMIN_ONLY,
-  type ShareArtifactRequest,
-  type ShareArtifactResult,
-} from "./artifact-share.ts";
-import { isSharedScope, parseScopeId, type Permission, type ScopeId } from "../types.ts";
+import { resolveShareTarget, type ShareArtifactRequest, type ShareArtifactResult } from "./artifact-share.ts";
+import { parseScopeId, type Permission, type ScopeId } from "../types.ts";
 import type { App, VisibleCron } from "./app.ts";
 import type { Skill, SkillStanding } from "../skills/skill-store.ts";
 
@@ -898,24 +892,15 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
           message: "more than one teammate matches",
           candidates: target.candidates,
         };
+      if (req.type === "skill") return shareSkillArtifact(app, req, target, capability, permission);
       const toScope = target.scope;
       const toKind = parseScopeId(toScope).kind;
 
-      const isOrg = toKind === "org";
-      const orgSkillCede = isOrg && req.type === "skill";
-
-      if (!orgSkillCede && !(await app.canManageArtifactHome(home.ownerScopeId, home.createdBy, capability.actorId))) {
+      if (!(await app.canManageArtifactHome(home.ownerScopeId, home.createdBy, capability.actorId))) {
         return {
           ok: false,
           code: "forbidden",
           message: `only the ${req.type}'s owner (or a member of its shared home) can share or move it`,
-        };
-      }
-      if (req.type === "skill" && !orgSkillCede && !(await app.skillSharingAllows(capability.actorId, "contexts"))) {
-        return {
-          ok: false,
-          code: "forbidden",
-          message: SKILL_CONTEXTS_ADMIN_ONLY,
         };
       }
       if (
@@ -930,24 +915,6 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
       }
 
       try {
-        if (orgSkillCede) {
-          const promoted = await app.promoteSkill(
-            home.id,
-            toScope,
-            capability.actorId,
-            capability.liveActor === true,
-            capability.portalSession === true,
-          );
-          return {
-            ok: true,
-            verb: "promote",
-            type: req.type,
-            id: promoted.id,
-            target: { scope: toScope, label: target.label },
-            permission,
-          };
-        }
-
         if (req.move) {
           const deployPersonTransfer = req.type === "deploy" && toKind === "personal" && capability.liveActor === true;
           if (!deployPersonTransfer && !(await app.belongsToScope(capability.actorId, toScope))) {
@@ -956,13 +923,6 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
               code: "forbidden",
               message: `you can only move a ${req.type} into a context you belong to — to give it to a teammate, share it (a grant) instead`,
             };
-          }
-          if (
-            req.type === "skill" &&
-            !livePersonCapability(capability) &&
-            (isSharedScope(home.ownerScopeId) || isSharedScope(toScope))
-          ) {
-            return { ok: false, code: "forbidden", message: SHARED_SKILL_TRIGGER_REFUSAL };
           }
           await app.moveArtifactHome(req.type, home.id, toScope, capability.actorId);
           return {
