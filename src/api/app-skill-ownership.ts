@@ -691,30 +691,31 @@ export function createSkillOwnershipMethods(
       return locked(async () => {
         const skills = await deps.skills.list();
         const writes = skillWriteGrants(skills, await deps.acl.list());
-        if (dryRun) return { downgraded: writes };
+        if (dryRun) return { downgraded: writes, skipped: [] };
         const resources = new Map(writes.map((w) => [`${w.ownerScopeId}\n${w.skillId}`, w]));
         const downgraded: SkillWriteGrant[] = [];
+        const skipped: string[] = [];
         for (const { ownerScopeId, skillId } of resources.values()) {
           const ref = refOf(skillId);
           const current = await deps.acl.grantsFor(ownerScopeId, ref);
-          const replacement = current.map((g) =>
-            g.permission === "write" ? { ...g, permission: "read" as const, grantedBy: actorId } : g,
-          );
-          if (await deps.acl.replaceGrantsIfCurrent(ownerScopeId, ref, current, replacement, actorId)) {
-            downgraded.push(...skillWriteGrants(skills, current));
+          const byGrantee = new Map<string, (typeof current)[number]>();
+          for (const g of current) {
+            const next = g.permission === "write" ? { ...g, permission: "read" as const, grantedBy: actorId } : g;
+            if (!byGrantee.has(g.granteeScopeId) || g.permission !== "write") byGrantee.set(g.granteeScopeId, next);
           }
-        }
-        if (downgraded.length) {
-          audit("skill_write_grants_downgrade", actorId, "skills", org(), {
-            count: downgraded.length,
-            grants: downgraded.map((w) => ({
-              ownerScopeId: w.ownerScopeId,
-              ref: refOf(w.skillId),
-              granteeScopeId: w.granteeScopeId,
-            })),
+          const replacement = [...byGrantee.values()];
+          if (!(await deps.acl.replaceGrantsIfCurrent(ownerScopeId, ref, current, replacement, actorId))) {
+            skipped.push(skillId);
+            continue;
+          }
+          const done = skillWriteGrants(skills, current);
+          downgraded.push(...done);
+          audit("skill_write_grants_downgrade", actorId, skillId, ownerScopeId, {
+            count: done.length,
+            grants: done.map((w) => ({ ownerScopeId: w.ownerScopeId, ref, granteeScopeId: w.granteeScopeId })),
           });
         }
-        return { downgraded };
+        return { downgraded, skipped };
       });
     },
 

@@ -355,3 +355,17 @@ test("downgrade-write-grants swaps each resource's grants in one step and record
     { ownerScopeId: owner, ref: `skill:${s.id}`, granteeScopeId: PRIV },
   ]);
 });
+
+test("downgrade-write-grants keeps one read grant when a scope already has both a read and a write grant", async () => {
+  const built = await ownerFixture();
+  const s = await publishSkill(built, { owner: "U1", name: "both" });
+  await built.app.shareSkill({ id: s.id, toScope: PRIV, permission: "read", actorId: "U1", ...live });
+  await built.app.shareSkill({ id: s.id, toScope: PRIV, permission: "write", actorId: "U1", ...live });
+  const result = await built.app.downgradeSkillWriteGrants({ dryRun: false, actorId: ADMIN });
+  assert.equal(result.downgraded.length, 1);
+  assert.deepEqual(result.skipped, []);
+  assert.deepEqual(
+    (await grantsOf(built, s.id)).map((g) => [g.granteeScopeId, g.permission]),
+    [[PRIV, "read"]],
+  );
+});

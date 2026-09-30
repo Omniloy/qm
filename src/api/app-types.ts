@@ -526,7 +526,10 @@ export interface App {
     id: string;
     actorId: string;
   }): Promise<SkillOutcome<{ restored: string; from: string; regranted: number; revoked: number }>>;
-  downgradeSkillWriteGrants(input: { dryRun: boolean; actorId: string }): Promise<{ downgraded: SkillWriteGrant[] }>;
+  downgradeSkillWriteGrants(input: {
+    dryRun: boolean;
+    actorId: string;
+  }): Promise<{ downgraded: SkillWriteGrant[]; skipped: string[] }>;
   purgeArchivedSkill(input: { id: string; actorId: string }): Promise<SkillOutcome<{ skill: Skill }>>;
   skillDuplicateReport(): Promise<DuplicateReport>;
   backfillSkillOwners(input: { dryRun: boolean; actorId: string }): Promise<{

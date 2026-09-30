@@ -86,7 +86,7 @@ test("unmerge over HTTP brings a retired copy back", async () => {
     });
     assert.equal((await s.built.skills.get(copy.id))?.status, "published");
     const dry = await s.call("POST", `/v1/admin/skills/downgrade-write-grants${org}`, { dryRun: true });
-    assert.deepEqual(await dry.json(), { dryRun: true, downgraded: [] });
+    assert.deepEqual(await dry.json(), { dryRun: true, downgraded: [], skipped: [] });
   } finally {
     await s.close();
   }
