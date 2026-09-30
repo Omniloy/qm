@@ -961,24 +961,20 @@ async function listSkills(ctx: ApiCtx): Promise<void> {
     ...(includeShadowed ? row.shadowed.map((skill) => ({ skill, shadowed: [] })) : []),
   ]);
   const archived = (await app.listSkills()).filter((skill) => skill.status === "archived" && !skill.supersededBy);
-  const archivedSharing = await app.skillSharingFor(archived, principalId);
-  const candidates = [
-    ...visible,
-    ...archived
-      .filter((_, i) => archivedSharing[i]!.role !== null && archivedSharing[i]!.role !== "admin")
-      .map((skill) => ({ skill, shadowed: [] })),
-  ];
-  const [access, sharing] = await Promise.all([
-    app.skillEditAccess(
-      candidates.map((r) => r.skill),
-      principalId,
-      true,
-    ),
-    app.skillSharingFor(
-      candidates.map((r) => r.skill),
-      principalId,
-    ),
-  ]);
+  const everything = [...visible, ...archived.map((skill) => ({ skill, shadowed: [] }))];
+  const allSharing = await app.skillSharingFor(
+    everything.map((r) => r.skill),
+    principalId,
+  );
+  const candidates = everything.flatMap((r, i) => {
+    const role = allSharing[i]!.role;
+    return i < visible.length || (role !== null && role !== "admin") ? [{ ...r, sharing: allSharing[i]! }] : [];
+  });
+  const access = await app.skillEditAccess(
+    candidates.map((r) => r.skill),
+    principalId,
+    true,
+  );
   const skills = candidates.map((r, i) => ({
     id: r.skill.id,
     name: r.skill.manifest.name,
@@ -994,7 +990,7 @@ async function listSkills(ctx: ApiCtx): Promise<void> {
     requiredCapabilities: r.skill.manifest.requiredCapabilities,
     editable: access[i] === "editable",
     createdByViewer: samePerson(r.skill.createdBy, principalId),
-    ...skillOwnershipFields(sharing[i]!, principalId),
+    ...skillOwnershipFields(r.sharing, principalId),
   }));
   return sendJson(res, 200, { skills });
 }
@@ -1147,6 +1143,8 @@ async function deleteSkill(ctx: ApiCtx): Promise<void> {
   if (outcome === "trigger_blocked")
     return sendJson(res, 403, { error: "forbidden", message: SHARED_SKILL_TRIGGER_REFUSAL });
   if (outcome === "admins_only") return sendJson(res, 403, { error: "forbidden", message: SKILL_CONTEXTS_ADMIN_ONLY });
+  if (outcome === "org_admins_only")
+    return sendJson(res, 403, { error: "forbidden", message: "only an org admin can take a skill back from the org" });
   if (outcome === "forbidden")
     return sendJson(res, 403, { error: "forbidden", message: "that skill isn't yours to archive" });
   return sendJson(res, 200, { ok: true });
@@ -1172,7 +1170,7 @@ export async function unshareSkill(ctx: ApiCtx): Promise<void> {
   const actor = await skillActor(ctx);
   if (!actor) return sendJson(res, 400, { error: "bad_request", message: "principalId required" });
   try {
-    const result = await app.unshareSkill({ id, scope: b.scope, actorId: actor.id });
+    const result = await app.unshareSkill({ id, scope: b.scope, actorId: actor.id, liveActor: actor.live });
     if (!result.ok) return sendJson(res, OUTCOME_STATUS[result.code], { error: result.code, message: result.message });
     return sendJson(res, 200, { ok: true });
   } catch (e) {

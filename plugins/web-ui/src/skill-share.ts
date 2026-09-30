@@ -103,7 +103,7 @@ export function shareImpact(
   }
   const base = `${targetLabel} can use /${row.name}. Edits you make reach them automatically.`;
   return permission === "write"
-    ? `${base} They can also edit the instructions; edits reach everyone who has it.`
+    ? `${base} Only members of ${targetLabel} can also edit the instructions; edits reach everyone who has it.`
     : base;
 }
 

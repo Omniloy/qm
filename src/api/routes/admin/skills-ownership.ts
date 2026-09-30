@@ -47,6 +47,25 @@ async function merge(ctx: ApiCtx): Promise<void> {
   return sendJson(ctx.res, 200, { ok, retired, into, regranted, orgWide });
 }
 
+async function unmerge(ctx: ApiCtx): Promise<void> {
+  const authz = await requireOrgAdmin(ctx);
+  if (!authz) return;
+  const result = await ctx.app.unmergeSkill({ id: ctx.params.id!, actorId: authz.actor.id });
+  if (!result.ok) return sendFailure(ctx, result);
+  const { ok, restored, from, regranted, revoked } = result;
+  return sendJson(ctx.res, 200, { ok, restored, from, regranted, revoked });
+}
+
+async function downgradeWriteGrants(ctx: ApiCtx): Promise<void> {
+  const authz = await requireOrgAdmin(ctx);
+  if (!authz) return;
+  const dryRun = bodyOf(ctx).dryRun === true;
+  return sendJson(ctx.res, 200, {
+    dryRun,
+    ...(await ctx.app.downgradeSkillWriteGrants({ dryRun, actorId: authz.actor.id })),
+  });
+}
+
 async function purge(ctx: ApiCtx): Promise<void> {
   const authz = await requireOrgAdmin(ctx);
   if (!authz) return;
@@ -116,7 +135,9 @@ async function move(ctx: ApiCtx): Promise<void> {
 export const adminSkillOwnershipRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/admin/skills/duplicates", auth: "either", handle: duplicates },
   { method: "POST", path: "/v1/admin/skills/backfill-owners", auth: "either", handle: backfill },
+  { method: "POST", path: "/v1/admin/skills/downgrade-write-grants", auth: "either", handle: downgradeWriteGrants },
   { method: "POST", path: "/v1/admin/skills/:id/merge", auth: "either", handle: merge },
+  { method: "POST", path: "/v1/admin/skills/:id/unmerge", auth: "either", handle: unmerge },
   { method: "POST", path: "/v1/admin/skills/:id/purge", auth: "either", handle: purge },
   { method: "POST", path: "/v1/admin/skills/:id/owner", auth: "either", handle: transferOwner },
   { method: "POST", path: "/v1/admin/skills/:id/move", auth: "either", handle: move },

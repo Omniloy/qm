@@ -13,7 +13,7 @@ import { revokeAllGrants, type AclStore } from "../acl/acl-store.ts";
 import { hasParentPathSegment, type Sandbox, type SandboxHandle } from "../sandbox/sandbox.ts";
 import { MAX_BLOB_BYTES, collectBlob, type BlobTransferStore } from "../persistence/blob-transfer.ts";
 import { fileArtifactId, type FileArtifactStore, type FileDirection } from "../files/file-artifact-store.ts";
-import { parseRef } from "../acl/resource-ref.ts";
+import { encodeRef, fileRef, parseRef } from "../acl/resource-ref.ts";
 import { swallowAs } from "../util/errors.ts";
 import { hashId } from "../util/crypto.ts";
 import type { SecurityScreenVerdict } from "../security/security-posture.ts";
@@ -147,7 +147,13 @@ export async function grantSharedContextRead(
 ): Promise<void> {
   const { ownerScopeId, path, createdInScope, grantedBy } = args;
   if (!createdInScope || createdInScope === ownerScopeId || !isSharedScope(createdInScope)) return;
-  await acl.grant({ ownerScopeId, ref: path, granteeScopeId: createdInScope, permission: "read", grantedBy });
+  await acl.grant({
+    ownerScopeId,
+    ref: encodeRef(fileRef(path)),
+    granteeScopeId: createdInScope,
+    permission: "read",
+    grantedBy,
+  });
 }
 
 async function registerArtifact(

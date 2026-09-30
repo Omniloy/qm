@@ -20,11 +20,27 @@ test("transferring a personal skill moves it to the new owner's personal space w
   );
   const audit = (await built.auditLog.events()).find((e) => e.action === "skill_owner_transfer")!;
   assert.deepEqual(JSON.parse(audit.detail!), { from: "U1", to: "U2", home: scopeId("personal", "U2") });
-  const notice = (await built.deliveries.pending("principal")).find(
-    (d) => d.idempotencyKey === `skill-owner:${s.id}:U2`,
+  const notice = (await built.deliveries.pending("principal")).find((d) =>
+    d.idempotencyKey?.startsWith(`skill-owner:${s.id}:U2:`),
   );
   assert.ok(notice, "the new owner is told");
   assert.match(notice!.text ?? "", /made you the owner of \/slides/);
+});
+
+test("a skill handed back and forth notifies its new owner every time", async () => {
+  const built = await ownerFixture();
+  const s = await publishSkill(built, { owner: "U1", name: "slides", home: PRIV, ownerId: "U1" });
+  const hand = (newOwnerId: string, actorId: string) =>
+    built.app.transferSkillOwner({ id: s.id, newOwnerId, actorId, liveActor: true });
+  await hand("U2", "U1");
+  await new Promise((r) => setTimeout(r, 2));
+  await hand("U1", "U2");
+  await new Promise((r) => setTimeout(r, 2));
+  await hand("U2", "U1");
+  const keys = (await built.deliveries.pending("principal"))
+    .map((d) => d.idempotencyKey)
+    .filter((k) => k?.startsWith(`skill-owner:${s.id}:U2:`));
+  assert.equal(new Set(keys).size, 2);
 });
 
 test("a personal skill can instead land in a shared home both people belong to", async () => {
@@ -81,6 +97,19 @@ test("only the owner or an admin transfers, and never on an unattended turn", as
   assert.equal(!byOther.ok && byOther.code, "forbidden");
   const trigger = await built.app.transferSkillOwner({ id: s.id, newOwnerId: "U2", actorId: "U1", liveActor: false });
   assert.equal(!trigger.ok && trigger.code, "trigger_blocked");
+  const adminOnUnshared = await built.app.transferSkillOwner({
+    id: s.id,
+    newOwnerId: "U2",
+    actorId: ADMIN,
+    liveActor: true,
+    asAdmin: true,
+  });
+  assert.equal(
+    !adminOnUnshared.ok && adminOnUnshared.code,
+    "forbidden",
+    "an unshared personal skill stays its owner's",
+  );
+  await built.app.shareSkill({ id: s.id, toScope: PRIV, permission: "read", actorId: "U1", liveActor: true });
   const adminApi = await built.app.transferSkillOwner({
     id: s.id,
     newOwnerId: "U2",
@@ -88,5 +117,5 @@ test("only the owner or an admin transfers, and never on an unattended turn", as
     liveActor: true,
     asAdmin: true,
   });
-  assert.ok(adminApi.ok, "the admin API always works");
+  assert.ok(adminApi.ok, "once shared, the admin API transfers it");
 });

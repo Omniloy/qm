@@ -5,7 +5,7 @@ import { parseScopeId, type Destination } from "../../../types.ts";
 import { publicUrlOf } from "../../../deploy/deploy-store.ts";
 import { sendJson } from "../../http.ts";
 import { audit, orgScope, requireScopedAdmin } from "../shared.ts";
-import { effectiveSkillOwner } from "../../../skills/skill-rights.ts";
+import { adminReachesSkill, effectiveSkillOwner } from "../../../skills/skill-rights.ts";
 import { isSourceManagedSkill } from "../../../skills/skill-store.ts";
 import { skillGrantsOf } from "../../../skills/skill-namespace.ts";
 import { type ApiCtx } from "../route.ts";
@@ -254,6 +254,12 @@ export async function updateAdminSkill(ctx: ApiCtx): Promise<void> {
   );
   if (!scoped) return;
   const { actor, record: skill } = scoped;
+  if (!adminReachesSkill(skill, (await app.listSkillGrants(id)).length)) {
+    return sendJson(res, 403, {
+      error: "forbidden",
+      message: "an admin can only edit a personal skill once its owner has shared it",
+    });
+  }
   const patch = skillEditPatch(body);
   if (!patch) {
     return sendJson(res, 400, { error: "bad_request", message: "send a non-empty description and/or body" });

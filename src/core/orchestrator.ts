@@ -151,7 +151,7 @@ import {
   type ArtifactRegistration,
   withoutAlreadyIngested,
 } from "./attachments.ts";
-import { parseRef } from "../acl/resource-ref.ts";
+import { encodeRef, fileRef, parseRef } from "../acl/resource-ref.ts";
 import { findTrailingPartialTurn, resumeNote, turnAtSeq } from "./turn-resume.ts";
 import type { RecordedTurn } from "./turn-resume.ts";
 import {
@@ -2583,7 +2583,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                   for (const granteeScopeId of fileAudience) {
                     await deps.acl.grant({
                       ownerScopeId,
-                      ref: path,
+                      ref: encodeRef(fileRef(path)),
                       granteeScopeId,
                       permission: "read",
                       grantedBy: actor.id,

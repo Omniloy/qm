@@ -135,7 +135,7 @@ test("the request body maps each mode onto what /v1/share dispatches on, and a s
 test("share copy says edits reach them, and a write share says they can edit too", () => {
   const share = shareImpact("share", skill(), "#ops");
   assert.equal(share, "#ops can use /jira-triage. Edits you make reach them automatically.");
-  assert.match(shareImpact("share", skill(), "#ops", "write"), /can also edit the instructions/);
+  assert.match(shareImpact("share", skill(), "#ops", "write"), /Only members of #ops can also edit the instructions/);
 });
 
 test("move copy says grants move with it and the current home loses access", () => {
@@ -197,6 +197,7 @@ test("a busy dialog says so on its confirm button whichever mode it is in", () =
 test("the share dialog offers a write option now that write grants are honored", () => {
   const source = readFileSync(new URL("../src/skills.ts", import.meta.url), "utf8");
   assert.match(source, /Use and edit it/);
+  assert.match(source, /Only members of that context can also edit the instructions/);
   assert.equal(permissionLabel("write"), "Can use and edit it");
   assert.equal(permissionLabel("read"), "Can use it");
 });

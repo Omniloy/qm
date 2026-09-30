@@ -480,7 +480,11 @@ test("a skill can be edited in place from its admin detail; archived and source-
 
   current = { ...org, ownerScopeId: "personal:alice" };
   await skills.skillDetail(root, current, [current], c);
-  assert.ok(root.querySelector(".skill-edit"), "the admin API edits a skill in any home");
+  assert.equal(root.querySelector(".skill-edit"), null, "an unshared personal skill stays its owner's");
+  assert.equal(root.querySelector(".skill-transfer"), null);
+  current = { ...org, ownerScopeId: "personal:alice", sharedWith: [{ scopeId: "channel:C1", permission: "read" }] };
+  await skills.skillDetail(root, current, [current], c);
+  assert.ok(root.querySelector(".skill-edit"), "once shared, the admin API edits a personal skill too");
   current = { ...org, status: "archived" };
   await skills.skillDetail(root, current, [current], c);
   assert.equal(root.querySelector(".skill-edit"), null, "an archived org skill is not editable");

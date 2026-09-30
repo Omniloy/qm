@@ -2,10 +2,18 @@ import { isSharedScope, parseScopeId, scopeId, type Grant, type Permission, type
 import { orgId as orgIdOf } from "../config.ts";
 import { canonicalPerson, samePerson } from "../directory/person.ts";
 import { encodeRef, skillRef } from "../acl/resource-ref.ts";
+import type { AuditEvent } from "../audit/audit-log.ts";
 import { principalDestination } from "../reach/reach.ts";
 import { swallow } from "../util/errors.ts";
 import { isSourceManagedSkill, type Skill } from "../skills/skill-store.ts";
-import { createSkillRights, effectiveSkillOwner, type SkillRights, type SkillRole } from "../skills/skill-rights.ts";
+import {
+  adminReachesSkill,
+  createSkillRights,
+  effectiveSkillOwner,
+  roleManages,
+  roleMovesOrTransfers,
+  type SkillRole,
+} from "../skills/skill-rights.ts";
 import {
   audienceNameClash,
   manifestDiff,
@@ -13,10 +21,11 @@ import {
   personalHomeMismatch,
   planSkillDuplicates,
   skillGrantsOf,
+  skillWriteGrants,
   type ManifestDiff,
 } from "../skills/skill-namespace.ts";
 import { SHARED_SKILL_TRIGGER_REFUSAL, SKILL_CONTEXTS_ADMIN_ONLY, UNATTESTED_TURN_CAUSE } from "./artifact-share.ts";
-import { withSkillMutationLock } from "./app-skills.ts";
+import { skillVisibilityContext, withSkillMutationLock } from "./app-skills.ts";
 import { AdminError } from "../admin/admin-service.ts";
 import type { App, AppDeps } from "./app-types.ts";
 import type { AppHelpers } from "./app-helpers.ts";
@@ -68,6 +77,21 @@ const fail = (code: SkillOwnershipCode, message: string, extra: Partial<SkillFai
 
 const BUILT_IN = "built-in";
 
+interface MergeDetail {
+  added: ScopeId[];
+  fromStatus?: Skill["status"];
+  fromGrants: Array<{ granteeScopeId: ScopeId; permission: Permission }>;
+}
+
+function mergeDetail(raw: string | undefined): MergeDetail {
+  const d = (raw ? JSON.parse(raw) : {}) as Partial<MergeDetail>;
+  return {
+    added: d.added ?? [],
+    fromGrants: d.fromGrants ?? [],
+    ...(d.fromStatus ? { fromStatus: d.fromStatus } : {}),
+  };
+}
+
 export const OUTCOME_STATUS: Record<SkillOwnershipCode, number> = {
   not_found: 404,
   forbidden: 403,
@@ -93,6 +117,8 @@ export function createSkillOwnershipMethods(
   | "moveSkillHome"
   | "transferSkillOwner"
   | "mergeSkill"
+  | "unmergeSkill"
+  | "downgradeSkillWriteGrants"
   | "purgeArchivedSkill"
   | "skillDuplicateReport"
   | "backfillSkillOwners"
@@ -110,20 +136,57 @@ export function createSkillOwnershipMethods(
     return { id: s.id, name: s.manifest.name, home: s.scopeId, owner: owner ? await displayName(owner) : BUILT_IN };
   }
 
-  async function nameConflict(s: Skill): Promise<SkillFailure> {
+  async function seesSkill(s: Skill, actorId: string): Promise<boolean> {
+    if (await h.skillRoleFor(s, actorId)) return true;
+    const { ordered, granted } = await skillVisibilityContext(deps, h, actorId, [s.scopeId]);
+    return (await deps.skills.visibleFor(ordered, granted)).some(
+      (r) => r.skill?.id === s.id || r.shadowed.some((x) => x.id === s.id),
+    );
+  }
+
+  async function nameConflict(s: Skill, actorId: string): Promise<SkillFailure> {
+    if (!(await seesSkill(s, actorId))) return fail("name_conflict", "a skill with this name is already visible there");
     return fail("name_conflict", `another /${s.manifest.name} is already visible there`, {
       conflict: await conflictOf(s),
     });
   }
 
-  async function mutable(id: string): Promise<Skill | SkillFailure> {
+  async function current(id: string): Promise<Skill | SkillFailure> {
     const s = await deps.skills.get(id);
     if (!s) return fail("not_found", "no such skill");
     if (s.supersededBy) {
       return fail("superseded", "this skill was merged into another one", { supersededBy: s.supersededBy });
     }
-    if (s.status === "archived") return fail("bad_request", "restore the skill first");
     return s;
+  }
+
+  async function mutable(id: string): Promise<Skill | SkillFailure> {
+    const s = await current(id);
+    if ("id" in s && s.status === "archived") return fail("bad_request", "restore the skill first");
+    return s;
+  }
+
+  async function adminAllowed(s: Skill): Promise<boolean> {
+    return adminReachesSkill(s, (await deps.acl.grantsFor(s.scopeId, refOf(s.id))).length);
+  }
+
+  async function mayChangeOwnership(
+    s: Skill,
+    actorId: string,
+    liveActor: boolean,
+    asAdmin: boolean | undefined,
+    verb: string,
+  ): Promise<SkillFailure | null> {
+    if (asAdmin) {
+      return (await adminAllowed(s))
+        ? null
+        : fail("forbidden", `an admin can only ${verb} a personal skill once its owner has shared it`);
+    }
+    if (!liveActor) return fail("trigger_blocked", SHARED_SKILL_TRIGGER_REFUSAL);
+    if (!(await h.skillRights.movesOrTransfers(s, actorId))) {
+      return fail("forbidden", `only the skill's owner or an org admin can ${verb} it`);
+    }
+    return null;
   }
 
   function homeClash(all: readonly Skill[], s: Skill, home: ScopeId): Skill | undefined {
@@ -135,6 +198,9 @@ export function createSkillOwnershipMethods(
   async function rekey(s: Skill, toScope: ScopeId, actorId: string, flip: () => Promise<unknown>): Promise<number> {
     const ref = refOf(s.id);
     const fromScope = s.scopeId;
+    for (const g of await deps.acl.grantsFor(toScope, ref)) {
+      await deps.acl.revoke(toScope, ref, g.granteeScopeId, actorId);
+    }
     const prior = await deps.acl.grantsFor(fromScope, ref);
     const carried = prior.filter((g) => g.granteeScopeId !== toScope);
     const added: Grant[] = [];
@@ -186,7 +252,7 @@ export function createSkillOwnershipMethods(
       await deps.deliveries.enqueue({
         destination: principalDestination(newOwner, actorId),
         text: `${await displayName(actorId)} made you the owner of /${s.manifest.name} (home ${await homeLabel(home)}). You can edit, share, move or transfer it.`,
-        idempotencyKey: `skill-owner:${s.id}:${newOwner}`,
+        idempotencyKey: `skill-owner:${s.id}:${newOwner}:${Date.now()}`,
       });
     } catch (error) {
       swallow("skills: owner transfer notice", error);
@@ -201,7 +267,7 @@ export function createSkillOwnershipMethods(
     );
   }
 
-  function rightsFromIndex(grants: readonly Grant[]): SkillRights {
+  function rightsFromIndex(grants: readonly Grant[]) {
     const admins = new Map<string, Promise<boolean>>();
     return createSkillRights({
       ...h.skillRightsBase,
@@ -216,7 +282,7 @@ export function createSkillOwnershipMethods(
 
   const setSkillOrgWide: App["setSkillOrgWide"] = ({ id, on, actorId, liveActor, portalSession }) =>
     locked(async () => {
-      const s = await mutable(id);
+      const s = await (on ? mutable(id) : current(id));
       if (!("id" in s)) return s;
       if (!liveActor) {
         return fail(
@@ -226,13 +292,16 @@ export function createSkillOwnershipMethods(
       }
       if (s.scopeId === org()) return fail("bad_request", "this skill already lives in the org home");
       if (isSourceManagedSkill(s)) return fail("forbidden", "a skill managed by its source can only be archived");
-      const admin = await isAdmin(actorId);
-      const owner = samePerson(effectiveSkillOwner(s), actorId);
-      const orgGrant = skillGrantsOf(s, await deps.acl.list()).find((g) => g.granteeScopeId === org());
+      if (!(await h.skillRights.movesOrTransfers(s, actorId))) {
+        return fail(
+          "forbidden",
+          on
+            ? "that skill isn't yours to share"
+            : "only the skill's owner or an org admin can stop sharing it with everyone",
+        );
+      }
+      const orgGrant = (await deps.acl.grantsFor(s.scopeId, refOf(s.id))).find((g) => g.granteeScopeId === org());
       if (!on) {
-        if (!admin && !owner) {
-          return fail("forbidden", "only the skill's owner or an org admin can stop sharing it with everyone");
-        }
         if (orgGrant) {
           await deps.acl.revoke(s.scopeId, refOf(s.id), org(), actorId);
           audit("skill_demote", actorId, s.id, org(), { mode: "grant" });
@@ -240,7 +309,7 @@ export function createSkillOwnershipMethods(
         return { ok: true, skill: s };
       }
       if (s.status !== "published") return fail("bad_request", "only a published skill can go org-wide");
-      if (!admin) {
+      if (!(await isAdmin(actorId))) {
         if (!(await h.skillSharingAllows(actorId, "org"))) {
           return fail("forbidden", "only an org admin can promote a skill org-wide");
         }
@@ -250,7 +319,6 @@ export function createSkillOwnershipMethods(
             "giving a skill to the whole organization takes you, in the web app — the agent can't do it for you",
           );
         }
-        if (!owner) return fail("forbidden", "that skill isn't yours to share");
       }
       if (orgGrant) return { ok: true, skill: s };
       const clash = audienceNameClash({
@@ -260,7 +328,7 @@ export function createSkillOwnershipMethods(
         grants: await deps.acl.list(),
         orgScopeId: org(),
       });
-      if (clash) return nameConflict(clash);
+      if (clash) return nameConflict(clash, actorId);
       await deps.acl.grant({
         ownerScopeId: s.scopeId,
         ref: refOf(s.id),
@@ -305,14 +373,14 @@ export function createSkillOwnershipMethods(
           const owner = effectiveSkillOwner(s);
           const live = skillGrantsOf(s, grants);
           const role = await rights.roleFor(s, principalId);
-          const canManage = await rights.manages(s, principalId);
+          const canManage = roleManages(s, role);
           return {
             role,
             ...(owner ? { ownerId: owner } : {}),
             ownerName: owner ? await nameOf(owner) : BUILT_IN,
             orgWide: s.scopeId === org() || live.some((g) => g.granteeScopeId === org()),
             canManage,
-            canMoveOrTransfer: await rights.movesOrTransfers(s, principalId),
+            canMoveOrTransfer: roleMovesOrTransfers(s, role),
             ...(canManage
               ? { sharedWith: live.map((g) => ({ scopeId: g.granteeScopeId, permission: g.permission })) }
               : {}),
@@ -351,7 +419,7 @@ export function createSkillOwnershipMethods(
           grants: await deps.acl.list(),
           orgScopeId: org(),
         });
-        if (clash) return nameConflict(clash);
+        if (clash) return nameConflict(clash, actorId);
         await deps.acl.grant({
           ownerScopeId: s.scopeId,
           ref: refOf(s.id),
@@ -364,10 +432,16 @@ export function createSkillOwnershipMethods(
       });
     },
 
-    unshareSkill({ id, scope, actorId }) {
+    unshareSkill({ id, scope, actorId, liveActor }) {
       return locked(async () => {
         const s = await deps.skills.get(id);
         if (!s) return fail("not_found", "no such skill");
+        if (!liveActor) {
+          return fail(
+            "trigger_blocked",
+            `changing who gets a skill takes a live person the platform can attest is present — ${UNATTESTED_TURN_CAUSE}`,
+          );
+        }
         if (!(await h.canManageSkill(s, actorId)))
           return fail("forbidden", "that skill isn't yours to share or unshare");
         if (scope === org() && !samePerson(effectiveSkillOwner(s), actorId) && !(await isAdmin(actorId))) {
@@ -404,8 +478,7 @@ export function createSkillOwnershipMethods(
           `taking a skill back from the org takes a live person the platform can attest is present — ${UNATTESTED_TURN_CAUSE}`,
         );
       }
-      const own = samePerson(effectiveSkillOwner(s), actorId) && (await h.skillSharingAllows(actorId, "org"));
-      if (!own && !(await isAdmin(actorId))) {
+      if (!(await h.mayTakeSkillFromOrg(s, actorId))) {
         throw new AdminError(403, "only an org admin can take a skill back from the org");
       }
       await deps.skills.archive(id);
@@ -417,13 +490,12 @@ export function createSkillOwnershipMethods(
         const s = await mutable(id);
         if (!("id" in s)) return s;
         if (isSourceManagedSkill(s)) return fail("forbidden", "a skill managed by its source can only be archived");
-        if (!asAdmin) {
-          if (!liveActor) return fail("trigger_blocked", SHARED_SKILL_TRIGGER_REFUSAL);
-          if (!(await h.skillRights.movesOrTransfers(s, actorId))) {
-            return fail("forbidden", "only the skill's owner or an org admin can move it");
-          }
-        }
+        const refused = await mayChangeOwnership(s, actorId, liveActor, asAdmin, "move");
+        if (refused) return refused;
         const admin = asAdmin === true || (await isAdmin(actorId));
+        if (!admin && !(await h.mayTakeSkillFromOrg(s, actorId))) {
+          return fail("forbidden", "only an org admin can take a skill out of the org home");
+        }
         const owner = effectiveSkillOwner(s)!;
         const { kind, ref } = parseScopeId(toScope);
         if (toScope === s.scopeId) return fail("bad_request", "the skill already lives there");
@@ -445,7 +517,7 @@ export function createSkillOwnershipMethods(
             return fail("forbidden", SKILL_CONTEXTS_ADMIN_ONLY);
         }
         const clash = homeClash(await deps.skills.list(), s, toScope);
-        if (clash) return nameConflict(clash);
+        if (clash) return nameConflict(clash, actorId);
         const from = s.scopeId;
         const regranted = await rekey(s, toScope, actorId, () => deps.skills.setOwner(s.id, owner, toScope));
         audit("skill_move", actorId, s.id, toScope, { from, to: toScope, regranted });
@@ -458,12 +530,8 @@ export function createSkillOwnershipMethods(
         const s = await mutable(id);
         if (!("id" in s)) return s;
         if (isSourceManagedSkill(s)) return fail("forbidden", "a skill managed by its source can only be archived");
-        if (!asAdmin) {
-          if (!liveActor) return fail("trigger_blocked", SHARED_SKILL_TRIGGER_REFUSAL);
-          if (!(await h.skillRights.movesOrTransfers(s, actorId))) {
-            return fail("forbidden", "only the skill's owner or an org admin can transfer it");
-          }
-        }
+        const refused = await mayChangeOwnership(s, actorId, liveActor, asAdmin, "transfer");
+        if (refused) return refused;
         const newOwner = canonicalPerson(newOwnerId.trim());
         if (!newOwner || !(await activeTeammate(newOwner))) {
           return fail("bad_request", "the new owner must be an active teammate");
@@ -472,6 +540,9 @@ export function createSkillOwnershipMethods(
         const from = effectiveSkillOwner(s);
         let home = s.scopeId;
         if (parseScopeId(s.scopeId).kind === "personal") {
+          if (!admin && !samePerson(newOwner, actorId) && !(await h.skillSharingAllows(actorId, "contexts"))) {
+            return fail("forbidden", SKILL_CONTEXTS_ADMIN_ONLY);
+          }
           home = homeScope ?? scopeId("personal", newOwner);
           const target = parseScopeId(home);
           if (target.kind === "personal" && !samePerson(target.ref, newOwner)) {
@@ -490,11 +561,14 @@ export function createSkillOwnershipMethods(
             if (!admin && !(await h.maySkillLiveIn(home, actorId))) return fail("forbidden", SKILL_CONTEXTS_ADMIN_ONLY);
           }
           const clash = home === s.scopeId ? undefined : homeClash(await deps.skills.list(), s, home);
-          if (clash) return nameConflict(clash);
+          if (clash) return nameConflict(clash, actorId);
           await rekey(s, home, actorId, () => deps.skills.setOwner(s.id, newOwner, home));
         } else {
           if (homeScope && homeScope !== s.scopeId) {
             return fail("bad_request", "only a personal skill changes home on transfer — move it instead");
+          }
+          if (isSharedScope(s.scopeId) && !admin && !(await h.skillRightsBase.isHomeMember(newOwner, s.scopeId))) {
+            return fail("bad_request", "the new owner isn't a member of the skill's home");
           }
           await deps.skills.setOwner(s.id, newOwner);
         }
@@ -509,6 +583,9 @@ export function createSkillOwnershipMethods(
         const [from, into] = await Promise.all([deps.skills.get(fromId), deps.skills.get(intoId)]);
         if (!from || !into) return fail("not_found", "no such skill");
         if (from.id === into.id) return fail("bad_request", "a skill can't be merged into itself");
+        if (isSourceManagedSkill(from) || isSourceManagedSkill(into)) {
+          return fail("forbidden", "a skill managed by its source can't be merged");
+        }
         if (from.manifest.name !== into.manifest.name) {
           return fail("name_mismatch", "only skills with the same name can be merged");
         }
@@ -523,6 +600,7 @@ export function createSkillOwnershipMethods(
             diff: manifestDiff(from.manifest, into.manifest),
           });
         }
+        const fromStatus = from.status;
         const ref = refOf(into.id);
         const fromRef = refOf(from.id);
         const fromGrants = await deps.acl.grantsFor(from.scopeId, fromRef);
@@ -532,7 +610,7 @@ export function createSkillOwnershipMethods(
         const targets = new Map<ScopeId, Permission>();
         for (const g of fromGrants) targets.set(g.granteeScopeId, g.granteeScopeId === org() ? "read" : g.permission);
         if (needOrg) targets.set(org(), "read");
-        let regranted = 0;
+        const added: ScopeId[] = [];
         for (const [grantee, permission] of targets) {
           if (grantee === into.scopeId || reached.has(grantee)) continue;
           await deps.acl.grant({
@@ -542,8 +620,9 @@ export function createSkillOwnershipMethods(
             permission,
             grantedBy: actorId,
           });
-          regranted++;
+          added.push(grantee);
         }
+        const regranted = added.length;
         await deps.skills.retire(from.id, into.id);
         for (const g of fromGrants) {
           await deps.acl
@@ -552,7 +631,14 @@ export function createSkillOwnershipMethods(
         }
         const owner = effectiveSkillOwner(into);
         if (!into.ownerId && owner) await deps.skills.setOwner(into.id, owner);
-        audit("skill_merge", actorId, from.id, into.scopeId, { into: into.id, forced: force === true, regranted });
+        audit("skill_merge", actorId, from.id, into.scopeId, {
+          into: into.id,
+          forced: force === true,
+          regranted,
+          added,
+          fromStatus,
+          fromGrants: fromGrants.map((g) => ({ granteeScopeId: g.granteeScopeId, permission: g.permission })),
+        });
         return {
           ok: true,
           retired: from.id,
@@ -560,6 +646,59 @@ export function createSkillOwnershipMethods(
           regranted,
           orgWide: into.scopeId === org() || needOrg || reached.has(org()),
         };
+      });
+    },
+
+    unmergeSkill({ id, actorId }) {
+      return locked(async () => {
+        const s = await deps.skills.get(id);
+        if (!s) return fail("not_found", "no such skill");
+        const into = s.supersededBy;
+        if (!into) return fail("bad_request", "this skill was never merged into another one");
+        const clash = homeClash(await deps.skills.list(), s, s.scopeId);
+        if (clash) return nameConflict(clash, actorId);
+        const merge = (await deps.auditLog.tail({ limit: 50_000, action: "skill_merge", resourceContains: s.id }))
+          .filter((e) => e.resource === s.id)
+          .reduce<AuditEvent | undefined>((a, b) => (!a || b.at > a.at ? b : a), undefined);
+        const detail = mergeDetail(merge?.detail);
+        await deps.skills.unretire(s.id);
+        if (detail.fromStatus !== "archived") await deps.skills.publish(s.id);
+        const ref = refOf(s.id);
+        for (const g of detail.fromGrants) {
+          await deps.acl.grant({ ownerScopeId: s.scopeId, ref, ...g, grantedBy: actorId });
+        }
+        const canonical = await deps.skills.get(into);
+        let revoked = 0;
+        if (canonical) {
+          const intoRef = refOf(canonical.id);
+          const live = new Set((await deps.acl.grantsFor(canonical.scopeId, intoRef)).map((g) => g.granteeScopeId));
+          for (const grantee of detail.added.filter((x) => live.has(x))) {
+            await deps.acl.revoke(canonical.scopeId, intoRef, grantee, actorId);
+            revoked++;
+          }
+        }
+        audit("skill_unmerge", actorId, s.id, s.scopeId, { from: into, regranted: detail.fromGrants.length, revoked });
+        return { ok: true, restored: s.id, from: into, regranted: detail.fromGrants.length, revoked };
+      });
+    },
+
+    downgradeSkillWriteGrants({ dryRun, actorId }) {
+      return locked(async () => {
+        const writes = skillWriteGrants(await deps.skills.list(), await deps.acl.list());
+        if (dryRun) return { downgraded: writes };
+        for (const w of writes) {
+          const ref = refOf(w.skillId);
+          await deps.acl.revoke(w.ownerScopeId, ref, w.granteeScopeId, actorId);
+          await deps.acl.grant({
+            ownerScopeId: w.ownerScopeId,
+            ref,
+            granteeScopeId: w.granteeScopeId,
+            permission: "read",
+            grantedBy: actorId,
+          });
+        }
+        if (writes.length) audit("skill_write_grants_downgrade", actorId, "skills", org(), { count: writes.length });
+        return { downgraded: writes };
       });
     },
 

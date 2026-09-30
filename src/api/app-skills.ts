@@ -20,7 +20,7 @@ import { samePerson } from "../directory/person.ts";
 import type { App, AppDeps, SkillViewer } from "./app-types.ts";
 import { encodeRef, parseRef, skillRef } from "../acl/resource-ref.ts";
 import { effectiveSkillOwner } from "../skills/skill-rights.ts";
-import { skillGrantsOf } from "../skills/skill-namespace.ts";
+import { audienceNameClash, skillGrantsOf } from "../skills/skill-namespace.ts";
 import { principalEntitledToScope } from "../resolution/context-filter.ts";
 import type { Grant, Principal } from "../types.ts";
 import type { AppHelpers } from "./app-helpers.ts";
@@ -398,18 +398,25 @@ export function createSkillMethods(
     async restoreOwnedSkill(id, principalId, opts) {
       const skill = await deps.skills.get(id);
       if (!skill || skill.status !== "archived") return null;
-      if (skill.supersededBy) return "superseded";
       const access = await skillEditAccessFor(principalId, opts?.liveActor === true)(skill);
       if (!managesSkill(access) || !(await h.skillRoleFor(skill, principalId))) return null;
+      if (skill.supersededBy) return "superseded";
       if (access === "needs_live_person") return "trigger_blocked";
       if (access === "admins_only") return "forbidden";
-      const taken = (await deps.skills.list()).some(
-        (s) =>
-          s.id !== id &&
-          s.scopeId === skill.scopeId &&
-          s.manifest.name === skill.manifest.name &&
-          s.status === "published",
-      );
+      const all = await deps.skills.list();
+      const grants = await deps.acl.list();
+      const org = scopeId("org", orgIdOf());
+      const taken =
+        all.some(
+          (s) =>
+            s.id !== id &&
+            s.scopeId === skill.scopeId &&
+            s.manifest.name === skill.manifest.name &&
+            s.status === "published",
+        ) ||
+        skillGrantsOf(skill, grants).some((g) =>
+          audienceNameClash({ skill, granteeScopeId: g.granteeScopeId, all, grants, orgScopeId: org }),
+        );
       if (taken) return "name_conflict";
       await deps.skills.review(id, principalId, skill.manifest.requiredCapabilities);
       const restored = await deps.skills.publish(id);
@@ -552,11 +559,12 @@ export function createSkillMethods(
     async deleteOwnedSkill({ principalId, id, liveActor }) {
       const skill = await deps.skills.get(id);
       if (!skill) return "missing";
-      if (skill.supersededBy) return "superseded";
       const access = await skillEditAccessFor(principalId, liveActor === true)(skill);
       if (!managesSkill(access) || !(await h.skillRoleFor(skill, principalId))) return "forbidden";
+      if (skill.supersededBy) return "superseded";
       if (access === "needs_live_person") return "trigger_blocked";
       if (access === "admins_only") return "admins_only";
+      if (!(await h.mayTakeSkillFromOrg(skill, principalId))) return "org_admins_only";
       await deps.skills.archive(id);
       deps.auditLog.record({
         at: Date.now(),

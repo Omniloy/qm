@@ -1,6 +1,6 @@
 import { parseScopeId, type Grant, type ScopeId } from "../types.ts";
 import { samePerson } from "../directory/person.ts";
-import { encodeRef, skillRef } from "../acl/resource-ref.ts";
+import { encodeRef, parseRef, skillRef } from "../acl/resource-ref.ts";
 import type { AuditEvent } from "../audit/audit-log.ts";
 import { effectiveSkillOwner } from "./skill-rights.ts";
 import { PLATFORM_SKILL_AUTHOR, type Skill, type SkillManifest } from "./skill-store.ts";
@@ -8,6 +8,30 @@ import { PLATFORM_SKILL_AUTHOR, type Skill, type SkillManifest } from "./skill-s
 export function skillGrantsOf(skill: Pick<Skill, "id" | "scopeId">, grants: readonly Grant[]): Grant[] {
   const ref = encodeRef(skillRef(skill.id));
   return grants.filter((g) => g.ref === ref && g.ownerScopeId === skill.scopeId);
+}
+
+export interface SkillWriteGrant {
+  skillId: string;
+  name?: string;
+  ownerScopeId: ScopeId;
+  granteeScopeId: ScopeId;
+}
+
+export function skillWriteGrants(skills: readonly Skill[], grants: readonly Grant[]): SkillWriteGrant[] {
+  const names = new Map(skills.map((s) => [s.id, s.manifest.name]));
+  return grants.flatMap((g) => {
+    const ref = parseRef(g.ref);
+    if (ref.kind !== "skill" || g.permission !== "write") return [];
+    const name = names.get(ref.id);
+    return [
+      {
+        skillId: ref.id,
+        ...(name ? { name } : {}),
+        ownerScopeId: g.ownerScopeId,
+        granteeScopeId: g.granteeScopeId,
+      },
+    ];
+  });
 }
 
 export function audienceNameClash(input: {
@@ -81,6 +105,7 @@ export interface DuplicateReport {
   clusters: DuplicateCluster[];
   nameClashes: Array<{ name: string; rows: DuplicateRow[]; note?: string }>;
   archivedLeftovers: DuplicateRow[];
+  writeGrants: SkillWriteGrant[];
   ownerBackfill: { pending: number; personalHomeMismatch: DuplicateRow[] };
 }
 
@@ -125,6 +150,7 @@ export function planSkillDuplicates(input: {
     clusters: [],
     nameClashes: [],
     archivedLeftovers: [],
+    writeGrants: skillWriteGrants(input.skills, input.grants),
     ownerBackfill: {
       pending: input.skills.filter((s) => ownerBackfillFor(s) !== undefined).length,
       personalHomeMismatch: input.skills.filter(personalHomeMismatch).map(row),
@@ -136,25 +162,34 @@ export function planSkillDuplicates(input: {
     byName.set(s.manifest.name, [...(byName.get(s.manifest.name) ?? []), s]);
   }
   const isOrg = (s: Skill) => s.scopeId === orgScopeId;
+  const promoteOf = (s: Skill) => input.promotes.find((e) => e.resource === s.id && e.scopeLabel === orgScopeId);
   for (const [name, rows] of [...byName].sort(([a], [b]) => a.localeCompare(b))) {
     if (rows.length < 2) continue;
+    const clash = (clashing: Skill[], note?: string) => {
+      const known = report.nameClashes.find((n) => n.name === name);
+      if (!known) {
+        report.nameClashes.push({ name, rows: clashing.map(row), ...(note ? { note } : {}) });
+        return;
+      }
+      const seen = new Set(known.rows.map((r) => r.id));
+      known.rows.push(...clashing.filter((s) => !seen.has(s.id)).map(row));
+    };
     const org = rows.filter((s) => isOrg(s) && !PLATFORM_SKILL_AUTHOR.test(s.createdBy));
     const seeds = rows.filter((s) => isOrg(s) && PLATFORM_SKILL_AUTHOR.test(s.createdBy) && s.status === "published");
     const src = rows.filter((s) => !isOrg(s) && s.status === "published");
-    if (seeds.length && src.length) {
-      report.nameClashes.push({ name, rows: [...seeds, ...src].map(row), note: "overrides a built-in skill" });
-    }
+    if (seeds.length && src.length) clash([...seeds, ...src], "overrides a built-in skill");
     if (!org.length) {
-      if (rows.every((s) => s.status === "archived")) report.archivedLeftovers.push(...rows.map(row));
-      else if (src.length > 1) report.nameClashes.push({ name, rows: src.map(row) });
+      if (src.length > 1) clash(src);
       continue;
     }
     if (!src.length) {
+      const lineage = (s: Skill) =>
+        isOrg(s) || promoteOf(s) !== undefined || org.some((o) => samePerson(o.createdBy, s.createdBy));
       const allArchived = rows.every((s) => s.status === "archived");
-      report.archivedLeftovers.push(...(allArchived ? rows : org.filter((o) => o.status === "archived")).map(row));
+      const leftovers = allArchived ? rows.filter(lineage) : org.filter((o) => o.status === "archived");
+      report.archivedLeftovers.push(...leftovers.map(row));
       continue;
     }
-    const promoteOf = (s: Skill) => input.promotes.find((e) => e.resource === s.id && e.scopeLabel === orgScopeId);
     const evidence: string[] = [];
     let linked = src.filter((s) => promoteOf(s));
     for (const s of linked) evidence.push(`audit skill_promote ${s.id}→org ${day(promoteOf(s)!.at)}`);
@@ -184,7 +219,7 @@ export function planSkillDuplicates(input: {
     }
     const canonical = linked[0]!;
     const others = src.filter((s) => s.id !== canonical.id);
-    if (others.length) report.nameClashes.push({ name, rows: [canonical, ...others].map(row) });
+    if (others.length) clash([canonical, ...others]);
     const pubOrg = org.filter((o) => o.status === "published");
     const archOrg = org.filter((o) => o.status === "archived");
     const auto = pubOrg.every((o) => o.signature === canonical.signature);

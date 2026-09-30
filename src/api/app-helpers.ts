@@ -518,10 +518,13 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     ...(deps.admin ? { admin: deps.admin } : {}),
     isCurrentSharedScopeMember: (p, scope) => principalIsCurrentSharedScopeMember(p, scope),
     acl: deps.acl,
-    canUseWriteGrant: async (p, grantee) =>
-      (await principalCanAccessCurrentScope(p, grantee)) && (await principalCanUseWriteGrant(p, grantee)),
   });
   const skillRights = createSkillRights(skillRightsBase);
+
+  async function mayTakeSkillFromOrg(skill: Skill, actorId: string): Promise<boolean> {
+    if (parseScopeId(skill.scopeId).kind !== "org" || (await isOrgAdmin(actorId))) return true;
+    return samePerson(effectiveSkillOwner(skill), actorId) && (await skillSharingAllows(actorId, "org"));
+  }
 
   function canManageSkill(skill: Skill, principalId: string): Promise<boolean> {
     return skillRights.manages(skill, principalId);
@@ -821,6 +824,7 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     skillRoleFor,
     skillRights,
     skillRightsBase,
+    mayTakeSkillFromOrg,
     skillEditAccessFor,
     isOrgAdmin,
     skillSharingAllows,

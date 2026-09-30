@@ -51,9 +51,19 @@ const skills: Skill[] = [
   row("amb-1", "triage", "personal:ana", { createdBy: "ana", signature: "sig-1" }),
   row("amb-2", "triage", "channel:CANA", { createdBy: "ana", signature: "sig-2" }),
   row("old", "slides", ORG, { status: "archived", supersededBy: "1f0e" }),
+  row("stranger-a", "stranger-notes", "personal:ana", { createdBy: "ana", status: "archived" }),
+  row("stranger-b", "stranger-notes", "personal:bob", { createdBy: "bob", status: "archived" }),
+  row("unrelated-arch", "share-smoke-test", "personal:bob", { createdBy: "bob", status: "archived" }),
 ];
 const grants: Grant[] = [
   { ownerScopeId: ORG, ref: "skill:621e", granteeScopeId: "channel:CSQUAD", permission: "read", grantedBy: "x" },
+  {
+    ownerScopeId: "channel:CLAB",
+    ref: "skill:4531",
+    granteeScopeId: "channel:CX",
+    permission: "write",
+    grantedBy: "x",
+  },
 ];
 const report = planSkillDuplicates({
   skills,
@@ -123,7 +133,33 @@ test("olivia: only an archived org copy is left, so the plan purges it", () => {
 
 test("a name whose every copy is archived is an archived leftover, and superseded rows are ignored", () => {
   assert.deepEqual(report.archivedLeftovers.map((r) => r.id).sort(), ["smoke-a", "smoke-b"]);
+  assert.ok(
+    !report.archivedLeftovers.some((r) => r.id.startsWith("stranger") || r.id === "unrelated-arch"),
+    "someone else's archived personal skill is never offered for purge",
+  );
   assert.ok(!JSON.stringify(report).includes('"old"'));
+});
+
+test("the report lists every skill write grant", () => {
+  assert.deepEqual(report.writeGrants, [
+    { skillId: "4531", name: "laberit", ownerScopeId: "channel:CLAB", granteeScopeId: "channel:CX" },
+  ]);
+});
+
+test("a name is listed as a clash once even when it clashes with a built-in and with other copies", () => {
+  const planned = planSkillDuplicates({
+    skills: [
+      row("seed2", "brief", ORG, { createdBy: "system:skills-seed" }),
+      row("b1", "brief", "personal:ana", { createdBy: "ana", signature: "sig-b1" }),
+      row("b2", "brief", "personal:bob", { createdBy: "bob", signature: "sig-b2" }),
+    ],
+    grants: [],
+    promotes: [],
+    orgScopeId: ORG,
+  });
+  const briefs = planned.nameClashes.filter((n) => n.name === "brief");
+  assert.equal(briefs.length, 1);
+  assert.deepEqual(briefs[0]!.rows.map((r) => r.id).sort(), ["b1", "b2", "seed2"]);
 });
 
 test("a built-in with the same name is reported as a clash and never merged", () => {

@@ -54,7 +54,7 @@ import type { SkillPack, NewSkillPack, SkillPackStore } from "../skills/skill-pa
 import type { SkillPackFetcher } from "../skills/pack-fetcher.ts";
 import { type IngestPlan, type ImportResult } from "../skills/ingest.ts";
 import { type SkillBundleStore } from "../skills/skill-bundle-store.ts";
-import type { DuplicateReport } from "../skills/skill-namespace.ts";
+import type { DuplicateReport, SkillWriteGrant } from "../skills/skill-namespace.ts";
 import type { SkillOutcome, SkillSharing } from "./app-skill-ownership.ts";
 import type { AuditLog } from "../audit/audit-log.ts";
 import type { CapabilityClaims } from "../auth/capability-token.ts";
@@ -488,7 +488,12 @@ export interface App {
     actorId: string;
     liveActor: boolean;
   }): Promise<SkillOutcome<{ skill: Skill }>>;
-  unshareSkill(input: { id: string; scope: ScopeId; actorId: string }): Promise<SkillOutcome<{ skill: Skill }>>;
+  unshareSkill(input: {
+    id: string;
+    scope: ScopeId;
+    actorId: string;
+    liveActor: boolean;
+  }): Promise<SkillOutcome<{ skill: Skill }>>;
   setSkillOrgWide(input: {
     id: string;
     on: boolean;
@@ -517,6 +522,11 @@ export interface App {
     actorId: string;
     force?: boolean;
   }): Promise<SkillOutcome<{ retired: string; into: string; regranted: number; orgWide: boolean }>>;
+  unmergeSkill(input: {
+    id: string;
+    actorId: string;
+  }): Promise<SkillOutcome<{ restored: string; from: string; regranted: number; revoked: number }>>;
+  downgradeSkillWriteGrants(input: { dryRun: boolean; actorId: string }): Promise<{ downgraded: SkillWriteGrant[] }>;
   purgeArchivedSkill(input: { id: string; actorId: string }): Promise<SkillOutcome<{ skill: Skill }>>;
   skillDuplicateReport(): Promise<DuplicateReport>;
   backfillSkillOwners(input: { dryRun: boolean; actorId: string }): Promise<{
@@ -681,7 +691,9 @@ export interface App {
     principalId: string;
     id: string;
     liveActor?: boolean;
-  }): Promise<"missing" | "forbidden" | "trigger_blocked" | "admins_only" | "superseded" | "deleted">;
+  }): Promise<
+    "missing" | "forbidden" | "trigger_blocked" | "admins_only" | "org_admins_only" | "superseded" | "deleted"
+  >;
   rollbackDeployment(id: string, version: number): Promise<void>;
   archiveDeployment(id: string): Promise<void>;
   restoreDeployment(id: string, actorId?: string): Promise<Deployment>;

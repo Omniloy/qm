@@ -67,6 +67,31 @@ test("backfill reports what it would change on a dry run and records owners when
   }
 });
 
+test("unmerge over HTTP brings a retired copy back", async () => {
+  const s = await start();
+  try {
+    const canonical = await publishSkill(s.built, { owner: "U1", name: "slides" });
+    const copy = await publishSkill(s.built, { owner: "U1", name: "slides", home: ORG_SCOPE });
+    await s.call("POST", `/v1/admin/skills/${copy.id}/merge${org}`, { into: canonical.id });
+    const scoped = `?scope=${encodeURIComponent(PRIV)}`;
+    assert.equal((await s.call("POST", `/v1/admin/skills/${copy.id}/unmerge${scoped}`, {})).status, 403);
+    const undone = await s.call("POST", `/v1/admin/skills/${copy.id}/unmerge${org}`, {});
+    assert.equal(undone.status, 200);
+    assert.deepEqual(await undone.json(), {
+      ok: true,
+      restored: copy.id,
+      from: canonical.id,
+      regranted: 0,
+      revoked: 1,
+    });
+    assert.equal((await s.built.skills.get(copy.id))?.status, "published");
+    const dry = await s.call("POST", `/v1/admin/skills/downgrade-write-grants${org}`, { dryRun: true });
+    assert.deepEqual(await dry.json(), { dryRun: true, downgraded: [] });
+  } finally {
+    await s.close();
+  }
+});
+
 test("merge over HTTP retires the copy; the retired id then redirects GET and PUT, and 409s DELETE and restore", async () => {
   const s = await start();
   try {
@@ -101,7 +126,7 @@ test("merge over HTTP retires the copy; the retired id then redirects GET and PU
   }
 });
 
-test("a scoped admin transfers and moves a skill in their scope, but not one outside it", async () => {
+test("a scoped admin transfers and moves a skill in their scope; a personal skill only once it is shared", async () => {
   const s = await start();
   try {
     const inChannel = await publishSkill(s.built, { owner: "U1", name: "triage", home: PRIV, ownerId: "U1" });
@@ -114,8 +139,27 @@ test("a scoped admin transfers and moves a skill in their scope, but not one out
       (await s.call("POST", `/v1/admin/skills/${personal.id}/owner${scoped}`, { ownerId: "U2" })).status,
       403,
     );
+    const unshared = await s.call("POST", `/v1/admin/skills/${personal.id}/move${org}`, { toScope: PRIV });
+    assert.equal(unshared.status, 403, "an admin leaves an unshared personal skill alone");
+    assert.equal((await s.call("POST", `/v1/admin/skills/${personal.id}/owner${org}`, { ownerId: "U2" })).status, 403);
+    assert.equal(
+      (await s.call("PUT", `/v1/admin/skills/${personal.id}${org}`, { body: "# rewritten by an admin" })).status,
+      403,
+    );
+    assert.equal((await s.built.skills.get(personal.id))?.manifest.body, "# digest");
+    await s.built.app.shareSkill({
+      id: personal.id,
+      toScope: scopeId("channel", "CPUB"),
+      permission: "read",
+      actorId: "U1",
+      liveActor: true,
+    });
+    assert.equal(
+      (await s.call("PUT", `/v1/admin/skills/${personal.id}${org}`, { body: "# edited by an admin" })).status,
+      200,
+    );
     const moved = await s.call("POST", `/v1/admin/skills/${personal.id}/move${org}`, { toScope: PRIV });
-    assert.equal(moved.status, 200, "the admin API moves even an unshared personal skill");
+    assert.equal(moved.status, 200, "once its owner shared it, the admin API moves it");
     assert.equal((await s.built.skills.get(personal.id))?.scopeId, PRIV);
     assert.equal((await s.call("POST", `/v1/admin/skills/${personal.id}/move${org}`, { toScope: "nope" })).status, 400);
   } finally {

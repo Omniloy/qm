@@ -73,6 +73,19 @@ test("moves are refused into someone else's personal space, into the org for a n
   assert.equal(!stranger.ok && stranger.code, "forbidden", "only the owner or an admin moves a skill");
   const trigger = await built.app.moveSkillHome({ id: s.id, toScope: PRIV, actorId: "U1", liveActor: false });
   assert.equal(!trigger.ok && trigger.code, "trigger_blocked");
+  const unsharedByAdmin = await built.app.moveSkillHome({
+    id: s.id,
+    toScope: ORG_SCOPE,
+    actorId: ADMIN,
+    liveActor: true,
+    asAdmin: true,
+  });
+  assert.equal(
+    !unsharedByAdmin.ok && unsharedByAdmin.code,
+    "forbidden",
+    "an admin leaves an unshared personal skill alone",
+  );
+  await built.app.shareSkill({ id: s.id, toScope: PUB, permission: "read", actorId: "U1", liveActor: true });
   const adminMove = await built.app.moveSkillHome({
     id: s.id,
     toScope: ORG_SCOPE,

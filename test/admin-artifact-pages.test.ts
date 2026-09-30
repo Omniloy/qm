@@ -436,8 +436,8 @@ test("an admin edits an org-wide skill in place: it stays published, the version
       headers: { ...ALICE_ADMIN, "content-type": "application/json" },
       body: JSON.stringify({ body: "Admin rewrite." }),
     });
-    assert.equal(personalPut.status, 200, "the admin API edits a skill in any home");
-    assert.equal((await s.built.skills.get(personal.id))?.manifest.body, "Admin rewrite.");
+    assert.equal(personalPut.status, 403, "an admin leaves an unshared personal skill alone");
+    assert.equal((await s.built.skills.get(personal.id))?.manifest.body, "b");
 
     const seeded = await s.built.skills.create({
       scopeId: "org:default-org",

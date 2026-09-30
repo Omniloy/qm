@@ -125,7 +125,7 @@ test("visibleFor reads the full skills table once, not once per skill name", asy
 test("an org-wide skill is one grant visible in a DM, a channel and the web, listed once even when also shared", async () => {
   const built = freshApp();
   const { app, skills } = built;
-  const slides = await publish(skills, scopeId("personal", "U1"), "slides", "build a deck");
+  const slides = await publish(skills, scopeId("channel", "CHOME"), "slides", "build a deck");
   await app.setSkillOrgWide({ id: slides.id, on: true, actorId: "admin-alice", liveActor: true });
   await app.shareSkill({
     id: slides.id,

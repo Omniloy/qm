@@ -110,7 +110,7 @@ import { createResolutionService } from "./resolution/resolution-service.ts";
 import { createAclStore, type AclStore } from "./acl/acl-store.ts";
 import { createPostgresGrantStore } from "./acl/postgres-grant-store.ts";
 import { parseRef } from "./acl/resource-ref.ts";
-import { createSkillRights, skillRightsDeps } from "./skills/skill-rights.ts";
+import { createSkillRights, skillRightsDeps, type GrantChange } from "./skills/skill-rights.ts";
 import { createSkillStore, type SkillStore, type Skill } from "./skills/skill-store.ts";
 import { createSkillPackStore, type SkillPack } from "./skills/skill-pack-store.ts";
 import { createSkillBundleStore, type SkillBundle, type SkillBundleStore } from "./skills/skill-bundle-store.ts";
@@ -654,14 +654,21 @@ export function buildApp(
     canManageScope?: CanManageScope;
     canUseSandboxScope?: CanManageScope;
     managesArtifactHome?: ManagesArtifactHome;
-    managesSkillGrant?: (principalId: string, skillId: string, ownerScopeId: ScopeId) => Promise<boolean>;
+    managesSkillGrant?: (
+      principalId: string,
+      skillId: string,
+      ownerScopeId: ScopeId,
+      change: GrantChange,
+    ) => Promise<boolean>;
   } = {};
   const acl = createAclStore(config.databaseUrl ? createPostgresGrantStore(config.databaseUrl) : undefined, {
     manages: (principalId, scopeId, authoredBy) =>
       membership.managesArtifactHome!(scopeId, authoredBy ?? "", principalId),
-    managesResource: async (principalId, ownerScopeId, ref) => {
+    managesResource: async (principalId, ownerScopeId, ref, change) => {
       const parsed = parseRef(ref);
-      return parsed.kind === "skill" ? membership.managesSkillGrant?.(principalId, parsed.id, ownerScopeId) : undefined;
+      return parsed.kind === "skill"
+        ? membership.managesSkillGrant?.(principalId, parsed.id, ownerScopeId, change)
+        : undefined;
     },
   });
   const pgArtifactMap = config.databaseUrl ? createPostgresMapFactory(config.databaseUrl) : null;
@@ -1824,8 +1831,8 @@ export function buildApp(
     ((await admin.adminStatusOf(identity.classify(actorId))).isAdmin || (await canWriteScope(actorId, scopeId)));
   membership.managesArtifactHome = managesArtifactHome;
   const skillRights = createSkillRights(skillRightsDeps({ identity, admin, isCurrentSharedScopeMember, acl }));
-  membership.managesSkillGrant = async (principalId, skillId, ownerScopeId) =>
-    skillRights.managesGrantKey(await skills.get(skillId), principalId, ownerScopeId);
+  membership.managesSkillGrant = async (principalId, skillId, ownerScopeId, change) =>
+    skillRights.managesGrantKey(await skills.get(skillId), principalId, ownerScopeId, change);
   const deployGitSecret = config.signingSecret;
   const deployGitBase = config.apiBaseUrl;
   const deliveries = withWebTranscriptDeliveries(

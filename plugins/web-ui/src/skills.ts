@@ -1141,7 +1141,11 @@ function shareDialog(): TemplateResult {
               ${(
                 [
                   ["read", "Use it", "They can invoke the skill."],
-                  ["write", "Use and edit it", "They can also edit the instructions; edits reach everyone who has it."],
+                  [
+                    "write",
+                    "Use and edit it",
+                    "Only members of that context can also edit the instructions; edits reach everyone who has it.",
+                  ],
                 ] as const
               ).map(
                 ([value, label, hint]) =>

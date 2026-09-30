@@ -639,10 +639,23 @@ test("demote carries promote's gates in the other direction — admin, and a liv
   assert.deepEqual(state.demotes, [{ id: "S1", actorId: "U-admin" }]);
 });
 
+test("an admin cannot promote an unshared personal skill through /v1/share", async () => {
+  const built = await ownerFixture();
+  const s = await publishSkill(built, { owner: "U1", name: "slides" });
+  const r = await createControlService(built.app).shareArtifact({ type: "skill", id: s.id, scope: "org" }, cap(ADMIN));
+  assert.equal(r.ok, false);
+  assert.deepEqual(await skillGrants(built, s.id), []);
+});
+
 test("sharing a skill to the org grants the same skill org-wide instead of copying it", async () => {
   const built = await ownerFixture();
   const svc = createControlService(built.app);
-  const s = await publishSkill(built, { owner: "U1", name: "slides" });
+  const s = await publishSkill(built, {
+    owner: "U1",
+    name: "slides",
+    home: scopeId("channel", "CPRIV"),
+    ownerId: "U1",
+  });
   const r = await svc.shareArtifact({ type: "skill", id: s.id, scope: "org" }, cap(ADMIN));
   assert.ok(r.ok, JSON.stringify(r));
   assert.equal(r.verb, "promote");

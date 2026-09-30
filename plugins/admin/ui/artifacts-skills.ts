@@ -62,7 +62,8 @@ export async function skillDetail(root: HTMLElement, rep: Data, group: Data[], c
     return k.createdBy?.startsWith("system:") ? "built-in" : "";
   })();
   const by = source || "by " + (k.createdBy || "None");
-  const editable = !source && k.status !== "archived";
+  const unsharedPersonal = c.scopeKind(k.ownerScopeId) === "personal" && !(k.sharedWith || []).length;
+  const editable = !source && k.status !== "archived" && !unsharedPersonal;
   const org = "org:" + c.orgId;
   const adminPath = (id: string, action: string) =>
     "/api/skills/" + encodeURIComponent(id) + "/" + action + "?scope=" + encodeURIComponent(org);
