@@ -403,6 +403,7 @@ export function createSkillMethods(
       if (skill.supersededBy) return "superseded";
       if (access === "needs_live_person") return "trigger_blocked";
       if (access === "admins_only") return "forbidden";
+      if (!(await h.mayTakeSkillFromOrg(skill, principalId))) return "org_admins_only";
       const all = await deps.skills.list();
       const grants = await deps.acl.list();
       const org = scopeId("org", orgIdOf());

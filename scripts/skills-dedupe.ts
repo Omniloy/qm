@@ -9,18 +9,18 @@ import type {
 
 const USAGE = `usage: QM_ADMIN_COOKIE=<admin session cookie> node scripts/skills-dedupe.ts --base <admin origin> <command>
   (without QM_ADMIN_COOKIE the cookie is read from the first line of stdin)
-  backfill [--dry-run]                record an owner on every skill that lacks one
+  run the rollout in this order: backfill -> downgrade-write-grants -> report -> apply
+  backfill [--yes]                    record an owner on every skill that lacks one; shows the dry run and asks first
+  downgrade-write-grants [--yes]      turn every skill write grant into a read grant; shows the dry run and asks first
   report                              print the duplicate report
   apply --auto [--yes]                merge every "auto" cluster; asks before purging anything
   apply --cluster <name> [--force]    merge one cluster; --force is the owner's approval for a diverged one
-  downgrade-write-grants [--dry-run]  turn every skill write grant into a read grant
   unmerge <retired skill id>          undo a merge: bring the retired copy back and take back what the merge added`;
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
   options: {
     base: { type: "string" },
-    "dry-run": { type: "boolean", default: false },
     auto: { type: "boolean", default: false },
     cluster: { type: "string" },
     force: { type: "boolean", default: false },
@@ -96,9 +96,28 @@ const isPurge = (a: DuplicateAction) => a.path.endsWith("/purge");
 
 const report = async () => (await call("GET", adminPath("/v1/admin/skills/duplicates"))).data as DuplicateReport;
 
-if (command === "backfill") {
-  const { data } = await call("POST", adminPath("/v1/admin/skills/backfill-owners"), { dryRun: values["dry-run"] });
+async function mergeableReport(): Promise<DuplicateReport> {
+  const r = await report();
+  if (r.writeGrants.length) {
+    throw new Error(
+      `${r.writeGrants.length} skill write grant(s) still exist — run in order: backfill -> downgrade-write-grants -> report -> apply`,
+    );
+  }
+  return r;
+}
+
+async function dryRunThenApply(corePath: string, question: string): Promise<void> {
+  const { data } = await call("POST", adminPath(corePath), { dryRun: true });
   console.log(JSON.stringify(data, null, 2));
+  if (!(await confirm(question))) {
+    console.log("dry run only — nothing changed");
+    return;
+  }
+  console.log(JSON.stringify((await call("POST", adminPath(corePath), { dryRun: false })).data, null, 2));
+}
+
+if (command === "backfill") {
+  await dryRunThenApply("/v1/admin/skills/backfill-owners", "record these owners?");
 } else if (command === "report") {
   const r = await report();
   r.clusters.forEach(printCluster);
@@ -115,7 +134,7 @@ if (command === "backfill") {
     `\nowners: ${r.ownerBackfill.pending} pending, ${r.ownerBackfill.personalHomeMismatch.length} personal-home mismatches`,
   );
 } else if (command === "apply" && values.auto) {
-  const r = await report();
+  const r = await mergeableReport();
   const purges: DuplicateAction[] = [];
   for (const c of r.clusters.filter((x) => x.status === "auto")) {
     printCluster(c);
@@ -130,15 +149,12 @@ if (command === "backfill") {
     await runActions(purges);
   }
 } else if (command === "downgrade-write-grants") {
-  const { data } = await call("POST", adminPath("/v1/admin/skills/downgrade-write-grants"), {
-    dryRun: values["dry-run"],
-  });
-  console.log(JSON.stringify(data, null, 2));
+  await dryRunThenApply("/v1/admin/skills/downgrade-write-grants", "turn these write grants into read grants?");
 } else if (command === "unmerge" && positionals[1]) {
   const { data } = await call("POST", adminPath(`/v1/admin/skills/${encodeURIComponent(positionals[1])}/unmerge`), {});
   console.log(JSON.stringify(data, null, 2));
 } else if (command === "apply" && values.cluster) {
-  const c = (await report()).clusters.find((x) => x.name === values.cluster);
+  const c = (await mergeableReport()).clusters.find((x) => x.name === values.cluster);
   if (!c) throw new Error(`no duplicate cluster named ${values.cluster}`);
   printCluster(c);
   if (c.status === "ambiguous") throw new Error("this cluster has no single source; merge it from the admin UI");

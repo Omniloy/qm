@@ -1074,6 +1074,8 @@ async function restoreSkill(ctx: ApiCtx): Promise<void> {
     return sendJson(ctx.res, 403, { error: "forbidden", message: SHARED_SKILL_TRIGGER_REFUSAL });
   if (restored === "forbidden")
     return sendJson(ctx.res, 403, { error: "forbidden", message: SKILL_CONTEXTS_ADMIN_ONLY });
+  if (restored === "org_admins_only")
+    return sendJson(ctx.res, 403, { error: "forbidden", message: "only an org admin can put a skill back in the org" });
   return restored ? sendJson(ctx.res, 200, { ok: true }) : sendJson(ctx.res, 404, { error: "not_found" });
 }
 

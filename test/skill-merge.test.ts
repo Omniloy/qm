@@ -13,7 +13,7 @@ async function legacyCopy() {
   return { built, canonical, orgCopy };
 }
 
-test("a merge makes the canonical skill reach everything the copy reached, then retires the copy", async () => {
+test("a merge makes the canonical skill reach everything the copy reached, read-only, then retires the copy", async () => {
   const { built, canonical, orgCopy } = await legacyCopy();
   await built.acl.grant({
     ownerScopeId: ORG_SCOPE,
@@ -35,7 +35,7 @@ test("a merge makes the canonical skill reach everything the copy reached, then 
   assert.deepEqual(
     (await grantsOf(built, canonical.id)).map((g) => [g.ownerScopeId, g.granteeScopeId, g.permission]).sort(),
     [
-      [scopeId("personal", "U1"), PRIV, "write"],
+      [scopeId("personal", "U1"), PRIV, "read"],
       [scopeId("personal", "U1"), ORG_SCOPE, "read"],
     ].sort(),
   );

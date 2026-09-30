@@ -670,7 +670,9 @@ export interface App {
     id: string,
     principalId: string,
     opts?: { liveActor?: boolean },
-  ): Promise<Skill | "trigger_blocked" | "forbidden" | "managed" | "superseded" | "name_conflict" | null>;
+  ): Promise<
+    Skill | "trigger_blocked" | "forbidden" | "org_admins_only" | "managed" | "superseded" | "name_conflict" | null
+  >;
   listSkillPacks(): Promise<SkillPack[]>;
   getSkillPack(id: string): Promise<SkillPack | null>;
   registerSkillPack(input: NewSkillPack): Promise<SkillPack>;

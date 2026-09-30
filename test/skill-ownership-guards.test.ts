@@ -264,3 +264,94 @@ test("a retired id tells a stranger nothing about where it went", async () => {
   assert.equal(await built.app.restoreOwnedSkill(copy.id, "U3", live), null);
   assert.equal(await built.app.deleteOwnedSkill({ principalId: "U1", id: copy.id, liveActor: true }), "superseded");
 });
+
+test("when only admins may take skills from the org, the owner cannot restore an org-home skill an admin archived", async () => {
+  const built = await ownerFixture();
+  await built.config.setSkillSharingPolicy({ contexts: "admins", org: "admins" });
+  const s = await publishSkill(built, { owner: "U1", name: "z", home: ORG_SCOPE });
+  await built.app.demoteSkill(s.id, ADMIN, true);
+  assert.equal(await built.app.restoreOwnedSkill(s.id, "U1", live), "org_admins_only");
+  assert.equal((await built.skills.get(s.id))?.status, "archived");
+  const restored = await built.app.restoreOwnedSkill(s.id, ADMIN, live);
+  assert.equal(typeof restored === "object" && restored?.status, "published");
+});
+
+test("a merge never hands write access to the canonical, and unmerge gives the copy its grants back as read", async () => {
+  const built = await ownerFixture();
+  await built.config.setSkillSharingPolicy({ contexts: "everyone", org: "admins" });
+  const from = await publishSkill(built, { owner: "U2", name: "m" });
+  await built.app.shareSkill({ id: from.id, toScope: PRIV, permission: "write", actorId: "U2", ...live });
+  const into = await publishSkill(built, { owner: "U1", name: "m", home: ORG_SCOPE });
+  assert.ok((await built.app.mergeSkill({ fromId: from.id, intoId: into.id, actorId: ADMIN, force: true })).ok);
+  assert.deepEqual(
+    (await grantsOf(built, into.id)).map((g) => [g.granteeScopeId, g.permission]),
+    [[PRIV, "read"]],
+  );
+  assert.equal(await built.app.updateOwnedSkill(into.id, "U2", { body: "edited" }, live), null);
+  assert.ok((await built.app.unmergeSkill({ id: from.id, actorId: ADMIN })).ok);
+  assert.deepEqual(
+    (await grantsOf(built, from.id)).map((g) => [g.granteeScopeId, g.permission]),
+    [[PRIV, "read"]],
+  );
+});
+
+test("unmerge puts the copy back in exactly the status it had when it was merged", async () => {
+  const built = await ownerFixture();
+  const into = await publishSkill(built, { owner: "U1", name: "r", home: ORG_SCOPE });
+  const draft = await built.skills.create({
+    scopeId: scopeId("personal", "U2"),
+    manifest: { name: "r", description: "r", requiredCapabilities: [], body: "x" },
+    createdBy: "U2",
+  });
+  await built.skills.review(draft.id, "reviewer", []);
+  assert.ok((await built.app.mergeSkill({ fromId: draft.id, intoId: into.id, actorId: ADMIN })).ok);
+  assert.ok((await built.app.unmergeSkill({ id: draft.id, actorId: ADMIN })).ok);
+  assert.equal((await built.skills.get(draft.id))?.status, "reviewed");
+});
+
+test("an archived copy in the canonical's own home can still be unmerged, and comes back archived", async () => {
+  const built = await ownerFixture();
+  const from = await publishSkill(built, { owner: "U1", name: "q" });
+  await built.skills.archive(from.id);
+  const into = await publishSkill(built, { owner: "U1", name: "q" });
+  assert.ok((await built.app.mergeSkill({ fromId: from.id, intoId: into.id, actorId: ADMIN })).ok);
+  const undone = await built.app.unmergeSkill({ id: from.id, actorId: ADMIN });
+  assert.ok(undone.ok, JSON.stringify(undone));
+  const restored = await built.skills.get(from.id);
+  assert.equal(restored?.status, "archived");
+  assert.equal(restored?.supersededBy, undefined);
+});
+
+test("unmerge refuses a retired skill with no merge on record and leaves it retired", async () => {
+  const built = await ownerFixture();
+  const into = await publishSkill(built, { owner: "U1", name: "n", home: ORG_SCOPE });
+  const from = await publishSkill(built, { owner: "U2", name: "n" });
+  await built.skills.retire(from.id, into.id);
+  const undone = await built.app.unmergeSkill({ id: from.id, actorId: ADMIN });
+  assert.equal(!undone.ok && undone.code, "bad_request");
+  const still = await built.skills.get(from.id);
+  assert.equal(still?.supersededBy, into.id);
+  assert.equal(still?.status, "archived");
+});
+
+test("downgrade-write-grants swaps each resource's grants in one step and records every grant it downgraded", async () => {
+  const built = await ownerFixture();
+  const s = await publishSkill(built, { owner: "U1", name: "d" });
+  await built.app.shareSkill({ id: s.id, toScope: PRIV, permission: "write", actorId: "U1", ...live });
+  await built.app.shareSkill({ id: s.id, toScope: PUB, permission: "read", actorId: "U1", ...live });
+  const owner = scopeId("personal", "U1");
+  built.acl.revoke = () => Promise.reject(new Error("downgrade must not revoke grant by grant"));
+  const result = await built.app.downgradeSkillWriteGrants({ dryRun: false, actorId: ADMIN });
+  assert.deepEqual(result.downgraded, [{ skillId: s.id, name: "d", ownerScopeId: owner, granteeScopeId: PRIV }]);
+  assert.deepEqual(
+    (await grantsOf(built, s.id)).map((g) => [g.granteeScopeId, g.permission]).sort(),
+    [
+      [PRIV, "read"],
+      [PUB, "read"],
+    ].sort(),
+  );
+  const event = (await built.auditLog.events()).find((e) => e.action === "skill_write_grants_downgrade");
+  assert.deepEqual(JSON.parse(event!.detail!).grants, [
+    { ownerScopeId: owner, ref: `skill:${s.id}`, granteeScopeId: PRIV },
+  ]);
+});

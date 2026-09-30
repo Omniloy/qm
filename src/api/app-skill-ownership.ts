@@ -23,6 +23,7 @@ import {
   skillGrantsOf,
   skillWriteGrants,
   type ManifestDiff,
+  type SkillWriteGrant,
 } from "../skills/skill-namespace.ts";
 import { SHARED_SKILL_TRIGGER_REFUSAL, SKILL_CONTEXTS_ADMIN_ONLY, UNATTESTED_TURN_CAUSE } from "./artifact-share.ts";
 import { skillVisibilityContext, withSkillMutationLock } from "./app-skills.ts";
@@ -79,17 +80,14 @@ const BUILT_IN = "built-in";
 
 interface MergeDetail {
   added: ScopeId[];
-  fromStatus?: Skill["status"];
-  fromGrants: Array<{ granteeScopeId: ScopeId; permission: Permission }>;
+  fromStatus: Skill["status"];
+  fromGrants: Array<{ granteeScopeId: ScopeId }>;
 }
 
-function mergeDetail(raw: string | undefined): MergeDetail {
+function mergeDetail(raw: string | undefined): MergeDetail | null {
   const d = (raw ? JSON.parse(raw) : {}) as Partial<MergeDetail>;
-  return {
-    added: d.added ?? [],
-    fromGrants: d.fromGrants ?? [],
-    ...(d.fromStatus ? { fromStatus: d.fromStatus } : {}),
-  };
+  if (!d.fromStatus) return null;
+  return { added: d.added ?? [], fromGrants: d.fromGrants ?? [], fromStatus: d.fromStatus };
 }
 
 export const OUTCOME_STATUS: Record<SkillOwnershipCode, number> = {
@@ -607,17 +605,16 @@ export function createSkillOwnershipMethods(
         const reached = new Set((await deps.acl.grantsFor(into.scopeId, ref)).map((g) => g.granteeScopeId));
         const needOrg =
           (from.scopeId === org() && from.status === "published") || fromGrants.some((g) => g.granteeScopeId === org());
-        const targets = new Map<ScopeId, Permission>();
-        for (const g of fromGrants) targets.set(g.granteeScopeId, g.granteeScopeId === org() ? "read" : g.permission);
-        if (needOrg) targets.set(org(), "read");
+        const targets = new Set(fromGrants.map((g) => g.granteeScopeId));
+        if (needOrg) targets.add(org());
         const added: ScopeId[] = [];
-        for (const [grantee, permission] of targets) {
+        for (const grantee of targets) {
           if (grantee === into.scopeId || reached.has(grantee)) continue;
           await deps.acl.grant({
             ownerScopeId: into.scopeId,
             ref,
             granteeScopeId: grantee,
-            permission,
+            permission: "read",
             grantedBy: actorId,
           });
           added.push(grantee);
@@ -655,17 +652,25 @@ export function createSkillOwnershipMethods(
         if (!s) return fail("not_found", "no such skill");
         const into = s.supersededBy;
         if (!into) return fail("bad_request", "this skill was never merged into another one");
-        const clash = homeClash(await deps.skills.list(), s, s.scopeId);
-        if (clash) return nameConflict(clash, actorId);
         const merge = (await deps.auditLog.tail({ limit: 50_000, action: "skill_merge", resourceContains: s.id }))
           .filter((e) => e.resource === s.id)
           .reduce<AuditEvent | undefined>((a, b) => (!a || b.at > a.at ? b : a), undefined);
         const detail = mergeDetail(merge?.detail);
-        await deps.skills.unretire(s.id);
-        if (detail.fromStatus !== "archived") await deps.skills.publish(s.id);
+        if (!detail) return fail("bad_request", "there is no record of this merge, so it can't be undone");
+        if (detail.fromStatus !== "archived") {
+          const clash = homeClash(await deps.skills.list(), s, s.scopeId);
+          if (clash) return nameConflict(clash, actorId);
+        }
+        await deps.skills.unretire(s.id, detail.fromStatus);
         const ref = refOf(s.id);
         for (const g of detail.fromGrants) {
-          await deps.acl.grant({ ownerScopeId: s.scopeId, ref, ...g, grantedBy: actorId });
+          await deps.acl.grant({
+            ownerScopeId: s.scopeId,
+            ref,
+            granteeScopeId: g.granteeScopeId,
+            permission: "read",
+            grantedBy: actorId,
+          });
         }
         const canonical = await deps.skills.get(into);
         let revoked = 0;
@@ -684,21 +689,32 @@ export function createSkillOwnershipMethods(
 
     downgradeSkillWriteGrants({ dryRun, actorId }) {
       return locked(async () => {
-        const writes = skillWriteGrants(await deps.skills.list(), await deps.acl.list());
+        const skills = await deps.skills.list();
+        const writes = skillWriteGrants(skills, await deps.acl.list());
         if (dryRun) return { downgraded: writes };
-        for (const w of writes) {
-          const ref = refOf(w.skillId);
-          await deps.acl.revoke(w.ownerScopeId, ref, w.granteeScopeId, actorId);
-          await deps.acl.grant({
-            ownerScopeId: w.ownerScopeId,
-            ref,
-            granteeScopeId: w.granteeScopeId,
-            permission: "read",
-            grantedBy: actorId,
+        const resources = new Map(writes.map((w) => [`${w.ownerScopeId}\n${w.skillId}`, w]));
+        const downgraded: SkillWriteGrant[] = [];
+        for (const { ownerScopeId, skillId } of resources.values()) {
+          const ref = refOf(skillId);
+          const current = await deps.acl.grantsFor(ownerScopeId, ref);
+          const replacement = current.map((g) =>
+            g.permission === "write" ? { ...g, permission: "read" as const, grantedBy: actorId } : g,
+          );
+          if (await deps.acl.replaceGrantsIfCurrent(ownerScopeId, ref, current, replacement, actorId)) {
+            downgraded.push(...skillWriteGrants(skills, current));
+          }
+        }
+        if (downgraded.length) {
+          audit("skill_write_grants_downgrade", actorId, "skills", org(), {
+            count: downgraded.length,
+            grants: downgraded.map((w) => ({
+              ownerScopeId: w.ownerScopeId,
+              ref: refOf(w.skillId),
+              granteeScopeId: w.granteeScopeId,
+            })),
           });
         }
-        if (writes.length) audit("skill_write_grants_downgrade", actorId, "skills", org(), { count: writes.length });
-        return { downgraded: writes };
+        return { downgraded };
       });
     },
 

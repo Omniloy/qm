@@ -125,7 +125,7 @@ export interface SkillStore {
   move(id: string, toScopeId: ScopeId): Promise<Skill>;
   setOwner(id: string, ownerId: string, toScopeId?: ScopeId): Promise<Skill>;
   retire(id: string, supersededBy: string): Promise<Skill>;
-  unretire(id: string): Promise<Skill>;
+  unretire(id: string, status: SkillStatus): Promise<Skill>;
 }
 
 function scopeKind(scopeId: ScopeId): string {
@@ -373,10 +373,11 @@ export function createSkillStore(opts: SkillStoreOptions = {}): SkillStore {
       return s;
     },
 
-    async unretire(id) {
+    async unretire(id, status) {
       const s = await skills.get(id);
       if (!s) throw new Error(`unknown skill: ${id}`);
       delete s.supersededBy;
+      s.status = status;
       s.updatedAt = Date.now();
       await skills.put(s.id, s);
       return s;
