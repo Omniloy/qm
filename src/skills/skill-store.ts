@@ -61,6 +61,8 @@ export interface Skill {
   updatedAt?: number;
   lastUsedAt?: number;
   pack?: { packId: string; commit: string; upstreamName: string };
+  ownerId?: string;
+  supersededBy?: string;
 }
 
 export interface GrantedSkillRef {
@@ -76,8 +78,10 @@ export interface SkillResolution {
 
 export type SkillEditAccess = "editable" | "not_yours" | "org_admins" | "needs_live_person" | "admins_only" | "managed";
 
+export const PLATFORM_SKILL_AUTHOR = /^(system|pack):/;
+
 export function isSourceManagedSkill(skill: Pick<Skill, "createdBy" | "pack">): boolean {
-  return skill.pack !== undefined || /^(system|pack):/.test(skill.createdBy);
+  return skill.pack !== undefined || PLATFORM_SKILL_AUTHOR.test(skill.createdBy);
 }
 
 export function managesSkill(access: SkillEditAccess): boolean {
@@ -88,6 +92,8 @@ export interface SkillStanding {
   id: string;
   home?: string;
   edit?: SkillEditAccess;
+  owner?: string;
+  orgWide?: boolean;
 }
 
 export interface SkillStoreOptions {
@@ -96,7 +102,13 @@ export interface SkillStoreOptions {
 }
 
 export interface SkillStore {
-  create(input: { scopeId: ScopeId; manifest: SkillManifest; createdBy: string; pack?: Skill["pack"] }): Promise<Skill>;
+  create(input: {
+    scopeId: ScopeId;
+    manifest: SkillManifest;
+    createdBy: string;
+    pack?: Skill["pack"];
+    ownerId?: string;
+  }): Promise<Skill>;
   update(id: string, manifest: SkillManifest): Promise<Skill>;
   get(id: string): Promise<Skill | null>;
   list(): Promise<Skill[]>;
@@ -111,6 +123,9 @@ export interface SkillStore {
   visibleFor(orderedScopes: ScopeId[], granted?: readonly GrantedSkillRef[]): Promise<SkillResolution[]>;
   promote(id: string, targetScopeId: ScopeId): Promise<Skill>;
   move(id: string, toScopeId: ScopeId): Promise<Skill>;
+  setOwner(id: string, ownerId: string, toScopeId?: ScopeId): Promise<Skill>;
+  retire(id: string, supersededBy: string): Promise<Skill>;
+  unretire(id: string, status: SkillStatus): Promise<Skill>;
 }
 
 function scopeKind(scopeId: ScopeId): string {
@@ -213,6 +228,7 @@ export function createSkillStore(opts: SkillStoreOptions = {}): SkillStore {
         createdAt: at,
         updatedAt: at,
         ...(input.pack ? { pack: input.pack } : {}),
+        ...(input.ownerId ? { ownerId: input.ownerId } : {}),
       };
       await skills.put(skill.id, skill);
       return skill;
@@ -330,6 +346,38 @@ export function createSkillStore(opts: SkillStoreOptions = {}): SkillStore {
         throw new Error("ceding a skill to the org goes through promote (admin-gated), not move");
       }
       s.scopeId = toScopeId;
+      s.updatedAt = Date.now();
+      await skills.put(s.id, s);
+      return s;
+    },
+
+    async setOwner(id, ownerId, toScopeId) {
+      const s = await skills.get(id);
+      if (!s) throw new Error(`unknown skill: ${id}`);
+      s.ownerId = ownerId;
+      if (toScopeId && toScopeId !== s.scopeId) {
+        s.scopeId = toScopeId;
+        s.updatedAt = Date.now();
+      }
+      await skills.put(s.id, s);
+      return s;
+    },
+
+    async retire(id, supersededBy) {
+      const s = await skills.get(id);
+      if (!s) throw new Error(`unknown skill: ${id}`);
+      s.status = "archived";
+      s.supersededBy = supersededBy;
+      s.updatedAt = Date.now();
+      await skills.put(s.id, s);
+      return s;
+    },
+
+    async unretire(id, status) {
+      const s = await skills.get(id);
+      if (!s) throw new Error(`unknown skill: ${id}`);
+      delete s.supersededBy;
+      s.status = status;
       s.updatedAt = Date.now();
       await skills.put(s.id, s);
       return s;

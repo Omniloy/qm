@@ -246,7 +246,9 @@ test("skills: a member who manages a teammate's shared skill cannot promote it o
   const org = scopeId("org", ORG);
   assert.deepEqual(await app.skillEditAccess([planted], PRIV_MEMBER, true), ["editable"]);
   await assert.rejects(app.promoteSkill(planted.id, org, PRIV_MEMBER, true, true), /isn't yours to share/);
-  assert.equal((await app.promoteSkill(planted.id, org, OWNER, true, true)).scopeId, org);
+  const shared = await app.promoteSkill(planted.id, org, OWNER, true, true);
+  assert.equal(shared.id, planted.id, "org-wide is a grant on the same skill");
+  assert.deepEqual(await app.listSkillGrants(planted.id), [{ granteeScopeId: org, permission: "read" }]);
 });
 
 test("skills: restoring an archived shared skill refuses a trigger and a member barred from sharing into contexts", async () => {
@@ -330,24 +332,21 @@ test("skills: a member CANNOT resurrect an admin-archived shared skill via an in
   assert.equal((await deps.skills.resolve("killed", [privScope])).skill, null, "still does not resolve/materialize");
 });
 
-test("skills: a PUBLIC-channel member may NOT edit or delete a shared skill", async () => {
+test("skills: a PUBLIC-channel member edits and archives a skill homed there, on a live turn only", async () => {
   const deps = makeDeps();
   const planted = await deps.skills.create({
     scopeId: pubScope,
     manifest: { name: "pub", description: "d", requiredCapabilities: [], body: "# b" },
     createdBy: OWNER,
   });
+  await deps.skills.review(planted.id, "system:test", []);
+  await deps.skills.publish(planted.id);
   const app = createApp(deps as unknown as AppDeps);
-  assert.equal(
-    await app.updateOwnedSkill(planted.id, PUB_MEMBER, { description: "no" }),
-    null,
-    "public-channel member cannot edit",
-  );
-  assert.equal(
-    await app.deleteOwnedSkill({ principalId: PUB_MEMBER, id: planted.id }),
-    "forbidden",
-    "public-channel member cannot delete",
-  );
+  assert.equal(await app.updateOwnedSkill(planted.id, PUB_MEMBER, { description: "no" }), "trigger_blocked");
+  const edited = await app.updateOwnedSkill(planted.id, PUB_MEMBER, { description: "d2" }, { liveActor: true });
+  assert.equal(typeof edited === "object" && edited?.manifest.description, "d2");
+  assert.equal(await app.deleteOwnedSkill({ principalId: OUTSIDER, id: planted.id, liveActor: true }), "forbidden");
+  assert.equal(await app.deleteOwnedSkill({ principalId: PUB_MEMBER, id: planted.id, liveActor: true }), "deleted");
 });
 
 test("skills: a non-member may not edit or delete a shared scope's skill", async () => {

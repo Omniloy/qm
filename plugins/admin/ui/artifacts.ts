@@ -2,7 +2,7 @@ import { html, nothing, render } from "lit";
 import { repeat } from "lit/directives/repeat.js";
 import { ifDefined } from "lit/directives/if-defined.js";
 import { card, bareCard, table, renderer } from "./shared.ts";
-import { mountPacks, mountSharing, skillDetail, removeSkill } from "./artifacts-skills.ts";
+import { mountDuplicates, mountPacks, mountSharing, skillDetail, removeSkill } from "./artifacts-skills.ts";
 export type Data = Record<string, any>;
 export type Context = Record<string, any>;
 type Row = {
@@ -488,15 +488,25 @@ export function skills(root: HTMLElement, d: Data, c: Context) {
     (c.index && items.length ? " · " + c.plural(new Set(items.map((s: Data) => s.ownerScopeId)).size, "scope") : "");
   const packs = document.createElement("div"),
     sharing = document.createElement("div"),
+    duplicates = document.createElement("div"),
     detail = document.createElement("div");
-  const identity = (s: Data) => (s.name || s.id) + "\0" + (s.createdBy || "");
+  const sameName = (d.skills || []).filter((r: Data) => !r.supersededBy);
   const open = (s: Data) =>
     skillDetail(
       detail,
       s,
-      all.filter((r: Data) => identity(r) === identity(s)),
+      sameName.filter((r: Data) => (r.name || r.id) === (s.name || s.id)),
       c,
     );
+  const org = "org:" + c.orgId;
+  const sharedCell = (s: Data) => {
+    const labels = [
+      ...(s.orgWide && c.scopeKind(s.ownerScopeId) !== "org" ? ["Everyone"] : []),
+      ...(s.sharedWith || []).filter((g: Data) => g.scopeId !== org).map((g: Data) => c.shortName(g.scopeId)),
+    ];
+    return { text: labels.join(", ") || "None", cls: labels.length ? "subline" : "subline muted" };
+  };
+  const ownerCell = (s: Data) => (s.ownerId ? { text: s.ownerId, cls: "mono" } : c.createdByCell(s));
   const pending = new Set<string>();
   let query = "";
   const draw = (q = query) => {
@@ -511,9 +521,10 @@ export function skills(root: HTMLElement, d: Data, c: Context) {
           <div class="subline">${s.description || c.shortId(s.id)}</div>
         </div>`,
       },
-      ...(c.index ? [{ text: c.shortName(s.ownerScopeId), cls: "mono" }] : []),
+      { text: c.shortName(s.ownerScopeId), cls: "mono" },
+      ownerCell(s),
+      sharedCell(s),
       { text: c.titleCase(s.status || "unknown"), cls: "subline" },
-      c.createdByCell(s),
       {
         text: (() => {
           if (s.lastUsedAt) return c.fmtHistoryTime(s.lastUsedAt);
@@ -544,13 +555,13 @@ export function skills(root: HTMLElement, d: Data, c: Context) {
       },
     ]);
     render(
-      html`${c.index ? html`${sharing}${packs}` : nothing}${card(
+      html`${c.index ? html`${sharing}${duplicates}${packs}` : nothing}${card(
         "Installed skills",
         "",
         html`${c.index ? html`<div class=${q ? "hidden" : ""}>${scopeList(all, c, "skill", lastUse, "No skills yet.")}</div>` : nothing}
           <div class=${c.index && !q ? "hidden" : ""}>
             ${table(
-              ["Skill", ...(c.index ? ["Scope"] : []), "Status", "Created by", "Last used", ""],
+              ["Skill", "Home", "Owner", "Shared with", "Status", "Last used", ""],
               rows,
               (() => {
                 if (q) return "No skills match.";
@@ -573,6 +584,7 @@ export function skills(root: HTMLElement, d: Data, c: Context) {
   draw();
   if (c.index) {
     void mountSharing(sharing, c);
+    void mountDuplicates(duplicates, c);
     void mountPacks(packs, c);
   }
 }

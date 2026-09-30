@@ -112,6 +112,21 @@ test("DELETE /api/skills/:id forwards as DELETE (per-skill un-index)", async () 
   assert.equal(c.url, "/v1/admin/skills/k1?scope=org:acme");
 });
 
+test("POST /api/skills/:id/merge and the duplicates report forward to the admin skill ownership routes", async () => {
+  const merge = await fetch(`${base}/api/skills/k1/merge?scope=org:acme`, {
+    method: "POST",
+    headers: { cookie: ADMIN, "content-type": "application/json" },
+    body: JSON.stringify({ into: "k2" }),
+  });
+  assert.equal(merge.status, 200);
+  const posted = calls.at(-1)!;
+  assert.equal(posted.method, "POST");
+  assert.equal(posted.url, "/v1/admin/skills/k1/merge?scope=org:acme");
+  const report = await fetch(`${base}/api/skills/duplicates?scope=org:acme`, { headers: { cookie: ADMIN } });
+  assert.equal(report.status, 200);
+  assert.equal(calls.at(-1)!.url, "/v1/admin/skills/duplicates?scope=org:acme");
+});
+
 test("skill-pack writes require a signed-in cookie", async () => {
   const before = calls.length;
   const r = await fetch(`${base}/api/skill-packs`, {

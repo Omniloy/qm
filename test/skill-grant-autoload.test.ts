@@ -163,3 +163,27 @@ test("a grant whose claimed owner scope does not match the skill's home is ignor
     [victim.id],
   );
 });
+
+test("an org grant on a skill homed elsewhere loads for a DM and for a channel of internal people", async () => {
+  const acl = createAclStore();
+  await acl.grant({
+    ownerScopeId: JOSH,
+    ref: encodeRef(skillRef("slides")),
+    granteeScopeId: ORG,
+    permission: "read",
+    grantedBy: "josh",
+  });
+  const inEricsDm = await acl.sharedOfKindForAudience("skill", [P("eric")], ERIC, ORG, principalEntitledToScope);
+  assert.deepEqual(
+    inEricsDm.map((g) => parseRef(g.ref).id),
+    ["slides"],
+  );
+  const inChannel = await acl.sharedOfKindForAudience(
+    "skill",
+    [P("eric"), P("dana")],
+    scopeId("channel", "C"),
+    ORG,
+    principalEntitledToScope,
+  );
+  assert.equal(inChannel.length, 1);
+});

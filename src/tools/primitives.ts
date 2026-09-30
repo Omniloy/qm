@@ -55,6 +55,7 @@ import { deploymentEntrypoint, type DeployService, type DeployFile } from "../de
 import { publicUrlOf } from "../deploy/deploy-store.ts";
 import { carriesGitMetadata } from "../deploy/deploy-fs.ts";
 import type { AclStore } from "../acl/acl-store.ts";
+import { encodeRef, fileRef } from "../acl/resource-ref.ts";
 import type { AuditLog } from "../audit/audit-log.ts";
 import { mimeFromName } from "../core/attachments.ts";
 import { swallow, errMessage } from "../util/errors.ts";
@@ -1043,7 +1044,13 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
               }
               const permission: Permission = s.permission ?? "read";
               await deps.acl.grant(
-                { ownerScopeId: writableScopeId, ref: path, granteeScopeId, permission, grantedBy: deps.createdBy },
+                {
+                  ownerScopeId: writableScopeId,
+                  ref: encodeRef(fileRef(path)),
+                  granteeScopeId,
+                  permission,
+                  grantedBy: deps.createdBy,
+                },
                 author,
               );
               deps.auditLog?.record({

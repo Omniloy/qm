@@ -89,6 +89,12 @@ export async function revokeAllGrants(
 
 export interface AclStoreOptions {
   manages?: ScopeManagement;
+  managesResource?: (
+    principalId: string,
+    ownerScopeId: ScopeId,
+    ref: string,
+    change: "grant" | "revoke",
+  ) => Promise<boolean | undefined>;
 }
 
 export interface GrantPersistence {
@@ -155,7 +161,15 @@ export function createAclStore(
   persist: GrantPersistence = createMemoryGrantPersistence(),
   opts: AclStoreOptions = {},
 ): AclStore {
-  async function canManage(scopeId: ScopeId, principalId: string, authoredBy?: string): Promise<boolean> {
+  async function canManage(
+    scopeId: ScopeId,
+    principalId: string,
+    ref: string,
+    change: "grant" | "revoke",
+    authoredBy?: string,
+  ): Promise<boolean> {
+    const decided = await opts.managesResource?.(principalId, scopeId, ref, change);
+    if (decided !== undefined) return decided;
     const owner = ownerOf(scopeId);
     if (owner !== null) return samePerson(principalId, owner);
     if (isMembershipManaged(scopeId) && opts.manages) return opts.manages(principalId, scopeId, authoredBy);
@@ -163,13 +177,13 @@ export function createAclStore(
   }
   return {
     async grant(g, authoredBy) {
-      if (!(await canManage(g.ownerScopeId, g.grantedBy, authoredBy))) {
+      if (!(await canManage(g.ownerScopeId, g.grantedBy, g.ref, "grant", authoredBy))) {
         throw new Error("only a manager of this scope may grant access (no transitive re-share)");
       }
       await persist.put(g);
     },
     async revoke(ownerScopeId, ref, granteeScopeId, revokedBy, authoredBy) {
-      if (!(await canManage(ownerScopeId, revokedBy, authoredBy))) {
+      if (!(await canManage(ownerScopeId, revokedBy, ref, "revoke", authoredBy))) {
         throw new Error("only a manager of this scope may revoke access");
       }
       const matches = (await persist.all()).filter(
@@ -178,7 +192,7 @@ export function createAclStore(
       for (const g of matches) await persist.remove(g);
     },
     async replaceGrantsIfCurrent(ownerScopeId, ref, expected, replacement, changedBy, authoredBy) {
-      if (!(await canManage(ownerScopeId, changedBy, authoredBy))) {
+      if (!(await canManage(ownerScopeId, changedBy, ref, "grant", authoredBy))) {
         throw new Error("only a manager of this scope may replace access grants");
       }
       if (

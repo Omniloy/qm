@@ -14,6 +14,13 @@ import { createSkillStore } from "../src/skills/skill-store.ts";
 import { splitToScope, UNATTESTED_TURN_CAUSE } from "../src/api/artifact-share.ts";
 import { createAclStore } from "../src/acl/acl-store.ts";
 import type { ManagesArtifactHome } from "../src/resolution/scope-membership.ts";
+import {
+  ADMIN,
+  grantsOf as skillGrants,
+  ORG_SCOPE as OWNER_ORG,
+  ownerFixture,
+  publishSkill,
+} from "./support/skill-owner-fixture.ts";
 
 const ORG = "default-org";
 
@@ -61,6 +68,28 @@ function fakeApp(state: FakeState): App {
     },
     canManageArtifactHome(homeScopeId: ScopeId, createdBy: string, principalId: string) {
       return fakeManages(state)(homeScopeId, createdBy, principalId);
+    },
+    async getSkill(id: string) {
+      const home = state.artifacts[`skill:${id}`];
+      return home ? { id, scopeId: home.ownerScopeId } : null;
+    },
+    async canManageSkill(id: string, principalId: string) {
+      const home = state.artifacts[`skill:${id}`];
+      return !!home && fakeManages(state)(home.ownerScopeId, home.createdBy, principalId);
+    },
+    async unshareSkill({ id, scope, actorId }: { id: string; scope: ScopeId; actorId: string }) {
+      const home = state.artifacts[`skill:${id}`];
+      if (!home) return { ok: false, code: "not_found", message: "no such skill" };
+      if (!(await fakeManages(state)(home.ownerScopeId, home.createdBy, actorId)))
+        return { ok: false, code: "forbidden", message: "that skill isn't yours to share or unshare" };
+      await state.acl.revoke(
+        home.ownerScopeId,
+        home.grantRef,
+        scope,
+        actorId,
+        authorOfGrant(state, home.ownerScopeId, home.grantRef),
+      );
+      return { ok: true, skill: {} };
     },
     async grant(g: Grant) {
       await state.acl.grant(g, authorOfGrant(state, g.ownerScopeId, g.ref));
@@ -161,8 +190,8 @@ function ownerState(): FakeState {
   });
 }
 
-test("share adds a grant for EVERY artifact type — one verb, one store, uniform across file/skill/deploy/cron", async () => {
-  for (const type of ["file", "skill", "deploy", "cron"] as const) {
+test("share adds a grant for every generic artifact type — one verb, one store, uniform across file/deploy/cron", async () => {
+  for (const type of ["file", "deploy", "cron"] as const) {
     const state = ownerState();
     const svc = createControlService(fakeApp(state));
     const id = { file: "F1", skill: "S1", deploy: "D1", cron: "K1" }[type];
@@ -202,28 +231,6 @@ test("share into a scope you belong to is frictionless; permission:write is hono
   assert.ok(r.ok);
   assert.equal(r.permission, "write");
   assert.equal((await grantsOf(state))[0]!.permission, "write");
-});
-
-test("move changes the home scope (skills); the creator is untouched; no grant is written", async () => {
-  const state = ownerState();
-  const svc = createControlService(fakeApp(state));
-  const r = await svc.shareArtifact(
-    { type: "skill", id: "S1", scope: scopeId("channel", "C1"), move: true },
-    cap("U1"),
-  );
-  assert.ok(r.ok);
-  assert.equal(r.verb, "move");
-  assert.deepEqual(state.moves, [{ type: "skill", id: "S1", toScope: scopeId("channel", "C1"), movedBy: "U1" }]);
-  assert.equal((await grantsOf(state)).length, 0, "a move adds no grant");
-});
-
-test("move into a teammate's personal scope is refused — a move re-homes only into a context you belong to", async () => {
-  const state = ownerState();
-  const svc = createControlService(fakeApp(state));
-  const r = await svc.shareArtifact({ type: "skill", id: "S1", recipient: "carol", move: true }, cap("U1"));
-  assert.equal(r.ok, false);
-  if (!r.ok) assert.equal(r.code, "forbidden");
-  assert.equal(state.moves.length, 0);
 });
 
 test("moving a DEPLOY to a teammate's personal scope is an ownership transfer — allowed for a live actor", async () => {
@@ -271,55 +278,6 @@ test("move is refused for a type whose home isn't movable (file) — directed to
   }
 });
 
-test("ceding a skill to the ORG is admin-gated — a non-admin share to org is forbidden, never a silent grant", async () => {
-  const state = ownerState();
-  const svc = createControlService(fakeApp(state));
-  const r = await svc.shareArtifact({ type: "skill", id: "S1", scope: "org" }, cap("U1"));
-  assert.equal(r.ok, false);
-  if (!r.ok) assert.equal(r.code, "forbidden");
-  assert.equal((await grantsOf(state)).length, 0, "no grant is written for a refused org-skill cede");
-});
-
-test("an org admin CAN cede a skill to the org — share to org promotes", async () => {
-  const state = ownerState();
-  state.admins.add("U1");
-  const svc = createControlService(fakeApp(state));
-  const r = await svc.shareArtifact({ type: "skill", id: "S1", scope: "org" }, cap("U1"));
-  assert.equal(r.ok, true);
-  if (r.ok) {
-    assert.equal(r.verb, "promote");
-    assert.equal(r.id, "org-S1", "the promoted org record's id is returned, not the source's");
-  }
-  assert.deepEqual(state.promotes, [{ id: "S1", targetScopeId: scopeId("org", ORG), actorId: "U1" }]);
-});
-
-test("an org admin can promote a TEAMMATE'S skill org-wide — admin-ness, not ownership, is the authority", async () => {
-  const state = ownerState();
-  state.admins.add("U9");
-  const svc = createControlService(fakeApp(state));
-  const r = await svc.shareArtifact({ type: "skill", id: "S1", scope: "org" }, cap("U9"));
-  assert.equal(r.ok, true);
-  assert.deepEqual(state.promotes, [{ id: "S1", targetScopeId: scopeId("org", ORG), actorId: "U9" }]);
-});
-
-test("an autonomous trigger (no liveActor) cannot cede a skill to the org, even as an admin", async () => {
-  const state = ownerState();
-  state.admins.add("U1");
-  const svc = createControlService(fakeApp(state));
-  const r = await svc.shareArtifact({ type: "skill", id: "S1", scope: "org" }, cap("U1", undefined, false));
-  assert.equal(r.ok, false);
-  if (!r.ok) assert.equal(r.code, "forbidden");
-  assert.equal(state.promotes.length, 0);
-});
-
-test("ceding a skill to the org via MOVE is also refused for a non-admin (admin gate, not a frictionless move)", async () => {
-  const state = ownerState();
-  const svc = createControlService(fakeApp(state));
-  const r = await svc.shareArtifact({ type: "skill", id: "S1", scope: "org", move: true }, cap("U1"));
-  assert.equal(r.ok, false);
-  if (!r.ok) assert.equal(r.code, "forbidden");
-});
-
 test("a non-member can't share into a scope they're not in (forbidden)", async () => {
   const state = ownerState();
   const svc = createControlService(fakeApp(state));
@@ -341,12 +299,12 @@ test("only the owner may share a personal-homed artifact — a non-creator is fo
 test("a member of a shared home (private channel/group) can share it even if they didn't create it (PR2 manage parity)", async () => {
   const state = ownerState();
   state.privateChannels.add("C1");
-  state.artifacts["skill:CS"] = {
-    type: "skill",
+  state.artifacts["cron:CS"] = {
+    type: "cron",
     id: "CS",
     ownerScopeId: scopeId("channel", "C1"),
     createdBy: "U1",
-    grantRef: "skill:CS",
+    grantRef: "cron:CS",
   };
   state.scopesByPrincipal["U2"] = [
     scopeId("personal", "U2"),
@@ -356,7 +314,7 @@ test("a member of a shared home (private channel/group) can share it even if the
   ];
   const svc = createControlService(fakeApp(state));
   const r = await svc.shareArtifact(
-    { type: "skill", id: "CS", scope: scopeId("group", "G9") },
+    { type: "cron", id: "CS", scope: scopeId("group", "G9") },
     cap("U2", scopeId("channel", "C1")),
   );
   assert.ok(r.ok, JSON.stringify(r));
@@ -365,19 +323,19 @@ test("a member of a shared home (private channel/group) can share it even if the
   assert.equal(grants[0]!.grantedBy, "U2", "the sharing member is recorded, not the creator");
 });
 
-test("an author who LEFT a private channel can no longer share its artifact (parity with canManageSkill — membership, not authorship)", async () => {
+test("an author who LEFT a private channel can no longer share its artifact (membership, not authorship)", async () => {
   const state = ownerState();
   state.privateChannels.add("C1");
-  state.artifacts["skill:CS"] = {
-    type: "skill",
+  state.artifacts["cron:CS"] = {
+    type: "cron",
     id: "CS",
     ownerScopeId: scopeId("channel", "C1"),
     createdBy: "U1",
-    grantRef: "skill:CS",
+    grantRef: "cron:CS",
   };
   state.scopesByPrincipal["U1"] = [scopeId("personal", "U1"), scopeId("org", ORG)];
   const svc = createControlService(fakeApp(state));
-  const r = await svc.shareArtifact({ type: "skill", id: "CS", scope: "org" }, cap("U1"));
+  const r = await svc.shareArtifact({ type: "cron", id: "CS", scope: "org" }, cap("U1"));
   assert.equal(r.ok, false, "the ex-member author must not pass the manage check on a private channel");
   if (!r.ok) assert.equal(r.code, "forbidden");
   state.artifacts["deploy:PD"] = {
@@ -432,16 +390,16 @@ test("a non-owner non-member CANNOT share a PUBLIC-channel artifact — the auth
 
 test("a non-member of a shared home cannot share it (membership-gated, not just creator-gated)", async () => {
   const state = ownerState();
-  state.artifacts["skill:CS"] = {
-    type: "skill",
+  state.artifacts["cron:CS"] = {
+    type: "cron",
     id: "CS",
     ownerScopeId: scopeId("channel", "C1"),
     createdBy: "U1",
-    grantRef: "skill:CS",
+    grantRef: "cron:CS",
   };
   state.scopesByPrincipal["U3"] = [scopeId("personal", "U3"), scopeId("org", ORG)];
   const svc = createControlService(fakeApp(state));
-  const r = await svc.shareArtifact({ type: "skill", id: "CS", scope: "org" }, cap("U3"));
+  const r = await svc.shareArtifact({ type: "cron", id: "CS", scope: "org" }, cap("U3"));
   assert.equal(r.ok, false);
   if (!r.ok) assert.equal(r.code, "forbidden");
 });
@@ -491,12 +449,12 @@ test("sharing into a team the actor is NOT on is forbidden", async () => {
 test("a move records the acting principal in the audit, not the artifact's creator", async () => {
   const state = ownerState();
   state.privateChannels.add("C1");
-  state.artifacts["skill:CM"] = {
-    type: "skill",
+  state.artifacts["deploy:CM"] = {
+    type: "deploy",
     id: "CM",
     ownerScopeId: scopeId("channel", "C1"),
     createdBy: "U1",
-    grantRef: "skill:CM",
+    grantRef: "deployment:CM",
   };
   state.scopesByPrincipal["U2"] = [
     scopeId("personal", "U2"),
@@ -506,67 +464,11 @@ test("a move records the acting principal in the audit, not the artifact's creat
   ];
   const svc = createControlService(fakeApp(state));
   const r = await svc.shareArtifact(
-    { type: "skill", id: "CM", scope: scopeId("group", "G9"), move: true },
+    { type: "deploy", id: "CM", scope: scopeId("group", "G9"), move: true },
     cap("U2", scopeId("channel", "C1")),
   );
   assert.ok(r.ok, JSON.stringify(r));
   assert.equal(state.moves[0]!.movedBy, "U2", "the mover is recorded, not the creator U1");
-});
-
-test("an automated trigger (no liveActor) cannot MOVE a skill out of its shared home — the move-verb sibling of the shared-skill mutation guard", async () => {
-  const state = ownerState();
-  state.privateChannels.add("C1");
-  state.artifacts["skill:CM"] = {
-    type: "skill",
-    id: "CM",
-    ownerScopeId: scopeId("channel", "C1"),
-    createdBy: "U1",
-    grantRef: "skill:CM",
-  };
-  state.scopesByPrincipal["U2"] = [
-    scopeId("personal", "U2"),
-    scopeId("org", ORG),
-    scopeId("channel", "C1"),
-    scopeId("group", "G9"),
-  ];
-  const svc = createControlService(fakeApp(state));
-
-  const trigger = cap("U2", scopeId("personal", "U2"), false);
-  const blocked = await svc.shareArtifact(
-    { type: "skill", id: "CM", scope: scopeId("group", "G9"), move: true },
-    trigger,
-  );
-  assert.equal(blocked.ok, false, "a trigger cannot move a shared skill out of its home");
-  if (!blocked.ok) assert.equal(blocked.code, "forbidden");
-  assert.equal(state.moves.length, 0, "nothing was re-homed");
-
-  const live = await svc.shareArtifact(
-    { type: "skill", id: "CM", scope: scopeId("group", "G9"), move: true },
-    cap("U2", scopeId("channel", "C1")),
-  );
-  assert.ok(live.ok, JSON.stringify(live));
-  assert.equal(state.moves.length, 1, "a live member's move goes through");
-});
-
-test("a trigger (no liveActor) cannot MOVE a personal skill INTO a shared scope either — a move that authors a group-wide skill is guarded like create", async () => {
-  const state = ownerState();
-  state.scopesByPrincipal["U1"] = [scopeId("personal", "U1"), scopeId("org", ORG), scopeId("channel", "C1")];
-  const svc = createControlService(fakeApp(state));
-  const trigger = cap("U1", scopeId("personal", "U1"), false);
-  const blocked = await svc.shareArtifact(
-    { type: "skill", id: "S1", scope: scopeId("channel", "C1"), move: true },
-    trigger,
-  );
-  assert.equal(blocked.ok, false, "a trigger cannot move a skill into a shared home");
-  if (!blocked.ok) assert.equal(blocked.code, "forbidden");
-  assert.equal(state.moves.length, 0);
-
-  const live = await svc.shareArtifact(
-    { type: "skill", id: "S1", scope: scopeId("channel", "C1"), move: true },
-    cap("U1"),
-  );
-  assert.ok(live.ok, JSON.stringify(live));
-  assert.equal(state.moves[0]!.toScope, scopeId("channel", "C1"));
 });
 
 function callShareRoute(state: FakeState, capability: CapabilityClaims | null, body: unknown) {
@@ -598,17 +500,12 @@ test("POST /v1/share: a single toScope (scope id) → 200 grant; a name → dire
   assert.equal(byName.body.target.label, "Carol");
 });
 
-test("POST /v1/share: no capability → 403; bad type/missing fields → 400; non-admin org cede → 403", async () => {
+test("POST /v1/share: no capability → 403; bad type/missing fields → 400", async () => {
   const state = ownerState();
   assert.equal((await callShareRoute(state, null, { type: "file", id: "F1", toScope: "org" })).status, 403);
   assert.equal((await callShareRoute(state, cap("U1"), { type: "bogus", id: "F1", toScope: "org" })).status, 400);
   assert.equal((await callShareRoute(state, cap("U1"), { type: "file", toScope: "org" })).status, 400);
   assert.equal((await callShareRoute(state, cap("U1"), { type: "file", id: "F1" })).status, 400);
-  assert.equal(
-    (await callShareRoute(state, cap("U1"), { type: "skill", id: "S1", toScope: "org" })).status,
-    403,
-    "non-admin org skill cede → forbidden (403)",
-  );
 });
 
 test("splitToScope: tool and route classify identically — a real scope id vs a name (incl. a colon name)", () => {
@@ -740,4 +637,100 @@ test("demote carries promote's gates in the other direction — admin, and a liv
   const ok = await callSkillRoute(demoteSkill, state, cap("U-admin"), "S1");
   assert.equal(ok.status, 200);
   assert.deepEqual(state.demotes, [{ id: "S1", actorId: "U-admin" }]);
+});
+
+test("an admin cannot promote an unshared personal skill through /v1/share", async () => {
+  const built = await ownerFixture();
+  const s = await publishSkill(built, { owner: "U1", name: "slides" });
+  const r = await createControlService(built.app).shareArtifact({ type: "skill", id: s.id, scope: "org" }, cap(ADMIN));
+  assert.equal(r.ok, false);
+  assert.deepEqual(await skillGrants(built, s.id), []);
+});
+
+test("sharing a skill to the org grants the same skill org-wide instead of copying it", async () => {
+  const built = await ownerFixture();
+  const svc = createControlService(built.app);
+  const s = await publishSkill(built, {
+    owner: "U1",
+    name: "slides",
+    home: scopeId("channel", "CPRIV"),
+    ownerId: "U1",
+  });
+  const r = await svc.shareArtifact({ type: "skill", id: s.id, scope: "org" }, cap(ADMIN));
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.equal(r.verb, "promote");
+  assert.equal(r.id, s.id, "the same id — no org copy");
+  assert.equal(r.permission, "read");
+  assert.deepEqual(
+    (await skillGrants(built, s.id)).map((g) => g.granteeScopeId),
+    [OWNER_ORG],
+  );
+  assert.equal((await built.skills.list()).filter((x) => x.manifest.name === "slides").length, 1);
+});
+
+test("a skill share into an audience that already sees another skill of that name is a 409 name conflict", async () => {
+  const built = await ownerFixture();
+  const s = await publishSkill(built, { owner: "U1", name: "slides" });
+  const theirs = await publishSkill(built, { owner: "U2", name: "slides", home: scopeId("channel", "CPRIV") });
+  const out: { status?: number; body?: any } = {};
+  const res = {
+    writeHead(status: number) {
+      out.status = status;
+    },
+    end(d?: string) {
+      out.body = d ? JSON.parse(d) : undefined;
+    },
+  };
+  const ctx = {
+    res,
+    deps: { control: createControlService(built.app) },
+    body: { type: "skill", id: s.id, toScope: scopeId("channel", "CPRIV") },
+    capability: cap("U1"),
+  } as unknown as ApiCtx;
+  await shareRoute(ctx);
+  assert.equal(out.status, 409);
+  assert.equal(out.body.error, "name_conflict");
+  assert.equal(out.body.conflict.id, theirs.id);
+  assert.equal(out.body.conflict.owner, "Person U2");
+});
+
+test("an org admin shares a channel skill without being in the channel; a trigger cannot share at all", async () => {
+  const built = await ownerFixture();
+  const svc = createControlService(built.app);
+  const s = await publishSkill(built, {
+    owner: "U1",
+    name: "triage",
+    home: scopeId("channel", "CPRIV"),
+    ownerId: "U1",
+  });
+  const byAdmin = await svc.shareArtifact({ type: "skill", id: s.id, scope: scopeId("channel", "CPUB") }, cap(ADMIN));
+  assert.ok(byAdmin.ok, JSON.stringify(byAdmin));
+  const byTrigger = await svc.shareArtifact(
+    { type: "skill", id: s.id, scope: scopeId("personal", "U4") },
+    cap("U1", undefined, false),
+  );
+  assert.equal(!byTrigger.ok && byTrigger.code, "forbidden");
+  const byOutsider = await svc.shareArtifact({ type: "skill", id: s.id, scope: scopeId("personal", "U4") }, cap("U4"));
+  assert.equal(!byOutsider.ok && byOutsider.code, "forbidden");
+});
+
+test("moving a skill through /v1/share re-keys its grants and is refused into a teammate's personal space", async () => {
+  const built = await ownerFixture();
+  const svc = createControlService(built.app);
+  const s = await publishSkill(built, { owner: "U1", name: "slides" });
+  await svc.shareArtifact({ type: "skill", id: s.id, scope: scopeId("channel", "CPUB") }, cap("U1"));
+  const moved = await svc.shareArtifact(
+    { type: "skill", id: s.id, scope: scopeId("channel", "CPRIV"), move: true },
+    cap("U1"),
+  );
+  assert.ok(moved.ok, JSON.stringify(moved));
+  assert.deepEqual(
+    (await skillGrants(built, s.id)).map((g) => [g.ownerScopeId, g.granteeScopeId]),
+    [[scopeId("channel", "CPRIV"), scopeId("channel", "CPUB")]],
+  );
+  const toTeammate = await svc.shareArtifact(
+    { type: "skill", id: s.id, scope: scopeId("personal", "U2"), move: true },
+    cap("U1"),
+  );
+  assert.equal(!toTeammate.ok && toTeammate.code, "forbidden");
 });

@@ -668,31 +668,30 @@ test("DELETE /v1/skills/:id lets any member of the home channel archive it", asy
   }
 });
 
-test("an author who LEAVES a private channel loses inline CRUD on its skill (membership, not authorship, decides)", async () => {
+test("an owner who LEAVES a private channel keeps managing its skill; a non-owner who leaves loses it", async () => {
   const srv = await startSecure();
   try {
     const id = await seedChannelSkill(srv);
     await srv.directory.replaceChannels(
       [{ channelId: "C9", name: "avery-jordan", isPrivate: true }],
-      [{ channelId: "C9", principalId: "jordan" }],
+      [{ channelId: "C9", principalId: "dana" }],
     );
-    const edit = await fetch(`${srv.base}/v1/skills/${id}`, {
-      method: "PUT",
-      headers: { "content-type": "application/json", "x-agent-capability": await srv.cap("avery") },
-      body: JSON.stringify({ description: "ex-member edit" }),
-    });
-    assert.equal(edit.status, 404, "an ex-member author cannot edit a private-channel skill");
+    const edit = (actor: string) =>
+      srv.cap(actor).then((cap) =>
+        fetch(`${srv.base}/v1/skills/${id}`, {
+          method: "PUT",
+          headers: { "content-type": "application/json", "x-agent-capability": cap },
+          body: JSON.stringify({ description: `edit by ${actor}` }),
+        }),
+      );
+    assert.equal((await edit("jordan")).status, 404, "an ex-member who doesn't own it cannot edit it");
     const del = await fetch(`${srv.base}/v1/skills/${id}`, {
       method: "DELETE",
-      headers: { "x-agent-capability": await srv.cap("avery") },
+      headers: { "x-agent-capability": await srv.cap("jordan") },
     });
-    assert.equal(del.status, 403, "an ex-member author cannot delete it either");
-    const k = await fetch(`${srv.base}/v1/skills/${id}`, {
-      method: "PUT",
-      headers: { "content-type": "application/json", "x-agent-capability": await srv.cap("jordan") },
-      body: JSON.stringify({ description: "still managed by the remaining member" }),
-    });
-    assert.equal(k.status, 200);
+    assert.equal(del.status, 403, "nor archive it");
+    assert.equal((await edit("avery")).status, 200, "the owner keeps the skill after leaving its home");
+    assert.equal((await edit("dana")).status, 200, "a current member of the home can edit it");
   } finally {
     await srv.close();
   }
@@ -915,7 +914,7 @@ test("GET /v1/skills shows a group-DM skill to a member known only via directory
   }
 });
 
-test("an ORG- or TEAM-homed skill is never inline-managed, even by its author (promotion/admin only)", async () => {
+test("an ORG- or TEAM-homed skill is managed by its owner only — nobody else can edit or archive it", async () => {
   const srv = await startSecure();
   try {
     for (const home of [scopeId("org", "default-org"), scopeId("team", "T1")]) {
@@ -929,32 +928,37 @@ test("an ORG- or TEAM-homed skill is never inline-managed, even by its author (p
 
       const edit = await fetch(`${srv.base}/v1/skills/${sk.id}`, {
         method: "PUT",
-        headers: { "content-type": "application/json", "x-agent-capability": await srv.cap("author") },
+        headers: { "content-type": "application/json", "x-agent-capability": await srv.cap("stranger") },
         body: JSON.stringify({ description: "inline edit" }),
       });
-      assert.equal(edit.status, 404, `${home}: author cannot inline-edit a wide-scope skill`);
-      const after = await srv.skills.get(sk.id);
-      assert.equal(after!.manifest.description, "v1", `${home}: untouched`);
-      assert.equal(after!.status, "published", `${home}: still published, not silently demoted`);
-
+      assert.equal(edit.status, 404, `${home}: a non-owner cannot edit a wide-scope skill`);
       const del = await fetch(`${srv.base}/v1/skills/${sk.id}`, {
         method: "DELETE",
-        headers: { "x-agent-capability": await srv.cap("author") },
+        headers: { "x-agent-capability": await srv.cap("stranger") },
       });
-      assert.equal(del.status, 403, `${home}: author cannot inline-delete a wide-scope skill`);
-      assert.ok(await srv.skills.get(sk.id), `${home}: the org/team copy survives`);
+      assert.equal(del.status, 403, `${home}: a non-owner cannot archive it`);
+
+      const own = await fetch(`${srv.base}/v1/skills/${sk.id}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json", "x-agent-capability": await srv.cap("author") },
+        body: JSON.stringify({ description: "owner edit" }),
+      });
+      assert.equal(own.status, 200, `${home}: its owner edits it in place`);
+      const after = await srv.skills.get(sk.id);
+      assert.equal(after!.manifest.description, "owner edit");
+      assert.equal(after!.status, "published", `${home}: still published`);
     }
   } finally {
     await srv.close();
   }
 });
 
-test("a PUBLIC channel (self-joinable) stays owner-only — a non-author member cannot edit it", async () => {
+test("any member of a PUBLIC channel home can edit its skill; a non-member cannot", async () => {
   const srv = await startSecure();
   try {
     await srv.directory.replaceChannels(
       [{ channelId: "CPUB", name: "general", isPrivate: false }],
-      ["owner", "rando"].map((principalId) => ({ channelId: "CPUB", principalId })),
+      ["owner", "member"].map((principalId) => ({ channelId: "CPUB", principalId })),
     );
     const created = await fetch(`${srv.base}/v1/skills`, {
       method: "POST",
@@ -967,25 +971,22 @@ test("a PUBLIC channel (self-joinable) stays owner-only — a non-author member 
     assert.equal(created.status, 201);
     const id = ((await created.json()) as { skill: { id: string } }).skill.id;
 
-    const edit = await fetch(`${srv.base}/v1/skills/${id}`, {
+    const outsider = await fetch(`${srv.base}/v1/skills/${id}`, {
       method: "PUT",
-      headers: {
-        "content-type": "application/json",
-        "x-agent-capability": await srv.cap("rando", scopeId("channel", "CPUB")),
-      },
+      headers: { "content-type": "application/json", "x-agent-capability": await srv.cap("outsider") },
       body: JSON.stringify({ description: "hijacked" }),
     });
-    assert.equal(edit.status, 404);
-    const own = await fetch(`${srv.base}/v1/skills/${id}`, {
+    assert.equal(outsider.status, 404);
+    const member = await fetch(`${srv.base}/v1/skills/${id}`, {
       method: "PUT",
       headers: {
         "content-type": "application/json",
-        "x-agent-capability": await srv.cap("owner", scopeId("channel", "CPUB")),
+        "x-agent-capability": await srv.cap("member", scopeId("channel", "CPUB")),
       },
-      body: JSON.stringify({ description: "owner edit" }),
+      body: JSON.stringify({ description: "member edit" }),
     });
-    assert.equal(own.status, 200);
-    assert.equal((await srv.skills.get(id))!.manifest.description, "owner edit");
+    assert.equal(member.status, 200);
+    assert.equal((await srv.skills.get(id))!.manifest.description, "member edit");
   } finally {
     await srv.close();
   }
@@ -1137,16 +1138,18 @@ test("the skills tool standing names a skill's id and home and says who may edit
     const live = (scope: ScopeId) => ({ actorId: "jordan", scopeId: scope, liveActor: true });
 
     const channel = await srv.app.skillStanding((await srv.skills.get(id))!, live(scopeId("channel", "C9")));
-    assert.deepEqual(channel, { id, home: "#avery-jordan", edit: "editable" });
+    assert.deepEqual(channel, { id, home: "#avery-jordan", edit: "editable", owner: "avery", orgWide: false });
     assert.equal(
       (await srv.app.skillStanding(pub, live(scopeId("channel", "CPUB")))).edit,
-      "not_yours",
-      "a public channel stays author-only",
+      "editable",
+      "any member of a public channel home can edit its skills",
     );
     assert.deepEqual(await srv.app.skillStanding(org, live(scopeId("channel", "C9"))), {
       id: org.id,
       home: "org",
       edit: "org_admins",
+      owner: "owner",
+      orgWide: true,
     });
     assert.equal(
       (

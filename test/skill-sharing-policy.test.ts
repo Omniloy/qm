@@ -40,6 +40,17 @@ async function publish(built: BuiltApp, owner: string, name: string, home = scop
   return built.skills.publish(skill.id);
 }
 
+async function sharedByOwner(built: BuiltApp, id: string, owner: string) {
+  const shared = await built.app.shareSkill({
+    id,
+    toScope: scopeId("personal", "U3"),
+    permission: "read",
+    actorId: owner,
+    liveActor: true,
+  });
+  assert.ok(shared.ok, JSON.stringify(shared));
+}
+
 const live = (actorId: string): CapabilityClaims =>
   ({ actorId, scopeId: scopeId("personal", actorId), exp: 9_999_999_999, liveActor: true }) as CapabilityClaims;
 
@@ -109,8 +120,19 @@ test("by default only an org admin can promote a skill org-wide", async () => {
   const built = buildApp(testConfig());
   const mine = await publish(built, "U1", "digest");
   await assert.rejects(built.app.promoteSkill(mine.id, ORG_SCOPE, "U1", true), /only an org admin/);
+  await assert.rejects(
+    built.app.promoteSkill(mine.id, ORG_SCOPE, "admin-alice", true),
+    /isn't yours/,
+    "an admin leaves an unshared personal skill alone",
+  );
+  await sharedByOwner(built, mine.id, "U1");
   const promoted = await built.app.promoteSkill(mine.id, ORG_SCOPE, "admin-alice", true);
-  assert.equal(promoted.scopeId, ORG_SCOPE);
+  assert.equal(promoted.id, mine.id, "org-wide is a grant on the same skill, not a copy");
+  assert.equal(promoted.scopeId, scopeId("personal", "U1"));
+  assert.deepEqual(
+    (await built.app.listSkillGrants(mine.id)).map((g) => g.granteeScopeId).sort(),
+    [ORG_SCOPE, scopeId("personal", "U3")].sort(),
+  );
 });
 
 test("when everyone may share with the org, a member promotes and takes back their own skill but no one else's", async () => {
@@ -124,22 +146,30 @@ test("when everyone may share with the org, a member promotes and takes back the
   await assert.rejects(app.promoteSkill(mine.id, ORG_SCOPE, "U1", true), /in the web app/);
   await assert.rejects(app.promoteSkill(theirs.id, ORG_SCOPE, "U1", true, true), /isn't yours/);
   const promoted = await app.promoteSkill(mine.id, ORG_SCOPE, "U1", true, true);
-  assert.equal(promoted.scopeId, ORG_SCOPE);
+  assert.equal(promoted.id, mine.id);
 
   const rival = await publish(built, "U2", "digest");
-  await assert.rejects(app.promoteSkill(rival.id, ORG_SCOPE, "U2", true, true), /only an org admin can replace/);
-  const adminCopy = await app.promoteSkill(theirs.id, ORG_SCOPE, "admin-alice", true);
+  await assert.rejects(app.promoteSkill(rival.id, ORG_SCOPE, "U2", true, true), /already visible/);
+  await sharedByOwner(built, theirs.id, "U2");
+  const adminShared = await app.promoteSkill(theirs.id, ORG_SCOPE, "admin-alice", true);
 
-  await assert.rejects(app.demoteSkill(adminCopy.id, "U1", true), /only an org admin/);
+  await assert.rejects(app.demoteSkill(adminShared.id, "U1", true), /owner or an org admin/);
   await app.demoteSkill(promoted.id, "U1", true);
-  assert.equal((await built.skills.get(promoted.id))?.status, "archived");
+  assert.equal((await built.skills.get(promoted.id))?.status, "published", "it stays in its home");
+  assert.deepEqual(await app.listSkillGrants(promoted.id), []);
 });
 
-test("with the default org setting a member cannot take back even a skill they wrote", async () => {
+test("with the default org setting the owner can still stop sharing their skill with everyone", async () => {
   const built = buildApp(testConfig());
   const mine = await publish(built, "U1", "digest");
-  const promoted = await built.app.promoteSkill(mine.id, ORG_SCOPE, "admin-alice", true);
-  await assert.rejects(built.app.demoteSkill(promoted.id, "U1", true), /only an org admin/);
+  await sharedByOwner(built, mine.id, "U1");
+  await built.app.promoteSkill(mine.id, ORG_SCOPE, "admin-alice", true);
+  await assert.rejects(built.app.demoteSkill(mine.id, "U2", true), /owner or an org admin/);
+  await built.app.demoteSkill(mine.id, "U1", true);
+  assert.deepEqual(
+    (await built.app.listSkillGrants(mine.id)).map((g) => g.granteeScopeId),
+    [scopeId("personal", "U3")],
+  );
 });
 
 test("limiting context sharing to admins refuses a member's skill share and move", async () => {
@@ -195,7 +225,9 @@ test("a member cannot claim an org skill name a built-in skill reserves, even wh
   });
   await built.skills.archive(seed.id);
   const mine = await publish(built, "U1", "digest");
-  await assert.rejects(built.app.promoteSkill(mine.id, ORG_SCOPE, "U1", true, true), /only an org admin can replace/);
+  await assert.rejects(built.app.promoteSkill(mine.id, ORG_SCOPE, "U1", true, true), /already visible/);
+  const channelCopy = await publish(built, "U1", "digest", scopeId("channel", "C1"));
+  await assert.rejects(built.app.promoteSkill(channelCopy.id, ORG_SCOPE, "admin-alice", true), /already visible/);
 });
 
 test("the org name-taken check and take-back treat one person's differently cased ids as the same author", async () => {
@@ -204,9 +236,9 @@ test("the org name-taken check and take-back treat one person's differently case
   const mine = await publish(built, "Ana@Acme.com", "digest");
   const promoted = await built.app.promoteSkill(mine.id, ORG_SCOPE, "Ana@Acme.com", true, true);
   const again = await publish(built, "ana@acme.com", "digest");
-  await built.app.promoteSkill(again.id, ORG_SCOPE, "ana@acme.com", true, true);
+  await assert.rejects(built.app.promoteSkill(again.id, ORG_SCOPE, "ana@acme.com", true, true), /already visible/);
   await built.app.demoteSkill(promoted.id, "ana@acme.com", true);
-  assert.equal((await built.skills.get(promoted.id))?.status, "archived");
+  assert.deepEqual(await built.app.listSkillGrants(promoted.id), []);
 });
 
 test("limiting context sharing to admins also refuses a member creating a skill in a shared home", async () => {
@@ -233,22 +265,39 @@ test("limiting context sharing to admins also refuses a member creating a skill 
   assert.equal(typeof admin === "object" && admin?.scopeId, channel);
 });
 
-test("the skills listing says which skills the viewer wrote, including their org-wide ones", async () => {
+test("the skills listing says who owns each skill and whether it is org-wide, without an org copy", async () => {
   const srv = start();
   const { built } = srv;
   const mine = await publish(built, "U1", "digest");
-  await built.app.promoteSkill(mine.id, ORG_SCOPE, "admin-alice", true);
+  await built.config.setSkillSharingPolicy({ contexts: "everyone", org: "everyone" });
+  await built.app.promoteSkill(mine.id, ORG_SCOPE, "U1", true, true);
   try {
     const rows = (
       (await (await fetch(`${srv.base}/v1/skills?principalId=U1&includeShadowed=1`)).json()) as {
-        skills: Array<{ name: string; scope: string; editable: boolean; createdByViewer: boolean }>;
+        skills: Array<{
+          name: string;
+          scope: string;
+          editable: boolean;
+          createdByViewer: boolean;
+          ownedByViewer: boolean;
+          orgWide: boolean;
+          ownerName: string;
+          sharedWith?: Array<{ scopeId: string }>;
+        }>;
       }
     ).skills;
-    const org = rows.find((r) => r.name === "digest" && r.scope === "org")!;
-    assert.equal(org.editable, false);
-    assert.equal(org.createdByViewer, true);
-    assert.equal(rows.find((r) => r.name === "digest" && r.scope === "personal")?.createdByViewer, true);
-    assert.ok(rows.filter((r) => r.name !== "digest").every((r) => r.createdByViewer === false));
+    const digest = rows.filter((r) => r.name === "digest");
+    assert.equal(digest.length, 1, "promotion no longer copies the skill");
+    assert.equal(digest[0]!.scope, "personal");
+    assert.equal(digest[0]!.editable, true);
+    assert.equal(digest[0]!.ownedByViewer, true);
+    assert.equal(digest[0]!.orgWide, true);
+    assert.deepEqual(
+      digest[0]!.sharedWith?.map((g) => g.scopeId),
+      [ORG_SCOPE],
+    );
+    assert.ok(rows.filter((r) => r.name !== "digest").every((r) => r.ownedByViewer === false));
+    assert.ok(rows.filter((r) => r.name !== "digest").some((r) => r.ownerName === "built-in"));
     assert.ok(rows.length > 2);
   } finally {
     await srv.close();

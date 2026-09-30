@@ -18,9 +18,11 @@ import { conversationLabelFor } from "../core/orchestrator/turn-helpers.ts";
 import { samePerson } from "../directory/person.ts";
 
 import type { App, AppDeps, SkillViewer } from "./app-types.ts";
-import { parseRef } from "../acl/resource-ref.ts";
+import { encodeRef, parseRef, skillRef } from "../acl/resource-ref.ts";
+import { effectiveSkillOwner } from "../skills/skill-rights.ts";
+import { audienceNameClash, skillGrantsOf } from "../skills/skill-namespace.ts";
 import { principalEntitledToScope } from "../resolution/context-filter.ts";
-import type { Principal } from "../types.ts";
+import type { Grant, Principal } from "../types.ts";
 import type { AppHelpers } from "./app-helpers.ts";
 
 export async function skillVisibilityContext(
@@ -73,10 +75,28 @@ function skillStandingsFor(
 ): (skill: Skill) => Promise<Required<SkillStanding>> {
   const access = h.skillEditAccessFor(viewer.actorId, livePersonCapability(viewer));
   const labels = new Map<ScopeId, Promise<string>>();
+  const names = new Map<string, Promise<string>>();
+  const org = scopeId("org", orgIdOf());
+  let grants: Promise<readonly Grant[]> | undefined;
+  const nameOf = (id: string) => {
+    const known =
+      names.get(id) ??
+      deps.directory.get(id).then(
+        (m) => m?.displayName ?? id,
+        () => id,
+      );
+    names.set(id, known);
+    return known;
+  };
   return async (skill) => {
+    grants ??= deps.acl.list().catch(() => []);
+    const ownerId = effectiveSkillOwner(skill);
+    const owner = ownerId ? await nameOf(ownerId) : "built-in";
+    const orgWide = skill.scopeId === org || skillGrantsOf(skill, await grants).some((g) => g.granteeScopeId === org);
     const label = labels.get(skill.scopeId) ?? skillHomeLabel(deps, skill.scopeId, viewer);
     labels.set(skill.scopeId, label);
-    return { id: skill.id, home: await label, edit: await access(skill) };
+    const home = orgWide && skill.scopeId !== org ? `org-wide (home ${await label})` : await label;
+    return { id: skill.id, home, edit: await access(skill), owner, orgWide };
   };
 }
 
@@ -156,7 +176,7 @@ function skillPackSourceIdentity(pack: SkillPack): string {
   ]);
 }
 
-function withSkillMutationLock<T>(deps: AppDeps, fn: () => Promise<T>): Promise<T> {
+export function withSkillMutationLock<T>(deps: AppDeps, fn: () => Promise<T>): Promise<T> {
   return deps.advisoryLock?.withLock(SKILL_MATERIALIZATION_LOCK, fn) ?? fn();
 }
 
@@ -342,6 +362,8 @@ export function createSkillMethods(
             home: standing.home,
             editable: standing.edit === "editable",
             edit: standing.edit,
+            owner: standing.owner,
+            orgWide: standing.orgWide,
           };
         }),
       );
@@ -356,12 +378,20 @@ export function createSkillMethods(
       if (access === "admins_only") return "forbidden";
       const updated = await editSkill(id, patch);
       if (!updated || updated === "managed") return updated;
+      const role = await h.skillRoleFor(skill, principalId, { writeGrants: true });
+      const org = scopeId("org", orgIdOf());
+      const orgWide =
+        skill.scopeId === org ||
+        (await deps.acl.grantsFor(skill.scopeId, encodeRef(skillRef(id))).catch(() => [])).some(
+          (g) => g.granteeScopeId === org,
+        );
       deps.auditLog.record({
         at: Date.now(),
         principalId,
         action: "skill_update",
         resource: id,
         scopeLabel: skill.scopeId,
+        detail: JSON.stringify({ role, orgWide }),
       });
       return updated;
     },
@@ -369,9 +399,26 @@ export function createSkillMethods(
       const skill = await deps.skills.get(id);
       if (!skill || skill.status !== "archived") return null;
       const access = await skillEditAccessFor(principalId, opts?.liveActor === true)(skill);
-      if (!managesSkill(access)) return null;
+      if (!managesSkill(access) || !(await h.skillRoleFor(skill, principalId))) return null;
+      if (skill.supersededBy) return "superseded";
       if (access === "needs_live_person") return "trigger_blocked";
       if (access === "admins_only") return "forbidden";
+      if (!(await h.mayTakeSkillFromOrg(skill, principalId))) return "org_admins_only";
+      const all = await deps.skills.list();
+      const grants = await deps.acl.list();
+      const org = scopeId("org", orgIdOf());
+      const taken =
+        all.some(
+          (s) =>
+            s.id !== id &&
+            s.scopeId === skill.scopeId &&
+            s.manifest.name === skill.manifest.name &&
+            s.status === "published",
+        ) ||
+        skillGrantsOf(skill, grants).some((g) =>
+          audienceNameClash({ skill, granteeScopeId: g.granteeScopeId, all, grants, orgScopeId: org }),
+        );
+      if (taken) return "name_conflict";
       await deps.skills.review(id, principalId, skill.manifest.requiredCapabilities);
       const restored = await deps.skills.publish(id);
       deps.auditLog.record({
@@ -493,7 +540,12 @@ export function createSkillMethods(
         requiredCapabilities: input.requiredCapabilities ?? [],
         body,
       };
-      const skill = await deps.skills.create({ scopeId: homeScope, manifest, createdBy: input.principalId });
+      const skill = await deps.skills.create({
+        scopeId: homeScope,
+        manifest,
+        createdBy: input.principalId,
+        ownerId: input.principalId,
+      });
       await deps.skills.review(skill.id, "system:skill-authoring", manifest.requiredCapabilities);
       const published = await deps.skills.publish(skill.id);
       deps.auditLog.record({
@@ -509,9 +561,11 @@ export function createSkillMethods(
       const skill = await deps.skills.get(id);
       if (!skill) return "missing";
       const access = await skillEditAccessFor(principalId, liveActor === true)(skill);
-      if (!managesSkill(access)) return "forbidden";
+      if (!managesSkill(access) || !(await h.skillRoleFor(skill, principalId))) return "forbidden";
+      if (skill.supersededBy) return "superseded";
       if (access === "needs_live_person") return "trigger_blocked";
       if (access === "admins_only") return "admins_only";
+      if (!(await h.mayTakeSkillFromOrg(skill, principalId))) return "org_admins_only";
       await deps.skills.archive(id);
       deps.auditLog.record({
         at: Date.now(),

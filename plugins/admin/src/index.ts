@@ -302,7 +302,7 @@ const WRITES = new Map<string, string[]>([
   ["external-users", ["POST", "DELETE"]],
   ["memory", ["PUT"]],
   ["crons", ["PUT"]],
-  ["skills", ["PUT", "DELETE"]],
+  ["skills", ["PUT", "POST", "DELETE"]],
   ["skill-packs", ["POST", "PATCH", "DELETE"]],
   ["users", ["PUT", "POST"]],
   ["slack-installation", ["POST", "PUT", "DELETE"]],

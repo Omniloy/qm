@@ -62,7 +62,129 @@ export async function skillDetail(root: HTMLElement, rep: Data, group: Data[], c
     return k.createdBy?.startsWith("system:") ? "built-in" : "";
   })();
   const by = source || "by " + (k.createdBy || "None");
-  const editable = !source && c.scopeKind(k.ownerScopeId) === "org" && k.status !== "archived";
+  const unsharedPersonal = c.scopeKind(k.ownerScopeId) === "personal" && !(k.sharedWith || []).length;
+  const editable = !source && k.status !== "archived" && !unsharedPersonal;
+  const org = "org:" + c.orgId;
+  const adminPath = (id: string, action: string) =>
+    "/api/skills/" + encodeURIComponent(id) + "/" + action + "?scope=" + encodeURIComponent(org);
+  let ownership: { mode: "transfer" | "move"; owner: string; home: string; busy: boolean; message: string } | null =
+    null;
+  let mergeMessage = "";
+  const homeChoices = () => [
+    { scopeId: org, label: "org-wide" },
+    ...c.scopeRows().map((r: Data) => ({ scopeId: r.scopeId, label: r.label || c.dirLabel(r.scopeId) || r.scopeId })),
+  ];
+  const submitOwnership = async () => {
+    const o = ownership;
+    if (!o || o.busy) return;
+    const body =
+      o.mode === "transfer"
+        ? { ownerId: o.owner.trim(), ...(o.home ? { homeScope: o.home } : {}) }
+        : { toScope: o.home };
+    if (o.mode === "transfer" ? !o.owner.trim() : !o.home) {
+      o.message = o.mode === "transfer" ? "Enter the new owner." : "Pick a home.";
+      return draw();
+    }
+    o.busy = true;
+    o.message = "Saving…";
+    draw();
+    const result = await c
+      .api("POST", adminPath(k.id, o.mode === "transfer" ? "owner" : "move"), body)
+      .catch(() => ({ ok: false, data: null }));
+    if (ownership !== o || request !== detailRequestSeq) return;
+    if (!result.ok) {
+      o.busy = false;
+      o.message = result.data?.message || "Failed.";
+      return draw();
+    }
+    c.invalidate();
+    await c.reload();
+  };
+  const mergeInto = async (from: Data) => {
+    const run = (force: boolean) =>
+      c
+        .api("POST", adminPath(from.id, "merge"), { into: k.id, ...(force ? { force: true } : {}) })
+        .catch(() => ({ ok: false, data: null }));
+    let result = await run(false);
+    if (!result.ok && result.data?.error === "diverged") {
+      const diff = result.data.diff || {};
+      const summary =
+        (diff.description ? "description differs; " : "") +
+        "body " +
+        (diff.bodyDeltaChars >= 0 ? "+" : "") +
+        diff.bodyDeltaChars +
+        " chars" +
+        (diff.files?.length ? "; files: " + diff.files.join(", ") : "");
+      if (!confirm("These copies differ (" + summary + "). Merge anyway, with the owner's approval?")) return;
+      result = await run(true);
+    }
+    if (request !== detailRequestSeq) return;
+    if (!result.ok) {
+      mergeMessage = result.data?.message || "Merge failed.";
+      return draw();
+    }
+    c.invalidate();
+    await c.reload();
+  };
+  const ownerText = k.ownerId ? c.dirLabel("personal:" + k.ownerId) || k.ownerId : "Built-in";
+  const sharedChips = [
+    ...(k.orgWide && c.scopeKind(k.ownerScopeId) !== "org" ? [badge("Everyone", "ok")] : []),
+    ...(k.sharedWith || [])
+      .filter((g: Data) => g.scopeId !== org)
+      .map((g: Data) => badge((c.dirLabel(g.scopeId) || g.scopeId) + (g.permission === "write" ? " (edit)" : ""))),
+  ];
+  const ownershipForm = (o: NonNullable<typeof ownership>) =>
+    html`<div class="skill-ownership-form">
+      ${
+        o.mode === "transfer"
+          ? html`<label for="skill-owner-input">New owner (email or id)</label
+              ><input
+                id="skill-owner-input"
+                .value=${o.owner}
+                ?disabled=${o.busy}
+                @input=${(ev: Event) => {
+                  o.owner = (ev.target as HTMLInputElement).value;
+                }}
+              />`
+          : nothing
+      }
+      ${
+        o.mode === "move" || c.scopeKind(k.ownerScopeId) === "personal"
+          ? html`<label for="skill-home-select">${o.mode === "move" ? "New home" : "New home (optional)"}</label
+              ><select
+                id="skill-home-select"
+                ?disabled=${o.busy}
+                @change=${(ev: Event) => {
+                  o.home = (ev.target as HTMLSelectElement).value;
+                }}
+              >
+                <option value="" ?selected=${!o.home}>
+                  ${o.mode === "move" ? "Pick a home" : "The new owner's personal skills"}
+                </option>
+                ${homeChoices()
+                  .filter((h) => h.scopeId !== k.ownerScopeId && (o.mode === "move" || !h.scopeId.startsWith("org:")))
+                  .map((h) => html`<option value=${h.scopeId} ?selected=${o.home === h.scopeId}>${h.label}</option>`)}
+              </select>`
+          : nothing
+      }
+      <p class="metric-note">
+        ${o.mode === "transfer" ? "The new owner can edit, share, move or transfer it; they are notified." : "Grants move with it."}
+      </p>
+      <div class="foot">
+        <button type="button" class="primary" ?disabled=${o.busy} @click=${submitOwnership}>
+          ${o.mode === "transfer" ? "Transfer" : "Move"}</button
+        ><button
+          type="button"
+          ?disabled=${o.busy}
+          @click=${() => {
+            ownership = null;
+            draw();
+          }}
+        >
+          Cancel</button
+        ><span class="status" role="status">${o.message}</span>
+      </div>
+    </div>`;
   let edit: { description: string; body: string; saving: boolean; message: string } | null = null;
   const startEdit = () => {
     edit = { description: k.description || "", body: k.body || "", saving: false, message: "" };
@@ -112,7 +234,7 @@ export async function skillDetail(root: HTMLElement, rep: Data, group: Data[], c
           e.body = (ev.target as HTMLTextAreaElement).value;
         }}
       ></textarea>
-      <p class="metric-note">Saving updates this org-wide skill in place for everyone, right away.</p>
+      <p class="metric-note">Saving updates this skill in place for everyone who has it, right away.</p>
       <div class="foot">
         <button type="button" class="primary" ?disabled=${e.saving} @click=${save}>Save</button
         ><button
@@ -137,34 +259,56 @@ export async function skillDetail(root: HTMLElement, rep: Data, group: Data[], c
             ${c.statusBadge(k.status)}${badge("v" + k.version)}${badge(by)}${badge("skill " + c.shortId(k.id, 16))}
           </div>
           ${k.description ? html`<p class="metric-note">${k.description}</p>` : nothing}${card(
-            "Scopes (" + group.length + ")",
-            "Every scope this skill is installed in. Remove takes it out of that scope only.",
-            table(
-              ["Scope", "Status", "Version", ""],
-              [...group]
-                .sort((a, b) =>
-                  (() => {
-                    if (c.scopeKind(a.ownerScopeId) === "org") return -1;
-                    return c.scopeKind(b.ownerScopeId) === "org"
-                      ? 1
-                      : (a.ownerScopeId || "").localeCompare(b.ownerScopeId || "");
-                  })(),
-                )
+            "Ownership",
+            "Who owns this skill, where it lives, and who it is shared with.",
+            html`<div class="badges">
+                ${badge("Owner: " + ownerText)}${badge("Home: " + (c.dirLabel(k.ownerScopeId) || k.ownerScopeId))}${sharedChips}
+              </div>
+              ${ownership ? ownershipForm(ownership) : nothing}`,
+            editable && !k.supersededBy && !ownership
+              ? html`<button
+                    type="button"
+                    class="rowbtn skill-transfer"
+                    @click=${() => {
+                      ownership = { mode: "transfer", owner: "", home: "", busy: false, message: "" };
+                      draw();
+                    }}
+                  >
+                    Transfer…</button
+                  ><button
+                    type="button"
+                    class="rowbtn skill-move"
+                    @click=${() => {
+                      ownership = { mode: "move", owner: "", home: "", busy: false, message: "" };
+                      draw();
+                    }}
+                  >
+                    Move…
+                  </button>`
+              : nothing,
+          )}${card(
+            "Other skills with this name",
+            "Each is a separate skill. Merge one into this skill to retire it and move its shares here.",
+            html`${table(
+              ["Home", "Owner", "Status", "Version", ""],
+              group
+                .filter((g) => g.id !== k.id && !g.supersededBy)
                 .map((g) => [
                   c.scopeCell(g.ownerScopeId),
+                  { text: g.ownerId || "Built-in", cls: "mono" },
                   { node: c.statusBadge(g.status) },
                   { text: g.version != null ? "v" + g.version : "None", cls: "num" },
                   {
                     node:
-                      g.status === "archived"
-                        ? badge("archived")
-                        : html`<button type="button" class="rowbtn danger" @click=${() => removeSkill(g, c)}>
-                            Remove
+                      g.sourceManaged || k.status !== "published"
+                        ? nothing
+                        : html`<button type="button" class="rowbtn skill-merge" @click=${() => mergeInto(g)}>
+                            Merge into this
                           </button>`,
                   },
                 ]),
-              "None",
-            ),
+              "No other skill has this name.",
+            )}${mergeMessage ? html`<p class="status err" role="status">${mergeMessage}</p>` : nothing}`,
           )}${card(
             "Capabilities",
             "What the skill is allowed to reach. Granted at review time.",
@@ -211,6 +355,149 @@ ${k.body || "(empty)"}</pre>`,
     );
   draw();
   root.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+export async function mountDuplicates(root: HTMLElement, c: Context) {
+  const org = "org:" + c.orgId;
+  const paint = renderer(root);
+  let report: Data | null = null;
+  let message = "";
+  const busy = new Set<string>();
+  const load = async () => {
+    const response = await c.api("GET", "/api/skills/duplicates?scope=" + encodeURIComponent(org));
+    if (!root.isConnected) return;
+    report = response.ok && Array.isArray(response.data?.clusters) ? response.data : null;
+    draw();
+  };
+  const call = (action: Data) =>
+    c.api(
+      action.method,
+      action.path.replace(/^\/v1\/admin\//, "/api/") + "?scope=" + encodeURIComponent(org),
+      action.body,
+    );
+  const run = async (key: string, steps: Array<() => Promise<Data>>) => {
+    if (busy.has(key)) return;
+    busy.add(key);
+    message = "";
+    draw();
+    for (const step of steps) {
+      const result = await step().catch(() => ({ ok: false, data: null }));
+      if (!result.ok) {
+        message = result.data?.message || "A step failed; the report shows what is left.";
+        break;
+      }
+    }
+    busy.delete(key);
+    c.invalidate();
+    await load();
+  };
+  const ids = (rows: Data[]) =>
+    rows.map((r: Data) => c.shortId(r.id, 8) + " (" + (c.dirLabel(r.scopeId) || r.scopeId) + ")").join(", ");
+  const diffText = (d: Data) =>
+    (d.description ? "description differs · " : "") +
+    "body " +
+    (d.bodyDeltaChars >= 0 ? "+" : "") +
+    d.bodyDeltaChars +
+    " chars" +
+    (d.files?.length ? " · files " + d.files.join(", ") : "");
+  const cluster = (cl: Data) =>
+    html`<div class="skill-duplicate" data-status=${cl.status}>
+      <div class="badges">
+        ${badge("/" + cl.name)}${badge(cl.status.replace("_", " "), cl.status === "auto" ? "ok" : "warn")}
+      </div>
+      ${cl.canonical ? html`<div class="subline">Keep ${ids([cl.canonical])}</div>` : nothing}
+      ${cl.retire.length ? html`<div class="subline">Retire ${ids(cl.retire)}</div>` : nothing}
+      ${cl.purge.length ? html`<div class="subline">Purge ${ids(cl.purge)}</div>` : nothing}
+      ${cl.evidence.length ? html`<div class="subline">${cl.evidence.join(" · ")}</div>` : nothing}
+      ${cl.diff ? html`<div class="subline">Differs: ${diffText(cl.diff)}</div>` : nothing}
+      ${
+        cl.status === "ambiguous"
+          ? html`<div class="subline">Open the skill you want to keep and use "Merge into this" for each copy.</div>`
+          : html`<button
+              type="button"
+              class="rowbtn skill-duplicate-merge"
+              ?disabled=${busy.has(cl.name)}
+              @click=${() =>
+                run(
+                  cl.name,
+                  cl.actions.map((a: Data) => () => call(a)),
+                )}
+            >
+              ${cl.status === "auto" ? "Merge" : "Merge anyway (owner approved)"}
+            </button>`
+      }
+    </div>`;
+  const draw = () => {
+    if (!report) return paint(nothing);
+    const r = report;
+    paint(
+      card(
+        "Duplicate skills",
+        "Org copies left behind by the old copy-on-promote, matched to the skill they came from. Merging keeps one skill, moves its shares over, and redirects the retired id.",
+        html`${r.clusters.length ? r.clusters.map(cluster) : html`<p class="empty">No duplicates to merge.</p>`}
+          ${
+            r.nameClashes.length
+              ? html`<h3>Same name, no shared history</h3>
+                  ${r.nameClashes.map(
+                    (n: Data) =>
+                      html`<div class="subline">/${n.name}: ${ids(n.rows)}${n.note ? " · " + n.note : ""}</div>`,
+                  )}`
+              : nothing
+          }
+          ${
+            r.archivedLeftovers.length
+              ? html`<h3>Archived leftovers</h3>
+                  ${r.archivedLeftovers.map(
+                    (row: Data) =>
+                      html`<div class="subline">
+                        ${ids([row])}
+                        <button
+                          type="button"
+                          class="rowbtn danger skill-purge"
+                          ?disabled=${busy.has(row.id)}
+                          @click=${() =>
+                            confirm("Delete this archived skill for good?") &&
+                            run(row.id, [
+                              () => call({ method: "POST", path: "/v1/admin/skills/" + row.id + "/purge" }),
+                            ])}
+                        >
+                          Purge
+                        </button>
+                      </div>`,
+                  )}`
+              : nothing
+          }
+          <h3>Owners</h3>
+          <div class="subline">
+            ${c.plural(r.ownerBackfill.pending, "skill")} without a recorded
+            owner${
+              r.ownerBackfill.personalHomeMismatch.length
+                ? " · " +
+                  c.plural(r.ownerBackfill.personalHomeMismatch.length, "personal skill") +
+                  " created by someone else"
+                : ""
+            }
+            ${
+              r.ownerBackfill.pending
+                ? html`<button
+                    type="button"
+                    class="rowbtn skill-backfill"
+                    ?disabled=${busy.has("backfill")}
+                    @click=${() =>
+                      run("backfill", [
+                        () =>
+                          call({ method: "POST", path: "/v1/admin/skills/backfill-owners", body: { dryRun: false } }),
+                      ])}
+                  >
+                    Run backfill
+                  </button>`
+                : nothing
+            }
+          </div>
+          ${message ? html`<p class="status err" role="status">${message}</p>` : nothing}`,
+      ),
+    );
+  };
+  await load();
 }
 type Audience = "everyone" | "admins";
 type SharingPolicy = { contexts: Audience; org: Audience };

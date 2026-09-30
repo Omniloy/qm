@@ -11,6 +11,8 @@ import { sessionSharingRoutes } from "./session-sharing.ts";
 import type { Grant, ScopeId, Session } from "../../types.ts";
 import { parseScopeId, scopeId as makeScopeId } from "../../types.ts";
 import { managesSkill, type Skill, type SkillResolution } from "../../skills/skill-store.ts";
+import { OUTCOME_STATUS, type SkillSharing } from "../app-skill-ownership.ts";
+import { skillActor, skillOwnershipRoutes } from "./skill-ownership.ts";
 import { ByteSourceTooLargeError } from "../../files/durable-byte-store.ts";
 import {
   defaultModelForHarness,
@@ -958,40 +960,44 @@ async function listSkills(ctx: ApiCtx): Promise<void> {
     { skill: row.skill, shadowed: row.shadowed },
     ...(includeShadowed ? row.shadowed.map((skill) => ({ skill, shadowed: [] })) : []),
   ]);
-  const candidates = [
-    ...visible,
-    ...(await app.listSkills())
-      .filter((skill) => skill.status === "archived")
-      .map((skill) => ({ skill, shadowed: [] })),
-  ];
+  const archived = (await app.listSkills()).filter((skill) => skill.status === "archived" && !skill.supersededBy);
+  const everything = [...visible, ...archived.map((skill) => ({ skill, shadowed: [] }))];
+  const allSharing = await app.skillSharingFor(
+    everything.map((r) => r.skill),
+    principalId,
+  );
+  const candidates = everything.flatMap((r, i) => {
+    const role = allSharing[i]!.role;
+    return i < visible.length || (role !== null && role !== "admin") ? [{ ...r, sharing: allSharing[i]! }] : [];
+  });
   const access = await app.skillEditAccess(
     candidates.map((r) => r.skill),
     principalId,
     true,
   );
-  const skills = candidates.flatMap((r, i) =>
-    i >= visible.length && !managesSkill(access[i]!)
-      ? []
-      : [
-          {
-            id: r.skill.id,
-            name: r.skill.manifest.name,
-            description: r.skill.manifest.description,
-            scope: parseScopeId(r.skill.scopeId).kind ?? r.skill.scopeId,
-            scopeId: r.skill.scopeId,
-            shadowed: r.shadowed.length > 0,
-            status: r.skill.status,
-            version: r.skill.version,
-            source: r.skill.pack ? "pack" : "native",
-            pack: r.skill.pack,
-            assetCount: r.skill.manifest.files?.length ?? 0,
-            requiredCapabilities: r.skill.manifest.requiredCapabilities,
-            editable: access[i] === "editable",
-            createdByViewer: samePerson(r.skill.createdBy, principalId),
-          },
-        ],
-  );
+  const skills = candidates.map((r, i) => ({
+    id: r.skill.id,
+    name: r.skill.manifest.name,
+    description: r.skill.manifest.description,
+    scope: parseScopeId(r.skill.scopeId).kind ?? r.skill.scopeId,
+    scopeId: r.skill.scopeId,
+    shadowed: r.shadowed.length > 0,
+    status: r.skill.status,
+    version: r.skill.version,
+    source: r.skill.pack ? "pack" : "native",
+    pack: r.skill.pack,
+    assetCount: r.skill.manifest.files?.length ?? 0,
+    requiredCapabilities: r.skill.manifest.requiredCapabilities,
+    editable: access[i] === "editable",
+    createdByViewer: samePerson(r.skill.createdBy, principalId),
+    ...skillOwnershipFields(r.sharing, principalId),
+  }));
   return sendJson(res, 200, { skills });
+}
+
+function skillOwnershipFields(sharing: SkillSharing, principalId: string) {
+  const { role: _role, ...fields } = sharing;
+  return { ...fields, ownedByViewer: samePerson(sharing.ownerId, principalId) };
 }
 
 async function getSkillDetail(ctx: ApiCtx): Promise<void> {
@@ -1001,8 +1007,9 @@ async function getSkillDetail(ctx: ApiCtx): Promise<void> {
     return sendJson(res, 401, { error: "capability_required" });
   }
   if (!principalId) return sendJson(res, 400, { error: "bad_request", message: "principalId required" });
-  const skill = await app.getSkill(ctx.params.id!);
-  if (!skill) return sendJson(res, 404, { error: "not_found" });
+  const resolved = await app.resolveSkillId(ctx.params.id!);
+  if (!resolved) return sendJson(res, 404, { error: "not_found" });
+  const { skill, supersededFrom } = resolved;
   const [access] = await app.skillEditAccess(
     [skill],
     principalId,
@@ -1014,14 +1021,17 @@ async function getSkillDetail(ctx: ApiCtx): Promise<void> {
       (await app.listTurnSkills(capability)).some((row) => row.id === skill.id)
     : manages || (await app.listVisibleSkills(principalId)).some((row) => row.skill?.id === skill.id);
   if (!visible) return sendJson(res, 404, { error: "not_found" });
+  const [sharing] = await app.skillSharingFor([skill], principalId);
   return sendJson(res, 200, {
     skill: {
       id: skill.id,
+      ...(supersededFrom ? { supersededFrom } : {}),
       name: skill.manifest.name,
       description: skill.manifest.description,
       body: skill.manifest.body,
       scope: parseScopeId(skill.scopeId).kind ?? skill.scopeId,
       scopeId: skill.scopeId,
+      home: skill.scopeId,
       status: skill.status,
       version: skill.version,
       createdBy: skill.createdBy,
@@ -1032,9 +1042,16 @@ async function getSkillDetail(ctx: ApiCtx): Promise<void> {
       createdAt: skill.createdAt,
       updatedAt: skill.updatedAt,
       editable: access === "editable",
+      ...skillOwnershipFields(sharing!, principalId),
     },
   });
 }
+
+const SUPERSEDED = (supersededBy: string | undefined) => ({
+  error: "superseded",
+  message: "this skill was merged into another one — use that one instead",
+  ...(supersededBy ? { supersededBy } : {}),
+});
 
 async function restoreSkill(ctx: ApiCtx): Promise<void> {
   const b = (ctx.body ?? {}) as { principalId?: unknown };
@@ -1046,10 +1063,19 @@ async function restoreSkill(ctx: ApiCtx): Promise<void> {
   if (!principalId) return sendJson(ctx.res, 400, { error: "bad_request", message: "principalId required" });
   const liveActor = ctx.capability ? livePersonCapability(ctx.capability) : true;
   const restored = await ctx.app.restoreOwnedSkill(ctx.params.id!, principalId, { liveActor });
+  if (restored === "superseded")
+    return sendJson(ctx.res, 409, SUPERSEDED((await ctx.app.getSkill(ctx.params.id!))?.supersededBy));
+  if (restored === "name_conflict")
+    return sendJson(ctx.res, 409, {
+      error: "name_conflict",
+      message: "another skill with this name is live in its home — archive or rename that one first",
+    });
   if (restored === "trigger_blocked")
     return sendJson(ctx.res, 403, { error: "forbidden", message: SHARED_SKILL_TRIGGER_REFUSAL });
   if (restored === "forbidden")
     return sendJson(ctx.res, 403, { error: "forbidden", message: SKILL_CONTEXTS_ADMIN_ONLY });
+  if (restored === "org_admins_only")
+    return sendJson(ctx.res, 403, { error: "forbidden", message: "only an org admin can put a skill back in the org" });
   return restored ? sendJson(ctx.res, 200, { ok: true }) : sendJson(ctx.res, 404, { error: "not_found" });
 }
 
@@ -1077,7 +1103,9 @@ async function updateSkill(ctx: ApiCtx): Promise<void> {
   if (typeof b.description === "string") patch.description = b.description;
   if (typeof b.body === "string") patch.body = b.body;
   const liveActor = capability ? livePersonCapability(capability) : true;
-  const updated = await app.updateOwnedSkill(id, principalId, patch, { liveActor });
+  const resolved = await app.resolveSkillId(id);
+  const target = resolved?.skill.id ?? id;
+  const updated = await app.updateOwnedSkill(target, principalId, patch, { liveActor });
   if (updated === "trigger_blocked")
     return sendJson(res, 403, { error: "forbidden", message: SHARED_SKILL_TRIGGER_REFUSAL });
   if (updated === "forbidden") return sendJson(res, 403, { error: "forbidden", message: SKILL_CONTEXTS_ADMIN_ONLY });
@@ -1086,6 +1114,7 @@ async function updateSkill(ctx: ApiCtx): Promise<void> {
   return sendJson(res, 200, {
     skill: {
       id: updated.id,
+      ...(resolved?.supersededFrom ? { supersededFrom: resolved.supersededFrom } : {}),
       name: updated.manifest.name,
       description: updated.manifest.description,
       ...(capability ? {} : { body: updated.manifest.body }),
@@ -1112,20 +1141,15 @@ async function deleteSkill(ctx: ApiCtx): Promise<void> {
   const liveActor = capability ? livePersonCapability(capability) : true;
   const outcome = await app.deleteOwnedSkill({ principalId, id, liveActor });
   if (outcome === "missing") return sendJson(res, 404, { error: "not_found", message: "no such skill" });
+  if (outcome === "superseded") return sendJson(res, 409, SUPERSEDED((await app.getSkill(id))?.supersededBy));
   if (outcome === "trigger_blocked")
     return sendJson(res, 403, { error: "forbidden", message: SHARED_SKILL_TRIGGER_REFUSAL });
   if (outcome === "admins_only") return sendJson(res, 403, { error: "forbidden", message: SKILL_CONTEXTS_ADMIN_ONLY });
+  if (outcome === "org_admins_only")
+    return sendJson(res, 403, { error: "forbidden", message: "only an org admin can take a skill back from the org" });
   if (outcome === "forbidden")
     return sendJson(res, 403, { error: "forbidden", message: "that skill isn't yours to archive" });
   return sendJson(res, 200, { ok: true });
-}
-
-async function skillActor(ctx: ApiCtx): Promise<{ id: string; live: boolean } | null> {
-  const b = (ctx.body ?? {}) as { principalId?: unknown };
-  if (ctx.capability) return { id: ctx.capability.actorId, live: livePersonCapability(ctx.capability) };
-  const fromQuery = ctx.url?.searchParams.get("principalId");
-  const id = typeof b.principalId === "string" && b.principalId ? b.principalId : (fromQuery ?? "");
-  return id ? { id, live: true } : null;
 }
 
 export async function listSkillSharing(ctx: ApiCtx): Promise<void> {
@@ -1133,9 +1157,8 @@ export async function listSkillSharing(ctx: ApiCtx): Promise<void> {
   const id = ctx.params.id!;
   const actor = await skillActor(ctx);
   if (!actor) return sendJson(res, 400, { error: "bad_request", message: "principalId required" });
-  const home = await app.getArtifactHome("skill", id);
-  if (!home) return sendJson(res, 404, { error: "not_found", message: "no such skill" });
-  if (!(await app.canManageArtifactHome(home.ownerScopeId, home.createdBy, actor.id)))
+  if (!(await app.getSkill(id))) return sendJson(res, 404, { error: "not_found", message: "no such skill" });
+  if (!(await app.canManageSkill(id, actor.id)))
     return sendJson(res, 403, { error: "forbidden", message: "that skill isn't yours to share or unshare" });
   return sendJson(res, 200, { grants: await app.listSkillGrants(id) });
 }
@@ -1148,12 +1171,9 @@ export async function unshareSkill(ctx: ApiCtx): Promise<void> {
     return sendJson(res, 400, { error: "bad_request", message: "scope required" });
   const actor = await skillActor(ctx);
   if (!actor) return sendJson(res, 400, { error: "bad_request", message: "principalId required" });
-  const home = await app.getArtifactHome("skill", id);
-  if (!home) return sendJson(res, 404, { error: "not_found", message: "no such skill" });
-  if (!(await app.canManageArtifactHome(home.ownerScopeId, home.createdBy, actor.id)))
-    return sendJson(res, 403, { error: "forbidden", message: "that skill isn't yours to share or unshare" });
   try {
-    await app.revokeGrant(home.ownerScopeId, home.grantRef, b.scope, actor.id);
+    const result = await app.unshareSkill({ id, scope: b.scope, actorId: actor.id, liveActor: actor.live });
+    if (!result.ok) return sendJson(res, OUTCOME_STATUS[result.code], { error: result.code, message: result.message });
     return sendJson(res, 200, { ok: true });
   } catch (e) {
     return sendJson(res, 400, { error: "revoke_failed", message: errMessage(e) });
@@ -1279,6 +1299,7 @@ const SHARE_ERROR_STATUS: Record<string, number> = {
   recipient_not_found: 404,
   ambiguous_recipient: 409,
   share_failed: 400,
+  name_conflict: 409,
 };
 
 export async function shareArtifact(ctx: ApiCtx): Promise<void> {
@@ -1331,6 +1352,7 @@ export async function shareArtifact(ctx: ApiCtx): Promise<void> {
       error: result.code,
       message: result.message,
       ...(result.candidates ? { candidates: result.candidates } : {}),
+      ...(result.conflict ? { conflict: result.conflict } : {}),
     });
   }
   return sendJson(res, 200, {
@@ -1637,6 +1659,7 @@ export const surfaceRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/skills/:id/grants", auth: "either", handle: listSkillSharing },
   { method: "POST", path: "/v1/skills/:id/unshare", auth: "either", handle: unshareSkill },
   { method: "POST", path: "/v1/skills/:id/demote", auth: "either", handle: demoteSkill },
+  ...skillOwnershipRoutes,
   { method: "POST", path: "/v1/grants", auth: "source", handle: createGrant },
   { method: "POST", path: "/v1/grants/revoke", auth: "source", handle: revokeGrant },
   { method: "POST", path: "/v1/share", auth: "either", handle: shareArtifact },

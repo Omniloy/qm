@@ -435,7 +435,7 @@ test("a save that lands after the admin opened another skill does not repaint th
   dom.window.close();
 });
 
-test("an org-wide skill can be edited in place from its admin detail; other homes stay read-only", async () => {
+test("a skill can be edited in place from its admin detail; archived and source-managed ones stay read-only", async () => {
   const { dom, root, c, skills } = fixture();
   c.statusBadge = (s: string) => s;
   c.scopeCell = (s: string) => ({ text: s });
@@ -480,7 +480,11 @@ test("an org-wide skill can be edited in place from its admin detail; other home
 
   current = { ...org, ownerScopeId: "personal:alice" };
   await skills.skillDetail(root, current, [current], c);
-  assert.equal(root.querySelector(".skill-edit"), null, "a personal skill is edited by its owner, not from admin");
+  assert.equal(root.querySelector(".skill-edit"), null, "an unshared personal skill stays its owner's");
+  assert.equal(root.querySelector(".skill-transfer"), null);
+  current = { ...org, ownerScopeId: "personal:alice", sharedWith: [{ scopeId: "channel:C1", permission: "read" }] };
+  await skills.skillDetail(root, current, [current], c);
+  assert.ok(root.querySelector(".skill-edit"), "once shared, the admin API edits a personal skill too");
   current = { ...org, status: "archived" };
   await skills.skillDetail(root, current, [current], c);
   assert.equal(root.querySelector(".skill-edit"), null, "an archived org skill is not editable");
@@ -494,5 +498,93 @@ test("an org-wide skill can be edited in place from its admin detail; other home
     await skills.skillDetail(root, current, [current], c);
     assert.equal(root.querySelector(".skill-edit"), null, `${managed.createdBy} skills are edited at their source`);
   }
+  dom.window.close();
+});
+
+test("the org skills index lists duplicates and runs a cluster's merge actions through the admin API", async () => {
+  const { dom, root, c, ui } = fixture();
+  c.index = true;
+  c.view = "skills";
+  c.orgId = "acme";
+  const calls: any[] = [];
+  const report = {
+    clusters: [
+      {
+        name: "slides",
+        status: "auto",
+        canonical: { id: "canon", scopeId: "personal:sergio" },
+        retire: [{ id: "orgcopy", scopeId: "org:acme" }],
+        purge: [],
+        evidence: ["audit skill_promote canon→org 2026-09-12"],
+        diff: null,
+        actions: [{ method: "POST", path: "/v1/admin/skills/orgcopy/merge", body: { into: "canon" } }],
+      },
+    ],
+    nameClashes: [{ name: "granola", rows: [{ id: "g1", scopeId: "personal:sergio" }] }],
+    archivedLeftovers: [],
+    ownerBackfill: { pending: 2, personalHomeMismatch: [] },
+  };
+  c.api = async (method: string, path: string, body?: unknown) => {
+    calls.push([method, path, body]);
+    if (path.startsWith("/api/skills/duplicates")) return { ok: true, data: report };
+    return { ok: true, data: {} };
+  };
+  ui.skills(root, { skills: [] }, c);
+  await tick();
+  await tick();
+  const merge = root.querySelector<HTMLButtonElement>(".skill-duplicate-merge")!;
+  assert.equal(merge.textContent!.trim(), "Merge");
+  assert.match(root.textContent!, /Same name, no shared history/);
+  assert.ok(root.querySelector(".skill-backfill"));
+  merge.click();
+  await tick();
+  const posted = calls.find((call) => call[0] === "POST");
+  assert.equal(
+    JSON.stringify(posted),
+    JSON.stringify(["POST", "/api/skills/orgcopy/merge?scope=org%3Aacme", { into: "canon" }]),
+  );
+  dom.window.close();
+});
+
+test("a skill's admin detail shows its owner and shares, and transfers it through the admin owner route", async () => {
+  const { dom, root, c, skills } = fixture();
+  c.statusBadge = (s: string) => s;
+  c.scopeCell = (s: string) => ({ text: s });
+  const skill = {
+    id: "k1",
+    ownerScopeId: "personal:sergio",
+    ownerId: "sergio",
+    orgWide: true,
+    sharedWith: [
+      { scopeId: "org:acme", permission: "read" },
+      { scopeId: "channel:C1", permission: "write" },
+    ],
+    name: "slides",
+    body: "Body.",
+    status: "published",
+    version: 3,
+  };
+  const calls: any[] = [];
+  c.api = async (...args: any[]) => {
+    calls.push(args);
+    return { ok: true, data: skill };
+  };
+  await skills.skillDetail(root, skill, [skill], c);
+  assert.match(root.textContent!, /Owner: personal:sergio/);
+  assert.match(root.textContent!, /Everyone/);
+  assert.match(root.textContent!, /channel:C1 \(edit\)/);
+  root.querySelector<HTMLButtonElement>(".skill-transfer")!.click();
+  const input = root.querySelector<HTMLInputElement>("#skill-owner-input")!;
+  input.value = "noe@acme.com";
+  input.dispatchEvent(new dom.window.Event("input"));
+  [...root.querySelectorAll<HTMLButtonElement>(".skill-ownership-form button")]
+    .find((b) => b.textContent!.trim() === "Transfer")!
+    .click();
+  await tick();
+  const post = calls.find((call) => call[0] === "POST");
+  assert.equal(
+    JSON.stringify(post),
+    JSON.stringify(["POST", "/api/skills/k1/owner?scope=org%3Aacme", { ownerId: "noe@acme.com" }]),
+  );
   dom.window.close();
 });

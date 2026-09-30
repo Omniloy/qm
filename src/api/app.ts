@@ -8,6 +8,7 @@ import { createSessionMethods } from "./app-sessions.ts";
 import { createMessagingMethods } from "./app-messaging.ts";
 import { createDeploymentMethods } from "./app-deployments.ts";
 import { createSkillMethods } from "./app-skills.ts";
+import { createSkillOwnershipMethods } from "./app-skill-ownership.ts";
 import { createSearchMethods } from "./app-search.ts";
 
 export type { App, AppDeps, ContextSummary, ProjectView, VisibleCron } from "./app-types.ts";
@@ -27,6 +28,7 @@ export function createApp(deps: AppDeps): App {
     ...createMessagingMethods(deps, helpers, ambient),
     ...createDeploymentMethods(deps, helpers),
     ...createSkillMethods(deps, helpers),
+    ...createSkillOwnershipMethods(deps, helpers),
   };
   const turn = methods.turn;
   methods.turn = async (req, replay) => {

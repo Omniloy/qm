@@ -84,6 +84,7 @@ const USER_SCOPED: Rule[] = [
   pat("GET", "/v1/skills/:id/grants", { in: "query", name: "principalId" }),
   pat("POST", "/v1/skills/:id/unshare", { in: "body", name: "principalId" }),
   pat("POST", "/v1/skills/:id/demote", { in: "body", name: "principalId" }),
+  pat("POST", "/v1/skills/:id/owner", { in: "body", name: "principalId" }),
   pat("POST", "/v1/soul", { in: "body", name: "actorId" }),
   pat("POST", "/v1/webhooks", { in: "body", name: "createdBy" }),
   pat("GET", "/v1/webhooks", { in: "query", name: "viewer" }),

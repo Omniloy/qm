@@ -105,8 +105,8 @@ export interface ToolContextRef {
 const SKILL_EDIT_NOTES: Record<SkillEditAccess, (id: string) => string> = {
   editable: (id) =>
     `editable by you. Edit it in place with PUT /v1/skills/${id} {description?, body?} — don't create a new copy`,
-  not_yours: () => "read-only for you: only its author or a manager of its home can change it",
-  org_admins: () => "org-wide: only an org admin can change it",
+  not_yours: () => "read-only for you: only its owner, an org admin, or a member of its home can change it",
+  org_admins: () => "org skill: only its owner or an org admin can change it",
   needs_live_person: () => "read-only this turn: a shared-context skill changes only on a turn a person is present for",
   admins_only: () => "read-only for you: this org lets only admins change skills in shared contexts",
   managed: () =>
@@ -114,7 +114,7 @@ const SKILL_EDIT_NOTES: Record<SkillEditAccess, (id: string) => string> = {
 };
 
 function skillStandingLine(s: SkillStanding): string {
-  return `[skill id ${s.id}${s.home ? ` · home ${s.home}` : ""}${s.edit ? ` · ${SKILL_EDIT_NOTES[s.edit](s.id)}` : ""}]`;
+  return `[skill id ${s.id}${s.home ? ` · home ${s.home}` : ""}${s.owner ? ` · owner ${s.owner}` : ""}${s.edit ? ` · ${SKILL_EDIT_NOTES[s.edit](s.id)}` : ""}]`;
 }
 
 function text(s: string) {

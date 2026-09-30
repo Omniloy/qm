@@ -155,6 +155,13 @@ export interface SkillItem {
   createdBy?: string;
   updatedAt?: number;
   files?: Array<{ path: string; executable?: boolean }>;
+  ownerId?: string;
+  ownerName?: string;
+  ownedByViewer?: boolean;
+  orgWide?: boolean;
+  sharedWith?: Array<{ scopeId: string; permission: "read" | "write" }>;
+  canManage?: boolean;
+  canMoveOrTransfer?: boolean;
 }
 
 let skillsCache: SkillItem[] | null = null;

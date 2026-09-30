@@ -436,8 +436,20 @@ test("an admin edits an org-wide skill in place: it stays published, the version
       headers: { ...ALICE_ADMIN, "content-type": "application/json" },
       body: JSON.stringify({ body: "Admin rewrite." }),
     });
-    assert.equal(personalPut.status, 403, "only org-home skills are editable from admin");
+    assert.equal(personalPut.status, 403, "an admin leaves an unshared personal skill alone");
     assert.equal((await s.built.skills.get(personal.id))?.manifest.body, "b");
+
+    const seeded = await s.built.skills.create({
+      scopeId: "org:default-org",
+      manifest: { name: "seeded", description: "d", requiredCapabilities: [], body: "b" },
+      createdBy: "system:skills-seed",
+    });
+    const seededPut = await fetch(`${s.base}/v1/admin/skills/${seeded.id}?scope=org:default-org`, {
+      method: "PUT",
+      headers: { ...ALICE_ADMIN, "content-type": "application/json" },
+      body: JSON.stringify({ body: "Admin rewrite." }),
+    });
+    assert.equal(seededPut.status, 409, "a source-managed skill is archived, never edited");
 
     await s.built.skills.archive(org.id);
     assert.equal((await put(ALICE_ADMIN, { body: "Zombie." })).status, 409);

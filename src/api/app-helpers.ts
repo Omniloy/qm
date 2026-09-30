@@ -1,5 +1,6 @@
 import { isSubagentThreadRef } from "../sessions/session-syscalls.ts";
 import type {
+  Grant,
   PendingApproval,
   PendingApprovalRecord,
   Permission,
@@ -15,9 +16,16 @@ import { isTerminal, type Run } from "../runs/run-store.ts";
 import { sleep } from "../util/async.ts";
 import type { RunSignal } from "../runs/run-signal-store.ts";
 import { processRun } from "../runs/worker.ts";
-import { deployRef, encodeRef, parseRef } from "../acl/resource-ref.ts";
+import { deployRef, encodeRef, parseRef, skillRef } from "../acl/resource-ref.ts";
 import { isSourceManagedSkill, type Skill, type SkillEditAccess } from "../skills/skill-store.ts";
-import { triggerBlocksSharedSkill } from "./artifact-share.ts";
+import {
+  createSkillRights,
+  effectiveSkillOwner,
+  liveSkillGrants,
+  skillRightsDeps,
+  triggerBlocksSkillChange,
+  type SkillRole,
+} from "../skills/skill-rights.ts";
 import type { CapabilityClaims } from "../auth/capability-token.ts";
 import type { SkillSharingPolicy } from "../resolution/config-store.ts";
 import {
@@ -482,7 +490,10 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     const { kind } = parseScopeId(ownerScopeId);
     if (kind !== "channel" && kind !== "group") return undefined;
     const r = parseRef(ref);
-    if (r.kind === "skill") return (await deps.skills.get(r.id))?.createdBy;
+    if (r.kind === "skill") {
+      const skill = await deps.skills.get(r.id);
+      return skill ? (effectiveSkillOwner(skill) ?? skill.createdBy) : undefined;
+    }
     if (r.kind === "cron") return (await deps.crons.get(r.id))?.createdBy;
     if (r.kind === "deploy") return (await deps.deploy.listDeployments()).find((d) => d.id === r.id)?.createdBy;
     if (r.kind === "file") return (await deps.files.resolveByOwnerPaths([{ ownerScopeId, path: r.id }]))[0]?.createdBy;
@@ -502,29 +513,62 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     return !isSharedScope(homeScope) || (await skillSharingAllows(actorId, "contexts"));
   }
 
-  function canManageSkill(skill: Pick<Skill, "scopeId" | "createdBy">, principalId: string): Promise<boolean> {
-    return principalManagesArtifactHome(skill.scopeId, skill.createdBy, principalId);
+  const skillRightsBase = skillRightsDeps({
+    identity: deps.identity,
+    ...(deps.admin ? { admin: deps.admin } : {}),
+    isCurrentSharedScopeMember: (p, scope) => principalIsCurrentSharedScopeMember(p, scope),
+    acl: deps.acl,
+  });
+  const skillRights = createSkillRights(skillRightsBase);
+
+  async function mayTakeSkillFromOrg(skill: Skill, actorId: string): Promise<boolean> {
+    if (parseScopeId(skill.scopeId).kind !== "org" || (await isOrgAdmin(actorId))) return true;
+    return samePerson(effectiveSkillOwner(skill), actorId) && (await skillSharingAllows(actorId, "org"));
   }
 
-  function skillEditAccessFor(
+  function canManageSkill(skill: Skill, principalId: string): Promise<boolean> {
+    return skillRights.manages(skill, principalId);
+  }
+
+  function skillRoleFor(
+    skill: Skill,
     principalId: string,
-    liveActor: boolean,
-  ): (skill: Pick<Skill, "scopeId" | "createdBy" | "pack">) => Promise<SkillEditAccess> {
+    opts?: { writeGrants?: boolean },
+  ): Promise<SkillRole | null> {
+    return skillRights.roleFor(skill, principalId, opts);
+  }
+
+  function skillEditAccessFor(principalId: string, liveActor: boolean): (skill: Skill) => Promise<SkillEditAccess> {
     let contextsAllowed: Promise<boolean> | undefined;
-    const byHome = new Map<string, Promise<SkillEditAccess>>();
-    const evaluate = async (skill: Pick<Skill, "scopeId" | "createdBy">): Promise<SkillEditAccess> => {
-      if (!(await canManageSkill(skill, principalId)))
-        return parseScopeId(skill.scopeId).kind === "org" ? "org_admins" : "not_yours";
-      if (triggerBlocksSharedSkill(skill.scopeId, liveActor)) return "needs_live_person";
-      if (!isSharedScope(skill.scopeId)) return "editable";
+    let grantIndex: Promise<Map<string, Grant[]>> | undefined;
+    const indexGrants = async () => {
+      const index = new Map<string, Grant[]>();
+      for (const g of await deps.acl.list().catch(() => [])) {
+        const key = `${g.ownerScopeId}\n${g.ref}`;
+        index.set(key, [...(index.get(key) ?? []), g]);
+      }
+      return index;
+    };
+    const grantsOf = async (skill: Pick<Skill, "id" | "scopeId">) =>
+      (await (grantIndex ??= indexGrants())).get(`${skill.scopeId}\n${encodeRef(skillRef(skill.id))}`) ?? [];
+    const rights = createSkillRights({ ...skillRightsBase, grantsOf });
+    const byId = new Map<string, Promise<SkillEditAccess>>();
+    const evaluate = async (skill: Skill): Promise<SkillEditAccess> => {
+      const role = await rights.roleFor(skill, principalId, { writeGrants: true });
+      if (!role) return parseScopeId(skill.scopeId).kind === "org" ? "org_admins" : "not_yours";
+      const granted = liveSkillGrants(skill, await grantsOf(skill)).length > 0;
+      if (triggerBlocksSkillChange(skill.scopeId, granted, liveActor)) return "needs_live_person";
+      if (isSourceManagedSkill(skill)) return "managed";
+      if (!isSharedScope(skill.scopeId) || role === "admin") return "editable";
       contextsAllowed ??= skillSharingAllows(principalId, "contexts");
       return (await contextsAllowed) ? "editable" : "admins_only";
     };
-    return async (skill) => {
-      const key = `${skill.scopeId}\n${samePerson(skill.createdBy, principalId)}`;
-      const access = byHome.get(key) ?? evaluate(skill);
-      byHome.set(key, access);
-      return (await access) === "editable" && isSourceManagedSkill(skill) ? "managed" : access;
+    return (skill) => {
+      const known = byId.get(skill.id);
+      if (known) return known;
+      const access = evaluate(skill);
+      byId.set(skill.id, access);
+      return access;
     };
   }
 
@@ -777,6 +821,10 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     principalManagesArtifactHome,
     artifactAuthor,
     canManageSkill,
+    skillRoleFor,
+    skillRights,
+    skillRightsBase,
+    mayTakeSkillFromOrg,
     skillEditAccessFor,
     isOrgAdmin,
     skillSharingAllows,

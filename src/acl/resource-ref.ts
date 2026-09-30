@@ -20,7 +20,9 @@ export const cronRef = (id: string): ResourceRef => ({ kind: "cron", id });
 export const serviceCredRef = (slug: string): ResourceRef => ({ kind: "service-cred", id: slug });
 
 export function encodeRef(r: ResourceRef): string {
-  return r.kind === "file" ? r.id : PREFIX[r.kind] + r.id;
+  if (r.kind !== "file") return PREFIX[r.kind] + r.id;
+  if (parseRef(r.id).kind !== "file") throw new Error(`"${r.id}" can't be shared as a file — rename it first`);
+  return r.id;
 }
 
 export function parseRef(s: string): ResourceRef {
