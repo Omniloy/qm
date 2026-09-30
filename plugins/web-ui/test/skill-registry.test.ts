@@ -5,6 +5,7 @@ import {
   filterSkillGroups,
   filterSkills,
   groupSkills,
+  matchSkills,
   otherHomes,
   skillEmptyState,
   skillHomeLabel,
@@ -164,4 +165,33 @@ test("other homes list the active copies of the same skill elsewhere", () => {
     ["mine", "chan", "org"],
   );
   assert.deepEqual(otherHomes(org, [org]), []);
+});
+
+test("the composer picker never offers an archived skill, with or without a query", () => {
+  const skills = [
+    skill({ id: "live", name: "deploy" }),
+    skill({ id: "gone", name: "deploy-old", status: "archived" }),
+    skill({ id: "other", name: "redeploy" }),
+  ];
+  assert.deepEqual(
+    matchSkills("", skills).map((m) => m.skill.id),
+    ["live", "other"],
+  );
+  const matches = matchSkills("DEPLOY", skills);
+  assert.deepEqual(
+    matches.map((m) => [m.skill.id, m.start, m.end]),
+    [
+      ["live", 0, 6],
+      ["other", 2, 8],
+    ],
+  );
+});
+
+test("the composer picker labels a personal skill by whose it is, not just its scope kind", () => {
+  const titleFor = (scopeId: string) => (scopeId === "channel:C1" ? "#ops" : scopeId);
+  const label = (over: Partial<SkillItem>) => skillHomeLabel(skill(over), "me@acme.com", titleFor);
+  assert.equal(label({ scope: "personal", scopeId: "personal:me@acme.com" }), "Personal");
+  assert.equal(label({ scope: "personal", scopeId: "personal:sergio.ruiz@acme.com" }), "Shared by Sergio Ruiz");
+  assert.equal(label({ scope: "channel", scopeId: "channel:C1" }), "#ops");
+  assert.equal(label({ scope: "org", scopeId: "org:acme" }), "Org");
 });

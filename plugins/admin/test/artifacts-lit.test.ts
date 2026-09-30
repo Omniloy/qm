@@ -396,3 +396,103 @@ test("the org skills index mounts the sharing card alongside skill packs", async
   assert.equal(card.querySelector<HTMLInputElement>('[name="skill-sharing-contexts"][value="admins"]')!.checked, true);
   dom.window.close();
 });
+
+test("a save that lands after the admin opened another skill does not repaint the old one", async () => {
+  const { dom, root, c, skills } = fixture();
+  c.statusBadge = (s: string) => s;
+  c.scopeCell = (s: string) => ({ text: s });
+  const first = {
+    id: "k1",
+    ownerScopeId: "org:acme",
+    name: "first",
+    body: "First body.",
+    status: "published",
+    version: 1,
+  };
+  const second = {
+    id: "k2",
+    ownerScopeId: "org:acme",
+    name: "second",
+    body: "Second body.",
+    status: "published",
+    version: 1,
+  };
+  let finishPut: (value: unknown) => void = () => {};
+  c.api = (method: string, path: string) => {
+    if (method === "PUT") return new Promise((resolve) => (finishPut = resolve));
+    return Promise.resolve({ ok: true, data: path.includes("/k2") ? second : first });
+  };
+  await skills.skillDetail(root, first, [first], c);
+  root.querySelector<HTMLButtonElement>(".skill-edit")!.click();
+  [...root.querySelectorAll<HTMLButtonElement>(".skill-edit-form button")]
+    .find((b) => b.textContent!.trim() === "Save")!
+    .click();
+  await skills.skillDetail(root, second, [second], c);
+  finishPut({ ok: true, data: first });
+  await tick();
+  await tick();
+  assert.match(root.querySelector(".skillbody")!.textContent!, /Second body\./);
+  dom.window.close();
+});
+
+test("an org-wide skill can be edited in place from its admin detail; other homes stay read-only", async () => {
+  const { dom, root, c, skills } = fixture();
+  c.statusBadge = (s: string) => s;
+  c.scopeCell = (s: string) => ({ text: s });
+  const org = {
+    id: "k1",
+    ownerScopeId: "org:acme",
+    name: "house-style",
+    description: "old words",
+    body: "Old body.",
+    status: "published",
+    version: 1,
+  };
+  const calls: any[] = [];
+  let current: any = org;
+  c.api = async (...args: any[]) => {
+    calls.push(args);
+    if (args[0] === "PUT") {
+      current = { ...org, ...args[2], version: 2 };
+      return { ok: true, data: current };
+    }
+    return { ok: true, data: current };
+  };
+  await skills.skillDetail(root, org, [org], c);
+  root.querySelector<HTMLButtonElement>(".skill-edit")!.click();
+  const description = root.querySelector<HTMLInputElement>("#skill-edit-description")!;
+  const body = root.querySelector<HTMLTextAreaElement>("#skill-edit-body")!;
+  assert.equal(body.value, "Old body.");
+  description.value = "new words";
+  description.dispatchEvent(new dom.window.Event("input"));
+  body.value = "New body.";
+  body.dispatchEvent(new dom.window.Event("input"));
+  [...root.querySelectorAll<HTMLButtonElement>(".skill-edit-form button")]
+    .find((b) => b.textContent!.trim() === "Save")!
+    .click();
+  await tick();
+  await tick();
+  const put = calls.find((call) => call[0] === "PUT");
+  assert.equal(put[1], "/api/skills/k1?scope=org%3Aacme");
+  assert.equal(JSON.stringify(put[2]), JSON.stringify({ description: "new words", body: "New body." }));
+  assert.equal(root.querySelector("#skill-edit-body"), null, "the form closes after a save");
+  assert.match(root.querySelector(".skillbody")!.textContent!, /New body\./);
+
+  current = { ...org, ownerScopeId: "personal:alice" };
+  await skills.skillDetail(root, current, [current], c);
+  assert.equal(root.querySelector(".skill-edit"), null, "a personal skill is edited by its owner, not from admin");
+  current = { ...org, status: "archived" };
+  await skills.skillDetail(root, current, [current], c);
+  assert.equal(root.querySelector(".skill-edit"), null, "an archived org skill is not editable");
+  for (const managed of [
+    { createdBy: "system:skills-seed" },
+    { createdBy: "system:deployment-layer" },
+    { createdBy: "pack:p1" },
+    { createdBy: "admin", pack: { id: "p1", url: "https://github.com/acme/pack.git" } },
+  ]) {
+    current = { ...org, ...managed };
+    await skills.skillDetail(root, current, [current], c);
+    assert.equal(root.querySelector(".skill-edit"), null, `${managed.createdBy} skills are edited at their source`);
+  }
+  dom.window.close();
+});

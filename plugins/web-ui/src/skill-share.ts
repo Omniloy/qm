@@ -68,19 +68,20 @@ export function shareTargets(
 export function shareImpact(mode: SkillShareMode, row: SkillShareRow, targetLabel: string): string {
   if (mode === "promote") {
     return (
-      `Everyone in the organization gets /${row.name}, in every conversation. ` +
-      `You keep your own copy, and org admins can edit the shared one from then on.`
+      `Everyone in the organization gets a copy of /${row.name}, in every conversation. ` +
+      `Your own stays where it is, but your later edits to it don't reach the org copy — ` +
+      `only org admins can edit that one.`
     );
   }
   if (mode === "move") {
     return (
       `/${row.name} moves to ${targetLabel} and stops being available where it lives now. ` +
-      `Anyone in ${targetLabel} can then edit it. You can move it back later.`
+      `Contexts you shared it with lose access. You can move it back later.`
     );
   }
   return (
-    `${targetLabel} gets to use /${row.name}. You keep it, and it stays yours to edit — ` +
-    `later changes are not pushed, so share again to update them.`
+    `${targetLabel} gets to use /${row.name}. It stays yours to edit, and they always get your latest version — ` +
+    `no need to share again after a change.`
   );
 }
 
@@ -100,11 +101,10 @@ export function shareConfirmLabel(mode: SkillShareMode, busy: boolean): string {
 export function shareRequest(
   mode: SkillShareMode,
   toScope: string,
-  permission: "read" | "write",
-): { toScope: string; permission?: "read" | "write"; move?: true } {
+): { toScope: string; permission?: "read"; move?: true } {
   if (mode === "promote") return { toScope: "org" };
   if (mode === "move") return { toScope, move: true };
-  return { toScope, permission };
+  return { toScope, permission: "read" };
 }
 
 export interface SkillGrantRow {
@@ -130,7 +130,7 @@ export function unshareSuccessNotice(name: string, targetLabel: string): string 
 export function demoteImpact(name: string): string {
   return (
     `/${name} stops being available to everyone in the organization, in every conversation. ` +
-    `Anyone who kept their own copy still has it, and its history is preserved.`
+    `The org copy is archived; the skill it was shared from keeps working where it lives.`
   );
 }
 

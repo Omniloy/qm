@@ -16,7 +16,7 @@ import { sleep } from "../util/async.ts";
 import type { RunSignal } from "../runs/run-signal-store.ts";
 import { processRun } from "../runs/worker.ts";
 import { deployRef, encodeRef, parseRef } from "../acl/resource-ref.ts";
-import type { Skill, SkillEditAccess } from "../skills/skill-store.ts";
+import { isSourceManagedSkill, type Skill, type SkillEditAccess } from "../skills/skill-store.ts";
 import { triggerBlocksSharedSkill } from "./artifact-share.ts";
 import type { CapabilityClaims } from "../auth/capability-token.ts";
 import type { SkillSharingPolicy } from "../resolution/config-store.ts";
@@ -509,7 +509,7 @@ export function createAppHelpers(deps: AppDeps, app: App) {
   function skillEditAccessFor(
     principalId: string,
     liveActor: boolean,
-  ): (skill: Pick<Skill, "scopeId" | "createdBy">) => Promise<SkillEditAccess> {
+  ): (skill: Pick<Skill, "scopeId" | "createdBy" | "pack">) => Promise<SkillEditAccess> {
     let contextsAllowed: Promise<boolean> | undefined;
     const byHome = new Map<string, Promise<SkillEditAccess>>();
     const evaluate = async (skill: Pick<Skill, "scopeId" | "createdBy">): Promise<SkillEditAccess> => {
@@ -520,30 +520,12 @@ export function createAppHelpers(deps: AppDeps, app: App) {
       contextsAllowed ??= skillSharingAllows(principalId, "contexts");
       return (await contextsAllowed) ? "editable" : "admins_only";
     };
-    return (skill) => {
+    return async (skill) => {
       const key = `${skill.scopeId}\n${samePerson(skill.createdBy, principalId)}`;
-      const known = byHome.get(key);
-      if (known) return known;
-      const access = evaluate(skill);
+      const access = byHome.get(key) ?? evaluate(skill);
       byHome.set(key, access);
-      return access;
+      return (await access) === "editable" && isSourceManagedSkill(skill) ? "managed" : access;
     };
-  }
-
-  async function republishIfShared(skill: Skill, editorId: string): Promise<Skill> {
-    if (skill.status === "published") return skill;
-    const { kind } = parseScopeId(skill.scopeId);
-    if (kind !== "channel" && kind !== "group") return skill;
-    await deps.skills.review(skill.id, "system:skill-authoring", skill.manifest.requiredCapabilities);
-    const published = await deps.skills.publish(skill.id);
-    deps.auditLog.record({
-      at: Date.now(),
-      principalId: editorId,
-      action: "skill_review",
-      resource: skill.id,
-      scopeLabel: skill.scopeId,
-    });
-    return published;
   }
 
   async function effectiveDeploymentPermission(d: Deployment, principalId: string): Promise<Permission | null> {
@@ -799,7 +781,6 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     isOrgAdmin,
     skillSharingAllows,
     maySkillLiveIn,
-    republishIfShared,
     effectiveDeploymentPermission,
     principalCanReadDeployment,
     principalGitPermission,

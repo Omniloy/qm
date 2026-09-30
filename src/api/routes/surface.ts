@@ -46,6 +46,7 @@ import {
   splitToScope,
   SHARED_SKILL_TRIGGER_REFUSAL,
   SKILL_CONTEXTS_ADMIN_ONLY,
+  SOURCE_MANAGED_SKILL_REFUSAL,
   UNATTESTED_TURN_CAUSE,
 } from "../artifact-share.ts";
 
@@ -1080,6 +1081,7 @@ async function updateSkill(ctx: ApiCtx): Promise<void> {
   if (updated === "trigger_blocked")
     return sendJson(res, 403, { error: "forbidden", message: SHARED_SKILL_TRIGGER_REFUSAL });
   if (updated === "forbidden") return sendJson(res, 403, { error: "forbidden", message: SKILL_CONTEXTS_ADMIN_ONLY });
+  if (updated === "managed") return sendJson(res, 409, { error: "managed", message: SOURCE_MANAGED_SKILL_REFUSAL });
   if (!updated) return sendJson(res, 404, { error: "not_found", message: "no such skill, or it isn't yours to edit" });
   return sendJson(res, 200, {
     skill: {

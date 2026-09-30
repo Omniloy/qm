@@ -3992,6 +3992,11 @@ test("skills read opens with the skill's id, home, and whether the turn may edit
     await call(withStanding({ id: "sk-3", home: "org", edit: "org_admins" }), { action: "read", name: "videos" }),
   );
   assert.match(org, /^\[skill id sk-3 · home org · org-wide: only an org admin can change it\]/);
+  const managed = textOut(
+    await call(withStanding({ id: "sk-5", home: "org", edit: "managed" }), { action: "read", name: "videos" }),
+  );
+  assert.match(managed, /^\[skill id sk-5 · home org · read-only: managed by its source/);
+  assert.doesNotMatch(managed, /PUT/);
   assert.match(
     textOut(await call(withStanding({ id: "sk-4" }), { action: "read", name: "videos" })),
     /^\[skill id sk-4\]\n# Videos/,

@@ -27,13 +27,12 @@ test("skill rows link to dedicated detail routes instead of expanding inline", (
   assert.doesNotMatch(bodyOf("skillGroup"), /skill-group-head|skill-group-name|skill-precedence/);
 });
 
-test("skill details have a back link and resource fields", () => {
+test("skill details render in their own pane from the row, with the list's home label", () => {
   const detail = bodyOf("openSkill");
-  assert.match(detail, /listBackLink\("Skills", \(\) => drawSkills\(\)\)/);
-  for (const label of ["Description", "Scope", "Version", "Source", "Capabilities", "Assets"]) {
-    assert.match(detail, new RegExp(`<label>${label}</label>`));
-  }
-  assert.match(detail, /<div class="value">\$\{skillHome\(s\)\}<\/div>/);
+  assert.match(detail, /renderSkillDetail\(host, s, \{/);
+  assert.match(detail, /home: skillHome/);
+  assert.match(detail, /onBack: \(\) => drawSkills\(\)/);
+  assert.match(detail, /onEdit: \(skill\) => void startEdit\(skill\)/);
 });
 
 test("skill detail routes survive reload and browser history", () => {

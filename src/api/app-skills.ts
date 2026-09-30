@@ -1,7 +1,13 @@
 import type { ScopeId } from "../types.ts";
 import { parseScopeId, scopeId } from "../types.ts";
 import { orgId as orgIdOf } from "../config.ts";
-import { managesSkill, type Skill, type SkillManifest, type SkillStanding } from "../skills/skill-store.ts";
+import {
+  isSourceManagedSkill,
+  managesSkill,
+  type Skill,
+  type SkillManifest,
+  type SkillStanding,
+} from "../skills/skill-store.ts";
 import type { SkillPack, SkillPackStore } from "../skills/skill-pack-store.ts";
 import type { SkillPackFetcher } from "../skills/pack-fetcher.ts";
 import { planIngest, importPack, collectSharedBundle, type ImportResult } from "../skills/ingest.ts";
@@ -253,6 +259,7 @@ export function createSkillMethods(
   | "listSkills"
   | "getSkill"
   | "archiveSkill"
+  | "editSkill"
   | "listVisibleSkills"
   | "skillEditAccess"
   | "skillStanding"
@@ -270,8 +277,21 @@ export function createSkillMethods(
   | "createOwnedSkill"
   | "deleteOwnedSkill"
 > {
-  const { skillEditAccessFor, maySkillLiveIn, republishIfShared } = h;
+  const { skillEditAccessFor, maySkillLiveIn } = h;
+  function editSkill(id: string, patch: { description?: string; body?: string }): Promise<Skill | "managed" | null> {
+    return withSkillMutationLock(deps, async () => {
+      const skill = await deps.skills.get(id);
+      if (!skill || skill.status === "archived") return null;
+      if (isSourceManagedSkill(skill)) return "managed";
+      return deps.skills.update(id, {
+        ...skill.manifest,
+        description: patch.description ?? skill.manifest.description,
+        body: patch.body ?? skill.manifest.body,
+      });
+    });
+  }
   return {
+    editSkill,
     listSkills() {
       return deps.skills.list();
     },
@@ -334,13 +354,8 @@ export function createSkillMethods(
       if (access === "needs_live_person") return "trigger_blocked";
       if (skill.status === "archived") return null;
       if (access === "admins_only") return "forbidden";
-      const manifest = {
-        ...skill.manifest,
-        description: patch.description ?? skill.manifest.description,
-        body: patch.body ?? skill.manifest.body,
-      };
-      const updated = await deps.skills.update(id, manifest);
-      const live = await republishIfShared(updated, principalId);
+      const updated = await editSkill(id, patch);
+      if (!updated || updated === "managed") return updated;
       deps.auditLog.record({
         at: Date.now(),
         principalId,
@@ -348,7 +363,7 @@ export function createSkillMethods(
         resource: id,
         scopeLabel: skill.scopeId,
       });
-      return live;
+      return updated;
     },
     async restoreOwnedSkill(id, principalId, opts) {
       const skill = await deps.skills.get(id);

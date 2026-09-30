@@ -109,6 +109,8 @@ const SKILL_EDIT_NOTES: Record<SkillEditAccess, (id: string) => string> = {
   org_admins: () => "org-wide: only an org admin can change it",
   needs_live_person: () => "read-only this turn: a shared-context skill changes only on a turn a person is present for",
   admins_only: () => "read-only for you: this org lets only admins change skills in shared contexts",
+  managed: () =>
+    "read-only: managed by its source (built-in / skill pack / deployment layer) — change it there, edits here would be reverted",
 };
 
 function skillStandingLine(s: SkillStanding): string {

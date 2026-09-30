@@ -36,7 +36,9 @@ export async function removeSkill(s: Data, c: Context) {
     alert("Could not remove skill.");
   }
 }
+let detailRequestSeq = 0;
 export async function skillDetail(root: HTMLElement, rep: Data, group: Data[], c: Context) {
+  const request = ++detailRequestSeq;
   root.replaceChildren();
   const paint = renderer(root);
   paint(html`<div class="loadingline">${"Loading " + (rep.name || rep.id) + "…"}</div>`);
@@ -44,6 +46,7 @@ export async function skillDetail(root: HTMLElement, rep: Data, group: Data[], c
     "GET",
     "/api/skills/" + encodeURIComponent(rep.id) + "?scope=" + encodeURIComponent(rep.ownerScopeId || c.scope),
   );
+  if (request !== detailRequestSeq) return;
   if (!response.ok || !response.data) {
     paint(
       html`<p class="empty">
@@ -53,78 +56,160 @@ export async function skillDetail(root: HTMLElement, rep: Data, group: Data[], c
     return;
   }
   const k = response.data;
-  const by = (() => {
+  const source = (() => {
     if (k.pack) return "from " + (c.packRepoLabel(k.pack.url) || "pack " + c.shortId(k.pack.id, 8));
-    return k.createdBy?.startsWith("system:") ? "built-in" : "by " + (k.createdBy || "None");
+    if (k.createdBy?.startsWith("pack:")) return "from pack " + c.shortId(k.createdBy.slice(5), 8);
+    return k.createdBy?.startsWith("system:") ? "built-in" : "";
   })();
-  paint(
-    card(
-      k.name || k.id,
-      "",
-      html`<div>
-        <div class="badges">
-          ${c.statusBadge(k.status)}${badge("v" + k.version)}${badge(by)}${badge("skill " + c.shortId(k.id, 16))}
-        </div>
-        ${k.description ? html`<p class="metric-note">${k.description}</p>` : nothing}${card(
-          "Scopes (" + group.length + ")",
-          "Every scope this skill is installed in. Remove takes it out of that scope only.",
-          table(
-            ["Scope", "Status", "Version", ""],
-            [...group]
-              .sort((a, b) =>
-                (() => {
-                  if (c.scopeKind(a.ownerScopeId) === "org") return -1;
-                  return c.scopeKind(b.ownerScopeId) === "org"
-                    ? 1
-                    : (a.ownerScopeId || "").localeCompare(b.ownerScopeId || "");
-                })(),
-              )
-              .map((g) => [
-                c.scopeCell(g.ownerScopeId),
-                { node: c.statusBadge(g.status) },
-                { text: g.version != null ? "v" + g.version : "None", cls: "num" },
+  const by = source || "by " + (k.createdBy || "None");
+  const editable = !source && c.scopeKind(k.ownerScopeId) === "org" && k.status !== "archived";
+  let edit: { description: string; body: string; saving: boolean; message: string } | null = null;
+  const startEdit = () => {
+    edit = { description: k.description || "", body: k.body || "", saving: false, message: "" };
+    draw();
+  };
+  const save = async () => {
+    if (!edit || edit.saving) return;
+    const current = edit;
+    current.saving = true;
+    current.message = "Saving…";
+    draw();
+    const result = await c
+      .api("PUT", "/api/skills/" + encodeURIComponent(k.id) + "?scope=" + encodeURIComponent(k.ownerScopeId), {
+        description: current.description,
+        body: current.body,
+      })
+      .catch(() => ({ ok: false, data: null }));
+    if (edit !== current || request !== detailRequestSeq) return;
+    if (!result.ok) {
+      current.saving = false;
+      current.message = result.data?.message || "Save failed.";
+      draw();
+      return;
+    }
+    c.invalidate();
+    await skillDetail(root, rep, group, c);
+  };
+  const editForm = (e: NonNullable<typeof edit>) =>
+    html`<div class="skill-edit-form">
+      <label for="skill-edit-description">Description</label
+      ><input
+        id="skill-edit-description"
+        .value=${e.description}
+        ?disabled=${e.saving}
+        @input=${(ev: Event) => {
+          e.description = (ev.target as HTMLInputElement).value;
+        }}
+      />
+      <label for="skill-edit-body">Instructions</label
+      ><textarea
+        id="skill-edit-body"
+        spellcheck="false"
+        style="min-height:340px;font-family:ui-monospace, SFMono-Regular, Menlo, monospace;font-size:12px"
+        .value=${e.body}
+        ?disabled=${e.saving}
+        @input=${(ev: Event) => {
+          e.body = (ev.target as HTMLTextAreaElement).value;
+        }}
+      ></textarea>
+      <p class="metric-note">Saving updates this org-wide skill in place for everyone, right away.</p>
+      <div class="foot">
+        <button type="button" class="primary" ?disabled=${e.saving} @click=${save}>Save</button
+        ><button
+          type="button"
+          ?disabled=${e.saving}
+          @click=${() => {
+            edit = null;
+            draw();
+          }}
+        >
+          Cancel</button
+        ><span class="status" role="status">${e.message}</span>
+      </div>
+    </div>`;
+  const draw = () =>
+    paint(
+      card(
+        k.name || k.id,
+        "",
+        html`<div>
+          <div class="badges">
+            ${c.statusBadge(k.status)}${badge("v" + k.version)}${badge(by)}${badge("skill " + c.shortId(k.id, 16))}
+          </div>
+          ${k.description ? html`<p class="metric-note">${k.description}</p>` : nothing}${card(
+            "Scopes (" + group.length + ")",
+            "Every scope this skill is installed in. Remove takes it out of that scope only.",
+            table(
+              ["Scope", "Status", "Version", ""],
+              [...group]
+                .sort((a, b) =>
+                  (() => {
+                    if (c.scopeKind(a.ownerScopeId) === "org") return -1;
+                    return c.scopeKind(b.ownerScopeId) === "org"
+                      ? 1
+                      : (a.ownerScopeId || "").localeCompare(b.ownerScopeId || "");
+                  })(),
+                )
+                .map((g) => [
+                  c.scopeCell(g.ownerScopeId),
+                  { node: c.statusBadge(g.status) },
+                  { text: g.version != null ? "v" + g.version : "None", cls: "num" },
+                  {
+                    node:
+                      g.status === "archived"
+                        ? badge("archived")
+                        : html`<button type="button" class="rowbtn danger" @click=${() => removeSkill(g, c)}>
+                            Remove
+                          </button>`,
+                  },
+                ]),
+              "None",
+            ),
+          )}${card(
+            "Capabilities",
+            "What the skill is allowed to reach. Granted at review time.",
+            table(
+              ["Capability", "Status"],
+              (k.requiredCapabilities || []).map((cap: string) => [
+                { text: cap, cls: "mono" },
                 {
-                  node:
-                    g.status === "archived"
-                      ? badge("archived")
-                      : html`<button type="button" class="rowbtn danger" @click=${() => removeSkill(g, c)}>
-                          Remove
-                        </button>`,
+                  node: (k.grantedCapabilities || []).includes(cap)
+                    ? badge("granted", "ok")
+                    : badge("not granted", "warn"),
                 },
               ]),
-            "None",
-          ),
-        )}${card(
-          "Capabilities",
-          "What the skill is allowed to reach. Granted at review time.",
-          table(
-            ["Capability", "Status"],
-            (k.requiredCapabilities || []).map((cap: string) => [
-              { text: cap, cls: "mono" },
-              {
-                node: (k.grantedCapabilities || []).includes(cap)
-                  ? badge("granted", "ok")
-                  : badge("not granted", "warn"),
-              },
-            ]),
-            "Requires no capabilities.",
-          ),
-        )}${
-          k.approvals?.length
-            ? card(
-                "Approvals",
-                "Reviewers who signed off on this skill.",
-                table(
-                  ["Reviewer"],
-                  k.approvals.map((a: string) => [{ text: a, cls: "mono" }]),
-                  "",
-                ),
-              )
-            : nothing
-        }${card("Instructions", "The SKILL.md the agent reads when this skill is in play.", html`<pre class="skillbody" style="white-space:pre-wrap;font-family:ui-monospace, SFMono-Regular, Menlo, monospace;font-size:12px;margin:0">${k.body || "(empty)"}</pre>`)}
-      </div>`,
-    ),
-  );
+              "Requires no capabilities.",
+            ),
+          )}${
+            k.approvals?.length
+              ? card(
+                  "Approvals",
+                  "Reviewers who signed off on this skill.",
+                  table(
+                    ["Reviewer"],
+                    k.approvals.map((a: string) => [{ text: a, cls: "mono" }]),
+                    "",
+                  ),
+                )
+              : nothing
+          }${card(
+            "Instructions",
+            "The SKILL.md the agent reads when this skill is in play.",
+            edit
+              ? editForm(edit)
+              : html`<pre
+                  class="skillbody"
+                  style="white-space:pre-wrap;font-family:ui-monospace, SFMono-Regular, Menlo, monospace;font-size:12px;margin:0"
+                >
+${k.body || "(empty)"}</pre>`,
+            editable && !edit
+              ? html`<button type="button" class="rowbtn skill-edit" @click=${startEdit}>Edit</button>`
+              : nothing,
+          )}
+        </div>`,
+      ),
+    );
+  draw();
   root.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 type Audience = "everyone" | "admins";

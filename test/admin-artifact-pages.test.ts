@@ -387,3 +387,80 @@ test("admin cron runtime edits preserve task authority and reject unavailable or
     await s.close();
   }
 });
+
+test("an admin edits an org-wide skill in place: it stays published, the version bumps, and the edit is audited", async () => {
+  const s = start();
+  try {
+    const org = await s.built.skills.create({
+      scopeId: "org:default-org",
+      manifest: { name: "house-style", description: "old words", requiredCapabilities: [], body: "Old body." },
+      createdBy: "U1",
+    });
+    await s.built.skills.review(org.id, "U1", []);
+    await s.built.skills.publish(org.id);
+    const url = `${s.base}/v1/admin/skills/${org.id}?scope=org:default-org`;
+    const put = (headers: Record<string, string>, body: unknown) =>
+      fetch(url, {
+        method: "PUT",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+    assert.equal((await put({ "x-admin-actor": "nobody@default-org" }, { body: "Hijacked." })).status, 403);
+    assert.equal((await put(ALICE_ADMIN, {})).status, 400);
+    assert.equal((await put(ALICE_ADMIN, { name: "renamed" })).status, 400);
+    assert.equal((await put(ALICE_ADMIN, { body: "   " })).status, 400);
+
+    const edited = await put(ALICE_ADMIN, { description: "new words", body: "New body." });
+    assert.equal(edited.status, 200);
+    const stored = await s.built.skills.get(org.id);
+    assert.equal(stored?.status, "published", "an edited org skill keeps serving everyone");
+    assert.equal(stored?.manifest.body, "New body.");
+    assert.equal(stored?.manifest.description, "new words");
+    assert.equal(stored?.version, 2);
+    assert.equal(stored?.id, org.id, "the edit lands on the same record rather than a copy");
+    assert.ok(
+      (await s.built.auditLog.events()).some(
+        (e) => e.action === "skill.update" && e.resource === org.id && e.principalId === "admin-alice",
+      ),
+      "the edit is audited",
+    );
+
+    const personal = await s.built.skills.create({
+      scopeId: "personal:U1",
+      manifest: { name: "mine", description: "d", requiredCapabilities: [], body: "b" },
+      createdBy: "U1",
+    });
+    const personalPut = await fetch(`${s.base}/v1/admin/skills/${personal.id}?scope=org:default-org`, {
+      method: "PUT",
+      headers: { ...ALICE_ADMIN, "content-type": "application/json" },
+      body: JSON.stringify({ body: "Admin rewrite." }),
+    });
+    assert.equal(personalPut.status, 403, "only org-home skills are editable from admin");
+    assert.equal((await s.built.skills.get(personal.id))?.manifest.body, "b");
+
+    await s.built.skills.archive(org.id);
+    assert.equal((await put(ALICE_ADMIN, { body: "Zombie." })).status, 409);
+
+    for (const [i, createdBy] of ["system:skills-seed", "system:deployment-layer", "pack:p1"].entries()) {
+      const managed = await s.built.skills.create({
+        scopeId: "org:default-org",
+        manifest: { name: `managed-${i}`, description: "d", requiredCapabilities: [], body: "Source." },
+        createdBy,
+      });
+      const refused = await fetch(`${s.base}/v1/admin/skills/${managed.id}?scope=org:default-org`, {
+        method: "PUT",
+        headers: { ...ALICE_ADMIN, "content-type": "application/json" },
+        body: JSON.stringify({ body: "Reverted soon." }),
+      });
+      assert.equal(refused.status, 409, `${createdBy} skills are changed at their source`);
+      assert.deepEqual(await refused.json(), {
+        error: "managed",
+        message: "This skill is managed by its source (built-in / skill pack / deployment layer) — change it there",
+      });
+      assert.equal((await s.built.skills.get(managed.id))?.manifest.body, "Source.");
+    }
+  } finally {
+    await s.close();
+  }
+});

@@ -15,6 +15,7 @@ import { getAdminSession, getAdminSessionLlm, listAdminSessions, listAdminShadow
 import { downloadAdminFile, listAdminFiles, readAdminFile, uploadAdminFile } from "./admin/files.ts";
 import {
   archiveAdminSkill,
+  updateAdminSkill,
   getAdminSkill,
   listAdminArtifacts,
   putAdminCronDestination,
@@ -160,6 +161,7 @@ const routes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "PUT", path: "/v1/admin/crons/:id/runtime", auth: "either", handle: putAdminCronRuntime },
   { method: "PUT", path: "/v1/admin/crons/:id/destination", auth: "either", handle: putAdminCronDestination },
   { method: "GET", path: "/v1/admin/skills/:id", auth: "either", handle: getAdminSkill },
+  { method: "PUT", path: "/v1/admin/skills/:id", auth: "either", handle: updateAdminSkill },
   { method: "DELETE", path: "/v1/admin/skills/:id", auth: "either", handle: archiveAdminSkill },
   { method: "GET", path: "/v1/admin/memory/scopes", auth: "either", handle: listMemoryScopes },
   { method: "GET", path: "/v1/admin/memory", auth: "either", handle: getAdminMemory },
