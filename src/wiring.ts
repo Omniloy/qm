@@ -2055,6 +2055,7 @@ export function buildApp(
     config: configStore,
     defaultHarness: fallbackHarness,
     defaultTurnWallClockMs: config.turnWallClockMs,
+    ...(config.codexProxy ? { codexProxy: config.codexProxy } : {}),
     userModelCredentials,
     ...(config.brandingDefault ? { brandingDefault: config.brandingDefault } : {}),
     sessionTapeMode: config.sessionTapeMode,

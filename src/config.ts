@@ -1,3 +1,4 @@
+import type { CodexProxy } from "./model/codex-proxy.ts";
 import type { ExternalSlackPolicies } from "./resolution/external-slack.ts";
 import { isStrongSigningSecret } from "./auth/source-auth.ts";
 import { parseScopeId } from "./types.ts";
@@ -89,7 +90,7 @@ export interface Config {
   claudeProcessEnv: NodeJS.ProcessEnv;
   relayPublicUrl?: string;
   maxLiveBrowsers?: number;
-  codexProxy?: { url: string; managementKey: string };
+  codexProxy?: CodexProxy;
   detectModelId?: string;
   titleModelId?: string;
   judgeModelId?: string;

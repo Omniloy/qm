@@ -236,6 +236,10 @@ export function createMockHarness(): Harness {
           throw new NonRetryableTurnError(
             "API integrators: you can reduce refusals for your users by configuring a fallback model",
           );
+        } else if (command0 === "!usage-limit") {
+          throw new Error(
+            'OpenAI API error (429): {"code":"model_cooldown","message":"All credentials for model gpt-6-sol are cooling down via provider codex"}',
+          );
         } else if (command0 === "!silent") {
           reply = "";
         } else if (command0.startsWith("[system] You were addressed")) {

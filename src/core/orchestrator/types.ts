@@ -1,3 +1,4 @@
+import type { CodexProxy } from "../../model/codex-proxy.ts";
 import type { ExternalSlackPolicies } from "../../resolution/external-slack.ts";
 import type { RuntimeService } from "../../harness/runtime-types.ts";
 import type { SandboxResources } from "../../sandbox/sandbox-resources.ts";
@@ -122,6 +123,7 @@ export interface OrchestratorDeps {
   /** The deployment's fallback harness (wiring's config.harness) — used when no org runtime selection exists. */
   defaultHarness?: string;
   defaultTurnWallClockMs?: number;
+  codexProxy?: CodexProxy;
   userModelCredentials?: UserModelCredentialStore;
   brandingDefault?: OrgBranding;
   resolveBaseModelId?: () => string | undefined;
