@@ -1,3 +1,4 @@
+import type { CodexProxy } from "../model/codex-proxy.ts";
 import type { HarnessAuthStore } from "../credentials/harness-auth-store.ts";
 import type { BrowserProviderSpec } from "../connectors/browser-providers.ts";
 import type { RelayHub } from "../browser-relay/relay.ts";
@@ -137,7 +138,7 @@ export interface ServerDeps {
   browserProviders?: readonly BrowserProviderSpec[];
   browserRelay?: RelayHub;
   relayPublicUrl?: string;
-  codexProxy?: { url: string; managementKey: string };
+  codexProxy?: CodexProxy;
   harnessAuthProbe?: (token: string) => Promise<{ ok: boolean; detail?: string }>;
   userModelCredentials?: UserModelCredentialStore;
   mcpServers?: McpServerStore;

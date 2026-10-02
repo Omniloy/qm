@@ -42,3 +42,22 @@ test("the shared failure policy renders quarantine canned, refused reasons verba
 
   assert.equal(userFacingFailureText({ status: "refused" }), GENERIC_FAILURE_TEXT);
 });
+
+test("a provider-limit failure shows its authored reason everywhere, unmarked failures stay generic", () => {
+  const limit = {
+    status: "failed",
+    refusalKind: "provider_limit",
+    reason:
+      "You've reached the OpenAI usage limit for gpt-6-sol on the connected ChatGPT subscription. Try again later or pick another model.",
+  } as const;
+  assert.equal(userFacingFailureText(limit), limit.reason);
+  assert.equal(userFacingFailureClause(limit), limit.reason);
+  assert.equal(standaloneFailureText(limit), limit.reason);
+
+  const unmarked = { status: "failed", reason: limit.reason };
+  assert.equal(userFacingFailureText(unmarked), GENERIC_FAILURE_TEXT);
+  assert.equal(userFacingFailureClause(unmarked), "something went wrong on my end");
+  assert.equal(standaloneFailureText(unmarked), undefined);
+
+  assert.equal(userFacingFailureText({ status: "failed", refusalKind: "provider_limit" }), GENERIC_FAILURE_TEXT);
+});

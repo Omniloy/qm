@@ -164,7 +164,13 @@ import {
 import { errMessage, reportFailure, swallow, swallowAs } from "../util/errors.ts";
 import { isObj } from "../util/objects.ts";
 import { absoluteAppLinks, headSlice, jsonbSafeStringify } from "../util/text.ts";
-import { NonRetryableTurnError, TitleRejected, turnFailureMessage, type TurnFailurePayload } from "./turn-error.ts";
+import {
+  NonRetryableTurnError,
+  settleProviderLimit,
+  TitleRejected,
+  turnFailureMessage,
+  type TurnFailurePayload,
+} from "./turn-error.ts";
 import { personKey, samePerson } from "../directory/person.ts";
 import { sleep } from "../util/async.ts";
 import { hashId } from "../util/crypto.ts";
@@ -4407,6 +4413,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           });
           return { status: "refused", sessionId: session.id, reason: err.message };
         }
+        const failure = await settleProviderLimit(err, {
+          ...(input.model ? { model: input.model } : {}),
+          ...(deps.codexProxy ? { codexProxy: deps.codexProxy } : {}),
+        });
         deps.errors?.record(
           {
             category: "turn",
@@ -4415,9 +4425,9 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             scopeLabel: scopeId,
             sessionId: session.id,
           },
-          err,
+          failure,
         );
-        if ((err instanceof NonRetryableTurnError || input.finalAttempt) && !input.cancel?.aborted) {
+        if ((failure instanceof NonRetryableTurnError || input.finalAttempt) && !input.cancel?.aborted) {
           const mirrorFailureEntry = async (entry: SessionEntry | undefined): Promise<void> => {
             if (!entry) return;
             await deps.sessions
@@ -4432,7 +4442,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           }
           const payload: TurnFailurePayload = {
             kind: "turn_failure",
-            message: turnFailureMessage(err),
+            message: turnFailureMessage(failure),
             ...(input.runId ? { runId: input.runId } : {}),
           };
           await deps.sessions
@@ -4440,7 +4450,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             .then(mirrorFailureEntry)
             .catch(swallowAs("orchestrator: terminal turn failure record", undefined));
         }
-        throw err;
+        throw failure;
       } finally {
         if (input.runId) deps.turnStream?.end(input.runId);
         stopLeaseKeepalive();

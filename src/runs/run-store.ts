@@ -74,7 +74,7 @@ export interface RunStore {
     runId: string,
     leaseToken: string,
     error: string,
-    opts?: { retry?: boolean; retryAfterMs?: number },
+    opts?: { retry?: boolean; retryAfterMs?: number; refusalKind?: TurnResult["refusalKind"] },
   ): Promise<{ requeued: boolean }>;
 
   setDeliveryState(runId: string, leaseToken: string | null, state: RunDeliveryState): Promise<boolean>;

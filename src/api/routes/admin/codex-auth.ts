@@ -1,5 +1,6 @@
 import { sendJson } from "../../http.ts";
 import { errMessage } from "../../../util/errors.ts";
+import { callCodexProxy, type CodexProxyCall } from "../../../model/codex-proxy.ts";
 import type { ApiCtx } from "../route.ts";
 import { audit, authorizeAdmin, orgScope } from "../shared.ts";
 
@@ -24,26 +25,9 @@ async function actor(ctx: ApiCtx) {
   return authorizeAdmin(ctx, orgScope(ctx.deps));
 }
 
-interface ProxyCall {
-  status: number;
-  body: unknown;
-}
-
-async function callProxy(ctx: ApiCtx, path: string, init?: RequestInit): Promise<ProxyCall | null> {
+async function callProxy(ctx: ApiCtx, path: string, init?: RequestInit): Promise<CodexProxyCall | null> {
   const proxy = ctx.deps.codexProxy;
-  if (!proxy) return null;
-  const r = await fetch(new URL(path, proxy.url), {
-    ...init,
-    headers: { ...init?.headers, "X-Management-Key": proxy.managementKey },
-  });
-  const text = await r.text();
-  let body: unknown;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    body = text;
-  }
-  return { status: r.status, body };
+  return proxy ? callCodexProxy(proxy, path, init) : null;
 }
 
 function unavailable(ctx: ApiCtx): void {
@@ -64,7 +48,7 @@ interface AuthFile {
 export async function getCodexAuth(ctx: ApiCtx): Promise<void> {
   const authorized = await actor(ctx);
   if (!authorized) return;
-  let call: ProxyCall | null;
+  let call: CodexProxyCall | null;
   try {
     call = await callProxy(ctx, "/v0/management/auth-files");
   } catch (e) {
@@ -97,7 +81,7 @@ export async function getCodexAuth(ctx: ApiCtx): Promise<void> {
 export async function startCodexAuth(ctx: ApiCtx): Promise<void> {
   const authorized = await actor(ctx);
   if (!authorized) return;
-  let call: ProxyCall | null;
+  let call: CodexProxyCall | null;
   try {
     call = await callProxy(ctx, "/v0/management/codex-auth-url");
   } catch (e) {
@@ -147,7 +131,7 @@ export async function completeCodexAuth(ctx: ApiCtx): Promise<void> {
       message: "That address carries no sign-in code. Copy the whole localhost address the browser landed on.",
     });
   }
-  let call: ProxyCall | null;
+  let call: CodexProxyCall | null;
   try {
     call = await callProxy(ctx, "/v0/management/oauth-callback", {
       method: "POST",
@@ -187,7 +171,7 @@ export async function deleteCodexAuth(ctx: ApiCtx): Promise<void> {
   if (!name) {
     return sendJson(ctx.res, 400, { error: "bad_request", message: "Which account to sign out is required." });
   }
-  let call: ProxyCall | null;
+  let call: CodexProxyCall | null;
   try {
     call = await callProxy(ctx, `/v0/management/auth-files?name=${encodeURIComponent(name)}`, { method: "DELETE" });
   } catch (e) {

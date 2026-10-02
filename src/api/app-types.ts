@@ -1,3 +1,4 @@
+import type { CodexProxy } from "../model/codex-proxy.ts";
 import type { ExternalSlackPolicies } from "../resolution/external-slack.ts";
 import type { InviteMailer } from "../admin/invite-email.ts";
 import type { DeploymentInvitation } from "../deploy/email-access.ts";
@@ -773,7 +774,7 @@ export interface AppDeps {
   browserRelay?: RelayHub;
   relayPublicUrl?: string;
   harnessAuthProbe?: (token: string) => Promise<{ ok: boolean; detail?: string }>;
-  codexProxy?: { url: string; managementKey: string };
+  codexProxy?: CodexProxy;
   userModelCredentials?: UserModelCredentialStore;
   mcpServers?: McpServerStore;
   mcpToolService?: McpToolService;

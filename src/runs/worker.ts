@@ -4,7 +4,7 @@ import type { ErrorLog } from "../admin/error-log.ts";
 import { conversationScope } from "../resolution/resolution-service.ts";
 import type { TurnResult } from "../types.ts";
 import type { Orchestrator } from "../core/orchestrator.ts";
-import { NonRetryableTurnError, turnFailureMessage } from "../core/turn-error.ts";
+import { NonRetryableTurnError, turnFailureKind, turnFailureMessage } from "../core/turn-error.ts";
 import { resolveTurnOrigin } from "../core/turn-origin.ts";
 import { errorParks, type Run, type RunStore } from "./run-store.ts";
 import { errMessage, errorAlreadyReported, swallow } from "../util/errors.ts";
@@ -110,6 +110,7 @@ export async function processRun(
     await deps.runs.fail(run.id, token, turnFailureMessage(err), {
       retry: !(err instanceof NonRetryableTurnError),
       retryAfterMs: retryDelay(run.errorAttempts),
+      refusalKind: turnFailureKind(err),
     });
     throw err;
   } finally {

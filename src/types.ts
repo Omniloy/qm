@@ -762,7 +762,7 @@ export interface TurnResult {
   reply?: string;
   reactions?: string[];
   reason?: string;
-  refusalKind?: "security_quarantine" | "session_busy";
+  refusalKind?: "security_quarantine" | "session_busy" | "provider_limit";
   adminUrl?: string;
   runId?: string;
   steered?: true;

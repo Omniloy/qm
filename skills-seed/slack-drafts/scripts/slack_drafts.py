@@ -26,7 +26,7 @@ API = "https://slack.com/api"
 def call(method: str, body: dict | None = None, query: dict | None = None):
     tok = os.environ.get("VAULT_TOKEN_SLACK_COM", "")
     if not tok:
-        sys.exit("no Slack token: ask the user to connect Slack")
+        sys.exit("no Slack token: re-run with execute.credentials [\"connector_slack_com_default\"] (or the Slack handle your instructions list); if none is listed outside a DM, ask the user to DM you; only in their DM does a missing handle mean they should connect Slack")
     url = f"{API}/{method}" + (f"?{urllib.parse.urlencode(query, doseq=True)}" if query else "")
     cmd = ["curl", "-sS", "--fail-with-body", "--max-time", "60",
            "-H", f"Authorization: Bearer {tok}", url]
