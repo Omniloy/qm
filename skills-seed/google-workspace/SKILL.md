@@ -11,16 +11,20 @@ requiredCapabilities:
 Use this skill when the user asks about Gmail, Google Calendar, or Google Tasks:
 schedule, meetings, emails, labels, drafts, replies, or to-do lists and tasks.
 
-This is an OAuth connector. The resolved user's Google OAuth token already lives on
-your computer as an environment variable, one per Google API host (the way a logged-in
-CLI's cached credential would):
+This is an OAuth connector. The resolved user's Google OAuth token is delivered per command, never
+left on the computer: pass the connector's handle in `execute.credentials` on every
+command that calls the API, with the execute scope the handle lists under "Execution
+credentials" in your instructions. Each handle sets one variable for that command only:
 
-- `$VAULT_TOKEN_GMAIL_GOOGLEAPIS_COM` — for `gmail.googleapis.com`
-- `$VAULT_TOKEN_WWW_GOOGLEAPIS_COM` — for `www.googleapis.com` (Calendar and Tasks)
+- `connector_gmail_googleapis_com_default` → `$VAULT_TOKEN_GMAIL_GOOGLEAPIS_COM` (Gmail, including `gmail.py` and `fetch_sent.py`)
+- `connector_www_googleapis_com_default` → `$VAULT_TOKEN_WWW_GOOGLEAPIS_COM` (Calendar and Tasks)
 
-Do not ask the user for a token, log it, or use another principal's. If the variable is
-empty or Google returns 401/403, the user either has not connected Google or connected
-before this permission existed — tell them to (re)connect it through the product OAuth
+A `_personal` or `_company` suffix replaces `_default` when the user connected more than one
+Google account; use the handle your instructions list. A "no Gmail token" error or an empty
+variable means the handle was not requested, so re-run the command with it. Do not ask the
+user for a token, log it, or use another principal's. Only when the handle is missing from
+your instructions, or Google returns 401/403, has the user not connected Google (or connected
+before this permission existed) — then tell them to (re)connect it through the product OAuth
 flow.
 
 ## Gmail

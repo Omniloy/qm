@@ -49,7 +49,7 @@ def call(method: str, path: str, query: dict | None = None):
     url = f"{API}/{path}" + (f"?{urllib.parse.urlencode(query, doseq=True)}" if query else "")
     tok = os.environ.get("VAULT_TOKEN_GMAIL_GOOGLEAPIS_COM", "")
     if not tok:
-        sys.exit("no Gmail token: ask the user to connect Google")
+        sys.exit("no Gmail token: re-run with execute.credentials [\"connector_gmail_googleapis_com_default\"] (or the gmail handle your instructions list); only if no such handle is listed, ask the user to connect Google")
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {tok}"}, method=method)
     try:
         with urllib.request.urlopen(req, timeout=60) as res:

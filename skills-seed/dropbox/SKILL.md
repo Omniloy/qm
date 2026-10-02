@@ -11,19 +11,21 @@ requiredCapabilities:
 Use this skill when the user asks about their Dropbox files or folders — listing,
 searching, reading/downloading, uploading, or sharing.
 
-This is an OAuth connector. The resolved user's Dropbox token already lives on your
-computer as an environment variable, one per Dropbox API host (the way a logged-in CLI's
-cached credential would):
+This is an OAuth connector. The resolved user's Dropbox token is delivered per command, never
+left on the computer: pass the connector's handle in `execute.credentials` on every
+command that calls the API, with the execute scope the handle lists under "Execution
+credentials" in your instructions. Each handle sets one variable for that command only:
 
-- `$VAULT_TOKEN_API_DROPBOXAPI_COM` — for `api.dropboxapi.com` (RPC: list, search, share, move, delete)
-- `$VAULT_TOKEN_CONTENT_DROPBOXAPI_COM` — for `content.dropboxapi.com` (download, upload)
+- `connector_api_dropboxapi_com_default` → `$VAULT_TOKEN_API_DROPBOXAPI_COM` (RPC: list, search, share, move, delete)
+- `connector_content_dropboxapi_com_default` → `$VAULT_TOKEN_CONTENT_DROPBOXAPI_COM` (download, upload)
 
-Both carry the **same** Dropbox token (one OAuth grant spans every host), so if a
-host-specific var is empty, `$VAULT_TOKEN_API_DROPBOXAPI_COM` works as the bearer for any
-Dropbox host. Pass it as `-H "Authorization: Bearer $VAULT_TOKEN_..."`. Never ask the user
+Both carry the **same** Dropbox token (one OAuth grant spans every host), so if a host's
+handle is not listed, request `connector_api_dropboxapi_com_default` and use
+`$VAULT_TOKEN_API_DROPBOXAPI_COM` as the bearer for any Dropbox host. Pass it as `-H "Authorization: Bearer $VAULT_TOKEN_..."`. Never ask the user
 for a token, log it, or use another principal's credential or a service fallback.
 
-If `$VAULT_TOKEN_API_DROPBOXAPI_COM` is **empty**: per-user connector tokens are injected
+If `$VAULT_TOKEN_API_DROPBOXAPI_COM` is **empty** after you requested its handle, or the handle is
+not listed in your instructions: per-user connector tokens are injected
 only in a **direct DM** with the user (their personal scope) — in a channel or group
 they're absent by design, even for a fully-connected user. So don't tell a channel user to
 reconnect; ask them to DM you to run this. Only if it's empty inside a DM does it mean they

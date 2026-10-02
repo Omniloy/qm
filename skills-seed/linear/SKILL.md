@@ -11,10 +11,12 @@ Use this skill when the user asks about Linear issues, tickets, projects, cycles
 their team's work tracking — finding issues, checking status, filing a bug, leaving a
 comment, or updating an issue.
 
-This is an OAuth connector. The resolved user's Linear token already lives on your
-computer as an environment variable (the way a logged-in CLI's cached credential would):
+This is an OAuth connector. The resolved user's Linear token is delivered per command, never
+left on the computer: pass the connector's handle in `execute.credentials` on every
+command that calls the API, with the execute scope the handle lists under "Execution
+credentials" in your instructions. Each handle sets one variable for that command only:
 
-- `$VAULT_TOKEN_API_LINEAR_APP` — for `api.linear.app`
+- `connector_api_linear_app_default` → `$VAULT_TOKEN_API_LINEAR_APP` (for `api.linear.app`)
 
 Linear's API is GraphQL at `https://api.linear.app/graphql`. Pass the token as a bearer
 header (`-H "Authorization: Bearer $VAULT_TOKEN_API_LINEAR_APP"`). Do not ask the user for

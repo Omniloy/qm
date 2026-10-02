@@ -12,11 +12,15 @@ send themselves: "draft a reply to X", "prep a message for #general", "write tha
 as a Slack draft". The draft lands in their own Slack composer, attributed to them,
 targeted at the conversation you choose — nothing is posted.
 
-This is an OAuth connector. The resolved user's Slack user token lives on your
-computer as `$VAULT_TOKEN_SLACK_COM`. Do not ask the user for a token, log it, or
-use another principal's. If the variable is empty or Slack returns 401/403, the user
-either has not connected Slack or connected before this permission existed — tell
-them to (re)connect it through the product OAuth flow.
+This is an OAuth connector. The resolved user's Slack user token is delivered per
+command, never left on the computer: pass `connector_slack_com_default` in
+`execute.credentials` on every command that calls Slack, with the execute scope it lists
+under "Execution credentials" in your instructions, and it sets `$VAULT_TOKEN_SLACK_COM`
+for that command only. Do not ask the user for a token, log it, or use another
+principal's. An empty variable means the handle was not requested, so re-run with it.
+Only when the handle is missing from your instructions, or Slack returns 401/403, has the
+user not connected Slack (or connected before this permission existed) — then tell them
+to (re)connect it through the product OAuth flow.
 
 Use the bundled helper for every draft — it owns destination resolution, rich-text
 block construction, and the required draft envelope:

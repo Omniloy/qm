@@ -13,24 +13,29 @@ requiredCapabilities:
 Use this skill when the user asks about Drive files, Google Docs, Google Sheets, Google
 Slides, sharing/access problems, or reading/editing any of that content.
 
-This is an OAuth connector. The resolved user's Google OAuth token already lives on
-your computer as an environment variable, one per Google API host (the way a logged-in
-CLI's cached credential would):
+This is an OAuth connector. The resolved user's Google OAuth token is delivered per command, never
+left on the computer: pass the connector's handle in `execute.credentials` on every
+command that calls the API, with the execute scope the handle lists under "Execution
+credentials" in your instructions. Each handle sets one variable for that command only:
 
-- `$VAULT_TOKEN_WWW_GOOGLEAPIS_COM` — for `www.googleapis.com` (Drive)
-- `$VAULT_TOKEN_SHEETS_GOOGLEAPIS_COM` — for `sheets.googleapis.com` (Sheets)
-- `$VAULT_TOKEN_DOCS_GOOGLEAPIS_COM` — for `docs.googleapis.com` (Docs)
-- `$VAULT_TOKEN_SLIDES_GOOGLEAPIS_COM` — for `slides.googleapis.com` (Slides)
+- `connector_www_googleapis_com_default` → `$VAULT_TOKEN_WWW_GOOGLEAPIS_COM` (Drive)
+- `connector_sheets_googleapis_com_default` → `$VAULT_TOKEN_SHEETS_GOOGLEAPIS_COM` (Sheets)
+- `connector_docs_googleapis_com_default` → `$VAULT_TOKEN_DOCS_GOOGLEAPIS_COM` (Docs)
+- `connector_slides_googleapis_com_default` → `$VAULT_TOKEN_SLIDES_GOOGLEAPIS_COM` (Slides)
 
-These all carry the **same** Google token (one OAuth grant spans every Google API), so
-if a host-specific var is empty (e.g. an older connection made before that host was
-added), `$VAULT_TOKEN_WWW_GOOGLEAPIS_COM` works as the bearer for any Google API host.
+A `_personal` or `_company` suffix replaces `_default` when the user connected more than one
+Google account; use the handles your instructions list. These all carry the **same** Google
+token (one OAuth grant spans every Google API), so if a host's handle is not listed (an
+older connection made before that host was added), request
+`connector_www_googleapis_com_default` and use `$VAULT_TOKEN_WWW_GOOGLEAPIS_COM` as the bearer
+for any Google API host.
 
 Call the Google APIs directly over `https://` with `curl` and pass the matching token
 as a bearer header (`-H "Authorization: Bearer $VAULT_TOKEN_..."`). Do not ask the user
 for a token, log it, or use another principal's credential or a service fallback.
 
-If the variable is empty or the API returns 401/403 or a file is inaccessible, tell the
+If the variable is empty after you requested its handle, the handle is missing from your
+instructions, or the API returns 401/403 or a file is inaccessible, tell the
 user which Google account/principal needs access and whether they should connect Google
 or share the file with that account.
 
