@@ -11,8 +11,10 @@ import {
   providerLimit,
   providerLimitMessage,
   settleProviderLimit,
+  turnFailureKind,
   turnFailureMessage,
 } from "../src/core/turn-error.ts";
+import { userFacingFailureText } from "../src/core/failure-copy.ts";
 import { codexProxyResetAt, type CodexProxy } from "../src/model/codex-proxy.ts";
 import { buildApp } from "../src/wiring.ts";
 import { testConfig } from "./support/test-config.ts";
@@ -129,6 +131,13 @@ test("a usage limit settles into a non-retryable failure whose message survives 
   assert.match(settled.message, /^You've reached the OpenAI usage limit for gpt-6-sol on the connected ChatGPT/);
   assert.match(settled.message, /resets in about 22 hours/);
   assert.equal(turnFailureMessage(settled), settled.message);
+  assert.equal(turnFailureKind(settled), "provider_limit");
+});
+
+test("only provider limits mark their failure reason as user-facing", () => {
+  assert.equal(turnFailureKind(new Error(ANTHROPIC_RATE)), "provider_limit");
+  assert.equal(turnFailureKind(new NonRetryableTurnError("swarm service unavailable")), undefined);
+  assert.equal(turnFailureKind(new Error("socket hang up")), undefined);
 });
 
 test("transient rate limits stay on the retry path", async () => {
@@ -219,6 +228,10 @@ test("a turn that hits the proxy usage limit parks on its first attempt with the
       assert.equal(first.status, "ok");
       await assert.rejects(app.turn(dm("!usage-limit", "usage-limit-1")), /usage limit for gpt-6-sol/);
       assert.equal(await runs.activeForThread("dm:U1:limit"), null, "parked on the first attempt, no retry queued");
+      const parked = await runs.latestForThread("dm:U1:limit");
+      assert.equal(parked?.status, "failed");
+      assert.equal(parked?.result?.refusalKind, "provider_limit");
+      assert.match(userFacingFailureText(parked!.result!), /^You've reached the OpenAI usage limit for gpt-6-sol/);
       const session = await app.getSession(first.sessionId!);
       const failures = session!.entries.filter(
         (e) => e.type === "system" && (e.payload as { kind?: string }).kind === "turn_failure",

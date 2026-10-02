@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import type { EnqueueInput, EnqueueResult, ReapEvent, Run, RunDeliveryState, RunStore } from "./run-store.ts";
 import { isTerminal, leaseLapsed, releasesDedupKey } from "./run-store.ts";
 import type { LedgerBegin, ToolLedger } from "./tool-ledger.ts";
+import type { TurnResult } from "../types.ts";
 
 export interface MemoryRuntime {
   runs: RunStore;
@@ -136,8 +137,11 @@ export function createMemoryRunStore(opts?: { maxClaims?: number }): MemoryRunti
       const run = runs.get(runId);
       if (!run || run.leaseToken !== leaseToken) return { requeued: false };
       return {
-        requeued: retire(run, error, opts?.retry !== false, { countsAsError: true, retryAfterMs: opts?.retryAfterMs })
-          .requeued,
+        requeued: retire(run, error, opts?.retry !== false, {
+          countsAsError: true,
+          retryAfterMs: opts?.retryAfterMs,
+          refusalKind: opts?.refusalKind,
+        }).requeued,
       };
     },
 
@@ -354,7 +358,12 @@ export function createMemoryRunStore(opts?: { maxClaims?: number }): MemoryRunti
     run: Run,
     error: string,
     retry: boolean,
-    opts?: { ifExpiredAt?: number; countsAsError?: boolean; retryAfterMs?: number },
+    opts?: {
+      ifExpiredAt?: number;
+      countsAsError?: boolean;
+      retryAfterMs?: number;
+      refusalKind?: TurnResult["refusalKind"];
+    },
   ): { requeued: boolean; applied: boolean } {
     if (run.status !== "running") return { requeued: false, applied: false };
     if (opts?.ifExpiredAt !== undefined && (run.leaseExpiresAt === null || run.leaseExpiresAt > opts.ifExpiredAt)) {
@@ -375,7 +384,12 @@ export function createMemoryRunStore(opts?: { maxClaims?: number }): MemoryRunti
       !opts?.countsAsError && overClaimed && retry && run.errorAttempts < run.maxAttempts
         ? `run parked after ${run.attempts} claims without completing (suspected crash loop)`
         : error;
-    run.result = { status: "failed", sessionId: run.sessionId, reason };
+    run.result = {
+      status: "failed",
+      sessionId: run.sessionId,
+      reason,
+      ...(reason === error && opts?.refusalKind ? { refusalKind: opts.refusalKind } : {}),
+    };
     run.finishedAt = Date.now();
     settle(run);
     return { requeued: false, applied: true };

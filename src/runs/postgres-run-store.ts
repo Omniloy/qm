@@ -210,7 +210,12 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
     run: Run,
     error: string,
     retry: boolean,
-    opts?: { ifExpiredAt?: number; countsAsError?: boolean; retryAfterMs?: number },
+    opts?: {
+      ifExpiredAt?: number;
+      countsAsError?: boolean;
+      retryAfterMs?: number;
+      refusalKind?: TurnResult["refusalKind"];
+    },
   ): Promise<{ requeued: boolean; applied: boolean }> {
     const ifExpiredAt = opts?.ifExpiredAt ?? null;
     const countsAsError = opts?.countsAsError ?? false;
@@ -229,7 +234,12 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
       !countsAsError && overClaimed && retry && errorAttemptsAfter < run.maxAttempts
         ? `run parked after ${run.attempts} claims without completing (suspected crash loop)`
         : error;
-    const result: TurnResult = { status: "failed", sessionId: run.sessionId, reason };
+    const result: TurnResult = {
+      status: "failed",
+      sessionId: run.sessionId,
+      reason,
+      ...(reason === error && opts?.refusalKind ? { refusalKind: opts.refusalKind } : {}),
+    };
     const { rowCount } = await q(
       `UPDATE runs SET status='failed', result=$4, lease_token=NULL, lease_expires_at=NULL, worker_id=NULL, finished_at=$5,
          error_attempts=error_attempts+$6
@@ -347,7 +357,11 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
       if (!run || run.leaseToken !== leaseToken) return { requeued: false };
       return {
         requeued: (
-          await retire(run, error, opts?.retry !== false, { countsAsError: true, retryAfterMs: opts?.retryAfterMs })
+          await retire(run, error, opts?.retry !== false, {
+            countsAsError: true,
+            retryAfterMs: opts?.retryAfterMs,
+            refusalKind: opts?.refusalKind,
+          })
         ).requeued,
       };
     },

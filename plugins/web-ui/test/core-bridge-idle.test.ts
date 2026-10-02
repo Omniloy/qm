@@ -382,6 +382,28 @@ test("a failed run renders friendly copy, never the internal failure reason", as
   assert.equal(final.errorMessage, "Something went wrong on my end and I couldn't finish that. Try again in a moment.");
 });
 
+test("a provider-limit failure shows its authored reason live, while an unmarked one with the same text stays generic", async () => {
+  setClock(() => 1_000_000);
+  instantSleep();
+  const reason =
+    "You've reached the OpenAI usage limit for gpt-6-sol on the connected ChatGPT subscription. Try again later or pick another model.";
+  stubRuns([{ status: "failed", result: { status: "failed", refusalKind: "provider_limit", reason }, partial: "" }]);
+  const marked = createAssistantMessageEventStream();
+  await pollRun(marked, blankAssistant(), "run-provider-limit", freshAcc(1_000_000));
+  const markedFinal = await drain(marked);
+  assert.equal(markedFinal.stopReason, "error");
+  assert.equal(markedFinal.errorMessage, reason);
+
+  stubRuns([{ status: "failed", result: { status: "failed", reason }, partial: "" }]);
+  const unmarked = createAssistantMessageEventStream();
+  await pollRun(unmarked, blankAssistant(), "run-unmarked-limit", freshAcc(1_000_000));
+  const unmarkedFinal = await drain(unmarked);
+  assert.equal(
+    unmarkedFinal.errorMessage,
+    "Something went wrong on my end and I couldn't finish that. Try again in a moment.",
+  );
+});
+
 test("a refused run still shows its authored, user-facing reason", async () => {
   setClock(() => 1_000_000);
   instantSleep();

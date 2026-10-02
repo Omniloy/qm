@@ -1,10 +1,18 @@
 import { codexProxyResetAt, type CodexProxy } from "../model/codex-proxy.ts";
+import type { TurnResult } from "../types.ts";
 import { headSlice } from "../util/text.ts";
 
 export class NonRetryableTurnError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "NonRetryableTurnError";
+  }
+}
+
+class ProviderLimitError extends NonRetryableTurnError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "ProviderLimitError";
   }
 }
 
@@ -105,11 +113,15 @@ export async function settleProviderLimit(
   const now = Date.now();
   const transient = settled.resetAt ? settled.resetAt - now <= TRANSIENT_RESET_MS : settled.kind === "rate";
   if (transient) return err;
-  return new NonRetryableTurnError(providerLimitMessage(settled, now), { cause: err });
+  return new ProviderLimitError(providerLimitMessage(settled, now), { cause: err });
 }
 
 export function turnFailureMessage(err: unknown): string {
   const limit = providerLimit(err);
   if (limit) return providerLimitMessage(limit);
   return err instanceof NonRetryableTurnError && err.message.trim() ? err.message : GENERIC_TURN_FAILURE;
+}
+
+export function turnFailureKind(err: unknown): TurnResult["refusalKind"] {
+  return err instanceof ProviderLimitError || providerLimit(err) ? "provider_limit" : undefined;
 }

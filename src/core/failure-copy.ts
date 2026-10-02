@@ -25,6 +25,7 @@ export function standaloneFailureText(result: FailureShape): string | undefined 
 export function userFacingFailureClause(result: FailureShape): string {
   if (result.refusalKind === "security_quarantine") return SECURITY_QUARANTINE_REFUSAL_TEXT;
   if (result.refusalKind === "session_busy") return SESSION_BUSY_CLAUSE;
-  if (result.status === "failed" || !result.reason) return GENERIC_FAILURE_CLAUSE;
+  if ((result.status === "failed" && result.refusalKind !== "provider_limit") || !result.reason)
+    return GENERIC_FAILURE_CLAUSE;
   return result.reason;
 }

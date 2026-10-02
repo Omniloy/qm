@@ -80,6 +80,54 @@ for (const backend of ["memory", "postgres"] as const) {
   );
 
   test(
+    `${backend}: a failure's provider-limit marker survives the store and a reload`,
+    { skip: backend === "postgres" && !process.env.DATABASE_URL },
+    async () => {
+      let connectionString = process.env.DATABASE_URL!;
+      let admin: Pool | undefined;
+      const schema = `fail_kind_${randomUUID().replaceAll("-", "")}`;
+      if (backend === "postgres") {
+        const pg = (await import("pg")).default;
+        admin = new pg.Pool({ connectionString });
+        await admin.query(`CREATE SCHEMA ${schema}`);
+        const url = new URL(connectionString);
+        url.searchParams.set("options", `-c search_path=${schema}`);
+        connectionString = url.toString();
+      }
+      const reason = "You've reached the OpenAI usage limit. Try again later or pick another model.";
+      let { runs } = backend === "memory" ? createMemoryRunStore() : createPostgresRunStore(connectionString);
+      try {
+        const marked = (await runs.enqueue({ sessionId: randomUUID(), request })).run;
+        const markedLease = await runs.claimById(marked.id, "worker", 60_000);
+        await runs.fail(marked.id, markedLease!.leaseToken!, reason, { retry: false, refusalKind: "provider_limit" });
+        const plain = (await runs.enqueue({ sessionId: randomUUID(), request })).run;
+        const plainLease = await runs.claimById(plain.id, "worker", 60_000);
+        await runs.fail(plain.id, plainLease!.leaseToken!, "TypeError: boom", { retry: false });
+        if (backend === "postgres") {
+          await runs.close?.();
+          runs = createPostgresRunStore(connectionString).runs;
+        }
+        assert.deepEqual((await runs.get(marked.id))?.result, {
+          status: "failed",
+          sessionId: marked.sessionId,
+          reason,
+          refusalKind: "provider_limit",
+        });
+        assert.equal((await runs.get(plain.id))?.result?.refusalKind, undefined);
+      } finally {
+        await runs.close?.();
+        if (admin) {
+          try {
+            await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+          } finally {
+            await admin.end();
+          }
+        }
+      }
+    },
+  );
+
+  test(
     `${backend}: failed returns wait durably without delaying new work or acknowledging results`,
     { skip: backend === "postgres" && !process.env.DATABASE_URL },
     async (t) => {
