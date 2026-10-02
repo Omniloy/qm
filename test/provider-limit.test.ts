@@ -231,3 +231,11 @@ test("a turn that hits the proxy usage limit parks on its first attempt with the
     },
   );
 });
+
+test("an OpenAI billing quota 429 keeps its own message instead of a rate-limit hint", () => {
+  const err = new NonRetryableTurnError(
+    'OpenAI API error (429): {"message":"You exceeded your current quota, please check your plan and billing details.","type":"insufficient_quota","code":"insufficient_quota"}',
+  );
+  assert.equal(providerLimit(err), null);
+  assert.equal(turnFailureMessage(err), err.message);
+});

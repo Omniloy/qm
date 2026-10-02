@@ -32,6 +32,7 @@ export interface ProviderLimit {
 
 const USAGE_LIMIT_CODE = /model_cooldown|usage_limit_reached/;
 const RATE_LIMIT_CODE = /rate_limit_error|API error \(429\)/;
+const BILLING_CODE = /insufficient_quota|billing_hard_limit/;
 const TRANSIENT_RESET_MS = 60_000;
 
 function resetAtFrom(text: string, now: number): number | undefined {
@@ -50,7 +51,7 @@ function providerFrom(text: string): string | undefined {
 export function providerLimit(err: unknown, fallbackModel?: string, now = Date.now()): ProviderLimit | null {
   const text = err instanceof Error ? err.message : String(err);
   const usage = USAGE_LIMIT_CODE.test(text);
-  if (!usage && !RATE_LIMIT_CODE.test(text)) return null;
+  if (!usage && (!RATE_LIMIT_CODE.test(text) || BILLING_CODE.test(text))) return null;
   const model = /for model ([\w:/-]+(?:\.[\w:/-]+)*)/.exec(text)?.[1] ?? fallbackModel;
   const viaCodexProxy = /model_cooldown|via provider codex/.test(text);
   const provider = providerFrom(`${text} ${model ?? ""}`);
