@@ -24,12 +24,12 @@ handle is not listed, request `connector_api_dropboxapi_com_default` and use
 `$VAULT_TOKEN_API_DROPBOXAPI_COM` as the bearer for any Dropbox host. Pass it as `-H "Authorization: Bearer $VAULT_TOKEN_..."`. Never ask the user
 for a token, log it, or use another principal's credential or a service fallback.
 
-If `$VAULT_TOKEN_API_DROPBOXAPI_COM` is **empty** after you requested its handle, or the handle is
-not listed in your instructions: per-user connector tokens are injected
-only in a **direct DM** with the user (their personal scope) — in a channel or group
-they're absent by design, even for a fully-connected user. So don't tell a channel user to
-reconnect; ask them to DM you to run this. Only if it's empty inside a DM does it mean they
-haven't connected Dropbox — then point them to the Connectors page.
+If `$VAULT_TOKEN_API_DROPBOXAPI_COM` is **empty**, the handle was not requested, so re-run the
+command with it. If no Dropbox handle is listed in your instructions, connector tokens are not offered here: they reach only the user's direct DM with you, or
+the live speaker in an Open shared conversation. In a channel or group, don't tell a
+connected user to reconnect; ask them to DM you to run this. Only a
+missing handle inside their DM means they haven't connected Dropbox — then point them to the
+Connectors page.
 
 On **401**: the token is expired/invalid → have them reconnect — _unless_ the error body's
 `.tag` is `missing_scope`, in which case the app lacks a permission; name the `required_scope`

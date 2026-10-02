@@ -22,8 +22,12 @@ Linear's API is GraphQL at `https://api.linear.app/graphql`. Pass the token as a
 header (`-H "Authorization: Bearer $VAULT_TOKEN_API_LINEAR_APP"`). Do not ask the user for
 a token, log it, or use another principal's credential.
 
-If the variable is empty or the API returns 401/400 (`authentication`), tell the user they
-need to connect Linear (Connectors page) and stop — don't guess at issue data.
+An empty variable means the handle was not requested, so re-run the command with it. If the
+handle is not listed in your instructions, connector tokens are not offered here: they reach only the user's direct DM with you, or
+the live speaker in an Open shared conversation. In a channel or group, don't tell a
+connected user to reconnect; ask them to DM you to run this. Only a missing handle inside their
+DM, or the API returning 401/400 (`authentication`), means they need to connect Linear
+(Connectors page) — tell them and stop; don't guess at issue data.
 
 ## Find / read issues
 
