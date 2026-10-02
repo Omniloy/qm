@@ -133,12 +133,14 @@ test("the curated catalog contains only current model families", () => {
       "claude-fable-5",
       "claude-opus-5",
       "claude-opus-4-8",
+      "claude-sonnet-5-5",
       "claude-sonnet-5",
       "claude-haiku-4-5",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
       "gpt-6-astra",
+      "gpt-6.1-sol",
       "gpt-6-sol",
       "gpt-6-luna",
       "openrouter/auto",
@@ -146,7 +148,9 @@ test("the curated catalog contains only current model families", () => {
   );
   assert.equal(getRequiredModel("gpt-5.6-sol").contextWindow, 1_050_000);
   assert.equal(getRequiredModel("gpt-6-astra").contextWindow, 1_050_000);
+  assert.equal(getRequiredModel("gpt-6.1-sol").contextWindow, 1_050_000);
   assert.equal(getRequiredModel("gpt-6-sol").contextWindow, 1_050_000);
+  assert.equal(getRequiredModel("claude-sonnet-5-5").contextWindow, 1_000_000);
   assert.equal(getRequiredModel("gpt-6-luna").contextWindow, 1_050_000);
   assert.deepEqual(getRequiredModel("gpt-6-sol").cost, {
     input: 2,
