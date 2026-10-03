@@ -989,7 +989,7 @@ test("followup accepts only typed runtime and staged attachment fields", async (
     return held;
   };
   const options = {
-    model: "gpt-5.6-terra",
+    model: "gpt-6-astra",
     harness: "pi",
     thinkingLevel: "high",
     fastMode: true,

@@ -333,7 +333,7 @@ test("endpoint, template metadata, credential revision, and model edits change v
   try {
     const original = (await verifier(parseModelOverlay(spec))).fingerprint;
     assert.equal((await verifier(parseModelOverlay(spec))).fingerprint, original);
-    assert.notEqual((await verifier(parseModelOverlay({ ...spec, template: "gpt-5.6-sol" }))).fingerprint, original);
+    assert.notEqual((await verifier(parseModelOverlay({ ...spec, template: "gpt-6.1-sol" }))).fingerprint, original);
     assert.notEqual((await verifier(parseModelOverlay({ ...spec, maxTokens: 8000 }))).fingerprint, original);
     setProviderBaseUrls({ openai: "http://127.0.0.1:19999/v1" });
     assert.notEqual((await verifier(parseModelOverlay(spec))).fingerprint, original);

@@ -419,6 +419,7 @@ import {
 import {
   auxiliaryModelFor,
   auxiliaryModelForProvider,
+  canonicalModelId,
   defaultModelForHarness,
   modelProviderAvailabilityFor,
   resolveModel,
@@ -1581,7 +1582,11 @@ export function buildApp(
       if (input.runtimePinned && input.runtime?.harnessId && input.runtime.modelId) {
         if (!modelSupportedByHarness(input.runtime.modelId, input.runtime.harnessId))
           throw new Error(`Unsupported model: ${input.runtime.modelId}`);
-        return { ...input.runtime, harnessId: input.runtime.harnessId, modelId: input.runtime.modelId };
+        return {
+          ...input.runtime,
+          harnessId: input.runtime.harnessId,
+          modelId: canonicalModelId(input.runtime.modelId),
+        };
       }
       return resolveRuntimeChoiceDurable(
         configStore,

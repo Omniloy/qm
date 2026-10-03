@@ -111,13 +111,13 @@ const classify = (base: string, modelId: string, status: string) =>
 test("a hidden model drops from the surface picker and base options; a legacy one stays", async () => {
   const srv = startAnthropic();
   try {
-    assert.equal((await classify(srv.base, "claude-sonnet-5", "hidden")).status, 200);
+    assert.equal((await classify(srv.base, "claude-sonnet-5-5", "hidden")).status, 200);
     assert.equal((await classify(srv.base, "claude-haiku-4-5", "legacy")).status, 200);
 
     const surface = await fetch(`${srv.base}/v1/surface-config`);
     const surfaceModels = ((await surface.json()) as { webuiModels: string[] }).webuiModels;
-    assert.ok(!surfaceModels.includes("claude-sonnet-5"));
-    assert.ok(surfaceModels.includes("claude-opus-5"));
+    assert.ok(!surfaceModels.includes("claude-sonnet-5-5"));
+    assert.ok(surfaceModels.includes("claude-opus-5-5"));
     assert.ok(surfaceModels.includes("claude-haiku-4-5"));
 
     const scope = await fetch(`${srv.base}/v1/admin/scopes/org%3Adefault-org`, { headers: ADMIN });
@@ -127,11 +127,11 @@ test("a hidden model drops from the surface picker and base options; a legacy on
       browseModelOptions: Array<{ id: string }>;
     };
     const has = (list: Array<{ id: string }>, id: string) => list.some((m) => m.id === id);
-    assert.ok(!has(data.baseModelOptions, "claude-sonnet-5"));
-    assert.ok(has(data.baseModelOptions, "claude-opus-5"));
+    assert.ok(!has(data.baseModelOptions, "claude-sonnet-5-5"));
+    assert.ok(has(data.baseModelOptions, "claude-opus-5-5"));
     assert.ok(has(data.baseModelOptions, "claude-haiku-4-5"));
-    assert.ok(!has(data.modelsByHarness.pi!, "claude-sonnet-5"));
-    assert.ok(!has(data.browseModelOptions, "claude-sonnet-5"));
+    assert.ok(!has(data.modelsByHarness.pi!, "claude-sonnet-5-5"));
+    assert.ok(!has(data.browseModelOptions, "claude-sonnet-5-5"));
   } finally {
     await srv.close();
   }
@@ -167,14 +167,14 @@ test("a hidden model pinned as the base survives for the scope that runs it, not
 test("a child scope's config reports the org classification map that filters its own options", async () => {
   const srv = startAnthropic();
   try {
-    assert.equal((await classify(srv.base, "claude-sonnet-5", "hidden")).status, 200);
+    assert.equal((await classify(srv.base, "claude-sonnet-5-5", "hidden")).status, 200);
     const personalScope = await fetch(`${srv.base}/v1/admin/scopes/personal%3Aalice`, { headers: ADMIN });
     const data = (await personalScope.json()) as {
       modelClassifications: Record<string, string>;
       modelsByHarness: Record<string, Array<{ id: string }>>;
     };
-    assert.equal(data.modelClassifications["claude-sonnet-5"], "hidden");
-    assert.ok(!data.modelsByHarness.pi!.some((m) => m.id === "claude-sonnet-5"));
+    assert.equal(data.modelClassifications["claude-sonnet-5-5"], "hidden");
+    assert.ok(!data.modelsByHarness.pi!.some((m) => m.id === "claude-sonnet-5-5"));
   } finally {
     await srv.close();
   }
@@ -189,11 +189,11 @@ test("the config reports the unfiltered default picker set, so a non-serviceable
       modelsByHarness: Record<string, Array<{ id: string }>>;
     };
     assert.ok(
-      data.webuiModelDefaults.includes("gpt-5.6-sol"),
+      data.webuiModelDefaults.includes("gpt-6.1-sol"),
       "the default set is provider-key-independent, so an OpenAI model stays in it under an Anthropic-only deployment",
     );
     assert.ok(
-      !data.modelsByHarness.codex!.some((m) => m.id === "gpt-5.6-sol"),
+      !data.modelsByHarness.codex!.some((m) => m.id === "gpt-6.1-sol"),
       "the filtered options do omit it, which is exactly why materializing from them would drop it",
     );
   } finally {
@@ -208,14 +208,14 @@ test("the classification route validates the model id, the status, the scope, an
     assert.equal(unknown.status, 400);
     assert.match(((await unknown.json()) as { message: string }).message, /unknown model id/);
 
-    const badStatus = await classify(srv.base, "claude-opus-5", "retired");
+    const badStatus = await classify(srv.base, "claude-opus-5-5", "retired");
     assert.equal(badStatus.status, 400);
     assert.match(((await badStatus.json()) as { message: string }).message, /status must be one of/);
 
     const wrongScope = await fetch(`${srv.base}/v1/admin/scopes/personal%3Aalice/model-classifications`, {
       method: "PUT",
       headers: ADMIN,
-      body: JSON.stringify({ modelId: "claude-opus-5", status: "hidden" }),
+      body: JSON.stringify({ modelId: "claude-opus-5-5", status: "hidden" }),
     });
     assert.equal(wrongScope.status, 400);
     assert.match(((await wrongScope.json()) as { message: string }).message, /org-wide/);
@@ -223,7 +223,7 @@ test("the classification route validates the model id, the status, the scope, an
     const nonAdmin = await fetch(`${srv.base}/v1/admin/scopes/org%3Adefault-org/model-classifications`, {
       method: "PUT",
       headers: { "content-type": "application/json", "x-admin-actor": "nobody@default-org" },
-      body: JSON.stringify({ modelId: "claude-opus-5", status: "hidden" }),
+      body: JSON.stringify({ modelId: "claude-opus-5-5", status: "hidden" }),
     });
     assert.equal(nonAdmin.status, 403);
   } finally {
@@ -234,12 +234,12 @@ test("the classification route validates the model id, the status, the scope, an
 test("a scope's chat picker grandfathers the pairings it is configured with, and no other Anthropic model", async () => {
   const srv = startAnthropic();
   try {
-    srv.built.config.setRuntimeSelection("org:default-org", { harnessId: "pi", modelId: "claude-opus-5" });
-    srv.built.config.setRuntimeSelection("personal:alice", { harnessId: "pi", modelId: "claude-sonnet-5" });
+    srv.built.config.setRuntimeSelection("org:default-org", { harnessId: "pi", modelId: "claude-opus-5-5" });
+    srv.built.config.setRuntimeSelection("personal:alice", { harnessId: "pi", modelId: "claude-sonnet-5-5" });
     const runtime = await fetch(`${srv.base}/v1/runtime-config?principalId=alice&scopeId=personal%3Aalice`);
     const pi = ((await runtime.json()) as { modelsByHarness: Record<string, string[]> }).modelsByHarness.pi!;
-    assert.ok(pi.includes("claude-sonnet-5"), "the scope keeps seeing what it is actually running");
-    assert.ok(pi.includes("claude-opus-5"), "the org default stays reachable, so the scope can inherit it again");
+    assert.ok(pi.includes("claude-sonnet-5-5"), "the scope keeps seeing what it is actually running");
+    assert.ok(pi.includes("claude-opus-5-5"), "the org default stays reachable, so the scope can inherit it again");
     assert.equal(pi.includes("claude-opus-4-8"), false, "no other Anthropic model is offered for pi");
   } finally {
     await srv.close();
@@ -252,7 +252,7 @@ test("picker-only filters never refuse a scheduled or triggered runtime the depl
     assert.equal((await classify(srv.base, "claude-opus-4-8", "hidden")).status, 200);
     const runtime = await fetch(`${srv.base}/v1/runtime-config?principalId=alice&scopeId=personal%3Aalice`);
     const pi = ((await runtime.json()) as { modelsByHarness: Record<string, string[]> }).modelsByHarness.pi!;
-    assert.equal(pi.includes("claude-sonnet-5"), false);
+    assert.equal(pi.includes("claude-sonnet-5-5"), false);
     assert.equal(pi.includes("claude-opus-4-8"), false);
 
     const ctx = {
@@ -264,7 +264,7 @@ test("picker-only filters never refuse a scheduled or triggered runtime the depl
     };
     for (const purpose of ["cron", undefined] as const) {
       assert.equal(
-        await availableRuntimeError(ctx, "personal:alice", { harnessId: "pi", modelId: "claude-sonnet-5" }, purpose),
+        await availableRuntimeError(ctx, "personal:alice", { harnessId: "pi", modelId: "claude-sonnet-5-5" }, purpose),
         null,
       );
       assert.equal(

@@ -4,14 +4,14 @@ import { metadata } from "./model-metadata.ts";
 export const inboxRuntime = {
   scopeId: "personal:taylor@example.com",
   modelCatalog: {
-    "gpt-5.6-sol": metadata("gpt-5.6-sol", "GPT-5.6 Sol"),
-    "gpt-5.6-terra": metadata("gpt-5.6-terra", "GPT-5.6 Terra"),
+    "gpt-6.1-sol": metadata("gpt-6.1-sol", "GPT-6.1 Sol"),
+    "gpt-6-astra": metadata("gpt-6-astra", "GPT-6 Astra"),
   },
   approvedHarnesses: ["pi"],
-  modelsByHarness: { pi: ["gpt-5.6-sol", "gpt-5.6-terra"] },
-  orgDefault: { harnessId: "pi", modelId: "gpt-5.6-sol", revision: 0 },
-  effective: { harnessId: "pi", modelId: "gpt-5.6-sol", effortLevel: "medium", fastMode: false },
-  fastModeModelIds: ["gpt-5.6-sol", "gpt-5.6-terra"],
+  modelsByHarness: { pi: ["gpt-6.1-sol", "gpt-6-astra"] },
+  orgDefault: { harnessId: "pi", modelId: "gpt-6.1-sol", revision: 0 },
+  effective: { harnessId: "pi", modelId: "gpt-6.1-sol", effortLevel: "medium", fastMode: false },
+  fastModeModelIds: ["gpt-6.1-sol", "gpt-6-astra"],
   scopeOverride: null,
 };
 

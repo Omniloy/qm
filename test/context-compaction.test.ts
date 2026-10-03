@@ -143,7 +143,7 @@ function buildOrchestrator(
     defaultTurnWallClockMs,
     sessionTapeMode,
     runtime: createRuntimeService(
-      { config, harnessId: "pi", baseModelDefault: "claude-sonnet-5" },
+      { config, harnessId: "pi", baseModelDefault: "claude-sonnet-5-5" },
       { authorizesCapabilityScope: async () => true },
     ),
   });
@@ -1176,7 +1176,7 @@ test("a retry restores a committed runtime decision after reset crashes, without
 
 test("only a cron automation receives task-runtime authority and each fire starts fresh", async () => {
   const base = createMockHarness();
-  const active = { harnessId: "pi" as const, modelId: "claude-sonnet-5", effortLevel: "high", fastMode: false };
+  const active = { harnessId: "pi" as const, modelId: "claude-sonnet-5-5", effortLevel: "high", fastMode: false };
   const outcomes: { surface: string; ok: boolean }[] = [];
   let resumed = 0;
   const harness: Harness = {
@@ -1236,7 +1236,7 @@ test("only a cron automation receives task-runtime authority and each fire start
 test("cron and loop dispatch use purpose defaults while task handoffs and later fires stay isolated", async () => {
   const base = createMockHarness();
   const category = { harnessId: "pi" as const, modelId: "gpt-6-astra", effortLevel: "low", fastMode: true };
-  const handoff = { ...category, modelId: "gpt-6-sol", fastMode: false };
+  const handoff = { ...category, modelId: "gpt-6.1-sol", fastMode: false };
   const seen: import("../src/harness/harness.ts").RuntimeChoice[] = [];
   const adapter: Harness = {
     ...base,
@@ -1267,7 +1267,7 @@ test("cron and loop dispatch use purpose defaults while task handoffs and later 
   built.config.setApprovedHarnesses(["pi"]);
   await built.config.setRuntimeSelectionLatest(PERSONAL, {
     harnessId: "pi",
-    modelId: "claude-sonnet-5",
+    modelId: "claude-sonnet-5-5",
     effortLevel: "high",
   });
   await built.config.setPurposeRuntime("cron", category);
@@ -1329,9 +1329,9 @@ test("human child continuations respect non-fast category defaults", async () =>
 });
 
 test("verified swarm workers use category defaults instead of copied parent choices, retaining unset behavior and handoffs", async () => {
-  const inherited = { harnessId: "pi" as const, modelId: "claude-opus-5", effortLevel: "high", fastMode: true };
+  const inherited = { harnessId: "pi" as const, modelId: "claude-opus-5-5", effortLevel: "high", fastMode: true };
   const category = { harnessId: "pi" as const, modelId: "gpt-6-astra", effortLevel: "low", fastMode: false };
-  const handoff = { ...category, modelId: "gpt-6-sol" };
+  const handoff = { ...category, modelId: "gpt-6.1-sol" };
   for (const configured of [false, true]) {
     const f = await swarmFixture({
       runtime: {

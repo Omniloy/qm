@@ -47,9 +47,9 @@ test("every web-ui-enabled model passes the web-turn model gate (no 403 for an o
   }
 });
 
-test("regression: gpt-5.6-sol is web-ui-enabled (the reported 403)", () => {
-  assert.ok(DEFAULT_WEBUI_MODEL_IDS.includes("gpt-5.6-sol"));
-  assert.equal(validateWebTurnModelOptions({ model: "gpt-5.6-sol" }, null), null);
+test("regression: gpt-6.1-sol is web-ui-enabled (the reported 403)", () => {
+  assert.ok(DEFAULT_WEBUI_MODEL_IDS.includes("gpt-6.1-sol"));
+  assert.equal(validateWebTurnModelOptions({ model: "gpt-6.1-sol" }, null), null);
 });
 
 test("gpt-6-astra is offered with its published context, output ceiling, and rates", () => {
@@ -91,7 +91,6 @@ test("Opus 5.5 inherits adaptive thinking without off, with its own rates and li
     supportsStrictTools: true,
   });
   assert.equal(resolveModel("claude-opus-4-8")?.thinkingLevelMap?.off, undefined);
-  assert.equal(resolveModel("claude-opus-5")?.thinkingLevelMap?.off, undefined);
   model.thinkingLevelMap!.xhigh = "high";
   assert.equal(resolveModel("claude-opus-5-5")?.thinkingLevelMap?.xhigh, "xhigh");
   assert.equal(resolveModel("claude-opus-4-8")?.thinkingLevelMap?.xhigh, "xhigh");
@@ -105,7 +104,7 @@ test("Opus 5.5 is selectable with compatible harnesses and credentials, without 
   assert.equal(safeModelMetadata(id)?.label, "Opus 5.5");
   for (const harness of ["pi", "claude", "opencode", "mock"]) {
     assert.equal(modelSupportedByHarness(id, harness), true);
-    assert.equal(defaultModelForHarness(harness), "claude-opus-5");
+    assert.equal(defaultModelForHarness(harness), "claude-opus-5-5");
   }
   assert.equal(modelSupportedByHarness(id, "codex"), false);
   assert.match(
@@ -130,9 +129,9 @@ test("FAST_MODE_MODEL_IDS derives from the registry — the web-ui client reads 
 
 test("exposure is provider-key-aware: a model whose provider is unconfigured is not serviceable", () => {
   const noOpenai = { anthropic: true, openai: false, openrouter: false };
-  assert.equal(modelServiceable("gpt-5.6-sol", noOpenai), false);
+  assert.equal(modelServiceable("gpt-6.1-sol", noOpenai), false);
   assert.equal(modelServiceable("claude-opus-4-8", noOpenai), true);
-  assert.deepEqual(serviceableModelIds(["claude-opus-4-8", "gpt-5.6-sol"], noOpenai), ["claude-opus-4-8"]);
+  assert.deepEqual(serviceableModelIds(["claude-opus-4-8", "gpt-6.1-sol"], noOpenai), ["claude-opus-4-8"]);
 });
 
 test("provider-key gating applies only to key-authed harnesses (no over-hiding on CLI-auth harnesses)", () => {
@@ -164,17 +163,17 @@ test("provider-key gating applies only to key-authed harnesses (no over-hiding o
 
 test("web-turn gate refuses a keyless model cleanly, accepts it once the provider is configured", () => {
   const noOpenai = { anthropic: true, openai: false, openrouter: false };
-  const refused = validateWebTurnModelOptions({ model: "gpt-5.6-sol" }, null, noOpenai);
+  const refused = validateWebTurnModelOptions({ model: "gpt-6.1-sol" }, null, noOpenai);
   assert.match(refused ?? "", /provider isn't configured/);
   assert.equal(
-    validateWebTurnModelOptions({ model: "gpt-5.6-sol" }, null, { anthropic: true, openai: true, openrouter: false }),
+    validateWebTurnModelOptions({ model: "gpt-6.1-sol" }, null, { anthropic: true, openai: true, openrouter: false }),
     null,
   );
 });
 
 test("fast-mode support is registry-driven", () => {
   assert.equal(modelSupportsFastMode("claude-opus-4-8"), true);
-  assert.equal(modelSupportsFastMode("gpt-5.6-sol"), true);
+  assert.equal(modelSupportsFastMode("gpt-6.1-sol"), true);
   assert.equal(modelSupportsFastMode(undefined), false);
   assert.equal(modelSupportsFastMode("nonexistent-model"), false);
 });

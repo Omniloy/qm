@@ -19,7 +19,7 @@ import type { Api, Model, Usage } from "@earendil-works/pi-ai";
 import { defaultInteractiveThinkingLevel, getRequiredModel } from "../src/model/pi-models.ts";
 
 test("modelSupportsFastMode allows only the documented direct Opus ids", () => {
-  for (const id of ["claude-opus-5-5", "claude-opus-5", "claude-opus-4-8"]) {
+  for (const id of ["claude-opus-5-5", "claude-opus-4-8"]) {
     assert.equal(modelSupportsFastMode(id), true, `${id} should support fast mode`);
   }
   for (const id of [
@@ -38,18 +38,18 @@ test("modelSupportsFastMode allows only the documented direct Opus ids", () => {
 });
 
 test('applyFastSpeed injects service_tier:"priority" for OpenAI-API models', () => {
-  const on = { model: "gpt-5.6-sol", input: [] } as Record<string, unknown>;
+  const on = { model: "gpt-6.1-sol", input: [] } as Record<string, unknown>;
   applyFastSpeed(on, true, "openai-responses");
   assert.equal(on.service_tier, "priority");
   assert.equal("speed" in on, false, "no Anthropic speed field on an OpenAI request");
 
-  const off = { model: "gpt-5.6-sol", input: [] } as Record<string, unknown>;
+  const off = { model: "gpt-6.1-sol", input: [] } as Record<string, unknown>;
   applyFastSpeed(off, false, "openai-responses");
   assert.equal("service_tier" in off, false);
 });
 
-test("modelSupportsFastMode covers the GPT-5.6 family (priority tier)", () => {
-  for (const id of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+test("modelSupportsFastMode covers the GPT-6 family (priority tier)", () => {
+  for (const id of ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-luna"]) {
     assert.equal(modelSupportsFastMode(id), true, id);
   }
 });
@@ -82,10 +82,10 @@ test("defaultInteractiveThinkingLevel keeps human turns light by provider", () =
 });
 
 test("fast mode requires an explicit opt-in on a supported model", () => {
-  assert.equal(wantsFastMode(undefined, "claude-opus-5"), false);
-  assert.equal(wantsFastMode(false, "claude-opus-5"), false);
-  assert.equal(wantsFastMode(true, "claude-opus-5"), true);
-  assert.equal(wantsFastMode(true, "claude-sonnet-5"), false);
+  assert.equal(wantsFastMode(undefined, "claude-opus-5-5"), false);
+  assert.equal(wantsFastMode(false, "claude-opus-5-5"), false);
+  assert.equal(wantsFastMode(true, "claude-opus-5-5"), true);
+  assert.equal(wantsFastMode(true, "claude-sonnet-5-5"), false);
 });
 
 test("auto resets a reused Anthropic session to its interactive default", () => {
@@ -104,7 +104,7 @@ test("auto resets a reused Anthropic session to its interactive default", () => 
 
 const ASTRA = getRequiredModel("gpt-6-astra", false) as Model<Api>;
 const OPUS_55 = getRequiredModel("claude-opus-5-5", false);
-const OPUS = getRequiredModel("claude-opus-5", false) as Model<Api>;
+const OPUS = getRequiredModel("claude-opus-4-8", false) as Model<Api>;
 const ASTRA_TOKENS = { input: 10_000, output: 2_000, cacheRead: 50_000, cacheWrite: 4_000, totalTokens: 66_000 };
 
 function assertUsd(actual: number, expected: number): void {
@@ -326,7 +326,7 @@ async function runTurn(
             url: "https://gateway.example/v1",
             apiKey: "sk-gateway-test",
             apiKeyHeader: "x-gateway-key",
-            models: { "gpt-6-astra": "openai/gpt-6-astra", "claude-sonnet-5": "anthropic/claude-sonnet-5" },
+            models: { "gpt-6-astra": "openai/gpt-6-astra", "claude-sonnet-5-5": "anthropic/claude-sonnet-5-5" },
           },
         }
       : {}),
@@ -392,7 +392,7 @@ for (const [name, gateway, fastMode, expected, echoedTier] of [
 }
 
 test("an unsupported fast-mode request records the standard price", async () => {
-  const { rows, payloads, betas } = await runTurn("sonnet-fast-ineligible", "claude-sonnet-5", true, () =>
+  const { rows, payloads, betas } = await runTurn("sonnet-fast-ineligible", "claude-sonnet-5-5", true, () =>
     anthropicReply("standard", ANTHROPIC_WIRE_USAGE),
   );
   assert.equal(payloads.length, 1);
@@ -408,19 +408,19 @@ test("an unsupported fast-mode request records the standard price", async () => 
 test("gateway-routed Claude requests carry neither the binding beta nor block_binding", async () => {
   const { payloads, betas } = await runTurn(
     "sonnet-gateway-unbound",
-    "claude-sonnet-5",
+    "claude-sonnet-5-5",
     false,
     () => anthropicReply("routed", ANTHROPIC_WIRE_USAGE),
     true,
   );
   assert.equal(payloads.length, 1);
-  assert.equal(payloads[0]?.model, "anthropic/claude-sonnet-5");
+  assert.equal(payloads[0]?.model, "anthropic/claude-sonnet-5-5");
   assert.equal(betas[0]?.includes(BINDING_BETA) ?? false, false);
   assert.equal("block_binding" in (payloads[0]!.thinking as object), false);
 });
 
 test("a refusal fallback prices each step on its actual model and tier", async () => {
-  const { rows, payloads } = await runTurn("refusal-fallback-pricing", "claude-sonnet-5", true, (_payload, index) =>
+  const { rows, payloads } = await runTurn("refusal-fallback-pricing", "claude-sonnet-5-5", true, (_payload, index) =>
     index === 0
       ? new Response(
           JSON.stringify({
@@ -435,17 +435,17 @@ test("a refusal fallback prices each step on its actual model and tier", async (
       : anthropicReply("recovered", ANTHROPIC_WIRE_USAGE),
   );
   assert.equal(payloads.length, 2);
-  assert.equal(payloads[0]?.model, "claude-sonnet-5");
+  assert.equal(payloads[0]?.model, "claude-sonnet-5-5");
   assert.equal("speed" in payloads[0]!, false);
-  assert.equal(payloads[1]?.model, "claude-opus-5");
+  assert.equal(payloads[1]?.model, "claude-opus-5-5");
   assert.equal(payloads[1]?.speed, "fast");
   assert.deepEqual(
     rows.map((r) => [r.step, r.model]),
     [
-      [0, "claude-sonnet-5"],
-      [1, "claude-opus-5"],
+      [0, "claude-sonnet-5-5"],
+      [1, "claude-opus-5-5"],
     ],
   );
   assertUsd(rows[0]!.usage!.costUsd, 0);
-  assertUsd(rows[1]!.usage!.costUsd, 0.15);
+  assertUsd(rows[1]!.usage!.costUsd, 0.12);
 });

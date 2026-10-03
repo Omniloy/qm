@@ -6,6 +6,7 @@ import type { AppDeps } from "./app-types.ts";
 import type { ScopeId } from "../types.ts";
 import { orgScope } from "../config.ts";
 import {
+  canonicalModelId,
   defaultModelForHarness,
   isHarnessId,
   modelProviderAvailabilityFor,
@@ -165,13 +166,13 @@ export async function runtimeConfigBody(
   if (orgStored && isHarnessId(orgStored.harnessId)) {
     orgDefault = {
       harnessId: orgStored.harnessId,
-      modelId: orgStored.modelId,
+      modelId: canonicalModelId(orgStored.modelId),
       ...(orgStored.effortLevel ? { effortLevel: orgStored.effortLevel } : {}),
       ...(typeof orgStored.fastMode === "boolean" ? { fastMode: orgStored.fastMode } : {}),
       revision: orgStored.revision ?? 0,
     };
   } else if (orgLegacyModel) {
-    orgDefault = { harnessId: fallback.harnessId, modelId: orgLegacyModel, revision: 0 };
+    orgDefault = { harnessId: fallback.harnessId, modelId: canonicalModelId(orgLegacyModel), revision: 0 };
   }
   const stored = scope === org ? orgStored : await config.getRuntimeSelectionDurable(scope);
   const legacyModel = scope === org ? null : await config.getBaseModelOwnDurable(scope);
@@ -185,13 +186,13 @@ export async function runtimeConfigBody(
   if (stored && isHarnessId(stored.harnessId)) {
     scopeOverride = {
       harnessId: stored.harnessId,
-      modelId: stored.modelId,
+      modelId: canonicalModelId(stored.modelId),
       ...(stored.effortLevel ? { effortLevel: stored.effortLevel } : {}),
       ...(typeof stored.fastMode === "boolean" ? { fastMode: stored.fastMode } : {}),
       orgRevision: stored.orgRevision,
     };
   } else if (legacyModel) {
-    scopeOverride = { harnessId: fallback.harnessId, modelId: legacyModel, orgRevision: 0 };
+    scopeOverride = { harnessId: fallback.harnessId, modelId: canonicalModelId(legacyModel), orgRevision: 0 };
   }
   const effective = purpose
     ? await resolveRuntimeChoiceDurable(config, org, scope, fallback, requested, undefined, purpose)
@@ -332,6 +333,7 @@ export async function availableRuntimeError(
   choice: RuntimeChoice,
   purpose?: RuntimePurpose,
 ): Promise<string | null> {
+  choice = { ...choice, modelId: canonicalModelId(choice.modelId) };
   await ctx.deps.refreshModels?.();
   const choices = await runtimeConfigBody(ctx, scope, undefined, purpose, choice);
   if (

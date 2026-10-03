@@ -80,7 +80,7 @@ test("discovery diffs the live provider list into known, new, and missing", asyn
     const enabled = await fetch(`${srv.base}/v1/admin/scopes/org%3Adefault-org/webui-models`, {
       method: "PUT",
       headers: ADMIN,
-      body: JSON.stringify({ ids: ["claude-sonnet-5", "claude-opus-4-8"] }),
+      body: JSON.stringify({ ids: ["claude-sonnet-5-5", "claude-opus-4-8"] }),
     });
     assert.equal(enabled.status, 200);
 
@@ -97,7 +97,7 @@ test("discovery diffs the live provider list into known, new, and missing", asyn
     assert.deepEqual(ids(body.known), ["claude-opus-4-8", "claude-x"]);
     assert.deepEqual(ids(body.new), ["claude-nova-9"]);
     assert.ok(body.known.some((m) => m.id === "claude-x" && m.displayName === "Claude X"));
-    assert.ok(body.missing.some((m) => m.id === "claude-sonnet-5"));
+    assert.ok(body.missing.some((m) => m.id === "claude-sonnet-5-5"));
     assert.ok(!body.missing.some((m) => m.id === "claude-opus-4-8"));
 
     const second = await fetch(`${srv.base}/v1/admin/model-providers/anthropic/models`, { headers: ADMIN });
@@ -142,7 +142,7 @@ test("discovery flags a default-picker model that the live provider list omits",
     assert.equal(response.status, 200);
     const body = (await response.json()) as { missing: Array<{ id: string }> };
     assert.ok(
-      body.missing.some((m) => m.id === "claude-sonnet-5"),
+      body.missing.some((m) => m.id === "claude-sonnet-5-5"),
       "a default anthropic model absent from the live list is missing even with no explicit picker",
     );
     assert.ok(!body.missing.some((m) => m.id === "claude-opus-4-8"), "a model present in the live list is not missing");

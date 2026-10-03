@@ -508,7 +508,7 @@ OpenAI-compatible endpoint at `http://codex-proxy:8317/v1`, the key
 models join the picker for every harness that routes through pi-ai.
 
 **Fast mode does not survive this route.** The web UI's fast toggle lights up on
-GPT-5.6 Sol and the request carries `service_tier: "fast"`, which is the right
+the Sol models and the request carries `service_tier: "fast"`, which is the right
 parameter — but measured against the proxy on 2026-08-14, the response came back
 `service_tier: "default"` whether or not the field was sent, with no latency
 difference. OpenAI documents `default` as the answer when the tier was not
@@ -521,7 +521,7 @@ this probe before assuming that has changed:
 ```bash
 docker exec qm-omniloy-core node -e 'fetch("http://codex-proxy:8317/v1/responses",{method:"POST",
   headers:{"Content-Type":"application/json",Authorization:"Bearer "+process.env.K},
-  body:JSON.stringify({model:"gpt-5.6-sol",input:"hi",service_tier:"fast"})})
+  body:JSON.stringify({model:"gpt-6.1-sol",input:"hi",service_tier:"fast"})})
   .then(r=>r.json()).then(j=>console.log(j.service_tier))'
 ```
 

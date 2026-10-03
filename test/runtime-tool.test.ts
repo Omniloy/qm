@@ -7,7 +7,7 @@ import type { CapabilityClaims } from "../src/auth/capability-token.ts";
 import type { RuntimeChoice } from "../src/harness/harness.ts";
 import type { SessionEntry } from "../src/types.ts";
 
-const active: RuntimeChoice = { harnessId: "pi", modelId: "claude-opus-5", effortLevel: "high", fastMode: false };
+const active: RuntimeChoice = { harnessId: "pi", modelId: "claude-opus-5-5", effortLevel: "high", fastMode: false };
 const claims: CapabilityClaims = {
   actorId: "alice",
   scopeId: "personal:alice",
@@ -30,7 +30,7 @@ async function setup(allowed = true) {
 
 test("runtime exposes actual dispatch separately from saved defaults and resolves Astra without losing settings", async () => {
   const { config, service } = await setup();
-  const running = { ...active, modelId: "claude-sonnet-5" };
+  const running = { ...active, modelId: "claude-sonnet-5-5" };
   const state = await service(claims, running, { action: "get" });
   assert.equal(state.ok, true);
   assert.deepEqual(state.active, running);
@@ -72,7 +72,7 @@ test("runtime rejects unsupported effort and fast mode instead of silently dropp
     ok: false,
     error: "effort_not_supported",
   });
-  assert.deepEqual(await service(claims, active, { action: "set", model: "claude-sonnet-5", fastMode: true }), {
+  assert.deepEqual(await service(claims, active, { action: "set", model: "claude-sonnet-5-5", fastMode: true }), {
     ok: false,
     error: "fast_mode_not_supported",
   });
@@ -102,8 +102,8 @@ test("runtime recovery uses only durable decisions belonging to the same run and
   });
   const entries = [
     entry("run", "alice", "gpt-6-astra"),
-    entry("other", "alice", "claude-sonnet-5"),
-    entry("run", "bob", "claude-opus-5"),
+    entry("other", "alice", "claude-sonnet-5-5"),
+    entry("run", "bob", "claude-opus-5-5"),
   ];
   assert.equal(recoveredRuntime(entries, "run", "alice")?.modelId, "gpt-6-astra");
   assert.equal(recoveredRuntime(entries, "new", "alice"), undefined);
@@ -132,7 +132,7 @@ test("individual-account availability does not depend on organization provider k
 test("a saved override removed from the model picker cannot be newly selected", async () => {
   const { config, service } = await setup();
   await config.setRuntimeSelectionLatest(claims.scopeId, { ...active, modelId: "gpt-6-astra" });
-  config.setWebuiModels("org:default-org", ["claude-sonnet-5"]);
+  config.setWebuiModels("org:default-org", ["claude-sonnet-5-5"]);
   await config.flushScope("org:default-org");
   assert.deepEqual(await service(claims, active, { action: "set", model: "Astra" }), {
     ok: false,
@@ -232,7 +232,7 @@ test("cron task handoffs still enforce actor, access, model and account policy",
   );
   assert.equal(result.ok, false);
   await config.setRuntimeSelectionLatest(claims.scopeId, { ...active, modelId: "gpt-6-astra" });
-  config.setWebuiModels("org:default-org", ["claude-sonnet-5"]);
+  config.setWebuiModels("org:default-org", ["claude-sonnet-5-5"]);
   await config.flushScope("org:default-org");
   assert.deepEqual(
     await service(cronClaims, active, { action: "set", model: "Astra" }, undefined, false, undefined, true),
@@ -243,7 +243,7 @@ test("cron task handoffs still enforce actor, access, model and account policy",
 test("cron inherit cannot select a saved model removed from policy", async () => {
   const { service, config } = await setup();
   await config.setRuntimeSelectionLatest(claims.scopeId, { ...active, modelId: "gpt-6-astra" });
-  config.setWebuiModels("org:default-org", ["claude-sonnet-5"]);
+  config.setWebuiModels("org:default-org", ["claude-sonnet-5-5"]);
   await config.flushScope("org:default-org");
   assert.deepEqual(
     await service(

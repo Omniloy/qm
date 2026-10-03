@@ -561,10 +561,10 @@ test("OpenCode includes steered PDF and extracted documents without copying echo
 });
 
 for (const [modelId, fastMode, expected] of [
-  ["claude-opus-5", true, { speed: "fast" }],
-  ["gpt-5.6-sol", true, { serviceTier: "priority" }],
-  ["claude-opus-5", false, {}],
-  ["claude-sonnet-5", true, {}],
+  ["claude-opus-5-5", true, { speed: "fast" }],
+  ["gpt-6.1-sol", true, { serviceTier: "priority" }],
+  ["claude-opus-5-5", false, {}],
+  ["claude-sonnet-5-5", true, {}],
   ["unknown-model", true, {}],
 ] as const) {
   test(`OpenCode bridge resolves fast options for ${modelId} with fast=${fastMode}`, async (t) => {
@@ -592,7 +592,7 @@ for (const [modelId, fastMode, expected] of [
       rmSync(dir, { recursive: true, force: true });
     });
     const turn = turnInput([], []);
-    turn.runtime = { modelId: "claude-opus-5", fastMode };
+    turn.runtime = { modelId: "claude-opus-5-5", fastMode };
     const result = await harness.turns.runTurn(turn);
     assert.deepEqual(JSON.parse(result.reply), expected);
   });
@@ -610,7 +610,7 @@ test("OpenCode child requests inherit fast mode and a reused runtime honors swit
       if (req.method === "POST" && message) {
         await readBody(req);
         const options = [];
-        for (const model of ["gpt-5.6-sol", "claude-sonnet-5"]) {
+        for (const model of ["gpt-6.1-sol", "claude-sonnet-5-5"]) {
           const context = await fetch(process.env.OPENCODE_BRIDGE_URL + "/session/ses_child/context?model=" + model, {
             headers: { authorization: "Bearer " + process.env.OPENCODE_BRIDGE_SECRET },
           }).then(r => r.json());
@@ -630,7 +630,7 @@ test("OpenCode child requests inherit fast mode and a reused runtime honors swit
   });
   for (const fastMode of [true, false]) {
     const turn = turnInput([], []);
-    turn.runtime = { modelId: "claude-opus-5", fastMode };
+    turn.runtime = { modelId: "claude-opus-5-5", fastMode };
     const result = await harness.turns.runTurn(turn);
     assert.deepEqual(JSON.parse(result.reply), [fastMode ? { serviceTier: "priority" } : {}, {}]);
   }

@@ -361,7 +361,7 @@ test("native document bytes reach the provider on every step without entering th
 });
 
 test("Pi Responses captures exclude history and document text without changing requests or tape", async () => {
-  const harness = createPiHarness({ openaiApiKey: "sk-test", modelId: "gpt-5.6-sol" });
+  const harness = createPiHarness({ openaiApiKey: "sk-test", modelId: "gpt-6.1-sol" });
   const sink: Sink = { entries: [], tape: [] };
   const captures: HarnessLlmRequestRecord[] = [];
   const realFetch = globalThis.fetch;

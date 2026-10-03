@@ -178,7 +178,7 @@ import { randomUUID } from "node:crypto";
 import { LRUCache } from "lru-cache";
 import type { SkillResolution } from "../skills/skill-store.ts";
 import type { Orchestrator, OrchestratorDeps, OrchestratorInput } from "./orchestrator/types.ts";
-import { isHarnessId, resolveModel, CODEX_SUBSCRIPTION_PROVIDER } from "../model/pi-models.ts";
+import { canonicalModelId, isHarnessId, resolveModel, CODEX_SUBSCRIPTION_PROVIDER } from "../model/pi-models.ts";
 import type { ProviderKeys } from "../harness/pi-harness.ts";
 import type { CodexTurnAuth } from "../harness/harness.ts";
 import { loadPersonalModelAccess, routePersonalModelAccess } from "./individual-auth-routing.ts";
@@ -242,7 +242,7 @@ const ACTIVITY_ENTRY_TYPES = new Set<EntryType>([
 
 function knownBrowseModel(id: string | null | undefined): { id: string; provider: string } | undefined {
   const provider = id ? resolveModel(id)?.provider : undefined;
-  return id && provider ? { id, provider } : undefined;
+  return id && provider ? { id: canonicalModelId(id), provider } : undefined;
 }
 
 const SHARED_CORE_MD = loadProtocolFile("shared-core");

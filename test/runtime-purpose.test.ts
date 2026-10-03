@@ -11,14 +11,14 @@ import type { SessionEntry } from "../src/types.ts";
 
 const ORG = "org:default-org";
 const SCOPE = "personal:alice";
-const fallback: RuntimeChoice = { harnessId: "pi", modelId: "claude-opus-5" };
+const fallback: RuntimeChoice = { harnessId: "pi", modelId: "claude-opus-5-5" };
 const category: RuntimeChoice = { harnessId: "pi", modelId: "gpt-6-astra", effortLevel: "low", fastMode: true };
 
 function setup() {
   const config = createMemoryConfigStore("default-org");
   config.setApprovedHarnesses(["pi", "codex", "claude"]);
   config.setRuntimeSelection(ORG, { ...fallback, effortLevel: "high", fastMode: true });
-  config.setRuntimeSelection(SCOPE, { ...fallback, modelId: "claude-sonnet-5", effortLevel: "medium" });
+  config.setRuntimeSelection(SCOPE, { ...fallback, modelId: "claude-sonnet-5-5", effortLevel: "medium" });
   return config;
 }
 
@@ -58,10 +58,10 @@ test("each purpose ignores conversation overrides and explicit fields including 
       fastMode: false,
     });
     assert.deepEqual(
-      resolveRuntimeChoice(config, ORG, SCOPE, fallback, { modelId: "gpt-6-sol", effortLevel: "high" }, purpose),
+      resolveRuntimeChoice(config, ORG, SCOPE, fallback, { modelId: "gpt-6.1-sol", effortLevel: "high" }, purpose),
       {
         ...category,
-        modelId: "gpt-6-sol",
+        modelId: "gpt-6.1-sol",
         effortLevel: "high",
       },
     );
@@ -80,12 +80,12 @@ test("durable purpose defaults refresh between child followups", async () => {
     await resolveRuntimeChoiceDurable(reader, ORG, SCOPE, fallback, undefined, undefined, "subagent"),
     category,
   );
-  await writer.setPurposeRuntime("subagent", { ...category, modelId: "gpt-6-sol" });
+  await writer.setPurposeRuntime("subagent", { ...category, modelId: "gpt-6.1-sol" });
   assert.deepEqual(
     await resolveRuntimeChoiceDurable(reader, ORG, SCOPE, fallback, { fastMode: false }, undefined, "subagent"),
     {
       ...category,
-      modelId: "gpt-6-sol",
+      modelId: "gpt-6.1-sol",
       fastMode: false,
     },
   );
@@ -103,7 +103,7 @@ test("configured purpose fails closed for unapproved or incompatible merged choi
     /not supported/,
   );
   assert.throws(
-    () => resolveRuntimeChoice(config, ORG, SCOPE, fallback, { modelId: "claude-sonnet-5" }, "cron"),
+    () => resolveRuntimeChoice(config, ORG, SCOPE, fallback, { modelId: "claude-sonnet-5-5" }, "cron"),
     /fast mode is not supported/,
   );
   config.setApprovedHarnesses(["claude"]);
@@ -142,7 +142,7 @@ test("runtime get and inherit use job execution defaults, and handoffs survive r
   const handoff = await service(
     claims,
     { ...category, ...explicit },
-    { action: "set", model: "gpt-6-sol" },
+    { action: "set", model: "gpt-6.1-sol" },
     undefined,
     false,
     undefined,
@@ -161,7 +161,7 @@ test("runtime get and inherit use job execution defaults, and handoffs survive r
   assert.deepEqual(resolveRuntimeChoice(config, ORG, SCOPE, fallback, restored, "cron"), {
     ...category,
     ...explicit,
-    modelId: "gpt-6-sol",
+    modelId: "gpt-6.1-sol",
   });
   assert.equal(recoveredRuntime(entries, "another-run", "alice"), undefined);
   assert.deepEqual(resolveRuntimeChoice(config, ORG, SCOPE, fallback, undefined, "cron"), category);
@@ -192,7 +192,7 @@ test("scope inheritance in a human child continuation retains its configured pur
 test("configured categories remain selectable outside the conversation picker without weakening explicit restrictions", async () => {
   const config = setup();
   await config.setPurposeRuntime("cron", category);
-  config.setWebuiModels(ORG, ["claude-sonnet-5"]);
+  config.setWebuiModels(ORG, ["claude-sonnet-5-5"]);
   await config.flushScope(ORG);
   const service = createRuntimeService(
     { config, harnessId: "pi", baseModelDefault: fallback.modelId },
@@ -205,7 +205,7 @@ test("configured categories remain selectable outside the conversation picker wi
   const denied = await service(
     claims,
     category,
-    { action: "set", model: "gpt-6-sol" },
+    { action: "set", model: "gpt-6.1-sol" },
     undefined,
     false,
     undefined,
@@ -219,7 +219,7 @@ test("configured categories remain selectable outside the conversation picker wi
 test("personal-account human child inheritance recognizes a configured purpose outside the chat picker", async () => {
   const config = setup();
   await config.setPurposeRuntime("subagent", category);
-  config.setWebuiModels(ORG, ["claude-sonnet-5"]);
+  config.setWebuiModels(ORG, ["claude-sonnet-5-5"]);
   await config.flushScope(ORG);
   const service = createRuntimeService(
     { config, harnessId: "pi", baseModelDefault: fallback.modelId },

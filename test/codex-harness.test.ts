@@ -1431,7 +1431,7 @@ test("Codex classifies deterministic provider failures as terminal and leaves tr
     "Codex 401: Incorrect API key provided",
     "Codex app-server exited (1): stream error: unauthorized",
     "You exceeded your current quota, please check your plan and billing details",
-    "The model `gpt-5.6-sol` does not exist or you do not have access to it",
+    "The model `gpt-6.1-sol` does not exist or you do not have access to it",
     "Not logged in. Run `codex login` to authenticate.",
     "Codex -32000: invalid_api_key",
     "403 Forbidden",
@@ -1448,14 +1448,14 @@ test("Codex classifies deterministic provider failures as terminal and leaves tr
   }
 
   const transient = [
-    "Rate limit reached for gpt-5.6-sol, please retry",
+    "Rate limit reached for gpt-6.1-sol, please retry",
     "429 Too Many Requests",
     "The server had an error while processing your request",
     "socket hang up",
     "Codex app-server exited (null): ECONNRESET",
     "Codex turn failed",
     "rate_limit_reached",
-    "You've hit your usage limit for gpt-5.6-sol",
+    "You've hit your usage limit for gpt-6.1-sol",
     "workspace_member_usage_limit_reached",
     "407 Proxy Authentication Required",
   ];

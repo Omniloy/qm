@@ -271,12 +271,12 @@ test("surface-config filters persisted model choices to the active native harnes
   const srv = start("codex");
   try {
     srv.built.config.setBaseModel("org:default-org", "claude-opus-4-8");
-    srv.built.config.setWebuiModels("org:default-org", ["claude-opus-4-8", "gpt-5.6-sol"]);
+    srv.built.config.setWebuiModels("org:default-org", ["claude-opus-4-8", "gpt-6.1-sol"]);
     const response = await fetch(`${srv.base}/v1/surface-config`);
     const config = (await response.json()) as { harnessId: string; baseModel: string; webuiModels: string[] };
     assert.equal(config.harnessId, "codex");
-    assert.equal(config.baseModel, "gpt-5.6-sol");
-    assert.deepEqual(config.webuiModels, ["gpt-5.6-sol"]);
+    assert.equal(config.baseModel, "gpt-6.1-sol");
+    assert.deepEqual(config.webuiModels, ["gpt-6.1-sol"]);
   } finally {
     await srv.close();
   }
@@ -647,12 +647,12 @@ test("admin runtime saves reasoning level and fast mode with the default model",
     const saved = await fetch(url, {
       method: "PUT",
       headers: ADMIN,
-      body: JSON.stringify({ harnessId: "pi", modelId: "claude-opus-5", effortLevel: "high", fastMode: true }),
+      body: JSON.stringify({ harnessId: "pi", modelId: "claude-opus-5-5", effortLevel: "high", fastMode: true }),
     });
     assert.equal(saved.status, 200);
     assert.deepEqual(await srv.built.config.getRuntimeSelectionDurable("org:default-org"), {
       harnessId: "pi",
-      modelId: "claude-opus-5",
+      modelId: "claude-opus-5-5",
       effortLevel: "high",
       fastMode: true,
       orgRevision: 1,
@@ -662,12 +662,12 @@ test("admin runtime saves reasoning level and fast mode with the default model",
     const changedModel = await fetch(`${srv.base}/v1/admin/scopes/org:default-org/base-model`, {
       method: "PUT",
       headers: ADMIN,
-      body: JSON.stringify({ modelId: "claude-fable-5" }),
+      body: JSON.stringify({ modelId: "claude-fable-5-1" }),
     });
     assert.equal(changedModel.status, 200);
     assert.deepEqual(await srv.built.config.getRuntimeSelectionDurable("org:default-org"), {
       harnessId: "pi",
-      modelId: "claude-fable-5",
+      modelId: "claude-fable-5-1",
       effortLevel: "high",
       fastMode: false,
       orgRevision: 2,
@@ -677,7 +677,7 @@ test("admin runtime saves reasoning level and fast mode with the default model",
     const unsupported = await fetch(url, {
       method: "PUT",
       headers: ADMIN,
-      body: JSON.stringify({ harnessId: "pi", modelId: "claude-fable-5", effortLevel: "low", fastMode: true }),
+      body: JSON.stringify({ harnessId: "pi", modelId: "claude-fable-5-1", effortLevel: "low", fastMode: true }),
     });
     assert.equal(unsupported.status, 200);
     assert.equal((await srv.built.config.getRuntimeSelectionDurable("org:default-org"))?.fastMode, false);
@@ -685,15 +685,15 @@ test("admin runtime saves reasoning level and fast mode with the default model",
     const openCode = await fetch(url, {
       method: "PUT",
       headers: ADMIN,
-      body: JSON.stringify({ harnessId: "opencode", modelId: "claude-opus-5", effortLevel: "auto", fastMode: true }),
+      body: JSON.stringify({ harnessId: "opencode", modelId: "claude-opus-5-5", effortLevel: "auto", fastMode: true }),
     });
     assert.equal(openCode.status, 200);
     assert.equal((await srv.built.config.getRuntimeSelectionDurable("org:default-org"))?.fastMode, true);
 
     for (const body of [
-      { harnessId: "pi", modelId: "claude-opus-5", effortLevel: "extreme", fastMode: true },
+      { harnessId: "pi", modelId: "claude-opus-5-5", effortLevel: "extreme", fastMode: true },
       { harnessId: "codex", modelId: "gpt-5.5", effortLevel: "max", fastMode: false },
-      { harnessId: "pi", modelId: "claude-opus-5", effortLevel: "high", fastMode: "yes" },
+      { harnessId: "pi", modelId: "claude-opus-5-5", effortLevel: "high", fastMode: "yes" },
     ]) {
       assert.equal((await fetch(url, { method: "PUT", headers: ADMIN, body: JSON.stringify(body) })).status, 400);
     }
@@ -814,7 +814,7 @@ test("webui-models is an org-wide string-list read back via admin GET and surfac
     ]);
 
     const before = await fetch(`${srv.base}/v1/surface-config`);
-    assert.equal(((await before.json()) as { baseModel: string }).baseModel, "claude-opus-5");
+    assert.equal(((await before.json()) as { baseModel: string }).baseModel, "claude-opus-5-5");
     const setBase = await fetch(`${srv.base}/v1/admin/scopes/org:default-org/base-model`, {
       method: "PUT",
       headers: ADMIN,
@@ -984,7 +984,7 @@ test("org purpose runtimes round-trip, validate, and clear independently", async
     assert.equal((await get()).subagentRuntime, null);
     for (const purpose of ["cron", "subagent"] as const) {
       const resource = `${purpose}-runtime`;
-      const choice = { harnessId: "pi", modelId: "claude-opus-5", effortLevel: "low", fastMode: false };
+      const choice = { harnessId: "pi", modelId: "claude-opus-5-5", effortLevel: "low", fastMode: false };
       assert.equal(
         (await put(resource, choice, "org:default-org", { ...ADMIN, "x-admin-actor": "nobody@default-org" })).status,
         403,
@@ -996,7 +996,7 @@ test("org purpose runtimes round-trip, validate, and clear independently", async
         { ...choice, modelId: "invalid" },
         { ...choice, effortLevel: "invalid" },
         { ...choice, fastMode: "yes" },
-        { ...choice, modelId: "claude-fable-5", fastMode: true },
+        { ...choice, modelId: "claude-fable-5-1", fastMode: true },
         { modelId: choice.modelId },
       ])
         assert.equal((await put(resource, bad)).status, 400);

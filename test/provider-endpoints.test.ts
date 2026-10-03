@@ -47,14 +47,14 @@ test("resolveModel routes a built-in model through the override", () => {
   assert.equal(resolveModel("claude-opus-4-8")?.baseUrl, "https://api.anthropic.com");
   setProviderBaseUrls({ anthropic: "https://gw.example.com" });
   assert.equal(resolveModel("claude-opus-4-8")?.baseUrl, "https://gw.example.com");
-  assert.equal(resolveModel("gpt-5.6-sol")?.baseUrl, "https://api.openai.com/v1");
+  assert.equal(resolveModel("gpt-6.1-sol")?.baseUrl, "https://api.openai.com/v1");
 });
 
 test("a cloned model follows its template's override", () => {
   setProviderBaseUrls({ anthropic: "https://gw.example.com" });
-  const clone = resolveModel("claude-opus-5");
+  const clone = resolveModel("claude-opus-5-5");
   assert.equal(clone?.baseUrl, "https://gw.example.com");
-  assert.equal(clone?.id, "claude-opus-5");
+  assert.equal(clone?.id, "claude-opus-5-5");
 });
 
 test("loadConfig parses provider base URLs and feeds the child harness envs", () => {
@@ -88,13 +88,13 @@ test("loadConfig accepts a complete model gateway and rejects partial or malform
     MODEL_GATEWAY_URL: "http://gateway.internal:8080/",
     MODEL_GATEWAY_API_KEY: "secret",
     MODEL_GATEWAY_API_KEY_HEADER: "api-key",
-    MODEL_GATEWAY_MODELS: "claude-opus-5=router/opus,claude-haiku-4-5=router/haiku",
+    MODEL_GATEWAY_MODELS: "claude-opus-5-5=router/opus,claude-haiku-4-5=router/haiku",
   });
   assert.deepEqual(config.modelGateway, {
     url: "http://gateway.internal:8080",
     apiKey: "secret",
     apiKeyHeader: "api-key",
-    models: { "claude-opus-5": "router/opus", "claude-haiku-4-5": "router/haiku" },
+    models: { "claude-opus-5-5": "router/opus", "claude-haiku-4-5": "router/haiku" },
   });
   assert.throws(() => loadConfig({ ...BASE_ENV, MODEL_GATEWAY_URL: "http://gateway.internal" }), /required/);
   assert.throws(
@@ -104,7 +104,7 @@ test("loadConfig accepts a complete model gateway and rejects partial or malform
         MODEL_GATEWAY_URL: "http://gateway.internal",
         MODEL_GATEWAY_API_KEY: "secret",
         MODEL_GATEWAY_API_KEY_HEADER: "bad header",
-        MODEL_GATEWAY_MODELS: "claude-opus-5=router/opus",
+        MODEL_GATEWAY_MODELS: "claude-opus-5-5=router/opus",
       }),
     /HTTP header name/,
   );
@@ -115,7 +115,7 @@ test("loadConfig accepts a complete model gateway and rejects partial or malform
         MODEL_GATEWAY_URL: "http://gateway.internal",
         MODEL_GATEWAY_API_KEY: "secret",
         MODEL_GATEWAY_API_KEY_HEADER: "api-key",
-        MODEL_GATEWAY_MODELS: "claude-opus-5",
+        MODEL_GATEWAY_MODELS: "claude-opus-5-5",
       }),
     /invalid MODEL_GATEWAY_MODELS/,
   );

@@ -89,7 +89,7 @@ for (const account of ["personal", "openai", "anthropic"] as const) {
   test(`web ${account} account honors the chosen model, effort and fast mode`, async () => {
     turns.length = 0;
     const provider = account === "anthropic" ? "anthropic" : "openai";
-    const model = provider === "anthropic" ? "claude-sonnet-5" : "gpt-5.6-terra";
+    const model = provider === "anthropic" ? "claude-sonnet-5-5" : "gpt-6-astra";
     const built = buildApp(testConfig({ openaiApiKey: "company-openai" }));
     built.config.setApprovedHarnesses(["pi"]);
     await built.config.flushScope("org:default-org");
@@ -158,17 +158,17 @@ test("mixed provider modes run Claude on the personal key and ChatGPT on the org
   };
   built.runtime.start();
   try {
-    const claude = await run("web", "claude-sonnet-5");
+    const claude = await run("web", "claude-sonnet-5-5");
     assert.deepEqual(claude.providerKeys, { anthropic: "personal-anthropic" });
-    assert.equal(claude.runtime?.modelId, "claude-sonnet-5");
-    const chatgpt = await run("web", "gpt-5.6-terra");
+    assert.equal(claude.runtime?.modelId, "claude-sonnet-5-5");
+    const chatgpt = await run("web", "gpt-6-astra");
     assert.notDeepEqual(chatgpt.providerKeys, { openai: "personal-openai" });
     assert.ok(!JSON.stringify(chatgpt.providerKeys ?? {}).includes("personal-"));
-    assert.equal(chatgpt.runtime?.modelId, "gpt-5.6-terra");
-    const slack = await run("slack", "gpt-5.6-terra");
+    assert.equal(chatgpt.runtime?.modelId, "gpt-6-astra");
+    const slack = await run("slack", "gpt-6-astra");
     assert.deepEqual(slack.providerKeys, { anthropic: "personal-anthropic" });
     await built.config.setModelAccountModes({ anthropic: "org", openai: "org" });
-    const company = await run("slack", "gpt-5.6-terra");
+    const company = await run("slack", "gpt-6-astra");
     assert.ok(!JSON.stringify(company.providerKeys ?? {}).includes("personal-"));
     assert.equal(await built.userModelCredentials.get("U1", "anthropic").then((c) => c?.apiKey), "personal-anthropic");
   } finally {
@@ -195,16 +195,16 @@ test("personal web selections reject wrong providers, harnesses, policy exclusio
       harness,
     });
   for (const [model, harness] of [
-    ["claude-sonnet-5", "pi"],
-    ["gpt-5.6-terra", "claude"],
+    ["claude-sonnet-5-5", "pi"],
+    ["gpt-6-astra", "claude"],
     ["unknown", "pi"],
   ])
     assert.equal((await submit(model!, harness!)).status, "refused");
-  built.config.setWebuiModels("org:default-org", ["gpt-5.6-sol"]);
+  built.config.setWebuiModels("org:default-org", ["gpt-6.1-sol"]);
   await built.config.flushScope("org:default-org");
-  assert.equal((await submit("gpt-5.6-terra")).status, "refused");
+  assert.equal((await submit("gpt-6-astra")).status, "refused");
   await built.userModelCredentials.delete("U1", "openai");
-  assert.equal((await submit("gpt-5.6-sol")).status, "refused");
+  assert.equal((await submit("gpt-6.1-sol")).status, "refused");
 });
 
 test("a queued web selection cannot fall back to another personal provider after disconnect", async () => {
@@ -223,7 +223,7 @@ test("a queued web selection cannot fall back to another personal provider after
     text: "hello",
     liveActor: true,
     async: true,
-    model: "gpt-5.6-terra",
+    model: "gpt-6-astra",
     harness: "pi",
   });
   assert.ok(submitted.runId, JSON.stringify(submitted));
@@ -257,7 +257,7 @@ test("web subscription selections use the namespaced model and personal OAuth on
     text: "hello",
     liveActor: true,
     async: true,
-    model: "codex/gpt-5.6-terra",
+    model: "codex/gpt-6-astra",
     harness: "pi",
     thinkingLevel: "high",
     fastMode: false,
@@ -271,7 +271,7 @@ test("web subscription selections use the namespaced model and personal OAuth on
     assert.deepEqual(turns[0]!.providerKeys, { "openai-codex": "personal-oauth" });
     assert.deepEqual(turns[0]!.runtime, {
       harnessId: "pi",
-      modelId: "codex/gpt-5.6-terra",
+      modelId: "codex/gpt-6-astra",
       effortLevel: "high",
       fastMode: false,
     });
@@ -283,8 +283,8 @@ test("web subscription selections use the namespaced model and personal OAuth on
 test("partial personal web choices queue the complete validated scoped runtime", async () => {
   const built = buildApp(testConfig());
   built.config.setApprovedHarnesses(["pi", "codex"]);
-  await built.config.setRuntimeSelectionLatest("org:default-org", { harnessId: "pi", modelId: "gpt-5.6-sol" });
-  await built.config.setRuntimeSelectionLatest("personal:U1", { harnessId: "pi", modelId: "gpt-5.6-terra" });
+  await built.config.setRuntimeSelectionLatest("org:default-org", { harnessId: "pi", modelId: "gpt-6.1-sol" });
+  await built.config.setRuntimeSelectionLatest("personal:U1", { harnessId: "pi", modelId: "gpt-6-astra" });
   await built.userModelCredentials.setApiKey("U1", "openai", "personal-openai");
   await built.config.setModelAccountModes({ anthropic: "personal", openai: "personal" });
   await built.config.setPersonalModelAuth("U1", true, "openai");
@@ -302,16 +302,16 @@ test("partial personal web choices queue the complete validated scoped runtime",
   assert.ok(first.runId, JSON.stringify(first));
   const queued = await built.runs.get(first.runId!);
   assert.equal(queued?.request.harness, "pi");
-  assert.equal(queued?.request.model, "gpt-5.6-terra");
+  assert.equal(queued?.request.model, "gpt-6-astra");
   await built.userModelCredentials.delete("U1", "openai");
   await built.userModelCredentials.setOAuth("U1", "openai", {
     accessToken: "personal-oauth",
     expiresAt: Date.now() + 3_600_000,
   });
-  await built.config.setRuntimeSelectionLatest("personal:U1", { harnessId: "codex", modelId: "gpt-5.6-sol" });
-  const second = await submit({ model: "gpt-5.6-terra" });
+  await built.config.setRuntimeSelectionLatest("personal:U1", { harnessId: "codex", modelId: "gpt-6.1-sol" });
+  const second = await submit({ model: "gpt-6-astra" });
   assert.ok(second.runId, JSON.stringify(second));
   const oauth = await built.runs.get(second.runId!);
   assert.equal(oauth?.request.harness, "codex");
-  assert.equal(oauth?.request.model, "gpt-5.6-terra");
+  assert.equal(oauth?.request.model, "gpt-6-astra");
 });

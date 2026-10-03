@@ -598,7 +598,7 @@ export class Onboarding {
             type="text"
             id="model-registry-id"
             autocomplete="off"
-            placeholder="e.g. claude-opus-4-6"
+            placeholder="e.g. claude-opus-4-8"
             required
             .value=${this.registryId}
             ?disabled=${this.registryBusy || this.editing}

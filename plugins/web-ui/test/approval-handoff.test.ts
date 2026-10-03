@@ -66,7 +66,7 @@ test("approval handoff unlocks queue and steer without losing pending decisions"
   const approval: PendingApproval = { requestId: "a1", command: "echo test", reason: "requires approval" };
   const row = { id: "s1", threadRef: "web:owner:test", scopeId: "personal:owner", title: "Test" };
   const entries = [{ seq: 1, type: "user", createdAt: Date.now(), payload: { text: "run the command" } }];
-  let selectedModelId = "gpt-5.6-sol";
+  let selectedModelId = "gpt-6.1-sol";
   let modelDeleted = false;
   let pending = [approval];
   let decision = deferred<Response>();
@@ -85,11 +85,11 @@ test("approval handoff unlocks queue and steer without losing pending decisions"
       return Response.json({
         scopeId: row.scopeId,
         approvedHarnesses: ["pi"],
-        modelsByHarness: { pi: modelDeleted ? ["replacement-api"] : ["gpt-5.6-sol"] },
+        modelsByHarness: { pi: modelDeleted ? ["replacement-api"] : ["gpt-6.1-sol"] },
         modelCatalog: modelDeleted
           ? { "replacement-api": metadata("replacement-api", "Replacement API") }
-          : { "gpt-5.6-sol": metadata("gpt-5.6-sol", "GPT-5.6 Sol") },
-        orgDefault: { harnessId: "pi", modelId: "gpt-5.6-sol", revision: 0 },
+          : { "gpt-6.1-sol": metadata("gpt-6.1-sol", "GPT-6.1 Sol") },
+        orgDefault: { harnessId: "pi", modelId: "gpt-6.1-sol", revision: 0 },
         effective: { harnessId: "pi", modelId: selectedModelId },
         scopeOverride: modelDeleted ? { harnessId: "pi", modelId: selectedModelId } : null,
         ...(modelDeleted && selectedModelId === "deleted-overlay"

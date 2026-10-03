@@ -132,11 +132,11 @@ test("only models present in both responses with valid chat capabilities are sel
 });
 
 test("successful revocation clears legacy aliases and cached models and cannot be undone by a failure", async () => {
-  const f = fixture([group()], { "claude-opus-5": "vendor/new-model" });
+  const f = fixture([group()], { "claude-opus-5-5": "vendor/new-model" });
   await f.catalog.refresh();
   const stale = resolveModel("gateway/vendor/new-model")!;
-  const native = resolveModel("claude-opus-5")!;
-  assert.ok(f.catalog.transport.models["claude-opus-5"]);
+  const native = resolveModel("claude-opus-5-5")!;
+  assert.ok(f.catalog.transport.models["claude-opus-5-5"]);
   f.tick();
   f.listing([]);
   await f.catalog.refresh();
@@ -153,10 +153,10 @@ test("successful revocation clears legacy aliases and cached models and cannot b
 });
 
 test("legacy routes work without discovery support, then discovery adds models and governs access", async () => {
-  const f = fixture([group()], { "claude-opus-5": "vendor/new-model" });
+  const f = fixture([group()], { "claude-opus-5-5": "vendor/new-model" });
   f.status(404);
   await f.catalog.refresh();
-  assert.equal(f.catalog.transport.models["claude-opus-5"], "vendor/new-model");
+  assert.equal(f.catalog.transport.models["claude-opus-5-5"], "vendor/new-model");
   f.tick();
   f.status(200);
   await f.catalog.refresh();
@@ -224,7 +224,7 @@ test("removed gateway selections never fall back to a different org or direct mo
   const store = createMemoryConfigStore("default-org");
   const org = "org:default-org" as const;
   const personal = "personal:alice" as const;
-  const fallback = { harnessId: "pi" as const, modelId: "claude-opus-5" };
+  const fallback = { harnessId: "pi" as const, modelId: "claude-opus-5-5" };
   store.setRuntimeSelection(org, { harnessId: "pi", modelId: "gateway/removed" });
   assert.throws(() => resolveRuntimeChoice(store, org, personal, fallback), /Gateway model is unavailable/);
   store.setRuntimeSelection(org, fallback);
@@ -233,13 +233,13 @@ test("removed gateway selections never fall back to a different org or direct mo
 });
 
 test("gateway aliases hide duplicate picker options while preserving saved routes", async () => {
-  const target = "anthropic/claude-opus-5";
-  const f = fixture([group(target)], { "claude-opus-5": target });
+  const target = "anthropic/claude-opus-5-5";
+  const f = fixture([group(target)], { "claude-opus-5-5": target });
   await f.catalog.refresh();
   const ids = builtInModelCatalog().map((m) => m.id);
-  assert.ok(ids.includes("claude-opus-5"));
+  assert.ok(ids.includes("claude-opus-5-5"));
   assert.ok(!ids.includes(`gateway/${target}`));
-  for (const id of ["claude-opus-5", `gateway/${target}`]) {
+  for (const id of ["claude-opus-5-5", `gateway/${target}`]) {
     assert.equal(modelGatewayRequest(f.catalog.transport, resolveModel(id)!)?.target, target);
     assert.equal(
       validateWebTurnModelOptions({ model: id }, null, {
@@ -254,7 +254,7 @@ test("gateway aliases hide duplicate picker options while preserving saved route
   f.listing([]);
   f.tick();
   await f.catalog.refresh();
-  assert.equal(f.catalog.transport.models["claude-opus-5"], undefined);
+  assert.equal(f.catalog.transport.models["claude-opus-5-5"], undefined);
   assert.equal(resolveModel(`gateway/${target}`), undefined);
 });
 
@@ -272,8 +272,8 @@ test("resolvable aliases outside the picker do not hide discovered models", asyn
 });
 
 test("gateway-only fallback retains models hidden by picker aliases", async () => {
-  const target = "openai/gpt-5.6-sol";
-  const f = fixture([group(target)], { "gpt-5.6-sol": target });
+  const target = "openai/gpt-6.1-sol";
+  const f = fixture([group(target)], { "gpt-6.1-sol": target });
   await f.catalog.refresh();
   assert.ok(!builtInModelCatalog().some((model) => model.id === `gateway/${target}`));
   const fallback = runtimeFallback({

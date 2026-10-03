@@ -173,7 +173,7 @@ test("runResultDelivery links the admin error page when a resolver is wired", ()
 
 test("runResultDelivery shows a provider-limit failure's authored reason", () => {
   const reason =
-    "You've reached the OpenAI usage limit for gpt-6-sol on the connected ChatGPT subscription. Try again later or pick another model.";
+    "You've reached the OpenAI usage limit for gpt-6.1-sol on the connected ChatGPT subscription. Try again later or pick another model.";
   const d = runResultDelivery(
     run({ status: "failed", result: { status: "failed", refusalKind: "provider_limit", reason } }),
   );

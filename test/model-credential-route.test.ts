@@ -62,18 +62,11 @@ test("admin model credentials are encrypted, write-only, live, and removable", a
       models: [
         { id: "claude-opus-5-5", name: "Claude Opus 5.5", provider: "anthropic" },
         { id: "claude-fable-5-1", name: "Claude Fable 5.1", provider: "anthropic" },
-        { id: "claude-fable-5", name: "Claude Fable 5", provider: "anthropic" },
-        { id: "claude-opus-5", name: "Claude Opus 5", provider: "anthropic" },
         { id: "claude-opus-4-8", name: "Claude Opus 4.8", provider: "anthropic" },
         { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", provider: "anthropic" },
-        { id: "claude-sonnet-5", name: "Claude Sonnet 5", provider: "anthropic" },
         { id: "claude-haiku-4-5", name: "Claude Haiku 4.5", provider: "anthropic" },
-        { id: "gpt-5.6-sol", name: "GPT-5.6 Sol", provider: "openai" },
-        { id: "gpt-5.6-terra", name: "GPT-5.6 Terra", provider: "openai" },
-        { id: "gpt-5.6-luna", name: "GPT-5.6 Luna", provider: "openai" },
-        { id: "gpt-6-astra", name: "GPT-6 Astra", provider: "openai" },
         { id: "gpt-6.1-sol", name: "GPT-6.1 Sol", provider: "openai" },
-        { id: "gpt-6-sol", name: "GPT-6 Sol", provider: "openai" },
+        { id: "gpt-6-astra", name: "GPT-6 Astra", provider: "openai" },
         { id: "gpt-6-luna", name: "GPT-6 Luna", provider: "openai" },
         { id: "openrouter/auto", name: "OpenRouter Auto", provider: "openrouter" },
       ],
@@ -81,7 +74,7 @@ test("admin model credentials are encrypted, write-only, live, and removable", a
     const scopeBefore = await fetch(`${srv.base}/v1/admin/scopes/org%3Adefault-org`, { headers: ADMIN });
     assert.equal(scopeBefore.status, 200);
     const beforeOptions = ((await scopeBefore.json()) as { baseModelOptions: Array<{ id: string }> }).baseModelOptions;
-    assert.ok(!beforeOptions.some((model) => model.id === "gpt-5.6-sol"));
+    assert.ok(!beforeOptions.some((model) => model.id === "gpt-6.1-sol"));
 
     const denied = await fetch(`${srv.base}/v1/admin/model-providers/openai`, {
       method: "PUT",
@@ -101,7 +94,7 @@ test("admin model credentials are encrypted, write-only, live, and removable", a
     const scopeAfter = await fetch(`${srv.base}/v1/admin/scopes/org%3Adefault-org`, { headers: ADMIN });
     assert.equal(scopeAfter.status, 200);
     const afterOptions = ((await scopeAfter.json()) as { baseModelOptions: Array<{ id: string }> }).baseModelOptions;
-    assert.ok(afterOptions.some((model) => model.id === "gpt-5.6-sol"));
+    assert.ok(afterOptions.some((model) => model.id === "gpt-6.1-sol"));
 
     const status = await fetch(`${srv.base}/v1/admin/model-providers`, { headers: ADMIN });
     const statusText = await status.text();
@@ -127,14 +120,14 @@ test("model gateway credentials stay separate and advertise only routed models",
         url: "http://gateway.internal:8080",
         apiKey: "gateway-secret",
         apiKeyHeader: "api-key",
-        models: { "claude-opus-5": "router/opus" },
+        models: { "claude-opus-5-5": "router/opus" },
       },
     }),
   );
   assert.equal(await partial.modelCredentials.resolve("anthropic"), null);
   const partialAvailability = await partial.modelCredentials.availability();
   assert.equal(partialAvailability.anthropic, false);
-  assert.equal(modelServiceable("claude-opus-5", partialAvailability), true);
+  assert.equal(modelServiceable("claude-opus-5-5", partialAvailability), true);
   assert.equal(modelServiceable("claude-sonnet-4-5", partialAvailability), false);
   await partial.modelCredentials.set("anthropic", "admin-anthropic-key", "admin-alice");
   assert.equal(modelServiceable("claude-sonnet-4-5", await partial.modelCredentials.availability()), true);
@@ -184,7 +177,7 @@ test("model gateway credentials stay separate and advertise only routed models",
     const selected = await fetch(`${srv.base}/v1/admin/scopes/org%3Adefault-org/runtime`, {
       method: "PUT",
       headers: ADMIN,
-      body: JSON.stringify({ harnessId: "pi", modelId: "claude-opus-5" }),
+      body: JSON.stringify({ harnessId: "pi", modelId: "claude-opus-5-5" }),
     });
     assert.equal(selected.status, 200);
   } finally {
@@ -198,7 +191,7 @@ test("model gateway credentials stay separate and advertise only routed models",
         url: "http://gateway.internal:8080",
         apiKey: "gateway-secret",
         apiKeyHeader: "api-key",
-        models: { "claude-opus-5": "router/opus" },
+        models: { "claude-opus-5-5": "router/opus" },
       },
     }),
   );
@@ -405,7 +398,7 @@ test("an oversized OpenRouter catalog falls back to the built-in models", async 
 test("admin scope keeps the selected runtime model visible when its provider is unavailable", async () => {
   const srv = start({ harness: "mock" });
   try {
-    srv.built.config.setRuntimeSelection("org:default-org", { harnessId: "pi", modelId: "claude-opus-5" });
+    srv.built.config.setRuntimeSelection("org:default-org", { harnessId: "pi", modelId: "claude-opus-5-5" });
     const response = await fetch(`${srv.base}/v1/admin/scopes/org%3Adefault-org`, { headers: ADMIN });
     assert.equal(response.status, 200);
     const data = (await response.json()) as {
@@ -413,12 +406,12 @@ test("admin scope keeps the selected runtime model visible when its provider is 
       harnessOptions: string[];
       modelsByHarness: Record<string, Array<{ id: string }>>;
     };
-    assert.deepEqual(data.runtime, { harnessId: "pi", modelId: "claude-opus-5", orgRevision: 1, revision: 1 });
+    assert.deepEqual(data.runtime, { harnessId: "pi", modelId: "claude-opus-5-5", orgRevision: 1, revision: 1 });
     assert.deepEqual(data.harnessOptions, ["pi"]);
     assert.deepEqual(data.modelsByHarness.pi, [
       {
-        id: "claude-opus-5",
-        name: "Claude Opus 5",
+        id: "claude-opus-5-5",
+        name: "Claude Opus 5.5",
         provider: "anthropic",
         effortLevels: ["auto", "default", "adaptive", "low", "medium", "high", "xhigh", "max", "ultracode"],
       },
@@ -448,8 +441,8 @@ test("managed Pi keys do not advertise unsupported OpenCode or browser credentia
     };
     assert.deepEqual(data.baseModelOptions, []);
     assert.deepEqual(data.browseModelOptions, []);
-    assert.ok(data.modelsByHarness.pi!.some((model) => model.id === "gpt-5.6-sol"));
-    assert.ok(!data.modelsByHarness.opencode!.some((model) => model.id === "gpt-5.6-sol"));
+    assert.ok(data.modelsByHarness.pi!.some((model) => model.id === "gpt-6.1-sol"));
+    assert.ok(!data.modelsByHarness.opencode!.some((model) => model.id === "gpt-6.1-sol"));
   } finally {
     await srv.close();
   }
@@ -470,13 +463,13 @@ test("web turns gate the requested and scope-selected harness against its real k
         ...overrides,
       });
 
-    const requested = await turn("web:alice:requested-opencode", { harness: "opencode", model: "gpt-5.6-sol" });
+    const requested = await turn("web:alice:requested-opencode", { harness: "opencode", model: "gpt-6.1-sol" });
     assert.equal(requested.status, "refused");
     assert.match(requested.reason ?? "", /provider isn't configured/);
 
     await srv.built.config.setRuntimeSelectionLatest("personal:alice", {
       harnessId: "opencode",
-      modelId: "gpt-5.6-sol",
+      modelId: "gpt-6.1-sol",
     });
     const configured = await turn("web:alice:configured-opencode");
     assert.equal(configured.status, "refused");
@@ -683,11 +676,11 @@ test("company runtime reads exclude personal-only models without changing the re
     await srv.built.config.setPersonalModelAuth("alice", true, "openai");
     const url = `${srv.base}/v1/runtime-config?principalId=alice&scopeId=personal%3Aalice`;
     const personal = (await (await fetch(url)).json()) as { modelsByHarness: Record<string, string[]> };
-    assert.ok(personal.modelsByHarness.pi?.includes("gpt-5.6-terra"));
+    assert.ok(personal.modelsByHarness.pi?.includes("gpt-6-astra"));
     const company = (await (await fetch(`${url}&account=company`)).json()) as {
       modelsByHarness: Record<string, string[]>;
     };
-    assert.ok(!company.modelsByHarness.pi?.includes("gpt-5.6-terra"));
+    assert.ok(!company.modelsByHarness.pi?.includes("gpt-6-astra"));
     assert.deepEqual(await (await fetch(url)).json(), personal);
     assert.equal((await fetch(`${url}&account=unknown`)).status, 400);
     assert.equal(await srv.built.config.getRuntimeSelectionDurable("personal:alice"), null);

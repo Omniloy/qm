@@ -60,7 +60,7 @@ function fixture() {
 
 async function runLoadOnboarding(
   modelProviders: unknown,
-  scopeConfig: unknown = { baseModel: "claude-opus-5" },
+  scopeConfig: unknown = { baseModel: "claude-opus-5-5" },
 ): Promise<Record<string, any>> {
   const { dom, controller } = fixture();
   const fixtures: Record<string, unknown> = {
@@ -88,7 +88,7 @@ const UNCONFIGURED_PROVIDERS = [
 ];
 const ANTHROPIC_MODELS = [
   { id: "first-option", name: "First model", provider: "anthropic" },
-  { id: "claude-opus-5", name: "Claude Opus 5", provider: "anthropic" },
+  { id: "claude-opus-5-5", name: "Claude Opus 5.5", provider: "anthropic" },
 ];
 
 test("harness-carried auth shows the model step as ready without a stored key", async () => {
@@ -99,10 +99,10 @@ test("harness-carried auth shows the model step as ready without a stored key", 
   });
   assert.equal(elements["onboarding-model-badge"]!.textContent, "Ready");
   assert.equal(elements["onboarding-model-badge"]!.className, "badge ok");
-  assert.equal(elements["onboarding-model-id"]!.value, "claude-opus-5");
+  assert.equal(elements["onboarding-model-id"]!.value, "claude-opus-5-5");
   assert.equal(
     elements["onboarding-model-summary"]!.textContent,
-    "claude-opus-5 · authenticated by the claude harness — no API key needed.",
+    "claude-opus-5-5 · authenticated by the claude harness — no API key needed.",
   );
 });
 
@@ -127,7 +127,7 @@ test("a stored key keeps its summary even when the harness also carries auth", a
     harnessAuth: { harnessId: "claude", provider: "anthropic" },
   });
   assert.equal(elements["onboarding-model-badge"]!.textContent, "Ready");
-  assert.equal(elements["onboarding-model-summary"]!.textContent, "claude-opus-5 · admin-managed key");
+  assert.equal(elements["onboarding-model-summary"]!.textContent, "claude-opus-5-5 · admin-managed key");
 });
 
 test("/admin/onboarding resolves to the onboarding view", () => {
@@ -233,7 +233,7 @@ test("pending onboarding reads preserve the provider associated with a newly ent
       return new Promise((resolve) => {
         complete = resolve;
       });
-    if (path.includes("?view=onboarding")) return { ok: true, data: { baseModel: "claude-opus-5" } };
+    if (path.includes("?view=onboarding")) return { ok: true, data: { baseModel: "claude-opus-5-5" } };
     return { ok: true, data: {} };
   };
   const pending = controller.load();

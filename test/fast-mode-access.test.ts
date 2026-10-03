@@ -110,7 +110,7 @@ test("the router downgrades fast mode for anyone not allowed, on every turn kind
   const config = createMemoryConfigStore("default-org");
   const people = await directory();
   await config.setFastModeAccess(["carol@acme.com"]);
-  const fast: RuntimeChoice = { harnessId: "pi", modelId: "claude-opus-5", effortLevel: "high", fastMode: true };
+  const fast: RuntimeChoice = { harnessId: "pi", modelId: "claude-opus-5-5", effortLevel: "high", fastMode: true };
   const { calls, run } = capturingRouter(fast, (actorId) => fastModeAllowed(config, people, actorId));
   const seen: RuntimeChoice[] = [];
   const runtimeControl: RuntimeControl = async (active) => {
@@ -140,7 +140,7 @@ test("turns billed to the person's own account keep fast mode despite the access
   const config = createMemoryConfigStore("default-org");
   const people = await directory();
   await config.setFastModeAccess(["carol@acme.com"]);
-  const fast: RuntimeChoice = { harnessId: "pi", modelId: "gpt-5.6-terra", effortLevel: "high", fastMode: true };
+  const fast: RuntimeChoice = { harnessId: "pi", modelId: "gpt-6-astra", effortLevel: "high", fastMode: true };
   const { calls, run } = capturingRouter(fast, (actorId) => fastModeAllowed(config, people, actorId));
   await run({ runtimeActorId: "dave@acme.com", providerKeys: { openai: "sk-own" } });
   await run({ runtimeActorId: "dave@acme.com", claudeOauthToken: "own-token" });
@@ -162,10 +162,10 @@ test("restricted people cannot save fast mode into a shared scope through the ru
   const people = await directory();
   await config.setFastModeAccess(["carol@acme.com"]);
   const service = createRuntimeService(
-    { config, directory: people, harnessId: "pi", baseModelDefault: "claude-opus-5" },
+    { config, directory: people, harnessId: "pi", baseModelDefault: "claude-opus-5-5" },
     { authorizesCapabilityScope: async () => true },
   );
-  const active: RuntimeChoice = { harnessId: "pi", modelId: "claude-opus-5", effortLevel: "high", fastMode: false };
+  const active: RuntimeChoice = { harnessId: "pi", modelId: "claude-opus-5-5", effortLevel: "high", fastMode: false };
   const setFast = async (actorId: string, scopeId: ScopeId) => {
     const claims = { actorId, scopeId, liveActor: true, exp: Date.now() + 60_000 };
     assert.equal((await service(claims, active, { action: "set", fastMode: true, lifetime: "scope" })).ok, true);
@@ -204,7 +204,7 @@ test("restricted people cannot save fast mode into a shared scope through the pi
     const res = await fetch(`${base}/v1/runtime-config`, {
       method: "PUT",
       headers: { "content-type": "application/json", "x-agent-capability": cap },
-      body: JSON.stringify({ harnessId: "pi", modelId: "claude-opus-5", fastMode: true }),
+      body: JSON.stringify({ harnessId: "pi", modelId: "claude-opus-5-5", fastMode: true }),
     });
     assert.equal(res.status, 200);
     return (await built.config.getRuntimeSelectionDurable(scopeId as ScopeId))?.fastMode;
@@ -236,8 +236,8 @@ test("the picker keeps fast mode for models billed to a restricted person's own 
   const scope = "personal:dave@acme.com" as ScopeId;
   const personal = await userPickerRuntimeConfig(ctx, scope, "dave@acme.com");
   assert.equal("fastModeRestricted" in personal, false);
-  assert.ok(personal.fastModeModelIds.includes("gpt-5.6-terra"));
-  assert.equal(personal.fastModeModelIds.includes("claude-opus-5"), false);
+  assert.ok(personal.fastModeModelIds.includes("gpt-6-astra"));
+  assert.equal(personal.fastModeModelIds.includes("claude-opus-5-5"), false);
   const company = await userPickerRuntimeConfig(ctx, scope, "dave@acme.com", true);
   assert.equal((company as { fastModeRestricted?: boolean }).fastModeRestricted, true);
   assert.deepEqual(company.fastModeModelIds, []);
@@ -246,13 +246,13 @@ test("the picker keeps fast mode for models billed to a restricted person's own 
 test("the picker hides fast mode, with a reason, from people who may not use it", async () => {
   const config = createMemoryConfigStore("default-org");
   config.setApprovedHarnesses(["pi"]);
-  config.setRuntimeSelection(ORG, { harnessId: "pi", modelId: "claude-opus-5", fastMode: true });
+  config.setRuntimeSelection(ORG, { harnessId: "pi", modelId: "claude-opus-5-5", fastMode: true });
   config.setInteractiveFastMode(true);
   await config.flushScope(ORG);
   const people = await directory();
   const ctx = { deps: { config, directory: people, harnessId: "pi" } };
   const everyone = await userPickerRuntimeConfig(ctx, "personal:dave@acme.com" as ScopeId, "dave@acme.com");
-  assert.ok(everyone.fastModeModelIds.includes("claude-opus-5"));
+  assert.ok(everyone.fastModeModelIds.includes("claude-opus-5-5"));
   assert.equal(everyone.effective.fastMode, true);
   assert.equal("fastModeRestricted" in everyone, false);
 
@@ -265,7 +265,7 @@ test("the picker hides fast mode, with a reason, from people who may not use it"
     assert.equal((dave as { fastModeRestricted?: boolean }).fastModeRestricted, true);
   }
   const carol = await userPickerRuntimeConfig(ctx, "personal:carol@acme.com" as ScopeId, "carol@acme.com");
-  assert.ok(carol.fastModeModelIds.includes("claude-opus-5"));
+  assert.ok(carol.fastModeModelIds.includes("claude-opus-5-5"));
   assert.equal(carol.effective.fastMode, true);
 });
 

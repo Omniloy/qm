@@ -73,7 +73,7 @@ const credential = (provider: "anthropic" | "openai"): UserModelCredential => ({
 test("routing serves org-mode providers from the org account for every mode, account, and model", async () => {
   const store = { get: async (_userId: string, provider: string) => credential(provider as "anthropic" | "openai") };
   const accounts = ["personal", "anthropic", "openai"] as const;
-  const models = ["claude-sonnet-5", "gpt-5.6-terra", undefined];
+  const models = ["claude-sonnet-5-5", "gpt-6-astra", undefined];
   for (const modes of MODES) {
     for (const account of accounts) {
       const access = await loadPersonalModelAccess(
@@ -111,11 +111,11 @@ test("a person with both accounts keeps Claude personal while ChatGPT turns fall
     "personal",
   );
   assert.equal(access.openai, null);
-  const claude = routePersonalModelAccess(access, "claude-sonnet-5", "pi");
+  const claude = routePersonalModelAccess(access, "claude-sonnet-5-5", "pi");
   assert.ok(claude !== "org" && claude?.kind === "apikey");
   assert.equal(claude.apiKey, "personal-anthropic");
-  assert.equal(routePersonalModelAccess(access, "gpt-5.6-terra", "pi"), "org");
-  assert.equal(routePersonalModelAccess(access, "codex/gpt-5.6-terra", "pi"), "org");
+  assert.equal(routePersonalModelAccess(access, "gpt-6-astra", "pi"), "org");
+  assert.equal(routePersonalModelAccess(access, "codex/gpt-6-astra", "pi"), "org");
 });
 
 test("without the org requirement, a pin to a provider switched to org falls back to the org account", async () => {
@@ -133,6 +133,6 @@ test("the org requirement fails closed for a personal-mode provider with no conn
     "U1",
     "personal",
   );
-  assert.equal(routePersonalModelAccess(access, "claude-sonnet-5", "pi"), null);
-  assert.equal(routePersonalModelAccess(access, "gpt-5.6-terra", "pi"), "org");
+  assert.equal(routePersonalModelAccess(access, "claude-sonnet-5-5", "pi"), null);
+  assert.equal(routePersonalModelAccess(access, "gpt-6-astra", "pi"), "org");
 });

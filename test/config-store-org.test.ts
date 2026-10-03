@@ -35,7 +35,7 @@ test("purpose runtimes persist independently without manufacturing a conversatio
   const store = createMemoryConfigStore("default-org", { baseModels });
   const org = "org:default-org";
   const cron = { harnessId: "pi", modelId: "gpt-5.5", fastMode: false };
-  const subagent = { harnessId: "pi", modelId: "claude-opus-5", effortLevel: "low" };
+  const subagent = { harnessId: "pi", modelId: "claude-opus-5-5", effortLevel: "low" };
   assert.equal(store.getPurposeRuntime("cron"), undefined);
   await store.setPurposeRuntime("cron", cron);
   await store.setPurposeRuntime("subagent", subagent);
