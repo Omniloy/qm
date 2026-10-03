@@ -136,7 +136,7 @@ test("POST /api/turn forwards blobId attachments to core as references (no inlin
       text: "here is a file",
       threadRef: "web:alice:t1",
       harness: "codex",
-      model: "gpt-5.6-sol",
+      model: "gpt-6.1-sol",
       attachments: [
         { name: "big.bin", mimetype: "application/octet-stream", sizeBytes: 5242880, blobId: "blob-abc123" },
       ],
@@ -151,7 +151,7 @@ test("POST /api/turn forwards blobId attachments to core as references (no inlin
   assert.equal(atts[0]!.sizeBytes, 5242880);
   assert.equal((atts[0] as Record<string, unknown>).contentBase64, undefined, "no inline bytes ride the turn body");
   assert.equal(lastTurnBody!.harness, "codex", "the selected harness reaches core");
-  assert.equal(lastTurnBody!.model, "gpt-5.6-sol", "the selected model reaches core");
+  assert.equal(lastTurnBody!.model, "gpt-6.1-sol", "the selected model reaches core");
 });
 
 test("POST /api/turn drops an attachment with no blobId rather than forwarding junk", async () => {

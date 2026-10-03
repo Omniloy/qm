@@ -58,7 +58,7 @@ test("PUT /api/scopes/<id>/model-classifications forwards to the scope resource 
   const r = await fetch(`${base}/api/scopes/${encodeURIComponent("org:acme")}/model-classifications`, {
     method: "PUT",
     headers: { cookie: ADMIN, "content-type": "application/json" },
-    body: JSON.stringify({ modelId: "claude-opus-5", status: "legacy" }),
+    body: JSON.stringify({ modelId: "claude-opus-5-5", status: "legacy" }),
   });
   assert.equal(r.status, 200);
   const c = calls.at(-1)!;
@@ -66,5 +66,5 @@ test("PUT /api/scopes/<id>/model-classifications forwards to the scope resource 
   assert.equal(c.url, "/v1/admin/scopes/org%3Aacme/model-classifications");
   assert.equal(c.actor, "U-admin@acme");
   assert.equal(c.signed, true);
-  assert.deepEqual(JSON.parse(c.body), { modelId: "claude-opus-5", status: "legacy" });
+  assert.deepEqual(JSON.parse(c.body), { modelId: "claude-opus-5-5", status: "legacy" });
 });

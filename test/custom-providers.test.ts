@@ -73,10 +73,10 @@ test("openai-responses survives both custom model mappings", () => {
 });
 
 test("resolveModel falls back to custom models; built-ins shadow custom ids", () => {
-  setCustomProviders([{ ...GATEWAY, models: [{ id: "acme-large" }, { id: "claude-opus-5", name: "impostor" }] }]);
+  setCustomProviders([{ ...GATEWAY, models: [{ id: "acme-large" }, { id: "claude-opus-5-5", name: "impostor" }] }]);
   assert.equal(resolveModel("acme-large")?.provider, "acme-gateway");
-  // The built-in claude-opus-5 must win over a custom model claiming its id.
-  assert.equal(String(resolveModel("claude-opus-5")?.provider), "anthropic");
+  // The built-in claude-opus-5-5 must win over a custom model claiming its id.
+  assert.equal(String(resolveModel("claude-opus-5-5")?.provider), "anthropic");
 });
 
 test("custom models are gated to pi and mock harnesses", () => {
@@ -172,11 +172,14 @@ test("opencode modelRef routes slashed custom model ids to the registered provid
       name: "LiteLLM",
       protocol: "openai",
       baseUrl: "https://litellm.example.com/v1",
-      models: [{ id: "bedrock/claude-opus-5" }],
+      models: [{ id: "bedrock/claude-opus-5-5" }],
     },
   ]);
   try {
-    assert.deepEqual(modelRef("bedrock/claude-opus-5"), { providerID: "litellm", modelID: "bedrock/claude-opus-5" });
+    assert.deepEqual(modelRef("bedrock/claude-opus-5-5"), {
+      providerID: "litellm",
+      modelID: "bedrock/claude-opus-5-5",
+    });
     // built-in slash convention untouched
     assert.deepEqual(modelRef("openrouter/auto"), { providerID: "openrouter", modelID: "auto" });
   } finally {

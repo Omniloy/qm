@@ -180,7 +180,7 @@ test("runtime reasoning choices follow the selected model and preserve legacy de
     const select = () => dom.window.document.getElementById("base-effort") as HTMLSelectElement;
     const choices = () => [...select().options].map((option) => [option.value, option.textContent]);
     assert.deepEqual(choices(), [
-      ["auto", "Legacy default"],
+      ["auto", "Default"],
       ["adaptive", "Auto"],
       ["default", "Provider default"],
       ["high", "High"],

@@ -49,7 +49,7 @@ test("refusalNote: a failed turn hides the internal reason but keeps the admin l
 
 test("refusalNote: a provider-limit failure shows the limit message on its own", () => {
   const reason =
-    "You've reached the OpenAI usage limit for gpt-6-sol on the connected ChatGPT subscription. Try again later or pick another model.";
+    "You've reached the OpenAI usage limit for gpt-6.1-sol on the connected ChatGPT subscription. Try again later or pick another model.";
   const note = refusalNote({ status: "failed", refusalKind: "provider_limit", reason, adminUrl: ADMIN_URL }, "channel");
   assert.equal(note, reason);
 });

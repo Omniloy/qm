@@ -44,7 +44,7 @@ test("base-model set rejects a model whose provider key is absent (would fail pr
     const bad = await fetch(`${srv.base}/v1/admin/scopes/org:default-org/base-model`, {
       method: "PUT",
       headers: ADMIN,
-      body: JSON.stringify({ modelId: "gpt-5.6-sol" }),
+      body: JSON.stringify({ modelId: "gpt-6.1-sol" }),
     });
     assert.equal(bad.status, 400);
     assert.match(((await bad.json()) as { message?: string }).message ?? "", /serviceable|provider key/i);
@@ -79,8 +79,8 @@ test("ChatGPT OAuth is serviceable for Codex without advertising OpenAI to Pi", 
 
 test("a deployment that declares a provider runs that provider's base model", async () => {
   for (const [modelProvider, key, expected] of [
-    ["anthropic", "anthropicApiKey", "claude-opus-5"],
-    ["openai", "openaiApiKey", "gpt-5.6-sol"],
+    ["anthropic", "anthropicApiKey", "claude-opus-5-5"],
+    ["openai", "openaiApiKey", "gpt-6.1-sol"],
     ["openrouter", "openrouterApiKey", "openrouter/auto"],
   ] as const) {
     const srv = start({ modelProvider, [key]: `deployment-${modelProvider}-key` });
@@ -102,7 +102,7 @@ test("an undeclared deployment keeps the shipped default, whatever keys it holds
     try {
       assert.equal(
         await effectiveModel(srv.base),
-        "claude-opus-5",
+        "claude-opus-5-5",
         "upgrading must not move an existing deployment's model or its billing",
       );
     } finally {

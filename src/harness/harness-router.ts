@@ -1,10 +1,11 @@
 import type { ScopedConfigStore, RuntimePurpose } from "../resolution/config-store.ts";
 import {
+  canonicalModelId,
   defaultModelForHarness,
-  fastModeModelIds,
   harnessSupportsFastMode,
   isHarnessId,
   modelSupportedByHarness,
+  modelSupportsFastMode,
   resolveModel,
   thinkingLevelsForHarness,
   modelUnavailableReason,
@@ -108,14 +109,14 @@ function normalizeRuntimeChoice(choice: RuntimeChoice): RuntimeChoice {
     );
   return {
     harnessId: choice.harnessId,
-    modelId: choice.modelId,
+    modelId: canonicalModelId(choice.modelId),
     ...(choice.effortLevel && thinkingLevelsForHarness(choice.harnessId, choice.modelId).includes(choice.effortLevel)
       ? { effortLevel: choice.effortLevel }
       : {}),
     ...(typeof choice.fastMode === "boolean"
       ? {
           fastMode:
-            choice.fastMode && harnessSupportsFastMode(choice.harnessId) && fastModeModelIds().includes(choice.modelId),
+            choice.fastMode && harnessSupportsFastMode(choice.harnessId) && modelSupportsFastMode(choice.modelId),
         }
       : {}),
   };
@@ -151,9 +152,9 @@ export function resolveRuntimeChoice(
       throw new NonRetryableTurnError(
         `${choice.effortLevel} reasoning is not supported by ${choice.harnessId}/${choice.modelId}`,
       );
-    if (choice.fastMode && (!harnessSupportsFastMode(choice.harnessId) || !fastModeModelIds().includes(choice.modelId)))
+    if (choice.fastMode && (!harnessSupportsFastMode(choice.harnessId) || !modelSupportsFastMode(choice.modelId)))
       throw new NonRetryableTurnError(`fast mode is not supported by ${choice.harnessId}/${choice.modelId}`);
-    return { ...choice, harnessId: choice.harnessId };
+    return { ...choice, harnessId: choice.harnessId, modelId: canonicalModelId(choice.modelId) };
   }
   if (purpose === "cron")
     requested = { effortLevel: NON_INTERACTIVE_THINKING_LEVEL, fastMode: NON_INTERACTIVE_FAST_MODE, ...requested };

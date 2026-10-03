@@ -6,7 +6,7 @@ import { parseCommandPolicy } from "../../policy/command-policy.ts";
 import { parseScopeId, scopeId, type CommandPolicy, type Grant, type ScopeId } from "../../types.ts";
 import {
   defaultModelForHarness,
-  fastModeModelIds,
+  modelSupportsFastMode,
   harnessSupportsFastMode,
   HARNESS_IDS,
   isHarnessId,
@@ -676,9 +676,7 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
           ...(typeof runtime.fastMode === "boolean"
             ? {
                 fastMode:
-                  runtime.fastMode &&
-                  harnessSupportsFastMode(runtime.harnessId) &&
-                  fastModeModelIds().includes(modelId),
+                  runtime.fastMode && harnessSupportsFastMode(runtime.harnessId) && modelSupportsFastMode(modelId),
               }
             : {}),
         });
@@ -699,9 +697,7 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
           ...(typeof effective.fastMode === "boolean"
             ? {
                 fastMode:
-                  effective.fastMode &&
-                  harnessSupportsFastMode(effective.harnessId) &&
-                  fastModeModelIds().includes(modelId),
+                  effective.fastMode && harnessSupportsFastMode(effective.harnessId) && modelSupportsFastMode(modelId),
               }
             : {}),
         });
@@ -743,11 +739,7 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
         return { error: `runtime requires effortLevel (${thinkingLevels.join(" | ")}) for ${harnessId}` };
       if (fastMode !== undefined && typeof fastMode !== "boolean")
         return { error: "runtime requires fastMode (boolean)" };
-      if (
-        purpose &&
-        fastMode === true &&
-        (!harnessSupportsFastMode(harnessId) || !fastModeModelIds().includes(modelId))
-      )
+      if (purpose && fastMode === true && (!harnessSupportsFastMode(harnessId) || !modelSupportsFastMode(modelId)))
         return { error: `fast mode is not supported by ${harnessId} with ${modelId}` };
       const configuredKeys = ctx.deps.providerKeys ?? ALL_PROVIDERS_AVAILABLE;
       const managedKeys = ctx.deps.modelCredentials ? await ctx.deps.modelCredentials.availability() : configuredKeys;
@@ -760,7 +752,7 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
         modelId,
         ...(typeof effortLevel === "string" ? { effortLevel } : {}),
         ...(typeof fastMode === "boolean"
-          ? { fastMode: fastMode && harnessSupportsFastMode(harnessId) && fastModeModelIds().includes(modelId) }
+          ? { fastMode: fastMode && harnessSupportsFastMode(harnessId) && modelSupportsFastMode(modelId) }
           : {}),
       };
       if (purpose) await ctx.deps.config!.setPurposeRuntime(purpose, choice);

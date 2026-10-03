@@ -28,7 +28,6 @@ services:
       - "${DOCKER_GID:-998}"
     env_file:
       - ../layers/omniloy/branding.conf
-      - ../layers/omniloy/models.conf
     environment:
       PORT: "8080"
       DATA_DIR: ${DATA_HOST_DIR}

@@ -123,7 +123,7 @@ test("piHarnessConfigOptions maps every Config knob the harness consumes, field 
         url: "http://gateway.internal:8080",
         apiKey: "gateway-key",
         apiKeyHeader: "api-key",
-        models: { "claude-opus-5": "router/opus" },
+        models: { "claude-opus-5-5": "router/opus" },
       },
       piCaptureRequests: false,
       piSystemCacheSplit: true,
@@ -148,7 +148,7 @@ test("piHarnessConfigOptions maps every Config knob the harness consumes, field 
       url: "http://gateway.internal:8080",
       apiKey: "gateway-key",
       apiKeyHeader: "api-key",
-      models: { "claude-opus-5": "router/opus" },
+      models: { "claude-opus-5-5": "router/opus" },
     },
     captureRequests: false,
     systemCacheSplit: true,
@@ -185,13 +185,13 @@ test("piHarnessConfigOptions leaves controlTools off unless a self-API (signing 
 
 test("piHarnessConfigOptions carries the deployment provider into Pi auxiliary model selection", () => {
   const opts = piHarnessConfigOptions(testConfig({ modelProvider: "openai", openaiApiKey: "sk-openai-test" }));
-  assert.equal(opts.defaultModelId, "gpt-5.6-sol");
-  assert.equal(auxiliaryModelFor(opts.defaultModelId!), "gpt-5.6-luna");
+  assert.equal(opts.defaultModelId, "gpt-6.1-sol");
+  assert.equal(auxiliaryModelFor(opts.defaultModelId!), "gpt-6-luna");
 });
 
 test("Pi title generation returns no title without an auxiliary-model credential", async () => {
   const harness = createPiHarness({
-    defaultModelId: "gpt-5.6-sol",
+    defaultModelId: "gpt-6.1-sol",
     resolveProviderKeys: async () => ({}),
   });
   assert.equal(await harness.models.generateTitle!("User:\nPrioritize the public qm issues"), undefined);
@@ -910,20 +910,20 @@ test("providerRefusalError finds this prompt's refusal but never a prior turn's"
 
 test("refusalFallbackNote names both models, carries the provider's refusal, and tells the agent to inform the user", () => {
   const note = refusalFallbackNote(
-    "Claude Fable 5",
+    "Claude Fable 5.1",
     "Claude Opus 4.8",
     "This request was blocked as it seems to violate Anthropic's Terms of Service restrictions on reverse engineering.",
   );
-  assert.match(note, /Claude Fable 5/);
+  assert.match(note, /Claude Fable 5.1/);
   assert.match(note, /Claude Opus 4.8/);
   assert.match(note, /restrictions on reverse engineering/);
   assert.match(note, /telling the user/);
 });
 
 test("refusal fallback drawdown: Fable -> Opus, Opus -> Sonnet, never the refused model back", () => {
-  assert.equal(refusalFallbackModelId("claude-fable-5-1"), "claude-opus-5");
-  assert.equal(refusalFallbackModelId("claude-fable-5"), "claude-opus-5");
-  assert.equal(refusalFallbackModelId("claude-opus-5"), "claude-sonnet-5");
+  assert.equal(refusalFallbackModelId("claude-fable-5-1"), "claude-opus-5-5");
+  assert.equal(refusalFallbackModelId("claude-fable-5-1"), "claude-opus-5-5");
+  assert.equal(refusalFallbackModelId("claude-opus-5-5"), "claude-sonnet-5-5");
   for (const id of REFUSAL_FALLBACK_MODEL_IDS) {
     assert.notEqual(refusalFallbackModelId(id), id);
     assert.equal(resolveModel(id)?.provider, "anthropic");

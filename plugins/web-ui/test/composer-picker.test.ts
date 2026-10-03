@@ -655,7 +655,7 @@ test("the personal-account picker preserves composer choices and saves context d
     const effortChoices = () => [...host.querySelectorAll<HTMLButtonElement>(".loadout-effort")];
     assert.deepEqual(
       effortChoices().map((item) => item.textContent?.trim()),
-      ["Legacy default", "Auto", "Provider default", "Low", "High"],
+      ["Default", "Auto", "Provider default", "Low", "High"],
     );
     effortChoices()
       .find((item) => item.textContent?.trim() === "Auto")!
@@ -664,7 +664,7 @@ test("the personal-account picker preserves composer choices and saves context d
     assert.equal(saved().find(({ value }) => value === "pi:alpha")?.effort, "adaptive");
     button('[data-loadout-section="effort"]').click();
     assert.equal(
-      effortChoices().some((item) => item.textContent?.trim() === "Legacy default"),
+      effortChoices().some((item) => item.textContent?.trim() === "Default"),
       false,
     );
     effortChoices()

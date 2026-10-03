@@ -70,10 +70,10 @@ test("worker transcripts allow approvals without enabling the composer", async (
       return Response.json({
         scopeId: row.scopeId,
         approvedHarnesses: ["pi"],
-        modelsByHarness: { pi: ["gpt-5.6-sol"] },
-        modelCatalog: { "gpt-5.6-sol": metadata("gpt-5.6-sol", "GPT-5.6 Sol") },
-        orgDefault: { harnessId: "pi", modelId: "gpt-5.6-sol", revision: 0 },
-        effective: { harnessId: "pi", modelId: "gpt-5.6-sol" },
+        modelsByHarness: { pi: ["gpt-6.1-sol"] },
+        modelCatalog: { "gpt-6.1-sol": metadata("gpt-6.1-sol", "GPT-6.1 Sol") },
+        orgDefault: { harnessId: "pi", modelId: "gpt-6.1-sol", revision: 0 },
+        effective: { harnessId: "pi", modelId: "gpt-6.1-sol" },
         scopeOverride: null,
       });
     }

@@ -7,8 +7,8 @@ import { isCustomModelId, resolveCustomModel } from "./custom-providers.ts";
 
 const getModel = getBuiltinModel as unknown as (provider: string, id: string) => Model<Api> | undefined;
 
-export const DEFAULT_AGENT_MODEL_ID = "claude-opus-5";
-export const DEFAULT_CODEX_MODEL_ID = "gpt-5.6-sol";
+export const DEFAULT_AGENT_MODEL_ID = "claude-opus-5-5";
+export const DEFAULT_CODEX_MODEL_ID = "gpt-6.1-sol";
 /**
  * pi-ai's ChatGPT-subscription provider: the same model ids as "openai",
  * served from the Codex backend and authenticated with a ChatGPT OAuth
@@ -113,7 +113,7 @@ interface ModelEntry {
   };
 }
 
-const GPT_56_CLONE = { template: "gpt-5.5", contextWindow: 1_050_000, maxTokens: 128_000 } as const;
+const GPT_6_CLONE = { template: "gpt-5.5", contextWindow: 1_050_000, maxTokens: 128_000 } as const;
 
 export const MODEL_REGISTRY: readonly ModelEntry[] = [
   {
@@ -149,22 +149,6 @@ export const MODEL_REGISTRY: readonly ModelEntry[] = [
       maxTokens: 128_000,
     },
   },
-  { id: "claude-fable-5", name: "Claude Fable 5", fastMode: false, webui: true, base: true },
-  {
-    id: "claude-opus-5",
-    name: "Claude Opus 5",
-    fastMode: true,
-    webui: true,
-    base: true,
-    clone: {
-      template: "claude-opus-4-8",
-      input: 5,
-      output: 25,
-      cacheWrite: 6.25,
-      contextWindow: 1_000_000,
-      maxTokens: 128_000,
-    },
-  },
   { id: "claude-opus-4-8", name: "Claude Opus 4.8", fastMode: true, webui: true, base: true },
   {
     id: "claude-sonnet-5-5",
@@ -183,52 +167,22 @@ export const MODEL_REGISTRY: readonly ModelEntry[] = [
       maxTokens: 128_000,
     },
   },
-  { id: "claude-sonnet-5", name: "Claude Sonnet 5", fastMode: false, webui: true, base: true },
   { id: "claude-haiku-4-5", name: "Claude Haiku 4.5", fastMode: false, webui: true, base: true, auxiliary: true },
   {
-    id: "gpt-5.6-sol",
-    buttonLabel: "5.6 Sol",
-    name: "GPT-5.6 Sol",
+    id: "gpt-6.1-sol",
+    buttonLabel: "6.1 Sol",
+    name: "GPT-6.1 Sol",
     fastMode: true,
     webui: true,
     base: true,
     clone: {
-      ...GPT_56_CLONE,
-      input: 4,
-      output: 20,
-      cacheWrite: 5,
-      tiers: [{ inputTokensAbove: 272_000, input: 8, output: 30, cacheRead: 0.8, cacheWrite: 10 }],
-    },
-  },
-  {
-    id: "gpt-5.6-terra",
-    buttonLabel: "5.6 Terra",
-    name: "GPT-5.6 Terra",
-    fastMode: true,
-    webui: true,
-    base: true,
-    clone: {
-      ...GPT_56_CLONE,
+      ...GPT_6_CLONE,
+      thinkingLevelMap: { off: null, minimal: null, max: "max" },
       input: 2,
-      output: 12,
+      output: 10,
+      cacheRead: 0.1,
       cacheWrite: 2.5,
-      tiers: [{ inputTokensAbove: 272_000, input: 4, output: 18, cacheRead: 0.4, cacheWrite: 5 }],
-    },
-  },
-  {
-    id: "gpt-5.6-luna",
-    buttonLabel: "5.6 Luna",
-    name: "GPT-5.6 Luna",
-    fastMode: true,
-    webui: true,
-    base: true,
-    auxiliary: true,
-    clone: {
-      ...GPT_56_CLONE,
-      input: 0.2,
-      output: 1.2,
-      cacheWrite: 0.25,
-      tiers: [{ inputTokensAbove: 272_000, input: 0.4, output: 1.8, cacheRead: 0.04, cacheWrite: 0.5 }],
+      tiers: [{ inputTokensAbove: 272_000, input: 4, output: 15, cacheRead: 0.2, cacheWrite: 5 }],
     },
   },
   {
@@ -239,44 +193,12 @@ export const MODEL_REGISTRY: readonly ModelEntry[] = [
     webui: true,
     base: true,
     clone: {
-      ...GPT_56_CLONE,
+      ...GPT_6_CLONE,
       input: 10,
       output: 50,
       cacheRead: 1,
       cacheWrite: 12.5,
       tiers: [{ inputTokensAbove: 272_000, input: 20, output: 75, cacheRead: 2, cacheWrite: 25 }],
-    },
-  },
-  {
-    id: "gpt-6.1-sol",
-    buttonLabel: "6.1 Sol",
-    name: "GPT-6.1 Sol",
-    fastMode: true,
-    webui: true,
-    base: true,
-    clone: {
-      ...GPT_56_CLONE,
-      thinkingLevelMap: { off: null, minimal: null, max: "max" },
-      input: 2,
-      output: 10,
-      cacheRead: 0.1,
-      cacheWrite: 2.5,
-      tiers: [{ inputTokensAbove: 272_000, input: 4, output: 15, cacheRead: 0.2, cacheWrite: 5 }],
-    },
-  },
-  {
-    id: "gpt-6-sol",
-    buttonLabel: "6 Sol",
-    name: "GPT-6 Sol",
-    fastMode: true,
-    webui: true,
-    base: true,
-    clone: {
-      ...GPT_56_CLONE,
-      input: 2,
-      output: 10,
-      cacheWrite: 2.5,
-      tiers: [{ inputTokensAbove: 272_000, input: 4, output: 15, cacheRead: 0.4, cacheWrite: 5 }],
     },
   },
   {
@@ -286,8 +208,9 @@ export const MODEL_REGISTRY: readonly ModelEntry[] = [
     fastMode: true,
     webui: true,
     base: true,
+    auxiliary: true,
     clone: {
-      ...GPT_56_CLONE,
+      ...GPT_6_CLONE,
       input: 0.1,
       output: 0.5,
       cacheWrite: 0.125,
@@ -295,9 +218,23 @@ export const MODEL_REGISTRY: readonly ModelEntry[] = [
     },
   },
   { id: "openrouter/auto", name: "OpenRouter Auto", fastMode: false, webui: true, base: true },
-  { id: "claude-opus-4-7", name: "Claude Opus 4.7", fastMode: false, webui: false, base: false },
-  { id: "claude-opus-4-6", name: "Claude Opus 4.6", fastMode: false, webui: false, base: false },
 ];
+
+const RETIRED_MODEL_SUCCESSORS: ReadonlyMap<string, string> = new Map([
+  ["gpt-5.6-sol", "gpt-6.1-sol"],
+  ["gpt-5.6-terra", "gpt-6.1-sol"],
+  ["gpt-5.6-luna", "gpt-6-luna"],
+  ["gpt-6-sol", "gpt-6.1-sol"],
+  ["claude-sonnet-5", "claude-sonnet-5-5"],
+  ["claude-opus-5", "claude-opus-5-5"],
+  ["claude-fable-5", "claude-fable-5-1"],
+]);
+
+export function canonicalModelId(id: string): string {
+  const successor = RETIRED_MODEL_SUCCESSORS.get(codexProviderModelId(id));
+  if (!successor) return id;
+  return id.startsWith(CODEX_SUBSCRIPTION_PREFIX) ? codexSubscriptionModelId(successor) : successor;
+}
 
 let overlays = new Map<string, ModelOverlay>();
 let unavailableOverlays = new Map<string, string>();
@@ -327,6 +264,7 @@ export function modelIdReserved(id: string): boolean {
     isGatewayModelId(id) ||
     id.startsWith(CODEX_SUBSCRIPTION_PREFIX) ||
     REGISTRY_BY_ID.has(id) ||
+    RETIRED_MODEL_SUCCESSORS.has(id) ||
     Boolean(builtinModel(id)) ||
     overlays.has(id) ||
     unavailableOverlays.has(id) ||
@@ -338,6 +276,7 @@ export function validateModelOverlay(value: unknown): ModelOverlay {
   const spec = parseModelOverlay(value);
   if (
     REGISTRY_BY_ID.has(spec.id) ||
+    RETIRED_MODEL_SUCCESSORS.has(spec.id) ||
     builtinModel(spec.id) ||
     isCustomModelId(spec.id) ||
     OPENROUTER_CATALOG_MODELS.has(spec.id)
@@ -426,11 +365,6 @@ export function modelDisplayName(id: string): string {
   return overlays.get(id)?.name ?? REGISTRY_BY_ID.get(id)?.name ?? OPENROUTER_CATALOG_MODELS.get(id)?.name ?? id;
 }
 
-export function builtinRegistryEntry(id: string): { webui: boolean; base: boolean } | undefined {
-  const entry = REGISTRY_BY_ID.get(id);
-  return entry ? { webui: entry.webui, base: entry.base } : undefined;
-}
-
 export const DEFAULT_WEBUI_MODEL_IDS: readonly string[] = MODEL_REGISTRY.filter((m) => m.webui).map((m) => m.id);
 
 export const SELECTABLE_BASE_MODELS: ReadonlyArray<{ id: string; name: string }> = MODEL_REGISTRY.filter(
@@ -494,15 +428,14 @@ export function registerOpenRouterCatalogModel(definition: OpenRouterCatalogMode
 }
 
 export function resolveBuiltinModel(id: string): PiModel | undefined {
-  if (id.startsWith(CODEX_SUBSCRIPTION_PREFIX)) {
-    const m = getModel(CODEX_SUBSCRIPTION_PROVIDER, codexProviderModelId(id));
-    return m ? { ...m, id } : undefined;
-  }
-  const entry = REGISTRY_BY_ID.get(id);
+  const subscription = id.startsWith(CODEX_SUBSCRIPTION_PREFIX);
+  const template = (templateId: string) =>
+    subscription ? getModel(CODEX_SUBSCRIPTION_PROVIDER, templateId) : builtinModel(templateId);
+  const entry = REGISTRY_BY_ID.get(codexProviderModelId(id));
   if (entry?.clone) {
-    const template = builtinModel(entry.clone.template);
-    return template
-      ? cloneModel(template, id, entry.name, {
+    const base = template(entry.clone.template);
+    return base
+      ? cloneModel(base, id, entry.name, {
           contextWindow: entry.clone.contextWindow,
           maxTokens: entry.clone.maxTokens,
           ...(entry.clone.thinkingLevelMap ? { thinkingLevelMap: entry.clone.thinkingLevelMap } : {}),
@@ -517,7 +450,8 @@ export function resolveBuiltinModel(id: string): PiModel | undefined {
         })
       : undefined;
   }
-  return builtinModel(id);
+  const model = template(codexProviderModelId(id));
+  return model && subscription ? { ...model, id } : model;
 }
 
 function resolveBaseModel(id: string): PiModel | undefined {
@@ -545,7 +479,7 @@ export function modelFromOverlay(spec: ModelOverlay, useOrgEndpoints = true): Pi
 }
 
 export function resolveModel(id: string, useOrgEndpoints = true): PiModel | undefined {
-  const model = resolveBaseModel(id);
+  const model = resolveBaseModel(canonicalModelId(id));
   if (!model || !useOrgEndpoints) return model;
   const override = providerBaseUrl(String(model.provider));
   return override ? { ...model, baseUrl: override } : model;
@@ -674,7 +608,7 @@ export function getRequiredModel(id: string, useOrgEndpoints = true): PiModel {
 export function modelSupportsFastMode(modelId: string | undefined): boolean {
   if (!modelId) return false;
   if (unavailableOverlays.has(modelId)) return false;
-  return overlays.get(modelId)?.fastMode ?? REGISTRY_BY_ID.get(modelId)?.fastMode ?? false;
+  return overlays.get(modelId)?.fastMode ?? REGISTRY_BY_ID.get(canonicalModelId(modelId))?.fastMode ?? false;
 }
 
 export const FAST_MODE_MODEL_IDS: readonly string[] = MODEL_REGISTRY.filter((m) => m.fastMode).map((m) => m.id);

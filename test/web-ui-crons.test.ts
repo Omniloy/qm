@@ -277,7 +277,7 @@ test("cron runtime patches pass through the web API, validate, and clear", async
     createdBy: "alice",
     ownerScopeId: "personal:alice",
   });
-  const runtime = { harnessId: "mock", modelId: "claude-sonnet-5" };
+  const runtime = { harnessId: "mock", modelId: "claude-sonnet-5-5" };
   const patch = (value: unknown) =>
     fetch(
       `${webBase}/api/crons/${cron.id}`,

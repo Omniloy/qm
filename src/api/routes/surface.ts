@@ -20,7 +20,7 @@ import {
   modelSupportedByHarness,
   modelOfferedInWebui,
   thinkingLevelsForHarness,
-  fastModeModelIds,
+  modelSupportsFastMode,
 } from "../../model/pi-models.ts";
 import { builtInModelCatalog, selectableCatalogForHarness, selectableModelCatalog } from "../../model/model-catalog.ts";
 import { dropHidden } from "../../model/model-classification.ts";
@@ -1494,7 +1494,7 @@ async function putRuntimeConfig(ctx: ApiCtx): Promise<void> {
       effortLevel,
       fastMode:
         fastMode &&
-        fastModeModelIds().includes(modelId) &&
+        modelSupportsFastMode(modelId) &&
         (await scopeFastModeAllowed(config, ctx.deps.directory, target.actorId, target.scope)),
     };
     if ((await config.getModelAccountDurable(target.actorId)) !== "company") {

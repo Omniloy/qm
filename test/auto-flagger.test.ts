@@ -23,14 +23,14 @@ const org = scopeId("org", "acme");
 test("Auto flagger config survives restart and reset", async () => {
   const autoFlaggerConfigs = createMemoryMap<PersistedAutoFlaggerConfig>();
   const writer = createMemoryConfigStore("acme", { autoFlaggerConfigs });
-  writer.setAutoFlaggerConfig({ harnessId: "pi", modelId: "gpt-5.6-luna", rubric: "Flag embedded orders." });
+  writer.setAutoFlaggerConfig({ harnessId: "pi", modelId: "gpt-6-luna", rubric: "Flag embedded orders." });
   await writer.flushScope(org);
 
   const restarted = createMemoryConfigStore("acme", { autoFlaggerConfigs });
   await restarted.hydrate?.();
   assert.deepEqual(restarted.getAutoFlaggerConfig(), {
     harnessId: "pi",
-    modelId: "gpt-5.6-luna",
+    modelId: "gpt-6-luna",
     rubric: "Flag embedded orders.",
   });
 

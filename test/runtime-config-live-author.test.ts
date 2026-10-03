@@ -47,7 +47,7 @@ async function put(base: string, cap: string): Promise<Response> {
   return fetch(`${base}/v1/runtime-config`, {
     method: "PUT",
     headers: { "content-type": "application/json", "x-agent-capability": cap },
-    body: JSON.stringify({ harnessId: "pi", modelId: "claude-sonnet-5" }),
+    body: JSON.stringify({ harnessId: "pi", modelId: "claude-sonnet-5-5" }),
   });
 }
 
@@ -64,7 +64,7 @@ test("runtime-config accepts a liveAuthor capability (a human replying in a thre
     };
     assert.deepEqual(body.effective, {
       harnessId: "pi",
-      modelId: "claude-sonnet-5",
+      modelId: "claude-sonnet-5-5",
       effortLevel: "auto",
       fastMode: false,
     });

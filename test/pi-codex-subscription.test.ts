@@ -19,7 +19,7 @@ test("a derived ChatGPT access token authenticates pi-ai's oauth-only codex prov
 
 test("codex subscription requests reach chatgpt.com with the bare model id on both streaming paths", async (t) => {
   const runtime = await buildModelRuntime({ [CODEX_SUBSCRIPTION_PROVIDER]: subscriptionToken });
-  const model = getRequiredModel("codex/gpt-5.6-sol");
+  const model = getRequiredModel("codex/gpt-6.1-sol");
   const originalFetch = globalThis.fetch;
   t.after(() => {
     globalThis.fetch = originalFetch;
@@ -39,7 +39,7 @@ test("codex subscription requests reach chatgpt.com with the bare model id on bo
     ).result();
     assert.ok(request, `${method} must reach the provider request: ${response.errorMessage ?? "no error"}`);
     assert.match(request.url, /^https:\/\/chatgpt\.com\/backend-api\//);
-    assert.equal(request.body.model, "gpt-5.6-sol", `${method} must send the provider's own model id`);
-    assert.equal(response.model, "codex/gpt-5.6-sol", `${method} keeps QM's namespaced id on the assistant message`);
+    assert.equal(request.body.model, "gpt-6.1-sol", `${method} must send the provider's own model id`);
+    assert.equal(response.model, "codex/gpt-6.1-sol", `${method} keeps QM's namespaced id on the assistant message`);
   }
 });

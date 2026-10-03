@@ -285,7 +285,7 @@ test("live admin lifecycle is authorized, audited, immediately selectable and re
     assert.equal(unavailable.effective.modelId, MODEL_ID);
     assert.equal(unavailable.scopeOverride.modelId, MODEL_ID);
     assert.match(unavailable.unavailableReason, /deleted/);
-    assert.ok(unavailable.modelsByHarness.pi.includes("gpt-5.6-sol"));
+    assert.ok(unavailable.modelsByHarness.pi.includes("gpt-6.1-sol"));
     assert.equal((await api("/v1/runtime-config", "PUT", runtime)).status, 400);
     const deletedTurn = await built.app.turn({
       surface: "web",
@@ -297,10 +297,10 @@ test("live admin lifecycle is authorized, audited, immediately selectable and re
     });
     assert.equal(deletedTurn.status, "refused");
     assert.match(JSON.stringify(deletedTurn), /couldn.t set up that runtime choice/);
-    const recovered = await api("/v1/runtime-config", "PUT", { ...runtime, modelId: "gpt-5.6-sol" });
+    const recovered = await api("/v1/runtime-config", "PUT", { ...runtime, modelId: "gpt-6.1-sol" });
     assert.equal(recovered.status, 200);
-    assert.equal(((await recovered.json()) as { effective: { modelId: string } }).effective.modelId, "gpt-5.6-sol");
-    for (const model of [undefined, "gpt-5.6-sol"]) {
+    assert.equal(((await recovered.json()) as { effective: { modelId: string } }).effective.modelId, "gpt-6.1-sol");
+    for (const model of [undefined, "gpt-6.1-sol"]) {
       const recoveredTurn = await built.app.turn({
         surface: "web",
         actor: { externalId: runtime.principalId },
@@ -439,7 +439,7 @@ test("hydration isolates promoted builtins, incompatible providers, missing temp
   await backing.put("gpt-5.5", row({ ...spec, id: "gpt-5.5", provider: "anthropic" }));
   await store.refresh();
   assert.equal(resolveModel("gpt-5.5"), undefined);
-  assert.ok(resolveModel("claude-opus-5"));
+  assert.ok(resolveModel("claude-opus-5-5"));
   await store.upsert({ ...spec, id: "missing-template" }, "admin");
   await store.refresh();
   assert.ok(resolveModel("missing-template"));
@@ -502,8 +502,8 @@ test("overlay resolution preserves canonical personal endpoints and upstream bui
     assert.equal(getRequiredModel(MODEL_ID).baseUrl, "http://127.0.0.1:19999/v1");
     assert.equal(getRequiredModel(MODEL_ID, false).baseUrl, canonical);
     assert.equal(safeModelMetadata("claude-fable-5-1")?.label, "Fable 5.1");
-    assert.equal(safeModelMetadata("gpt-5.6-sol")?.cost.input, 4);
-    assert.equal(safeModelMetadata("gpt-5.6-sol")?.fastMode, true);
+    assert.equal(safeModelMetadata("gpt-6.1-sol")?.cost.input, 2);
+    assert.equal(safeModelMetadata("gpt-6.1-sol")?.fastMode, true);
   } finally {
     setProviderBaseUrls({});
   }
@@ -517,7 +517,7 @@ test("runtime normalization preserves native capabilities and reflects overlay c
   config.setApprovedHarnesses(["pi", "codex", "claude"]);
   const org = "org:default-org" as const;
   const scope = "personal:alice" as const;
-  const fallback = { harnessId: "pi" as const, modelId: "gpt-5.6-sol" };
+  const fallback = { harnessId: "pi" as const, modelId: "gpt-6.1-sol" };
   const overlay = validateModelOverlay({ ...spec, provider: "anthropic", template: "claude-opus-4-8", fastMode: true });
   setModelOverlays([overlay]);
   const requested = { harnessId: "pi" as const, modelId: MODEL_ID, effortLevel: "max", fastMode: true };
@@ -530,7 +530,7 @@ test("runtime normalization preserves native capabilities and reflects overlay c
   );
   const native = resolveRuntimeChoice(config, org, scope, fallback, {
     harnessId: "codex",
-    modelId: "gpt-5.6-sol",
+    modelId: "gpt-6.1-sol",
     effortLevel: "xhigh",
     fastMode: true,
   });

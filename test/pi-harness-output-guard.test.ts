@@ -12,7 +12,7 @@ const FABLE = { contextWindow: 200_000, maxTokens: 64_000 };
 
 function payload(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    model: "claude-fable-5",
+    model: "claude-fable-5-1",
     messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
     system: [{ type: "text", text: "You are Agent." }],
     max_tokens: 64_000,
@@ -26,7 +26,7 @@ function asAssistantError(err: Error) {
     role: "assistant",
     content: [],
     provider: "anthropic",
-    model: "claude-fable-5",
+    model: "claude-fable-5-1",
     stopReason: "error",
     errorMessage: err.message,
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
@@ -175,7 +175,7 @@ test("pi-ai characterization: a stale usage anchor clamps max_tokens to 1 even f
     timestamp: Date.now(),
     api: "anthropic-messages",
     provider: "anthropic",
-    model: "claude-fable-5",
+    model: "claude-fable-5-1",
   };
   const context = {
     systemPrompt: "You are Agent.",

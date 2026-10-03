@@ -1225,7 +1225,7 @@ test("a privileged cron's note is writable by its own fire (grants intact) but r
 test("cron runtime create and patch retain ownership gates and refuse unavailable choices", async () => {
   const { built, control } = setup();
   built.config.setApprovedHarnesses(["mock"]);
-  const runtime = { harnessId: "mock" as const, modelId: "claude-sonnet-5" };
+  const runtime = { harnessId: "mock" as const, modelId: "claude-sonnet-5-5" };
   const created = await control.createCron(
     { title: "runtime", schedule: { everyMs: 60_000 }, action: "check", runtime },
     claims("U1"),
@@ -1260,7 +1260,7 @@ test("scheduled runtime is refused before execution when its model is no longer 
       conversation: { kind: "dm", threadRef: `cron-runtime-${surface}` },
       text: "must not execute",
       harness: "mock",
-      model: "claude-sonnet-5",
+      model: "claude-sonnet-5-5",
     });
     assert.equal(result.status, "refused", JSON.stringify(result));
     assert.match(result.reason ?? "", /runtime is no longer available/);
@@ -1274,7 +1274,7 @@ test("queued cron rechecks its runtime after admission and preserves the overrid
   const original = built.runs.enqueue.bind(built.runs);
   t.mock.method(built.runs, "enqueue", async (input: Parameters<typeof original>[0]) => {
     const result = await original(input);
-    assert.equal(result.run.request.model, "claude-sonnet-5");
+    assert.equal(result.run.request.model, "claude-sonnet-5-5");
     assert.equal(result.run.request.harness, "mock");
     assert.equal(result.run.request.fastMode, false);
     built.config.setWebuiModels("org:default-org", ["gpt-6-astra"]);
@@ -1289,7 +1289,7 @@ test("queued cron rechecks its runtime after admission and preserves the overrid
       conversation: { kind: "dm", threadRef: "cron-runtime-revoked-after-enqueue" },
       text: "must not execute",
       harness: "mock",
-      model: "claude-sonnet-5",
+      model: "claude-sonnet-5-5",
       fastMode: false,
     }),
     /runtime is no longer available/,

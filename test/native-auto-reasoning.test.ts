@@ -182,7 +182,7 @@ test("runtime scope writes and turn dispatch reject unsupported modes without ch
   const { createRuntimeService } = await import("../src/harness/runtime-control.ts");
   const config = createMemoryConfigStore("default-org");
   config.setApprovedHarnesses(["pi", "claude", "codex", "opencode"]);
-  const active = { harnessId: "pi" as const, modelId: "claude-sonnet-5", effortLevel: "auto" };
+  const active = { harnessId: "pi" as const, modelId: "claude-sonnet-5-5", effortLevel: "auto" };
   await config.setRuntimeSelectionLatest("personal:test", active);
   const service = createRuntimeService({ config, harnessId: "pi" }, { authorizesCapabilityScope: async () => true });
   const claims = { actorId: "test", scopeId: "personal:test" as const, liveActor: true, exp: Date.now() + 60_000 };

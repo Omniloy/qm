@@ -91,7 +91,7 @@ test("the Pi harness exposes no session-reset hook after removing session state"
 
 test("ack emoji keeps working on a non-Anthropic base model when an Anthropic key is present", async () => {
   const harness = createPiHarness({
-    defaultModelId: "gpt-5.6-sol",
+    defaultModelId: "gpt-6.1-sol",
     resolveProviderKeys: async () => ({ anthropic: "sk-ant-test" }),
   });
   const realFetch = globalThis.fetch;
@@ -113,7 +113,7 @@ test("ack emoji keeps working on a non-Anthropic base model when an Anthropic ke
 
 test("ack emoji stays home when the deployment has no Anthropic key at all", async () => {
   const harness = createPiHarness({
-    defaultModelId: "gpt-5.6-sol",
+    defaultModelId: "gpt-6.1-sol",
     resolveProviderKeys: async () => ({ openai: "sk-openai-test" }),
   });
   const realFetch = globalThis.fetch;

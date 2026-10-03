@@ -48,7 +48,7 @@ test("a provider-limit failure shows its authored reason everywhere, unmarked fa
     status: "failed",
     refusalKind: "provider_limit",
     reason:
-      "You've reached the OpenAI usage limit for gpt-6-sol on the connected ChatGPT subscription. Try again later or pick another model.",
+      "You've reached the OpenAI usage limit for gpt-6.1-sol on the connected ChatGPT subscription. Try again later or pick another model.",
   } as const;
   assert.equal(userFacingFailureText(limit), limit.reason);
   assert.equal(userFacingFailureClause(limit), limit.reason);

@@ -986,7 +986,7 @@ export function providerRefusalError(session: AssistantTextSession, messagesBefo
   return err && isProviderRefusal(err) ? err : null;
 }
 
-export const REFUSAL_FALLBACK_MODEL_IDS = ["claude-opus-5", "claude-sonnet-5"] as const;
+export const REFUSAL_FALLBACK_MODEL_IDS = ["claude-opus-5-5", "claude-sonnet-5-5"] as const;
 
 export function refusalFallbackModelId(fromId: string): string | undefined {
   return REFUSAL_FALLBACK_MODEL_IDS.find((id) => id !== fromId);

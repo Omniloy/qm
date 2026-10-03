@@ -386,7 +386,7 @@ test("a provider-limit failure shows its authored reason live, while an unmarked
   setClock(() => 1_000_000);
   instantSleep();
   const reason =
-    "You've reached the OpenAI usage limit for gpt-6-sol on the connected ChatGPT subscription. Try again later or pick another model.";
+    "You've reached the OpenAI usage limit for gpt-6.1-sol on the connected ChatGPT subscription. Try again later or pick another model.";
   stubRuns([{ status: "failed", result: { status: "failed", refusalKind: "provider_limit", reason }, partial: "" }]);
   const marked = createAssistantMessageEventStream();
   await pollRun(marked, blankAssistant(), "run-provider-limit", freshAcc(1_000_000));

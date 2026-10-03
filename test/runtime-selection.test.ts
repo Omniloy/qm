@@ -58,13 +58,13 @@ test("runtime resolution carries reasoning and fast-mode defaults into turns", (
   config.setApprovedHarnesses(["pi", "opencode", "codex"]);
   config.setRuntimeSelection(ORG, {
     harnessId: "pi",
-    modelId: "claude-opus-5",
+    modelId: "claude-opus-5-5",
     effortLevel: "high",
     fastMode: true,
   });
-  assert.deepEqual(resolveRuntimeChoice(config, ORG, PERSONAL, { harnessId: "pi", modelId: "claude-fable-5" }), {
+  assert.deepEqual(resolveRuntimeChoice(config, ORG, PERSONAL, { harnessId: "pi", modelId: "claude-fable-5-1" }), {
     harnessId: "pi",
-    modelId: "claude-opus-5",
+    modelId: "claude-opus-5-5",
     effortLevel: "high",
     fastMode: true,
   });
@@ -73,7 +73,7 @@ test("runtime resolution carries reasoning and fast-mode defaults into turns", (
       config,
       ORG,
       PERSONAL,
-      { harnessId: "pi", modelId: "claude-fable-5" },
+      { harnessId: "pi", modelId: "claude-fable-5-1" },
       {
         harnessId: "codex",
         modelId: "gpt-5.5",
@@ -91,13 +91,13 @@ test("runtime resolution carries reasoning and fast-mode defaults into turns", (
       config,
       ORG,
       PERSONAL,
-      { harnessId: "pi", modelId: "claude-fable-5" },
+      { harnessId: "pi", modelId: "claude-fable-5-1" },
       {
         harnessId: "opencode",
-        modelId: "claude-opus-5",
+        modelId: "claude-opus-5-5",
       },
     ),
-    { harnessId: "opencode", modelId: "claude-opus-5", fastMode: true },
+    { harnessId: "opencode", modelId: "claude-opus-5-5", fastMode: true },
   );
 });
 
@@ -106,7 +106,7 @@ test("runtime resolution falls back to the first approved harness when deploymen
   config.setApprovedHarnesses(["codex"]);
   assert.deepEqual(resolveRuntimeChoice(config, ORG, PERSONAL, { harnessId: "pi", modelId: "claude-opus-4-8" }), {
     harnessId: "codex",
-    modelId: "gpt-5.6-sol",
+    modelId: "gpt-6.1-sol",
   });
 });
 
@@ -143,7 +143,7 @@ test("every write that changes a scope's served model notifies listeners", async
 
   config.setRuntimeSelection(ORG, { harnessId: "pi", modelId: "claude-opus-4-8" });
   await config.setRuntimeSelectionLatest(PERSONAL, { harnessId: "codex", modelId: "gpt-5.5" });
-  config.setBaseModel(PERSONAL, "gpt-5.6-sol");
+  config.setBaseModel(PERSONAL, "gpt-6.1-sol");
   await config.setRuntimeSelectionLatest(PERSONAL, null);
   config.acknowledgeRuntimeSelection(PERSONAL);
   assert.deepEqual(seen, [ORG, PERSONAL, PERSONAL, PERSONAL]);
@@ -207,9 +207,9 @@ test("durable runtime resolution hydrates the model catalog before rejecting an 
 test("explicit runtime validation rejects a revoked scoped model and unsupported fast mode", async () => {
   const config = createMemoryConfigStore("default-org");
   config.setApprovedHarnesses(["pi"]);
-  config.setRuntimeSelection(ORG, { harnessId: "pi", modelId: "claude-sonnet-5" });
+  config.setRuntimeSelection(ORG, { harnessId: "pi", modelId: "claude-sonnet-5-5" });
   config.setRuntimeSelection(PERSONAL, { harnessId: "pi", modelId: "gpt-6-astra" });
-  config.setWebuiModels(ORG, ["claude-sonnet-5"]);
+  config.setWebuiModels(ORG, ["claude-sonnet-5-5"]);
   await config.flushScope(ORG);
   await config.flushScope(PERSONAL);
   const ctx = { deps: { config, harnessId: "pi" } };
@@ -218,7 +218,7 @@ test("explicit runtime validation rejects a revoked scoped model and unsupported
     /no longer available/,
   );
   assert.equal(
-    await availableRuntimeError(ctx, PERSONAL, { harnessId: "pi", modelId: "claude-sonnet-5", fastMode: true }),
+    await availableRuntimeError(ctx, PERSONAL, { harnessId: "pi", modelId: "claude-sonnet-5-5", fastMode: true }),
     "fast_mode_not_supported",
   );
 });
@@ -226,9 +226,14 @@ test("explicit runtime validation rejects a revoked scoped model and unsupported
 test("runtime availability preserves the existing harness normalization of inherited scheduled effort", async () => {
   const config = createMemoryConfigStore("default-org");
   config.setApprovedHarnesses(["opencode"]);
-  config.setWebuiModels(ORG, ["claude-sonnet-5"]);
+  config.setWebuiModels(ORG, ["claude-sonnet-5-5"]);
   await config.flushScope(ORG);
-  const choice = { harnessId: "opencode" as const, modelId: "claude-sonnet-5", effortLevel: "xhigh", fastMode: false };
+  const choice = {
+    harnessId: "opencode" as const,
+    modelId: "claude-sonnet-5-5",
+    effortLevel: "xhigh",
+    fastMode: false,
+  };
   assert.equal(await availableRuntimeError({ deps: { config, harnessId: "opencode" } }, PERSONAL, choice), null);
   const resolved = resolveRuntimeChoice(config, ORG, PERSONAL, choice, choice);
   assert.equal(resolved.modelId, choice.modelId);

@@ -9,7 +9,7 @@ import { createContextSummaryPayload } from "../src/sessions/session-store.ts";
 import { zeroUsage } from "../src/harness/replay.ts";
 import type { SessionEntry } from "../src/types.ts";
 
-const model = getRequiredModel("claude-opus-5");
+const model = getRequiredModel("claude-opus-5-5");
 const summary = "## Goal\nInvestigate migration failures.\n## Constraints & Preferences\nDo not change production.";
 const entry = (seq: number, type: SessionEntry["type"], payload: unknown): SessionEntry => ({
   sessionId: "test-session",
@@ -110,7 +110,7 @@ test("compaction propagates transport failures and rejects empty output", async 
   );
 });
 
-for (const modelId of ["gpt-6-astra", "claude-opus-5", "gpt-4.1"]) {
+for (const modelId of ["gpt-6-astra", "claude-opus-5-5", "gpt-4.1"]) {
   test(`compaction enables low reasoning only when supported by ${modelId}`, async () => {
     const summaryModel = getRequiredModel(modelId);
     await summarizeHistory([], summaryModel, (_model, _context, options) => {

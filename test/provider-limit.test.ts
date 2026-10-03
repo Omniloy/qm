@@ -20,9 +20,9 @@ import { buildApp } from "../src/wiring.ts";
 import { testConfig } from "./support/test-config.ts";
 
 const COOLDOWN =
-  'OpenAI API error (429): {"code":"model_cooldown","message":"All credentials for model gpt-6-sol are cooling down via provider codex"}';
+  'OpenAI API error (429): {"code":"model_cooldown","message":"All credentials for model gpt-6.1-sol are cooling down via provider codex"}';
 const COOLDOWN_WITH_RESET =
-  'OpenAI API error (429): {"code":"model_cooldown","message":"All credentials for model gpt-6-sol are cooling down via provider codex","reset_seconds":80003,"reset_time":"22h13m22s"}';
+  'OpenAI API error (429): {"code":"model_cooldown","message":"All credentials for model gpt-6.1-sol are cooling down via provider codex","reset_seconds":80003,"reset_time":"22h13m22s"}';
 const CODEX_USAGE = (field: string) =>
   `Codex turn failed: {"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"prolite",${field}}}`;
 const ANTHROPIC_RATE =
@@ -69,7 +69,7 @@ test("the codex proxy cooldown is a usage limit on the ChatGPT subscription, mod
     kind: "usage",
     viaCodexProxy: true,
     provider: "OpenAI",
-    model: "gpt-6-sol",
+    model: "gpt-6.1-sol",
     subscription: "the connected ChatGPT subscription",
   });
 });
@@ -79,20 +79,20 @@ test("a non-streaming cooldown carries its reset in seconds", () => {
 });
 
 test("a Codex usage_limit_reached reads resets_at or resets_in_seconds and falls back to the turn's model", () => {
-  const absolute = providerLimit(new Error(CODEX_USAGE(`"resets_at":${RESET / 1000}`)), "gpt-6-sol", NOW);
+  const absolute = providerLimit(new Error(CODEX_USAGE(`"resets_at":${RESET / 1000}`)), "gpt-6.1-sol", NOW);
   assert.equal(absolute?.kind, "usage");
   assert.equal(absolute?.provider, "OpenAI");
-  assert.equal(absolute?.model, "gpt-6-sol");
+  assert.equal(absolute?.model, "gpt-6.1-sol");
   assert.equal(absolute?.resetAt, RESET);
   const relative = providerLimit(new Error(CODEX_USAGE(`"resets_in_seconds":900`)), undefined, NOW);
   assert.equal(relative?.resetAt, NOW + 900_000);
 });
 
 test("an Anthropic rate_limit_error is a rate limit", () => {
-  const limit = providerLimit(new Error(ANTHROPIC_RATE), "claude-opus-5", NOW);
+  const limit = providerLimit(new Error(ANTHROPIC_RATE), "claude-opus-5-5", NOW);
   assert.equal(limit?.kind, "rate");
   assert.equal(limit?.provider, "Anthropic");
-  assert.equal(limit?.model, "claude-opus-5");
+  assert.equal(limit?.model, "claude-opus-5-5");
   assert.equal(limit?.resetAt, undefined);
 });
 
@@ -106,7 +106,7 @@ test("the message names provider, model and subscription, with a relative and UT
   const limit = providerLimit(new Error(COOLDOWN), undefined, NOW)!;
   assert.equal(
     providerLimitMessage({ ...limit, resetAt: RESET }, NOW),
-    "You've reached the OpenAI usage limit for gpt-6-sol on the connected ChatGPT subscription. It resets in about 22 hours (Sat 3 Oct, 18:03 UTC). Pick another model to keep working now.",
+    "You've reached the OpenAI usage limit for gpt-6.1-sol on the connected ChatGPT subscription. It resets in about 22 hours (Sat 3 Oct, 18:03 UTC). Pick another model to keep working now.",
   );
   assert.match(providerLimitMessage({ ...limit, resetAt: NOW + 15 * 60_000 }, NOW), /resets in 15 minutes \(/);
   assert.match(providerLimitMessage({ ...limit, resetAt: NOW + 3 * 86_400_000 }, NOW), /resets in about 3 days \(/);
@@ -115,7 +115,7 @@ test("the message names provider, model and subscription, with a relative and UT
 test("without a known reset the message says to try later or switch model", () => {
   assert.equal(
     turnFailureMessage(new Error(COOLDOWN)),
-    "You've reached the OpenAI usage limit for gpt-6-sol on the connected ChatGPT subscription. Try again later or pick another model.",
+    "You've reached the OpenAI usage limit for gpt-6.1-sol on the connected ChatGPT subscription. Try again later or pick another model.",
   );
   assert.equal(
     turnFailureMessage(new NonRetryableTurnError(ANTHROPIC_RATE)),
@@ -125,10 +125,10 @@ test("without a known reset the message says to try later or switch model", () =
 
 test("a usage limit settles into a non-retryable failure whose message survives turnFailureMessage", async () => {
   const raw = new Error(CODEX_USAGE(`"resets_in_seconds":80003`));
-  const settled = await settleProviderLimit(raw, { model: "gpt-6-sol" });
+  const settled = await settleProviderLimit(raw, { model: "gpt-6.1-sol" });
   assert.ok(settled instanceof NonRetryableTurnError);
   assert.equal(settled.cause, raw);
-  assert.match(settled.message, /^You've reached the OpenAI usage limit for gpt-6-sol on the connected ChatGPT/);
+  assert.match(settled.message, /^You've reached the OpenAI usage limit for gpt-6.1-sol on the connected ChatGPT/);
   assert.match(settled.message, /resets in about 22 hours/);
   assert.equal(turnFailureMessage(settled), settled.message);
   assert.equal(turnFailureKind(settled), "provider_limit");
@@ -226,12 +226,12 @@ test("a turn that hits the proxy usage limit parks on its first attempt with the
       });
       const first = await app.turn(dm("hello"));
       assert.equal(first.status, "ok");
-      await assert.rejects(app.turn(dm("!usage-limit", "usage-limit-1")), /usage limit for gpt-6-sol/);
+      await assert.rejects(app.turn(dm("!usage-limit", "usage-limit-1")), /usage limit for gpt-6.1-sol/);
       assert.equal(await runs.activeForThread("dm:U1:limit"), null, "parked on the first attempt, no retry queued");
       const parked = await runs.latestForThread("dm:U1:limit");
       assert.equal(parked?.status, "failed");
       assert.equal(parked?.result?.refusalKind, "provider_limit");
-      assert.match(userFacingFailureText(parked!.result!), /^You've reached the OpenAI usage limit for gpt-6-sol/);
+      assert.match(userFacingFailureText(parked!.result!), /^You've reached the OpenAI usage limit for gpt-6.1-sol/);
       const session = await app.getSession(first.sessionId!);
       const failures = session!.entries.filter(
         (e) => e.type === "system" && (e.payload as { kind?: string }).kind === "turn_failure",
@@ -239,7 +239,7 @@ test("a turn that hits the proxy usage limit parks on its first attempt with the
       assert.equal(failures.length, 1);
       assert.match(
         (failures[0]!.payload as { message: string }).message,
-        /^You've reached the OpenAI usage limit for gpt-6-sol on the connected ChatGPT subscription\. It resets in .* \(Sat 4 Oct, 18:03 UTC\)\./,
+        /^You've reached the OpenAI usage limit for gpt-6.1-sol on the connected ChatGPT subscription\. It resets in .* \(Sat 4 Oct, 18:03 UTC\)\./,
       );
     },
   );

@@ -126,7 +126,7 @@ test("a web turn carrying fastMode on a non-fast model is accepted; dispatch mas
         actor: { externalId: "alice" },
         conversation: { kind: "dm", threadRef: "web:alice:fast1" },
         text: "hi",
-        model: "claude-fable-5",
+        model: "claude-fable-5-1",
         fastMode: true,
       }),
     });

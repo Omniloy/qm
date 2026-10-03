@@ -943,14 +943,14 @@ test("inbox followup runtime and attachments affect only that item turn", async 
   const [item] = await s.items.byLoop(loop.id);
   const attachments = [{ name: "notes.txt", mimetype: "text/plain", blobId: "staged-file", sizeBytes: 12 }];
   await s.fire.followUp(loop, item!, "Use these notes", "josh", {
-    model: "gpt-5.6-terra",
+    model: "gpt-6-astra",
     harness: "pi",
     thinkingLevel: "high",
     fastMode: true,
     attachments,
   });
   const turn = s.turns[0]!;
-  assert.equal(turn.model, "gpt-5.6-terra");
+  assert.equal(turn.model, "gpt-6-astra");
   assert.equal(turn.harness, "pi");
   assert.equal(turn.thinkingLevel, "high");
   assert.equal(turn.fastMode, true);

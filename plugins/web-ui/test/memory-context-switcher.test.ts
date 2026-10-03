@@ -343,7 +343,7 @@ test("compacting stages the ask in a conversation in the notebook's context", as
         scopeId: u.searchParams.get("scopeId"),
         approvedHarnesses: [],
         modelsByHarness: {},
-        effective: { harnessId: "pi", modelId: "claude-opus-5" },
+        effective: { harnessId: "pi", modelId: "claude-opus-5-5" },
       });
     }
     try {
@@ -385,7 +385,7 @@ test("compacting a channel notebook carries the raw channel name, not the # titl
         scopeId: u.searchParams.get("scopeId"),
         approvedHarnesses: [],
         modelsByHarness: {},
-        effective: { harnessId: "pi", modelId: "claude-opus-5" },
+        effective: { harnessId: "pi", modelId: "claude-opus-5-5" },
       });
     }
     try {

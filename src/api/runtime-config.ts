@@ -6,6 +6,7 @@ import type { AppDeps } from "./app-types.ts";
 import type { ScopeId } from "../types.ts";
 import { orgScope } from "../config.ts";
 import {
+  canonicalModelId,
   defaultModelForHarness,
   isHarnessId,
   modelProviderAvailabilityFor,
@@ -14,6 +15,7 @@ import {
   serviceableModelIds,
   ALL_PROVIDERS_AVAILABLE,
   fastModeModelIds,
+  modelSupportsFastMode,
   safeModelMetadata,
   modelOfferedInWebui,
   modelUnavailableReason,
@@ -86,7 +88,7 @@ async function personalRuntimeConfig(ctx: { deps: RuntimeDeps }, scope: ScopeId,
         fastMode:
           snapshot.effective.fastMode === true &&
           harnessSupportsFastMode(route.harness) &&
-          fastModeModelIds().includes(route.model),
+          modelSupportsFastMode(route.model),
       },
     },
   };
@@ -304,7 +306,7 @@ export function validateRuntimeChoice(choice: RuntimeChoice): string | null {
   )
     return "effort_not_supported";
   if (choice.fastMode !== undefined && typeof choice.fastMode !== "boolean") return "fast_mode_invalid";
-  if (choice.fastMode && (!harnessSupportsFastMode(choice.harnessId) || !fastModeModelIds().includes(choice.modelId)))
+  if (choice.fastMode && (!harnessSupportsFastMode(choice.harnessId) || !modelSupportsFastMode(choice.modelId)))
     return "fast_mode_not_supported";
   return null;
 }
@@ -314,7 +316,7 @@ export async function webuiModelEnabled(
   modelId: string,
   purpose?: RuntimePurpose,
 ): Promise<boolean> {
-  modelId = codexProviderModelId(modelId);
+  modelId = canonicalModelId(codexProviderModelId(modelId));
   const config = ctx.deps.config!;
   const picker = await config.getWebuiModelsDurable(orgScope());
   if (picker == null || picker.includes(modelId)) return true;
@@ -332,6 +334,7 @@ export async function availableRuntimeError(
   choice: RuntimeChoice,
   purpose?: RuntimePurpose,
 ): Promise<string | null> {
+  choice = { ...choice, modelId: canonicalModelId(choice.modelId) };
   await ctx.deps.refreshModels?.();
   const choices = await runtimeConfigBody(ctx, scope, undefined, purpose, choice);
   if (

@@ -79,7 +79,7 @@ test("draft is the first editable chat message and Send it submits the combined 
         assert.deepEqual(calls[1]!.body, {
           message: instruction ? `${instruction}\n\nSend it` : "Send it",
           expectedProposalAt: 101,
-          model: "gpt-5.6-sol",
+          model: "gpt-6.1-sol",
           harness: "pi",
           thinkingLevel: "medium",
           fastMode: false,
@@ -154,8 +154,8 @@ test("draft is the first editable chat message and Send it submits the combined 
     await until(() => Boolean(host.querySelector(".composer-input:not(:disabled)")));
     host.querySelector<HTMLButtonElement>(".loadout-button")!.click();
     host.querySelector<HTMLButtonElement>(".loadout-add")!.click();
-    const terra = host.querySelector<HTMLButtonElement>('[aria-label="Add GPT-5.6 Terra to presets"]')!;
-    terra.click();
+    const astra = host.querySelector<HTMLButtonElement>('[aria-label="Add GPT-6 Astra to presets"]')!;
+    astra.click();
     host.querySelector<HTMLButtonElement>(".loadout-button")!.click();
     host.querySelector<HTMLButtonElement>('[aria-label="Fast"][role="menuitemcheckbox"]')!.click();
     assert.equal(host.querySelector(".runtime-default-btn"), null);
@@ -170,18 +170,18 @@ test("draft is the first editable chat message and Send it submits the combined 
     fill("First item");
     host.querySelector<HTMLButtonElement>(".send-btn")!.click();
     await until(() => submissions.length === 1);
-    assert.equal(submissions[0]!.model, "gpt-5.6-terra");
+    assert.equal(submissions[0]!.model, "gpt-6-astra");
     assert.equal(submissions[0]!.fastMode, true);
     render(embedded("test-inbox-second"), host);
     await until(() => Boolean(host.querySelector(".composer-input:not(:disabled)")));
     fill("Second item");
     host.querySelector<HTMLButtonElement>(".send-btn")!.click();
     await until(() => submissions.length === 2);
-    assert.equal(submissions[1]!.model, "gpt-5.6-sol");
+    assert.equal(submissions[1]!.model, "gpt-6.1-sol");
     assert.equal(submissions[1]!.fastMode, false);
     render(embedded("test-inbox-first"), host);
     await until(() => Boolean(host.querySelector(".composer-input:not(:disabled)")));
-    assert.match(host.querySelector(".loadout-button")!.textContent!, /Terra/);
+    assert.match(host.querySelector(".loadout-button")!.textContent!, /Astra/);
     host.querySelector<HTMLButtonElement>(".loadout-button")!.click();
     await until(
       () => host.querySelector('[aria-label="Fast"][role="menuitemcheckbox"]')?.getAttribute("aria-checked") === "true",
@@ -190,9 +190,9 @@ test("draft is the first editable chat message and Send it submits the combined 
     invalidateRuntimeConfigs();
     unavailable = true;
     render(embedded("test-inbox-deleted-model"), host);
-    await until(() => Boolean(host.querySelector('select option[value="pi:gpt-5.6-sol"]')));
+    await until(() => Boolean(host.querySelector('select option[value="pi:gpt-6.1-sol"]')));
     const replacement = host.querySelector<HTMLSelectElement>("select")!;
-    replacement.value = "pi:gpt-5.6-sol";
+    replacement.value = "pi:gpt-6.1-sol";
     replacement.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
     await until(() => Boolean(host.querySelector(".composer-input:not(:disabled)")));
     unavailable = false;
