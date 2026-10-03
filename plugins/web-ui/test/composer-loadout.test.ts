@@ -211,7 +211,7 @@ test("harness effort choices exclude unsupported settings and label extra high c
   for (const harnessId of ["pi", "claude", "codex"])
     assert.equal(effortLevelsForHarness(harnessId).find(({ value }) => value === "xhigh")?.label, "Extra high");
   for (const harnessId of ["opencode", "mock", "unknown"])
-    assert.deepEqual(effortLevelsForHarness(harnessId), [{ value: "auto", label: "Legacy default" }]);
+    assert.deepEqual(effortLevelsForHarness(harnessId), [{ value: "auto", label: "Default" }]);
 });
 
 test("native reasoning choices require model and harness metadata while legacy settings survive", () => {
@@ -228,7 +228,7 @@ test("native reasoning choices require model and harness metadata while legacy s
     { value: "low", label: "Low" },
     { value: "high", label: "High" },
   ]);
-  assert.equal(effortLevelsForHarness("pi", model, "auto")[0]?.label, "Legacy default");
+  assert.equal(effortLevelsForHarness("pi", model, "auto")[0]?.label, "Default");
   for (const harness of ["claude", "codex"])
     assert.ok(
       effortLevelsForHarness(harness, model, "adaptive").every(
@@ -242,7 +242,7 @@ test("native reasoning choices require model and harness metadata while legacy s
       ),
     );
   const withoutEfforts = { ...model, effortLevelsByHarness: { pi: [] } };
-  assert.deepEqual(effortLevelsForHarness("pi", withoutEfforts), [{ value: "auto", label: "Legacy default" }]);
+  assert.deepEqual(effortLevelsForHarness("pi", withoutEfforts), [{ value: "auto", label: "Default" }]);
   const saved = [entry("pi:one", "adaptive"), entry("pi:two", "default"), entry("pi:three", "auto")];
   assert.deepEqual(parseLoadout(JSON.stringify(saved)), saved);
 });
