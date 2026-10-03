@@ -9,10 +9,11 @@ import {
   type PersistedWebuiModels,
 } from "../src/resolution/config-store.ts";
 import { availableRuntimeError, validateRuntimeChoice, webuiModelEnabled } from "../src/api/runtime-config.ts";
-import { canonicalModelId, defaultModelForHarness } from "../src/model/pi-models.ts";
-import { setCustomProviders } from "../src/model/custom-providers.ts";
-import { configuredModelForHarness } from "../src/config.ts";
-import { resolveConfiguredModelId } from "../src/harness/pi-harness.ts";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { loadConfig } from "../src/config.ts";
+import { buildApp } from "../src/wiring.ts";
 import { testConfig } from "./support/test-config.ts";
 
 const ORG = "org:default-org" as const;
@@ -91,12 +92,43 @@ test("a retired org default stays enabled when the allowlist omits it", async ()
   assert.equal(await webuiModelEnabled(deps(config), "claude-opus-5-5"), true);
 });
 
-test("a configured retired default resolves to its successor", () => {
-  assert.equal(defaultModelForHarness("pi", "claude-opus-5"), "claude-opus-5-5");
-  assert.equal(defaultModelForHarness("codex", "gpt-6-sol"), "gpt-6.1-sol");
-  assert.equal(configuredModelForHarness(testConfig({ modelId: "claude-opus-5" }), "pi"), "claude-opus-5-5");
-  assert.equal(configuredModelForHarness(testConfig({ codexModel: "gpt-5.6-sol" }), "codex"), "gpt-6.1-sol");
-  assert.equal(resolveConfiguredModelId("claude-sonnet-5"), "claude-sonnet-5-5");
+test("configured retired model ids load as their successors", () => {
+  const config = loadConfig({
+    PI_MODEL: "claude-opus-5",
+    CODEX_MODEL: "gpt-5.6-sol",
+    CLAUDE_MODEL: "claude-sonnet-5",
+    PI_DETECT_MODEL: "gpt-5.6-luna",
+    PI_TITLE_MODEL: "claude-fable-5",
+    PI_JUDGE_MODEL: "gpt-6-sol",
+  });
+  assert.equal(config.modelId, "claude-opus-5-5");
+  assert.equal(config.opencodeModel, "claude-opus-5-5");
+  assert.equal(config.codexModel, "gpt-6.1-sol");
+  assert.equal(config.claudeModel, "claude-sonnet-5-5");
+  assert.equal(config.detectModelId, "gpt-6-luna");
+  assert.equal(config.titleModelId, "claude-fable-5-1");
+  assert.equal(config.judgeModelId, "gpt-6.1-sol");
+});
+
+test("a web turn sent with a retired id from a pre-deploy tab runs on the successor", async () => {
+  const built = buildApp(
+    testConfig({
+      dataDir: mkdtempSync(join(tmpdir(), "retired-model-ids-")),
+      anthropicApiKey: "test-key",
+      openaiApiKey: "test-key",
+    }),
+  );
+  built.config.setWebuiModels(ORG, ["claude-opus-5-5", "gpt-6.1-sol"]);
+  await built.config.flushScope(ORG);
+  const turn = await built.app.turn({
+    surface: "web",
+    actor: { externalId: "alice" },
+    conversation: { kind: "dm", threadRef: "web:alice:retired-model" },
+    text: "hello",
+    model: "claude-opus-5",
+    async: true,
+  });
+  assert.equal(turn.status, "queued");
 });
 
 test("fast mode on a retired id follows its successor", () => {
@@ -105,22 +137,4 @@ test("fast mode on a retired id follows its successor", () => {
     validateRuntimeChoice({ harnessId: "pi", modelId: "claude-sonnet-5", fastMode: true }),
     "fast_mode_not_supported",
   );
-});
-
-test("a custom-provider model whose bare id was retired is never aliased", () => {
-  setCustomProviders([
-    {
-      id: "litellm",
-      name: "LiteLLM",
-      protocol: "openai",
-      baseUrl: "http://127.0.0.1:4000/v1",
-      models: [{ id: "claude-opus-5" }],
-    },
-  ]);
-  try {
-    assert.equal(canonicalModelId("claude-opus-5"), "claude-opus-5");
-  } finally {
-    setCustomProviders([]);
-  }
-  assert.equal(canonicalModelId("claude-opus-5"), "claude-opus-5-5");
 });

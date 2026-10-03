@@ -55,7 +55,6 @@ import { NonRetryableTurnError, TitleRejected } from "../core/turn-error.ts";
 import { MAX_LLM_REQUEST_BYTES } from "../core/attachments.ts";
 import { asError, swallow, swallowAs } from "../util/errors.ts";
 import {
-  canonicalModelId,
   DEFAULT_AGENT_MODEL_ID,
   auxiliaryModelFor,
   auxiliaryModelForProvider,
@@ -1474,7 +1473,7 @@ export function guardOutputBudget(payload: unknown, model: unknown): OutputBudge
 export function resolveConfiguredModelId(configured: string | undefined, defaultModelId?: string): string {
   for (const candidate of [configured, defaultModelId]) {
     if (!candidate) continue;
-    if (resolveModel(candidate)) return canonicalModelId(candidate);
+    if (resolveModel(candidate)) return candidate;
     swallow("pi: configured model id not in registry, falling back to default", new Error(candidate));
   }
   return DEFAULT_AGENT_MODEL_ID;
@@ -1540,9 +1539,9 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         opts?.defaultModelId,
       ),
     );
-  const detectModelId = (): string => canonicalModelId(opts?.detectModelId ?? auxiliaryModelId());
-  const titleModelId = (): string => canonicalModelId(opts?.titleModelId ?? auxiliaryModelId());
-  const judgeModelId = (): string => canonicalModelId(opts?.judgeModelId ?? auxiliaryModelId());
+  const detectModelId = (): string => opts?.detectModelId ?? auxiliaryModelId();
+  const titleModelId = (): string => opts?.titleModelId ?? auxiliaryModelId();
+  const judgeModelId = (): string => opts?.judgeModelId ?? auxiliaryModelId();
   const tempDirPrefix = opts?.tempDirPrefix ?? "pi";
   const configuredProviderKeys: ProviderKeys = opts?.resolveProviderKeys
     ? {}
@@ -2548,7 +2547,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         recordLlmRequest,
       }) {
         try {
-          const modelId = canonicalModelId(configuredScreenModel ?? detectModelId());
+          const modelId = configuredScreenModel ?? detectModelId();
           const model = getRequiredModel(modelId);
           const providerKeys = await resolveProviderKeys();
           if (!keyForModel(providerKeys, model)) return undefined;

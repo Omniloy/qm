@@ -216,13 +216,10 @@ export interface Config {
 }
 
 export function configuredModelForHarness(config: Config, harness: string): string | undefined {
-  const byHarness: Record<string, string | undefined> = {
-    codex: config.codexModel,
-    claude: config.claudeModel,
-    opencode: config.opencodeModel,
-  };
-  const configured = harness in byHarness ? byHarness[harness] : config.modelId;
-  return configured && canonicalModelId(configured);
+  if (harness === "codex") return config.codexModel;
+  if (harness === "claude") return config.claudeModel;
+  if (harness === "opencode") return config.opencodeModel;
+  return config.modelId;
 }
 
 export function providerKeysPresent(config: Config): ModelProviderAvailability {
@@ -1484,9 +1481,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         }
       : {}),
     ...(orgBrandingFromEnv(env) ? { brandingDefault: orgBrandingFromEnv(env) } : {}),
-    ...(env.PI_MODEL ? { modelId: env.PI_MODEL } : {}),
-    ...(env.OPENCODE_MODEL || env.PI_MODEL ? { opencodeModel: env.OPENCODE_MODEL || env.PI_MODEL } : {}),
-    ...(env.CODEX_MODEL ? { codexModel: env.CODEX_MODEL } : {}),
+    ...(env.PI_MODEL ? { modelId: canonicalModelId(env.PI_MODEL) } : {}),
+    ...(env.OPENCODE_MODEL || env.PI_MODEL
+      ? { opencodeModel: canonicalModelId(env.OPENCODE_MODEL || env.PI_MODEL || "") }
+      : {}),
+    ...(env.CODEX_MODEL ? { codexModel: canonicalModelId(env.CODEX_MODEL) } : {}),
     ...(env.CODEX_BIN ? { codexBinPath: env.CODEX_BIN } : {}),
     ...(codexOAuthConfigured && codexAuthCandidate ? { codexAuthFile: codexAuthCandidate } : {}),
     ...(codexAuthCredential ? { codexAuthCredential } : {}),
@@ -1499,12 +1498,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(env.CODEX_PROXY_URL && env.CODEX_PROXY_MANAGEMENT_KEY
       ? { codexProxy: { url: env.CODEX_PROXY_URL, managementKey: env.CODEX_PROXY_MANAGEMENT_KEY } }
       : {}),
-    ...(env.CLAUDE_MODEL ? { claudeModel: env.CLAUDE_MODEL } : {}),
+    ...(env.CLAUDE_MODEL ? { claudeModel: canonicalModelId(env.CLAUDE_MODEL) } : {}),
     ...(env.CLAUDE_BIN ? { claudeBinPath: env.CLAUDE_BIN } : {}),
     claudeProcessEnv,
-    ...(env.PI_DETECT_MODEL ? { detectModelId: env.PI_DETECT_MODEL } : {}),
-    ...(env.PI_TITLE_MODEL ? { titleModelId: env.PI_TITLE_MODEL } : {}),
-    ...(env.PI_JUDGE_MODEL ? { judgeModelId: env.PI_JUDGE_MODEL } : {}),
+    ...(env.PI_DETECT_MODEL ? { detectModelId: canonicalModelId(env.PI_DETECT_MODEL) } : {}),
+    ...(env.PI_TITLE_MODEL ? { titleModelId: canonicalModelId(env.PI_TITLE_MODEL) } : {}),
+    ...(env.PI_JUDGE_MODEL ? { judgeModelId: canonicalModelId(env.PI_JUDGE_MODEL) } : {}),
     ...(env.ANTHROPIC_API_KEY ? { anthropicApiKey: env.ANTHROPIC_API_KEY } : {}),
     ...(env.OPENAI_API_KEY ? { openaiApiKey: env.OPENAI_API_KEY } : {}),
     ...(env.OPENROUTER_API_KEY ? { openrouterApiKey: env.OPENROUTER_API_KEY } : {}),

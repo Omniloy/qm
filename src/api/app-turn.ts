@@ -16,6 +16,7 @@ import { turnModelOptions, turnRuntimePurpose, validateWebTurnModelOptions } fro
 import { isProjectGroupRef, projectIdFromGroupRef } from "../projects/project-store.ts";
 import { samePerson } from "../directory/person.ts";
 import {
+  canonicalModelId,
   defaultModelForHarness,
   isHarnessId,
   modelProviderAvailabilityFor,
@@ -134,6 +135,7 @@ export function createTurnMethods(
   }
   return {
     async turn(req: TurnRequest, replay?: { signalDedupKey: string }): Promise<TurnResult> {
+      if (req.model) req = { ...req, model: canonicalModelId(req.model) };
       const startedAt = performance.now();
       const historicalSlack = Object.keys(deps.externalSlackPolicies ?? {}).length
         ? (await deps.sessions.getByThread(req.conversation.threadRef))?.surface === "slack"

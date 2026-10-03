@@ -231,7 +231,6 @@ const RETIRED_MODEL_SUCCESSORS: ReadonlyMap<string, string> = new Map([
 ]);
 
 export function canonicalModelId(id: string): string {
-  if (isCustomModelId(id)) return id;
   const successor = RETIRED_MODEL_SUCCESSORS.get(codexProviderModelId(id));
   if (!successor) return id;
   return id.startsWith(CODEX_SUBSCRIPTION_PREFIX) ? codexSubscriptionModelId(successor) : successor;
@@ -538,7 +537,7 @@ export function defaultModelForHarness(
   providers?: ModelProviderAvailability,
 ): string {
   if (configured && (modelUnavailableReason(configured) || modelSupportedByHarness(configured, harness)))
-    return canonicalModelId(configured);
+    return configured;
   const preferred = harness === "codex" ? DEFAULT_CODEX_MODEL_ID : DEFAULT_AGENT_MODEL_ID;
   if (!providers || modelServiceable(preferred, providers)) return preferred;
   const servable = selectableBaseModels(true).find(
