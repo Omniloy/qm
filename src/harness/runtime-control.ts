@@ -9,7 +9,7 @@ import {
 } from "../api/runtime-config.ts";
 import { livePersonCapability } from "../api/artifact-share.ts";
 import { parseScopeId } from "../types.ts";
-import { isHarnessId, thinkingLevelsForHarness } from "../model/pi-models.ts";
+import { canonicalModelId, isHarnessId, thinkingLevelsForHarness } from "../model/pi-models.ts";
 import { scopeFastModeAllowed } from "../core/turn-options.ts";
 
 export function createRuntimeService(deps: RuntimeDeps, app: Pick<App, "authorizesCapabilityScope">): RuntimeService {
@@ -79,7 +79,7 @@ export function createRuntimeService(deps: RuntimeDeps, app: Pick<App, "authoriz
     if (!isHarnessId(harnessId) || !snapshot.approvedHarnesses.includes(harnessId))
       return { ok: false, error: "harness_not_approved", candidates: snapshot.approvedHarnesses };
     const candidates = snapshot.modelsByHarness[harnessId] ?? [];
-    let modelId = request.model ?? active.modelId;
+    let modelId = canonicalModelId(request.model ?? active.modelId);
     if (!candidates.includes(modelId)) {
       const query = modelId.toLowerCase();
       const matches = candidates.filter((id) => {

@@ -35,6 +35,7 @@ import {
 import { codexAuthFileForEnv, readCodexOAuthAuthFile } from "./harness/codex-auth-file.ts";
 import {
   MODEL_PROVIDERS,
+  canonicalModelId,
   defaultModelForProvider,
   isModelProvider,
   onlyProvider,
@@ -215,10 +216,13 @@ export interface Config {
 }
 
 export function configuredModelForHarness(config: Config, harness: string): string | undefined {
-  if (harness === "codex") return config.codexModel;
-  if (harness === "claude") return config.claudeModel;
-  if (harness === "opencode") return config.opencodeModel;
-  return config.modelId;
+  const byHarness: Record<string, string | undefined> = {
+    codex: config.codexModel,
+    claude: config.claudeModel,
+    opencode: config.opencodeModel,
+  };
+  const configured = harness in byHarness ? byHarness[harness] : config.modelId;
+  return configured && canonicalModelId(configured);
 }
 
 export function providerKeysPresent(config: Config): ModelProviderAvailability {

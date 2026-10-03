@@ -15,6 +15,7 @@ import {
   serviceableModelIds,
   ALL_PROVIDERS_AVAILABLE,
   fastModeModelIds,
+  modelSupportsFastMode,
   safeModelMetadata,
   modelOfferedInWebui,
   modelUnavailableReason,
@@ -87,7 +88,7 @@ async function personalRuntimeConfig(ctx: { deps: RuntimeDeps }, scope: ScopeId,
         fastMode:
           snapshot.effective.fastMode === true &&
           harnessSupportsFastMode(route.harness) &&
-          fastModeModelIds().includes(route.model),
+          modelSupportsFastMode(route.model),
       },
     },
   };
@@ -166,13 +167,13 @@ export async function runtimeConfigBody(
   if (orgStored && isHarnessId(orgStored.harnessId)) {
     orgDefault = {
       harnessId: orgStored.harnessId,
-      modelId: canonicalModelId(orgStored.modelId),
+      modelId: orgStored.modelId,
       ...(orgStored.effortLevel ? { effortLevel: orgStored.effortLevel } : {}),
       ...(typeof orgStored.fastMode === "boolean" ? { fastMode: orgStored.fastMode } : {}),
       revision: orgStored.revision ?? 0,
     };
   } else if (orgLegacyModel) {
-    orgDefault = { harnessId: fallback.harnessId, modelId: canonicalModelId(orgLegacyModel), revision: 0 };
+    orgDefault = { harnessId: fallback.harnessId, modelId: orgLegacyModel, revision: 0 };
   }
   const stored = scope === org ? orgStored : await config.getRuntimeSelectionDurable(scope);
   const legacyModel = scope === org ? null : await config.getBaseModelOwnDurable(scope);
@@ -186,13 +187,13 @@ export async function runtimeConfigBody(
   if (stored && isHarnessId(stored.harnessId)) {
     scopeOverride = {
       harnessId: stored.harnessId,
-      modelId: canonicalModelId(stored.modelId),
+      modelId: stored.modelId,
       ...(stored.effortLevel ? { effortLevel: stored.effortLevel } : {}),
       ...(typeof stored.fastMode === "boolean" ? { fastMode: stored.fastMode } : {}),
       orgRevision: stored.orgRevision,
     };
   } else if (legacyModel) {
-    scopeOverride = { harnessId: fallback.harnessId, modelId: canonicalModelId(legacyModel), orgRevision: 0 };
+    scopeOverride = { harnessId: fallback.harnessId, modelId: legacyModel, orgRevision: 0 };
   }
   const effective = purpose
     ? await resolveRuntimeChoiceDurable(config, org, scope, fallback, requested, undefined, purpose)
@@ -305,7 +306,7 @@ export function validateRuntimeChoice(choice: RuntimeChoice): string | null {
   )
     return "effort_not_supported";
   if (choice.fastMode !== undefined && typeof choice.fastMode !== "boolean") return "fast_mode_invalid";
-  if (choice.fastMode && (!harnessSupportsFastMode(choice.harnessId) || !fastModeModelIds().includes(choice.modelId)))
+  if (choice.fastMode && (!harnessSupportsFastMode(choice.harnessId) || !modelSupportsFastMode(choice.modelId)))
     return "fast_mode_not_supported";
   return null;
 }
@@ -315,7 +316,7 @@ export async function webuiModelEnabled(
   modelId: string,
   purpose?: RuntimePurpose,
 ): Promise<boolean> {
-  modelId = codexProviderModelId(modelId);
+  modelId = canonicalModelId(codexProviderModelId(modelId));
   const config = ctx.deps.config!;
   const picker = await config.getWebuiModelsDurable(orgScope());
   if (picker == null || picker.includes(modelId)) return true;

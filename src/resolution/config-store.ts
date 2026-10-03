@@ -7,7 +7,7 @@ import type { DurableMap } from "../persistence/durable-map.ts";
 import { createMemoryMap } from "../persistence/durable-map.ts";
 import { createKeyedQueue } from "../util/async.ts";
 import { foldPrincipalId } from "../directory/person.ts";
-import { isHarnessId, modelSupportedByHarness } from "../model/pi-models.ts";
+import { canonicalModelId, isHarnessId, modelSupportedByHarness } from "../model/pi-models.ts";
 import type { ModelStatus } from "../model/model-classification.ts";
 import { composeSecurityPosture, type SecurityPosture } from "../security/security-posture.ts";
 import { composeSharingPostures, type SharingPosture } from "./sharing-posture.ts";
@@ -322,6 +322,46 @@ export interface ScopedConfigStore {
   hydrate?(): Promise<void>;
 }
 
+function withCanonicalModel<T extends { modelId: string }>(row: T): T {
+  return { ...row, modelId: canonicalModelId(row.modelId) };
+}
+
+function canonicalBaseModelRow(row: PersistedBaseModel): PersistedBaseModel {
+  return {
+    ...row,
+    ...(row.modelId ? { modelId: canonicalModelId(row.modelId) } : {}),
+    ...(row.cronRuntime ? { cronRuntime: withCanonicalModel(row.cronRuntime) } : {}),
+    ...(row.subagentRuntime ? { subagentRuntime: withCanonicalModel(row.subagentRuntime) } : {}),
+  };
+}
+
+function canonicalModelIds(ids: string[]): string[] {
+  return [...new Set(ids.map(canonicalModelId))];
+}
+
+function canonicalRows<T>(store: DurableMap<T>, canonical: (row: T) => T): DurableMap<T> {
+  return {
+    ...store,
+    all: async () => (await store.all()).map(canonical),
+    get: async (id) => {
+      const row = await store.get(id);
+      return row && canonical(row);
+    },
+    put: (id, row) => store.put(id, canonical(row)),
+  };
+}
+
+class CanonicalMap<K, V> extends Map<K, V> {
+  readonly #canonical: (value: V) => V;
+  constructor(canonical: (value: V) => V) {
+    super();
+    this.#canonical = canonical;
+  }
+  override set(key: K, value: V): this {
+    return super.set(key, this.#canonical(value));
+  }
+}
+
 export function createMemoryConfigStore(
   orgId: string,
   opts: {
@@ -373,19 +413,19 @@ export function createMemoryConfigStore(
   const unfulfilledInsights = new Map<ScopeId, boolean>();
   const externalSlackParticipants = new Map<ScopeId, boolean>();
   const channelHeaderPin = new Map<ScopeId, boolean>();
-  const baseModels = new Map<ScopeId, PersistedBaseModel>();
+  const baseModels = new CanonicalMap<ScopeId, PersistedBaseModel>(canonicalBaseModelRow);
   let approvedHarnesses: string[] | null = null;
   let internalMemberOverrides: string[] = [];
   let orgAmbient = true;
   let interactiveFastMode = false;
   let individualModelAuth = false;
-  const webuiModels = new Map<ScopeId, string[]>();
+  const webuiModels = new CanonicalMap<ScopeId, string[]>(canonicalModelIds);
   const modelClassifications = new Map<ScopeId, Record<string, ModelStatus>>();
   const peopleDirectoryUrls = new Map<ScopeId, string>();
   const ackEmoji = new Map<ScopeId, string[]>();
   const branding = new Map<ScopeId, OrgBranding>();
   const browseMaxSteps = new Map<ScopeId, number>();
-  const browseModels = new Map<ScopeId, string>();
+  const browseModels = new CanonicalMap<ScopeId, string>(canonicalModelId);
   const browserProviders = new Map<ScopeId, string>();
   let autoFlaggerConfig: AutoFlaggerConfig | null = null;
   const turnWallClocks = new Map<ScopeId, number>();
@@ -399,7 +439,7 @@ export function createMemoryConfigStore(
   const unfulfilledInsightsStore = opts.unfulfilledInsights ?? createMemoryMap<PersistedScopedFlag>();
   const externalSlackParticipantsStore = opts.externalSlackParticipants ?? createMemoryMap<PersistedScopedFlag>();
   const channelHeaderPinStore = opts.channelHeaderPin ?? createMemoryMap<PersistedScopedFlag>();
-  const baseModelStore = opts.baseModels ?? createMemoryMap<PersistedBaseModel>();
+  const baseModelStore = canonicalRows(opts.baseModels ?? createMemoryMap<PersistedBaseModel>(), canonicalBaseModelRow);
   const approvedHarnessStore = opts.approvedHarnesses ?? createMemoryMap<PersistedApprovedHarnesses>();
   const internalMemberOverridesStore =
     opts.internalMemberOverrides ?? createMemoryMap<PersistedInternalMemberOverrides>();
@@ -426,16 +466,25 @@ export function createMemoryConfigStore(
     if (account === "company" || !allowed.length) return "company";
     return account === "personal" || allowed.includes(account) ? account : required;
   };
-  const webuiModelStore = opts.webuiModels ?? createMemoryMap<PersistedWebuiModels>();
+  const webuiModelStore = canonicalRows(opts.webuiModels ?? createMemoryMap<PersistedWebuiModels>(), (row) => ({
+    ...row,
+    ids: canonicalModelIds(row.ids),
+  }));
   const modelClassificationStore = opts.modelClassifications ?? createMemoryMap<PersistedModelClassification>();
   const peopleDirectoryUrlStore = opts.peopleDirectoryUrls ?? createMemoryMap<PersistedPeopleDirectoryUrl>();
   const ackEmojiStore = opts.ackEmoji ?? createMemoryMap<PersistedAckEmoji>();
   const slackEmojiCatalogStore = opts.slackEmojiCatalog ?? createMemoryMap<PersistedSlackEmojiCatalog>();
   const brandingStore = opts.branding ?? createMemoryMap<PersistedBranding>();
   const browseMaxStepsStore = opts.browseMaxSteps ?? createMemoryMap<PersistedBrowseMaxSteps>();
-  const browseModelStore = opts.browseModels ?? createMemoryMap<PersistedBrowseModel>();
+  const browseModelStore = canonicalRows(
+    opts.browseModels ?? createMemoryMap<PersistedBrowseModel>(),
+    withCanonicalModel,
+  );
   const browserProviderStore = opts.browserProviders ?? createMemoryMap<PersistedBrowserProvider>();
-  const autoFlaggerStore = opts.autoFlaggerConfigs ?? createMemoryMap<PersistedAutoFlaggerConfig>();
+  const autoFlaggerStore = canonicalRows(
+    opts.autoFlaggerConfigs ?? createMemoryMap<PersistedAutoFlaggerConfig>(),
+    withCanonicalModel,
+  );
   const turnWallClockStore = opts.turnWallClocks ?? createMemoryMap<PersistedTurnWallClock>();
   const deploymentIdentity = opts.deploymentIdentity ?? createMemoryMap<PersistedDeploymentIdentity>();
   const persistWarn = (what: string) => reportFailureAs(`config: persist ${what}`, undefined);
@@ -1221,7 +1270,7 @@ export function createMemoryConfigStore(
       (id === org ? null : ((await browserProviderStore.get(org))?.providerId ?? null)),
     getAutoFlaggerConfig: () => autoFlaggerConfig,
     setAutoFlaggerConfig(config) {
-      autoFlaggerConfig = config;
+      autoFlaggerConfig = config && withCanonicalModel(config);
       if (config === null) {
         persist(`autoFlagger:${org}`, "Auto flagger config", () => autoFlaggerStore.delete(org));
       } else {
