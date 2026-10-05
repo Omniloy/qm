@@ -46,12 +46,15 @@ interface AuthFile {
   status_message?: unknown;
 }
 
+const PLAN_FROM_NAME = /-([a-z][a-z0-9_]{0,31})\.json$/;
+
 function usage(file: AuthFile, now: number) {
   const state = codexAccountState(file.status_message, now);
+  const plan = state.planType ?? (typeof file.name === "string" ? PLAN_FROM_NAME.exec(file.name)?.[1] : undefined);
   const resetsAt = state.resetsAt !== undefined && state.resetsAt > now ? state.resetsAt : undefined;
   const limitReached = state.limitReached && file.status !== "active" && (state.resetsAt === undefined || resetsAt);
   return {
-    ...(state.planType ? { plan: state.planType } : {}),
+    ...(plan ? { plan } : {}),
     ...(limitReached
       ? {
           usageLimit: {

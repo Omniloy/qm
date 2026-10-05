@@ -59,7 +59,7 @@ test("the codex account list carries the plan and usage-limit reset but never th
         status_message: LIMITED,
         access_token: "tok",
       },
-      { name: "codex-b.json", provider: "codex", status: "active", status_message: "" },
+      { name: "codex-b-ops@acme.test-pro.json", provider: "codex", status: "active", status_message: "" },
       { name: "codex-c.json", provider: "codex", status: "active", status_message: LIMITED },
       {
         name: "codex-d.json",
@@ -84,7 +84,7 @@ test("the codex account list carries the plan and usage-limit reset but never th
             plan: "prolite",
             usageLimit: { windowMinutes: 10080, resetsAt: RESETS_AT * 1000 },
           },
-          { name: "codex-b.json", status: "active", disabled: false },
+          { name: "codex-b-ops@acme.test-pro.json", status: "active", disabled: false, plan: "pro" },
           { name: "codex-c.json", status: "active", disabled: false, plan: "prolite" },
           { name: "codex-d.json", status: "error", disabled: false },
         ],

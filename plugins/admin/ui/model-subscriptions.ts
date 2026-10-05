@@ -28,6 +28,7 @@ const chatgpt = {
   state: "Checking…",
   available: true,
   account: "",
+  accounts: [] as Data[],
   pending: null as { url: string; expiresAt: number } | null,
   callback: "",
   busy: false,
@@ -118,12 +119,14 @@ async function loadChatgpt(): Promise<boolean> {
   const response = await context.api("GET", "/api/codex-auth");
   chatgpt.available = response.status !== 503;
   chatgpt.account = "";
+  chatgpt.accounts = [];
   if (!chatgpt.available) chatgpt.state = "No ChatGPT proxy is configured on this instance.";
   else if (!response.ok) chatgpt.state = "The proxy could not be reached.";
   else {
     const live = (response.data?.accounts || []).filter((account: Data) => !account.disabled);
+    chatgpt.accounts = live;
     chatgpt.account = live[0]?.name || "";
-    chatgpt.state = live.length ? live.map(describeChatgptAccount).join(" ") : "No ChatGPT account connected.";
+    chatgpt.state = live.length ? "" : "No ChatGPT account connected.";
   }
   redrawChatgpt();
   return Boolean(chatgpt.account);
@@ -189,8 +192,7 @@ async function completeChatgpt() {
     redrawChatgpt();
   }
 }
-async function signOutChatgpt() {
-  const name = chatgpt.account;
+async function signOutChatgpt(name = chatgpt.account) {
   if (!name || !confirm("Sign this ChatGPT account out? GPT models stop working until one is signed in again.")) return;
   chatgpt.busy = true;
   redrawChatgpt();
@@ -264,7 +266,28 @@ function chatgptTemplate() {
       </p>
     </div>
     <div class="body setup-form">
-      <p class="muted" id="codex-auth-state">${chatgpt.state}</p>
+      <p class="muted" id="codex-auth-state">
+        ${
+          chatgpt.state ||
+          chatgpt.accounts.map(
+            (account) =>
+              html`<span class="codex-account"
+                >${describeChatgptAccount(account)}${
+                chatgpt.accounts.length > 1
+                  ? html` <button
+                      class="danger"
+                      data-codex-account=${account.name}
+                      ?disabled=${chatgpt.busy}
+                      @click=${() => signOutChatgpt(account.name)}
+                    >
+                      Sign out
+                    </button>`
+                  : nothing
+              }</span
+              >`,
+          )
+        }
+      </p>
       ${
         pending
           ? html`<div id="codex-auth-step">
@@ -304,14 +327,18 @@ function chatgptTemplate() {
             >
               Sign in with ChatGPT
             </button>`
-      }<button
-        class="danger"
-        id="codex-auth-delete"
-        ?disabled=${chatgpt.busy || !chatgpt.account}
-        @click=${signOutChatgpt}
-      >
-        Sign out</button
-      >${status("st-codex-auth", chatgpt.message, chatgpt.tone)}
+      }${
+        chatgpt.accounts.length > 1
+          ? nothing
+          : html`<button
+              class="danger"
+              id="codex-auth-delete"
+              ?disabled=${chatgpt.busy || !chatgpt.account}
+              @click=${() => signOutChatgpt()}
+            >
+              Sign out
+            </button>`
+      }${status("st-codex-auth", chatgpt.message, chatgpt.tone)}
     </div>
   </section>`;
 }

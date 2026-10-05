@@ -200,7 +200,7 @@ test("the ChatGPT card runs the paste-back sign-in and shows the connected accou
       callback: "http://localhost:1455/auth/callback?code=c&state=s",
     });
     assert.equal(doc.getElementById("codex-auth-step"), null);
-    assert.match(doc.getElementById("codex-auth-state")!.textContent!, /^Signed in as ops@acme\.test\.$/);
+    assert.match(doc.getElementById("codex-auth-state")!.textContent!.trim(), /^Signed in as ops@acme\.test\.$/);
     assert.match(doc.getElementById("st-codex-auth")!.textContent!, /Signed in\. GPT models now bill/);
     assert.ok(doc.getElementById("card-chatgpt-subscription")!.classList.contains("sv-models"));
     assert.ok(doc.getElementById("card-claude-subscription")!.classList.contains("sv-models"));
@@ -239,7 +239,7 @@ test("the ChatGPT card names the plan and when a reached usage limit resets", as
   try {
     await ui.modelSubscriptions.load();
     assert.equal(
-      doc.getElementById("codex-auth-state")!.textContent,
+      doc.getElementById("codex-auth-state")!.textContent!.trim(),
       "Signed in as ops@acme.test (ChatGPT Pro Lite). Weekly usage limit reached; resets Sat 3 Oct, 18:03 UTC.",
     );
     assert.equal((doc.getElementById("codex-auth-start") as HTMLButtonElement).disabled, false);
@@ -271,4 +271,39 @@ test("a ChatGPT account summary falls back to its status when nothing more is kn
     describeChatgptAccount({ name: "a", status: "error", usageLimit: { windowMinutes: 300 } }),
     "Signed in as a. 5-hour usage limit reached.",
   );
+});
+
+test("each of several ChatGPT accounts gets its own sign-out", async () => {
+  let accounts = [
+    { name: "codex-1-ops@acme.test-pro.json", email: "ops@acme.test", status: "active", plan: "pro" },
+    { name: "codex-1-ops@acme.test-prolite.json", email: "ops@acme.test", status: "active", plan: "prolite" },
+  ];
+  const { dom, ui, doc, calls } = fixture({
+    "GET /api/harness-auth": () => ({ ok: true, data: { harnesses: [] } }),
+    "GET /api/codex-auth": () => ({ ok: true, data: { accounts } }),
+    "DELETE /api/codex-auth": () => {
+      accounts = accounts.filter((account) => account.plan !== "prolite");
+      return { ok: true, data: {} };
+    },
+  });
+  dom.window.confirm = () => true;
+  try {
+    await ui.modelSubscriptions.load();
+    const rows = [...doc.querySelectorAll("#codex-auth-state .codex-account")];
+    assert.equal(rows.length, 2);
+    assert.match(rows[0]!.textContent!, /ChatGPT Pro\)/);
+    assert.match(rows[1]!.textContent!, /ChatGPT Pro Lite\)/);
+    assert.equal(doc.getElementById("codex-auth-delete"), null);
+    (rows[1]!.querySelector("button") as HTMLButtonElement).click();
+    await tick();
+    await tick();
+    assert.deepEqual(
+      calls.filter((call) => call.method === "DELETE").map((call) => call.path),
+      ["/api/codex-auth?name=codex-1-ops%40acme.test-prolite.json"],
+    );
+    assert.equal(doc.querySelectorAll("#codex-auth-state .codex-account").length, 1);
+    assert.ok(doc.getElementById("codex-auth-delete"));
+  } finally {
+    dom.window.close();
+  }
 });
