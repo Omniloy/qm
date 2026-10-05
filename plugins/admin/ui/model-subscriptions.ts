@@ -3,12 +3,32 @@ import { mountTemplate } from "./shared.ts";
 type Data = Record<string, any>;
 const DAY_MS = 86_400_000;
 const TOKEN_LIFETIME_DAYS = 365;
+const PLAN_LABELS: Record<string, string> = {
+  free: "Free",
+  plus: "Plus",
+  pro: "Pro",
+  prolite: "Pro Lite",
+  team: "Team",
+  business: "Business",
+  enterprise: "Enterprise",
+  edu: "Edu",
+};
+const RESET_LABEL = new Intl.DateTimeFormat("en-GB", {
+  weekday: "short",
+  day: "numeric",
+  month: "short",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+  timeZone: "UTC",
+});
 let context: Data = {};
 const claude = { status: null as Data | null, token: "", busy: false, message: "", tone: "" };
 const chatgpt = {
   state: "Checking…",
   available: true,
   account: "",
+  accounts: [] as Data[],
   pending: null as { url: string; expiresAt: number } | null,
   callback: "",
   busy: false,
@@ -34,6 +54,26 @@ export function describeSubscription(status: Data | null, now = Date.now()): str
   if (daysLeft <= 30) life += ", generate a new one soon";
   if (daysLeft <= 0) life = " — expired, generate a new one";
   return "Active, added " + added.toLocaleDateString() + by + life + ".";
+}
+function limitWindow(minutes?: number): string {
+  if (minutes === 10_080) return "Weekly usage";
+  if (minutes === 1_440) return "Daily usage";
+  if (minutes && minutes % 60 === 0) return minutes / 60 + "-hour usage";
+  return "Usage";
+}
+export function describeChatgptAccount(account: Data): string {
+  const limit = account.usageLimit;
+  const tags = [
+    ...(account.plan
+      ? ["ChatGPT " + ((Object.hasOwn(PLAN_LABELS, account.plan) && PLAN_LABELS[account.plan]) || account.plan)]
+      : []),
+    ...(limit || account.status === "active" ? [] : [account.status]),
+  ];
+  const signedIn =
+    "Signed in as " + (account.email || account.name) + (tags.length ? " (" + tags.join(", ") + ")" : "") + ".";
+  if (!limit) return signedIn;
+  const resets = limit.resetsAt ? "; resets " + RESET_LABEL.format(limit.resetsAt) + " UTC" : "";
+  return signedIn + " " + limitWindow(limit.windowMinutes) + " limit reached" + resets + ".";
 }
 async function loadClaude() {
   const response = await context.api("GET", "/api/harness-auth");
@@ -79,14 +119,14 @@ async function loadChatgpt(): Promise<boolean> {
   const response = await context.api("GET", "/api/codex-auth");
   chatgpt.available = response.status !== 503;
   chatgpt.account = "";
+  chatgpt.accounts = [];
   if (!chatgpt.available) chatgpt.state = "No ChatGPT proxy is configured on this instance.";
   else if (!response.ok) chatgpt.state = "The proxy could not be reached.";
   else {
     const live = (response.data?.accounts || []).filter((account: Data) => !account.disabled);
+    chatgpt.accounts = live;
     chatgpt.account = live[0]?.name || "";
-    chatgpt.state = live.length
-      ? live.map((account: Data) => `Signed in as ${account.email || account.name} (${account.status}).`).join(" ")
-      : "No ChatGPT account connected.";
+    chatgpt.state = live.length ? "" : "No ChatGPT account connected.";
   }
   redrawChatgpt();
   return Boolean(chatgpt.account);
@@ -152,8 +192,7 @@ async function completeChatgpt() {
     redrawChatgpt();
   }
 }
-async function signOutChatgpt() {
-  const name = chatgpt.account;
+async function signOutChatgpt(name = chatgpt.account) {
   if (!name || !confirm("Sign this ChatGPT account out? GPT models stop working until one is signed in again.")) return;
   chatgpt.busy = true;
   redrawChatgpt();
@@ -173,7 +212,7 @@ function remaining(expiresAt: number) {
   return `expires in ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
 }
 function claudeTemplate() {
-  return html`<section class="card" id="card-claude-subscription">
+  return html`<section class="card sv-models" id="card-claude-subscription">
     <div class="head">
       <h2>Claude subscription</h2>
       <p>
@@ -216,7 +255,7 @@ function claudeTemplate() {
 }
 function chatgptTemplate() {
   const pending = chatgpt.pending;
-  return html`<section class="card" id="card-chatgpt-subscription">
+  return html`<section class="card sv-models" id="card-chatgpt-subscription">
     <div class="head">
       <h2>ChatGPT subscription</h2>
       <p>
@@ -227,7 +266,28 @@ function chatgptTemplate() {
       </p>
     </div>
     <div class="body setup-form">
-      <p class="muted" id="codex-auth-state">${chatgpt.state}</p>
+      <p class="muted" id="codex-auth-state">
+        ${
+          chatgpt.state ||
+          chatgpt.accounts.map(
+            (account) =>
+              html`<span class="codex-account"
+                >${describeChatgptAccount(account)}${
+                  chatgpt.accounts.length > 1
+                    ? html` <button
+                        class="danger"
+                        data-codex-account=${account.name}
+                        ?disabled=${chatgpt.busy}
+                        @click=${() => signOutChatgpt(account.name)}
+                      >
+                        Sign out
+                      </button>`
+                    : nothing
+                }</span
+              >`,
+          )
+        }
+      </p>
       ${
         pending
           ? html`<div id="codex-auth-step">
@@ -267,14 +327,18 @@ function chatgptTemplate() {
             >
               Sign in with ChatGPT
             </button>`
-      }<button
-        class="danger"
-        id="codex-auth-delete"
-        ?disabled=${chatgpt.busy || !chatgpt.account}
-        @click=${signOutChatgpt}
-      >
-        Sign out</button
-      >${status("st-codex-auth", chatgpt.message, chatgpt.tone)}
+      }${
+        chatgpt.accounts.length > 1
+          ? nothing
+          : html`<button
+              class="danger"
+              id="codex-auth-delete"
+              ?disabled=${chatgpt.busy || !chatgpt.account}
+              @click=${() => signOutChatgpt()}
+            >
+              Sign out
+            </button>`
+      }${status("st-codex-auth", chatgpt.message, chatgpt.tone)}
     </div>
   </section>`;
 }
