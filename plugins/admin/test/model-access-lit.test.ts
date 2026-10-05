@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { JSDOM } from "jsdom";
 import { buildGovernanceUI } from "../src/governance-bundle.ts";
-import { describeSubscription } from "../ui/model-subscriptions.ts";
+import { describeChatgptAccount, describeSubscription } from "../ui/model-subscriptions.ts";
 
 const bundle = buildGovernanceUI();
 type Call = { method: string; path: string; body?: any };
@@ -200,8 +200,10 @@ test("the ChatGPT card runs the paste-back sign-in and shows the connected accou
       callback: "http://localhost:1455/auth/callback?code=c&state=s",
     });
     assert.equal(doc.getElementById("codex-auth-step"), null);
-    assert.match(doc.getElementById("codex-auth-state")!.textContent!, /Signed in as ops@acme\.test \(active\)\./);
+    assert.match(doc.getElementById("codex-auth-state")!.textContent!, /^Signed in as ops@acme\.test\.$/);
     assert.match(doc.getElementById("st-codex-auth")!.textContent!, /Signed in\. GPT models now bill/);
+    assert.ok(doc.getElementById("card-chatgpt-subscription")!.classList.contains("sv-models"));
+    assert.ok(doc.getElementById("card-claude-subscription")!.classList.contains("sv-models"));
   } finally {
     dom.window.close();
   }
@@ -213,4 +215,56 @@ test("a setup token warns in its last month and reads expired after a year", () 
   assert.match(describeSubscription(status, added + 340 * 86_400_000), /expires in 25 days, generate a new one soon\./);
   assert.match(describeSubscription(status, added + 366 * 86_400_000), /expired, generate a new one\./);
   assert.match(describeSubscription(null), /No subscription configured/);
+});
+
+test("the ChatGPT card names the plan and when a reached usage limit resets", async () => {
+  const resetsAt = Date.UTC(2026, 9, 3, 18, 3);
+  const { dom, ui, doc } = fixture({
+    "GET /api/harness-auth": () => ({ ok: true, data: { harnesses: [] } }),
+    "GET /api/codex-auth": () => ({
+      ok: true,
+      data: {
+        accounts: [
+          {
+            name: "acct",
+            email: "ops@acme.test",
+            status: "error",
+            plan: "prolite",
+            usageLimit: { windowMinutes: 10080, resetsAt },
+          },
+        ],
+      },
+    }),
+  });
+  try {
+    await ui.modelSubscriptions.load();
+    assert.equal(
+      doc.getElementById("codex-auth-state")!.textContent,
+      "Signed in as ops@acme.test (ChatGPT Pro Lite). Weekly usage limit reached; resets Sat 3 Oct, 18:03 UTC.",
+    );
+    assert.equal((doc.getElementById("codex-auth-start") as HTMLButtonElement).disabled, false);
+    assert.equal((doc.getElementById("codex-auth-delete") as HTMLButtonElement).disabled, false);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("a ChatGPT account summary falls back to its status when nothing more is known", () => {
+  assert.equal(describeChatgptAccount({ name: "a", status: "error" }), "Signed in as a (error).");
+  assert.equal(
+    describeChatgptAccount({ name: "a", email: "a@x.test", status: "active", plan: "plus" }),
+    "Signed in as a@x.test (ChatGPT Plus).",
+  );
+  assert.equal(
+    describeChatgptAccount({ name: "a", status: "error", plan: "team" }),
+    "Signed in as a (ChatGPT Team, error).",
+  );
+  assert.equal(
+    describeChatgptAccount({ name: "a", status: "error", usageLimit: {} }),
+    "Signed in as a. Usage limit reached.",
+  );
+  assert.equal(
+    describeChatgptAccount({ name: "a", status: "error", usageLimit: { windowMinutes: 300 } }),
+    "Signed in as a. 5-hour usage limit reached.",
+  );
 });

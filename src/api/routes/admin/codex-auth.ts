@@ -1,6 +1,6 @@
 import { sendJson } from "../../http.ts";
 import { errMessage } from "../../../util/errors.ts";
-import { callCodexProxy, type CodexProxyCall } from "../../../model/codex-proxy.ts";
+import { callCodexProxy, codexAccountState, type CodexProxyCall } from "../../../model/codex-proxy.ts";
 import type { ApiCtx } from "../route.ts";
 import { audit, authorizeAdmin, orgScope } from "../shared.ts";
 
@@ -43,6 +43,23 @@ interface AuthFile {
   status?: unknown;
   disabled?: unknown;
   email?: unknown;
+  status_message?: unknown;
+}
+
+function usage(file: AuthFile, now: number) {
+  const state = codexAccountState(file.status_message, now);
+  const resetsAt = state.resetsAt !== undefined && state.resetsAt > now ? state.resetsAt : undefined;
+  return {
+    ...(state.planType ? { plan: state.planType } : {}),
+    ...(state.limitReached
+      ? {
+          usageLimit: {
+            ...(state.limitWindowMinutes ? { windowMinutes: state.limitWindowMinutes } : {}),
+            ...(resetsAt ? { resetsAt } : {}),
+          },
+        }
+      : {}),
+  };
 }
 
 export async function getCodexAuth(ctx: ApiCtx): Promise<void> {
@@ -59,8 +76,7 @@ export async function getCodexAuth(ctx: ApiCtx): Promise<void> {
     return sendJson(ctx.res, 502, { error: "proxy_error", message: `the proxy answered ${call.status}` });
   }
   const files = ((call.body as { files?: unknown })?.files ?? []) as AuthFile[];
-  // Only the Codex accounts, and only what an operator needs to see: which
-  // account is connected and whether it still works. Never the file itself.
+  const now = Date.now();
   const accounts = files
     .filter((f) => f.provider === "codex")
     .map((f) => ({
@@ -68,6 +84,7 @@ export async function getCodexAuth(ctx: ApiCtx): Promise<void> {
       email: typeof f.email === "string" ? f.email : undefined,
       status: String(f.status ?? "unknown"),
       disabled: Boolean(f.disabled),
+      ...usage(f, now),
     }));
   audit(ctx.deps, {
     principalId: authorized.id,
