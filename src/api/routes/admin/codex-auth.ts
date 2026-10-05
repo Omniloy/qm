@@ -46,7 +46,7 @@ interface AuthFile {
   status_message?: unknown;
 }
 
-const PLAN_FROM_NAME = /-([a-z][a-z0-9_]{0,31})\.json$/;
+const PLAN_FROM_NAME = /@[^@/]+-([a-z][a-z0-9_]{0,31})\.json$/;
 
 function usage(file: AuthFile, now: number) {
   const state = codexAccountState(file.status_message, now);

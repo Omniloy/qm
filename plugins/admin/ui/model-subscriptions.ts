@@ -273,17 +273,17 @@ function chatgptTemplate() {
             (account) =>
               html`<span class="codex-account"
                 >${describeChatgptAccount(account)}${
-                chatgpt.accounts.length > 1
-                  ? html` <button
-                      class="danger"
-                      data-codex-account=${account.name}
-                      ?disabled=${chatgpt.busy}
-                      @click=${() => signOutChatgpt(account.name)}
-                    >
-                      Sign out
-                    </button>`
-                  : nothing
-              }</span
+                  chatgpt.accounts.length > 1
+                    ? html` <button
+                        class="danger"
+                        data-codex-account=${account.name}
+                        ?disabled=${chatgpt.busy}
+                        @click=${() => signOutChatgpt(account.name)}
+                      >
+                        Sign out
+                      </button>`
+                    : nothing
+                }</span
               >`,
           )
         }
