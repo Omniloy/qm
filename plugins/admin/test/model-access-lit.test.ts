@@ -260,6 +260,10 @@ test("a ChatGPT account summary falls back to its status when nothing more is kn
     "Signed in as a (ChatGPT Team, error).",
   );
   assert.equal(
+    describeChatgptAccount({ name: "a", status: "active", plan: "constructor" }),
+    "Signed in as a (ChatGPT constructor).",
+  );
+  assert.equal(
     describeChatgptAccount({ name: "a", status: "error", usageLimit: {} }),
     "Signed in as a. Usage limit reached.",
   );

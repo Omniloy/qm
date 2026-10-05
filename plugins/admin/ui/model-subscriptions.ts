@@ -63,7 +63,9 @@ function limitWindow(minutes?: number): string {
 export function describeChatgptAccount(account: Data): string {
   const limit = account.usageLimit;
   const tags = [
-    ...(account.plan ? ["ChatGPT " + (PLAN_LABELS[account.plan] || account.plan)] : []),
+    ...(account.plan
+      ? ["ChatGPT " + ((Object.hasOwn(PLAN_LABELS, account.plan) && PLAN_LABELS[account.plan]) || account.plan)]
+      : []),
     ...(limit || account.status === "active" ? [] : [account.status]),
   ];
   const signedIn =

@@ -60,6 +60,8 @@ function resetTime(error: StatusError | undefined, now: number): number | undefi
   return undefined;
 }
 
+const MAX_DATE_MS = 8.64e15;
+
 export function codexAccountState(statusMessage: unknown, now: number): CodexAccountState {
   const error = statusError(statusMessage);
   const window = error?.limit_window_minutes;
@@ -68,7 +70,7 @@ export function codexAccountState(statusMessage: unknown, now: number): CodexAcc
     ...(typeof error?.plan_type === "string" && PLAN_TYPE.test(error.plan_type) ? { planType: error.plan_type } : {}),
     limitReached: error?.type === "usage_limit_reached",
     ...(typeof window === "number" && Number.isInteger(window) && window > 0 ? { limitWindowMinutes: window } : {}),
-    ...(resetsAt !== undefined && Number.isFinite(resetsAt) ? { resetsAt } : {}),
+    ...(resetsAt !== undefined && Number.isFinite(resetsAt) && resetsAt <= MAX_DATE_MS ? { resetsAt } : {}),
   };
 }
 

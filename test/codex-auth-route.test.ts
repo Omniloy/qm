@@ -13,7 +13,7 @@ import { buildApp } from "../src/wiring.ts";
 import { testConfig } from "./support/test-config.ts";
 
 const ADMIN = { "content-type": "application/json", "x-admin-actor": "admin-alice@default-org" };
-const RESETS_AT = Math.floor(Date.UTC(2036, 9, 4, 18, 3) / 1000);
+const RESETS_AT = Math.floor(Date.now() / 1000) + 3 * 24 * 60 * 60;
 const LIMITED = JSON.stringify({
   error: {
     type: "usage_limit_reached",
@@ -60,6 +60,13 @@ test("the codex account list carries the plan and usage-limit reset but never th
         access_token: "tok",
       },
       { name: "codex-b.json", provider: "codex", status: "active", status_message: "" },
+      { name: "codex-c.json", provider: "codex", status: "active", status_message: LIMITED },
+      {
+        name: "codex-d.json",
+        provider: "codex",
+        status: "error",
+        status_message: JSON.stringify({ error: { type: "usage_limit_reached", resets_at: 1_000_000_000 } }),
+      },
       { name: "gemini.json", provider: "gemini", status: "error", status_message: LIMITED },
     ],
     async (base) => {
@@ -78,6 +85,8 @@ test("the codex account list carries the plan and usage-limit reset but never th
             usageLimit: { windowMinutes: 10080, resetsAt: RESETS_AT * 1000 },
           },
           { name: "codex-b.json", status: "active", disabled: false },
+          { name: "codex-c.json", status: "active", disabled: false, plan: "prolite" },
+          { name: "codex-d.json", status: "error", disabled: false },
         ],
       });
     },
@@ -85,7 +94,7 @@ test("the codex account list carries the plan and usage-limit reset but never th
 });
 
 test("codexAccountState keeps only a known shape from the status message", () => {
-  const now = Date.UTC(2026, 9, 2);
+  const now = Date.now();
   assert.deepEqual(codexAccountState(LIMITED, now), {
     planType: "prolite",
     limitReached: true,
@@ -103,6 +112,9 @@ test("codexAccountState keeps only a known shape from the status message", () =>
     ),
     { limitReached: true },
   );
+  assert.deepEqual(codexAccountState('{"error":{"resets_at":1e13}}', now), {
+    limitReached: false,
+  });
   assert.deepEqual(codexAccountState("not json", now), { limitReached: false });
   assert.deepEqual(codexAccountState(undefined, now), { limitReached: false });
   assert.deepEqual(codexAccountState('{"error":"flat"}', now), { limitReached: false });

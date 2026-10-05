@@ -49,9 +49,10 @@ interface AuthFile {
 function usage(file: AuthFile, now: number) {
   const state = codexAccountState(file.status_message, now);
   const resetsAt = state.resetsAt !== undefined && state.resetsAt > now ? state.resetsAt : undefined;
+  const limitReached = state.limitReached && file.status !== "active" && (state.resetsAt === undefined || resetsAt);
   return {
     ...(state.planType ? { plan: state.planType } : {}),
-    ...(state.limitReached
+    ...(limitReached
       ? {
           usageLimit: {
             ...(state.limitWindowMinutes ? { windowMinutes: state.limitWindowMinutes } : {}),
