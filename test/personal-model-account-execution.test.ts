@@ -639,8 +639,15 @@ test("the org capability check models real org credentials", async () => {
   assert.equal(await bare.orgServesModel("claude", claudeModel), false);
   assert.equal(await bare.orgServesModel("pi", "codex/gpt-6-astra"), false);
   assert.equal(await bare.orgServesModel("pi", "gpt-6-astra"), false);
-  const gateway = buildApp(
+  const gatewayOnly = buildApp(
     testConfig({ harness: "pi", claudeProcessEnv: { ANTHROPIC_BASE_URL: "https://gateway.example.test" } }),
+  );
+  assert.equal(await gatewayOnly.orgServesModel("claude", claudeModel), false);
+  const gateway = buildApp(
+    testConfig({
+      harness: "pi",
+      claudeProcessEnv: { ANTHROPIC_BASE_URL: "https://gateway.example.test", ANTHROPIC_AUTH_TOKEN: "org-token" },
+    }),
   );
   assert.equal(await gateway.orgServesModel("claude", claudeModel), true);
   const codex = buildApp(testConfig({ harness: "pi", codexProcessEnv: { CODEX_ACCESS_TOKEN: "org-codex" } }));

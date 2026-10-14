@@ -828,3 +828,38 @@ test("a personal Claude error with sign-in wording and no status is a 401, while
   const org = harnessTurn();
   assert.equal((await harness.turns.runTurn(org.turn)).reply, "Invalid API key · Please run /login");
 });
+
+test("personal Claude billing text without a status stays the reply instead of a synthetic sign-in failure", async () => {
+  currentScript = async function* (prompts) {
+    await prompts[Symbol.asyncIterator]().next();
+    yield resultMessage("Your credit balance is too low to access the Anthropic API.", { is_error: true });
+  };
+  const harness = createClaudeHarness({});
+  const { turn } = harnessTurn({ claudeOauthToken: "sk-ant-oat-personal" });
+  assert.equal(
+    (await harness.turns.runTurn(turn)).reply,
+    "Your credit balance is too low to access the Anthropic API.",
+  );
+});
+
+for (const text of ["You've hit your limit · resets 5pm", "Claude AI usage limit reached|1700000000"]) {
+  test(`a personal Claude subscription limit without a status goes through the limit path: ${text}`, async () => {
+    const script = async function* (prompts: AsyncIterable<{ message: { content: unknown } }>) {
+      await prompts[Symbol.asyncIterator]().next();
+      yield resultMessage(text, { is_error: true });
+    };
+    currentScript = script;
+    const harness = createClaudeHarness({});
+    const personal = harnessTurn({ claudeOauthToken: "sk-ant-oat-personal" });
+    const error = await harness.turns.runTurn(personal.turn).then(
+      () => assert.fail("expected the turn to fail"),
+      (e: unknown) => e as Error,
+    );
+    assert.ok(!(error instanceof NonRetryableTurnError));
+    assert.equal(credentialRejected(error), true);
+    assert.match(turnFailureMessage(error), /Anthropic usage limit/);
+    assert.equal(personal.entries.filter((entry) => entry.type === "assistant").length, 0);
+    currentScript = script;
+    assert.equal((await harness.turns.runTurn(harnessTurn().turn)).reply, text);
+  });
+}

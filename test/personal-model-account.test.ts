@@ -287,3 +287,53 @@ test("shared chat messages queue instead of borrowing another person's account",
   assert.equal((await built.runs.get(other.runId!))?.request.modelAccount, "company");
   assert.equal((await built.signals.takePending(first.runId!)).length, 0);
 });
+
+test("ready stays false when the org's own Claude runtime only has a gateway URL and no credential", async () => {
+  const built = buildApp(
+    testConfig({
+      harness: "claude",
+      dataDir: mkdtempSync(join(tmpdir(), "personal-ready-")),
+      claudeProcessEnv: { ANTHROPIC_BASE_URL: "https://gateway.example.test" },
+    }),
+  );
+  await built.config.setModelAccountPolicy({
+    anthropic: "personal",
+    openai: "personal",
+    fallbackWhenUnavailable: true,
+  });
+  await built.config.setPersonalModelAuth("alice@default-org", true, "anthropic");
+  built.config.setInternalMemberOverrides(["alice@default-org"]);
+  await built.config.flushScope("org:default-org");
+  const server = createServer(built.app, {
+    signingSecret: SECRET,
+    requireSignedPortalIdentity: true,
+    capabilitySecret: SECRET + "capability",
+    portalIdentitySecret: SECRET + "portal",
+    config: built.config,
+    userModelCredentials: built.userModelCredentials,
+    auditLog: built.auditLog,
+    harnessId: "claude",
+    orgServesModel: built.orgServesModel,
+  });
+  server.listen(0);
+  const base = `http://localhost:${(server.address() as AddressInfo).port}`;
+  try {
+    const path = "/v1/user-model-auth/status?principalId=alice%40default-org";
+    const ts = Math.floor(Date.now() / 1000);
+    const response = await fetch(base + path, {
+      headers: {
+        "x-timestamp": String(ts),
+        "x-signature": signRequest(SECRET, ts, `GET\n${path}\n`),
+        "x-portal-identity": await mintPortalIdentity(
+          { p: "alice@default-org", exp: Date.now() + 60_000 },
+          SECRET + "portal",
+        ),
+      },
+    });
+    const status = (await response.json()) as { account: string; ready: boolean };
+    assert.equal(status.account, "anthropic");
+    assert.equal(status.ready, false);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});

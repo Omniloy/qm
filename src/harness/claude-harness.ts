@@ -21,7 +21,7 @@ import { fromJSONSchema, type ZodObject } from "zod";
 import { contentText, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { CONFIG_DEFAULTS, type Config } from "../config.ts";
 import { isDeliveryNote } from "../core/attachments.ts";
-import { credentialRejectionMessage, NonRetryableTurnError, providerStatusError } from "../core/turn-error.ts";
+import { NonRetryableTurnError, providerStatusError, subscriptionLimitMessage } from "../core/turn-error.ts";
 import {
   contextTokenBudgetForModel,
   getRequiredModel,
@@ -108,12 +108,6 @@ const CLAUDE_ENV_PASSTHROUGH = [
   "CLAUDE_CODE_OAUTH_TOKEN",
 ] as const;
 
-export function claudeEnvCarriesAuth(env: NodeJS.ProcessEnv): boolean {
-  return Boolean(
-    env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN || env.CLAUDE_CODE_OAUTH_TOKEN || env.ANTHROPIC_BASE_URL,
-  );
-}
-
 const CLAUDE_CREDENTIALS_OUTRANKING_SUBSCRIPTION = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] as const;
 
 export function claudeChildEnv(source: NodeJS.ProcessEnv, jail: string): NodeJS.ProcessEnv {
@@ -127,13 +121,18 @@ export function claudeChildEnv(source: NodeJS.ProcessEnv, jail: string): NodeJS.
   return env;
 }
 
+const CLAUDE_SIGN_IN_FAILURE =
+  /not logged in|please run \/login|invalid[_ -]?(?:x-)?api[_ -]?key|authentication|(?:oauth|access) token (?:has )?(?:expired|been revoked)|token_expired/i;
+
 function claudeRejection(
   result: { api_error_status?: number | null; result: string },
   personal: boolean,
 ): Error | null {
   const raw = result.result.trim();
-  const authWording = personal && (credentialRejectionMessage(raw) || /please run \/login/i.test(raw));
-  const status = result.api_error_status ?? (authWording ? 401 : undefined);
+  let inferred: number | undefined;
+  if (personal && CLAUDE_SIGN_IN_FAILURE.test(raw)) inferred = 401;
+  else if (personal && subscriptionLimitMessage(raw)) inferred = 429;
+  const status = result.api_error_status ?? inferred;
   if (status === 429) return providerStatusError(status, `Claude API error (429): ${raw}`);
   if (status !== 401 && status !== 403) return null;
   const message = personal

@@ -338,7 +338,7 @@ import { createCodexHarness, codexHarnessConfigOptions } from "./harness/codex-h
 import { keychainCodexAuthStore } from "./harness/codex-auth-store.ts";
 import { keychainHarnessAuthEnv } from "./credentials/harness-auth-env.ts";
 import { probeClaudeSubscription } from "./credentials/claude-subscription-probe.ts";
-import { claudeEnvCarriesAuth, createClaudeHarness, claudeHarnessConfigOptions } from "./harness/claude-harness.ts";
+import { createClaudeHarness, claudeHarnessConfigOptions } from "./harness/claude-harness.ts";
 import { createPiHarness, piHarnessConfigOptions } from "./harness/pi-harness.ts";
 import { createHarnessRouter, resolveRuntimeChoiceDurable } from "./harness/harness-router.ts";
 import { selectableModelCatalog } from "./model/model-catalog.ts";
@@ -1509,11 +1509,12 @@ export function buildApp(
   );
   const orgServesModel = async (harnessId: string, modelId: string) => {
     if (resolveModel(modelId)?.provider === CODEX_SUBSCRIPTION_PROVIDER) return orgCodexSignIn;
-    if (harnessId === "claude")
-      return (
-        Boolean(config.anthropicApiKey) ||
-        claudeEnvCarriesAuth({ ...config.claudeProcessEnv, ...(await claudeAuthEnv()) })
+    if (harnessId === "claude") {
+      const env = { ...config.claudeProcessEnv, ...(await claudeAuthEnv()) };
+      return Boolean(
+        config.anthropicApiKey || env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN || env.CLAUDE_CODE_OAUTH_TOKEN,
       );
+    }
     return modelServiceable(
       modelId,
       modelProviderAvailabilityFor(

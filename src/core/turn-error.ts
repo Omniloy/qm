@@ -130,8 +130,8 @@ export function providerStatusError(status: number, message: string, options?: E
   return Object.assign(error, { providerStatus: status });
 }
 
-export function credentialRejectionMessage(message: string): boolean {
-  return CREDENTIAL_REJECTION.test(message);
+export function subscriptionLimitMessage(message: string): boolean {
+  return SUBSCRIPTION_LIMIT.test(message);
 }
 
 export function credentialRejected(err: unknown): boolean {
@@ -140,7 +140,7 @@ export function credentialRejected(err: unknown): boolean {
   if (providerLimit(err)) return true;
   const text = err instanceof Error ? err.message : String(err);
   return (
-    credentialRejectionMessage(text) ||
+    CREDENTIAL_REJECTION.test(text) ||
     BILLING_CODE.test(text) ||
     /usage limit|last status: 429|429 too many requests/i.test(text)
   );
