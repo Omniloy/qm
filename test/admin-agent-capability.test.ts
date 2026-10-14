@@ -825,16 +825,13 @@ const rawRequest = (
 
 const hex = (c: string) => `%${c.charCodeAt(0).toString(16)}`;
 
-const pathDodges = (resource: string): string[] => {
+const pathDodges = (resource: string): Array<[path: string, status: number]> => {
   const head = resource.slice(0, 1);
   const tail = resource.slice(1);
-  return [
+  const nonCanonical = [
     `/v1/admin/${hex(head)}${tail}`,
     `/v1/admin/${hex(head).toUpperCase()}${tail}`,
     `/v1/admin/${resource.slice(0, -1)}${hex(resource.slice(-1))}`,
-    `/v1/admin/%25${hex(head).slice(1)}${tail}`,
-    `/v1/admin%2F${resource}`,
-    `/v1/admin%2f${resource}`,
     `/v1/%61dmin/${resource}`,
     `/v1/admin/./${resource}`,
     `/v1/admin/x/../${resource}`,
@@ -845,10 +842,19 @@ const pathDodges = (resource: string): string[] => {
     `/v1/admin//${resource}`,
     `/v1/admin/${resource}/`,
     `/v1/admin\\${resource}`,
-    `/v1/admin/${resource.toUpperCase()}`,
     `/v1/admin/%zz${resource}`,
     `/v1/admin/${resource}%`,
     `/v1/admin/${resource}%C3`,
+  ];
+  const unrouted = [
+    `/v1/admin/%25${hex(head).slice(1)}${tail}`,
+    `/v1/admin%2F${resource}`,
+    `/v1/admin%2f${resource}`,
+    `/v1/admin/${resource.toUpperCase()}`,
+  ];
+  return [
+    ...nonCanonical.map((path): [string, number] => [path, 400]),
+    ...unrouted.map((path): [string, number] => [path, 403]),
   ];
 };
 
@@ -857,28 +863,32 @@ test("encoded, dot-segment and slash variants of portal-only admin paths never r
   try {
     const json = { "x-agent-capability": await capFor("admin-alice"), "content-type": "application/json" };
     const promote = JSON.stringify({ principalId: "U9", role: "org_admin", scopeId: ORG });
-    for (const path of pathDodges("grants")) {
+    for (const [path, status] of pathDodges("grants")) {
       const res = await rawRequest(s.base, "POST", path, json, promote);
-      assert.ok(res.status >= 400, `${path} → ${res.status} ${res.text}`);
+      assert.equal(res.status, status, `${path} → ${res.status} ${res.text}`);
     }
-    for (const path of pathDodges("grants/admin-bob")) {
+    for (const [path, status] of pathDodges("grants/admin-bob")) {
       const res = await rawRequest(s.base, "DELETE", `${path}?scope=${encodeURIComponent(ORG)}&role=org_admin`, json);
-      assert.ok(res.status >= 400, `${path} → ${res.status} ${res.text}`);
+      assert.equal(res.status, status, `${path} → ${res.status} ${res.text}`);
     }
-    for (const path of pathDodges("impersonate")) {
+    for (const [path, status] of pathDodges("impersonate")) {
       const res = await rawRequest(s.base, "POST", path, json, JSON.stringify({ target: "U9" }));
-      assert.ok(res.status >= 400, `${path} → ${res.status} ${res.text}`);
+      assert.equal(res.status, status, `${path} → ${res.status} ${res.text}`);
     }
-    for (const path of pathDodges("principal-links")) {
+    for (const [path, status] of pathDodges("principal-links")) {
       const link = await rawRequest(s.base, "POST", path, json, JSON.stringify({ principalId: "U9", linkedId: "U1" }));
-      assert.ok(link.status >= 400, `${path} → ${link.status} ${link.text}`);
+      assert.equal(link.status, status, `${path} → ${link.status} ${link.text}`);
       const list = await rawRequest(s.base, "GET", path, json);
-      assert.ok(list.status >= 400, `GET ${path} → ${list.status} ${list.text}`);
+      assert.equal(list.status, status, `GET ${path} → ${list.status} ${list.text}`);
     }
     const u9 = await fetch(`${s.base}/v1/admin/whoami`, { headers: { "x-agent-capability": await capFor("U9") } });
     assert.equal(((await u9.json()) as any).isAdmin, false, "no dodged promote landed");
     assert.equal((await rawRequest(s.base, "POST", "/v1/admin/%67rants", json, promote)).status, 400);
     assert.equal((await rawRequest(s.base, "POST", "/v1/admin/%zzgrants", json, promote)).status, 400);
+    for (const path of ["/", "//", "/\\", "/v1/admin/users//onboarding"]) {
+      const res = await rawRequest(s.base, "POST", path, json, promote);
+      assert.equal(res.status, 400, `${path} → ${res.status} ${res.text}`);
+    }
   } finally {
     await s.close();
   }
@@ -890,14 +900,14 @@ test("encoded and dot-segment variants of admin content reads keep the DM gate",
     const fromChannel = { "x-agent-capability": await capFor("admin-alice", { scope: scopeId("channel", "C1") }) };
     const personal = `?scope=${encodeURIComponent(scopeId("personal", "U1"))}`;
     for (const resource of ["memory", "keychain", "sessions", "users/U1", "slack-mirror", "ambient-judgments"]) {
-      for (const path of pathDodges(resource)) {
+      for (const [path, status] of pathDodges(resource)) {
         const res = await rawRequest(s.base, "GET", `${path}${personal}`, fromChannel);
-        assert.ok(res.status >= 400, `${path} → ${res.status} ${res.text.slice(0, 120)}`);
+        assert.equal(res.status, status, `${path} → ${res.status} ${res.text.slice(0, 120)}`);
       }
     }
-    for (const path of pathDodges(`scopes/${encodeURIComponent(scopeId("personal", "U1"))}`)) {
+    for (const [path, status] of pathDodges(`scopes/${encodeURIComponent(scopeId("personal", "U1"))}`)) {
       const res = await rawRequest(s.base, "GET", path, fromChannel);
-      assert.ok(res.status >= 400, `${path} → ${res.status} ${res.text.slice(0, 120)}`);
+      assert.equal(res.status, status, `${path} → ${res.status} ${res.text.slice(0, 120)}`);
     }
   } finally {
     await s.close();

@@ -176,7 +176,7 @@ const UNRESERVED = /^[A-Za-z0-9\-._~]$/;
 export function isCanonicalRequestPath(target: string): boolean {
   const path = target.split(/[?#]/, 1)[0] ?? "";
   if (!path.startsWith("/") || path.split("/").slice(1).includes("")) return false;
-  if (new URL(path, "http://localhost").pathname !== path) return false;
+  if (!URL.canParse(path, "http://localhost") || new URL(path, "http://localhost").pathname !== path) return false;
   for (const escape of path.matchAll(/%(.{0,2})/g)) {
     const hex = escape[1] ?? "";
     if (!/^[0-9A-Fa-f]{2}$/.test(hex) || UNRESERVED.test(String.fromCharCode(parseInt(hex, 16)))) return false;
