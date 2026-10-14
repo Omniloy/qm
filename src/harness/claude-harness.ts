@@ -21,7 +21,7 @@ import { fromJSONSchema, type ZodObject } from "zod";
 import { contentText, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { CONFIG_DEFAULTS, type Config } from "../config.ts";
 import { isDeliveryNote } from "../core/attachments.ts";
-import { NonRetryableTurnError } from "../core/turn-error.ts";
+import { NonRetryableTurnError, providerStatusError } from "../core/turn-error.ts";
 import {
   contextTokenBudgetForModel,
   getRequiredModel,
@@ -90,7 +90,6 @@ export function claudeHarnessConfigOptions(config: Config): ClaudeHarnessOptions
 }
 
 const CLAUDE_CHILD_AGENT_TYPES = new Set(["research", "code", "consult"]);
-const CREDENTIAL_STATUSES = new Set([401, 403, 429]);
 const CLAUDE_ENV_PASSTHROUGH = [
   "PATH",
   "TMPDIR",
@@ -120,6 +119,17 @@ export function claudeChildEnv(source: NodeJS.ProcessEnv, jail: string): NodeJS.
     for (const name of CLAUDE_CREDENTIALS_OUTRANKING_SUBSCRIPTION) delete env[name];
   }
   return env;
+}
+
+function claudeRejection(result: { api_error_status?: number | null; result: string }): Error | null {
+  const status = result.api_error_status;
+  if (status === 429) return providerStatusError(status, `Claude API error (429): ${result.result.trim()}`);
+  if (status === 401 || status === 403)
+    return providerStatusError(
+      status,
+      `Claude did not accept this account's sign-in (HTTP ${status}). Reconnect the account or use a different one.`,
+    );
+  return null;
 }
 
 export function perUserClaudeEnv(env: NodeJS.ProcessEnv, oauthToken: string | undefined): NodeJS.ProcessEnv {
@@ -750,12 +760,8 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
           await recordStep(message);
           await flushThinking();
           if (interrupted) break;
-          if (
-            message.subtype === "success" &&
-            message.is_error &&
-            CREDENTIAL_STATUSES.has(message.api_error_status ?? 0)
-          )
-            throw new NonRetryableTurnError(`Claude API error (${message.api_error_status}): ${message.result.trim()}`);
+          const rejection = message.subtype === "success" && message.is_error ? claudeRejection(message) : null;
+          if (rejection) throw rejection;
           const terminal = ref.runtimeHandoff || ref.silentRequested || ref.pausedOnApproval;
           const text = message.subtype === "success" && !terminal ? message.result.trim() : "";
           if (text) {

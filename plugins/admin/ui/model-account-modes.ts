@@ -31,6 +31,10 @@ export function modelAccountModesDraft(data: Record<string, any>) {
   };
 }
 
+export function personalAccountsOffered(draft: Record<string, unknown>) {
+  return PROVIDERS.some(([provider]) => draft[provider] === "personal");
+}
+
 export function modelAccountModesCard(s: SettingsState) {
   return html`<section
     class=${classMap({ card: true, "sv-models": true, "setting-row": true, hidden: !s.available, dirty: s.dirty })}
@@ -62,7 +66,7 @@ export function modelAccountModesCard(s: SettingsState) {
             )}
           </fieldset>`,
       )}
-      ${FALLBACKS.map(
+      ${(personalAccountsOffered(s.draft) ? FALLBACKS : []).map(
         ([key, title, detail]) =>
           html`<label class="setting-toggle" id=${`model-account-${key}-control`}
             ><input

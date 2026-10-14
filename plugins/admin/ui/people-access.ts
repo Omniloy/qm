@@ -53,7 +53,7 @@ function addPerson(s: SettingsState) {
   s.changed();
 }
 
-export function peopleAccessCard(s: SettingsState) {
+export function peopleAccessCard(s: SettingsState, hidden = false) {
   const copy = PEOPLE_ACCESS[s.key]!;
   const directory: Member[] = s.context[copy.readKey]?.directory ?? [];
   const nameOf = (id: string) =>
@@ -61,7 +61,7 @@ export function peopleAccessCard(s: SettingsState) {
   const people: string[] = s.draft.people ?? [];
   const limited = s.draft.audience === "people";
   return html`<section
-    class=${classMap({ card: true, "sv-models": true, hidden: !s.available, dirty: s.dirty })}
+    class=${classMap({ card: true, "sv-models": true, hidden: hidden || !s.available, dirty: s.dirty })}
     id=${`card-${s.key}`}
   >
     <div class="head">

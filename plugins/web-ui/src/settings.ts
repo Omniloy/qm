@@ -275,9 +275,7 @@ function acceptAiStatus(status: StatusResponse): void {
   aiStatus = status;
   if (appState.me) {
     appState.me.individualModelAuth = status.individualModelAuth;
-    appState.me.modelAuthConnected = status.connections.some(
-      (c) => status.account === "personal" || status.account === c.provider,
-    );
+    appState.me.modelAuthConnected = status.ready;
   }
   drawSettings();
 }
@@ -346,14 +344,25 @@ function aiAccountsRow(): TemplateResult | typeof nothing {
     ] as const
   ).filter(([provider]) => personalAllowed(aiStatus, provider));
   if (aiStatus && !providers.length) {
-    if (!aiStatus.orgServedConnections?.length) return nothing;
+    const notAllowed = aiStatus.allowed === false;
+    if (!aiStatus.orgServedConnections?.length && !notAllowed) return nothing;
+    const note = notAllowed
+      ? "Your organization provides AI access. Personal AI accounts aren't enabled for you."
+      : "Your organization provides AI access.";
+    if (!aiStatus.orgServedConnections?.length)
+      return html`
+        <div class="settings-row" id="ai-not-allowed">
+          <div class="settings-row-copy">
+            <div class="settings-row-title">AI access</div>
+            <div class="settings-row-note">${note}</div>
+          </div>
+        </div>
+      `;
     return html`
       <div class="settings-row" id="ai-org-served">
         <div class="settings-row-copy">
           <div class="settings-row-title">AI access</div>
-          <div class="settings-row-note">
-            Your organization provides AI access. You still have a saved personal sign-in, which is not used.
-          </div>
+          <div class="settings-row-note">${note} You still have a saved personal sign-in, which is not used.</div>
         </div>
         <button class="btn settings-row-action" @click=${() => openModelConnectManager()}>Remove saved sign-in</button>
       </div>

@@ -424,6 +424,7 @@ import {
   modelProviderAvailabilityFor,
   modelServiceable,
   resolveModel,
+  CODEX_SUBSCRIPTION_PROVIDER,
   type HarnessId,
   modelSupportedByHarness,
 } from "./model/pi-models.ts";
@@ -1489,6 +1490,30 @@ export function buildApp(
           ? { ...directProviderAvailability, modelIds: new Set(Object.keys(gatewayTransport.models)) }
           : undefined),
     );
+  const claudeAuthEnv = async () => {
+    const keychainEnv =
+      config.claudeAuthCredential && keychain
+        ? await keychainHarnessAuthEnv(keychain, config.claudeAuthCredential, [
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "ANTHROPIC_AUTH_TOKEN",
+          ])()
+        : {};
+    return claudeHarnessAuthEnv(harnessAuth, keychainEnv);
+  };
+  const orgServesModel = async (harnessId: string, modelId: string) => {
+    if (resolveModel(modelId)?.provider === CODEX_SUBSCRIPTION_PROVIDER)
+      return Boolean(config.codexAuthFile || config.codexAuthCredential || config.codexProxy);
+    if (harnessId === "claude") {
+      const env = { ...config.claudeProcessEnv, ...(await claudeAuthEnv()) };
+      return Boolean(
+        config.anthropicApiKey || env.ANTHROPIC_API_KEY || env.CLAUDE_CODE_OAUTH_TOKEN || env.ANTHROPIC_AUTH_TOKEN,
+      );
+    }
+    return modelServiceable(
+      modelId,
+      modelProviderAvailabilityFor(harnessId, providerKeysPresent(config), await modelCredentials.availability()),
+    );
+  };
   const adapters = new Map<HarnessId, Harness>([
     [
       "pi",
@@ -1547,16 +1572,7 @@ export function buildApp(
       "claude",
       createClaudeHarness({
         ...claudeHarnessConfigOptions(config),
-        authEnv: async () => {
-          const keychainEnv =
-            config.claudeAuthCredential && keychain
-              ? await keychainHarnessAuthEnv(keychain, config.claudeAuthCredential, [
-                  "CLAUDE_CODE_OAUTH_TOKEN",
-                  "ANTHROPIC_AUTH_TOKEN",
-                ])()
-              : {};
-          return claudeHarnessAuthEnv(harnessAuth, keychainEnv);
-        },
+        authEnv: claudeAuthEnv,
         signals: runSignals,
         tasks,
         mcpTools,
@@ -2065,11 +2081,7 @@ export function buildApp(
     defaultTurnWallClockMs: config.turnWallClockMs,
     ...(config.codexProxy ? { codexProxy: config.codexProxy } : {}),
     userModelCredentials,
-    orgServesModel: async (harnessId, modelId) =>
-      modelServiceable(
-        modelId,
-        modelProviderAvailabilityFor(harnessId, providerKeysPresent(config), await modelCredentials.availability()),
-      ),
+    orgServesModel,
     ...(config.brandingDefault ? { brandingDefault: config.brandingDefault } : {}),
     sessionTapeMode: config.sessionTapeMode,
     sessions,

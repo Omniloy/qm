@@ -935,8 +935,13 @@ test("model-account-modes is org-admin-only, validates both providers, and reads
     };
     assert.equal((await put(fallbacks)).status, 200);
     assert.deepEqual(await read(), fallbacks);
-    assert.equal((await put({ anthropic: "personal", openai: "personal" })).status, 200);
-    assert.deepEqual(await read(), { anthropic: "personal", openai: "personal", ...off });
+    assert.equal((await put({ anthropic: "org", openai: "personal", fallbackWhenRejected: false })).status, 200);
+    assert.deepEqual(await read(), {
+      anthropic: "org",
+      openai: "personal",
+      fallbackWhenUnavailable: true,
+      fallbackWhenRejected: false,
+    });
   } finally {
     await srv.close();
   }

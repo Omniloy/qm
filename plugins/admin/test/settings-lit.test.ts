@@ -339,10 +339,12 @@ for (const [key, readKey] of [
     const document = dom.window.document;
     const data = {
       ...models,
+      modelAccountModes: { anthropic: "personal", openai: "org" },
       [readKey]: { people: null, directory: [{ principalId: "carol@acme.com", displayName: "Carol" }] },
     };
     const collect = () => JSON.parse(String(dom.window.eval(`JSON.stringify(settingsUI.collect("${key}"))`)));
     try {
+      dom.window.eval("settingsUI.load(" + JSON.stringify(data) + ',"org:test","model-account-modes")');
       dom.window.eval("settingsUI.load(" + JSON.stringify(data) + `,"org:test","${key}")`);
       const card = document.getElementById(`card-${key}`)!;
       assert.equal(card.classList.contains("hidden"), false);
@@ -377,3 +379,24 @@ for (const [key, readKey] of [
     }
   });
 }
+
+test("the allowlist card and fallback toggles stay hidden until a provider allows personal accounts", () => {
+  const dom = setup();
+  try {
+    const doc = dom.window.document;
+    const data = {
+      modelAccountModes: { anthropic: "org", openai: "org" },
+      personalAccountAccess: { people: null, directory: [] },
+    };
+    dom.window.eval("settingsUI.load(" + JSON.stringify(data) + ',"org:test","model-account-modes")');
+    dom.window.eval("settingsUI.load(" + JSON.stringify(data) + ',"org:test","personal-account-access")');
+    const allowlist = () => doc.getElementById("card-personal-account-access")!;
+    assert.equal(allowlist().classList.contains("hidden"), true);
+    assert.equal(doc.getElementById("model-account-fallbackWhenRejected"), null);
+    doc.querySelector<HTMLInputElement>('input[name="model-account-mode-openai"][value="personal"]')!.click();
+    assert.equal(allowlist().classList.contains("hidden"), false);
+    assert.ok(doc.getElementById("model-account-fallbackWhenRejected"));
+  } finally {
+    dom.window.close();
+  }
+});

@@ -68,6 +68,8 @@ interface DevicePrompt {
 export interface StatusResponse {
   account: "company" | "personal" | "anthropic" | "openai";
   individualModelAuth: boolean;
+  allowed?: boolean;
+  ready: boolean;
   connections: { provider: "anthropic" | "openai"; kind: ConnKind }[];
   orgServedConnections?: { provider: "anthropic" | "openai"; kind: ConnKind }[];
   modes?: Partial<Record<"anthropic" | "openai", "org" | "personal">>;
@@ -180,9 +182,7 @@ function applyStatus(status: StatusResponse): void {
   s.loaded = true;
   if (appState.me) {
     appState.me.individualModelAuth = s.personal;
-    appState.me.modelAuthConnected = status.connections.some(
-      (c) => s.account === "personal" || s.account === c.provider,
-    );
+    appState.me.modelAuthConnected = status.ready;
     window.dispatchEvent(new CustomEvent("model-account-changed", { detail: status }));
   }
 }

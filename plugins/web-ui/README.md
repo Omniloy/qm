@@ -363,10 +363,19 @@ or use the secondary API-key option; connecting automatically selects that accou
 personal credentials. The choice is durable per person and applies to their human
 chat turns on the web and in Slack; background tasks retain company access.
 
-A submitted turn keeps its account choice, so switching affects new turns. Personal
-access failures do not retry on company credentials. Messages using a different
-account queue separately instead of steering an existing run; an explicit steer
-across accounts is refused. Organizations that already require individual accounts
-continue to require them.
+Personal accounts are always opt-in; no organization can require one. Admins choose,
+per provider, whether people may use their own account, and can limit who may with an
+allowlist (**Who may use their own AI account**, everyone by default). People outside
+the list always use company access, and a sign-in they saved earlier is kept but not
+used; Settings tells them personal accounts are not enabled for them.
+
+A submitted turn keeps its account choice, so switching affects new turns. By default a
+personal access failure fails the turn. Two admin switches, both off by default, move
+the turn to company credentials instead: one when the personal account is unavailable
+(disconnected, or its sign-in cannot be refreshed), and one when the provider rejects it
+during the turn (a failed sign-in or a usage or rate limit). Neither applies when the
+organization has no credential of its own for that model, and every fallback is logged
+and audited. Messages using a different account queue separately instead of steering an
+existing run; an explicit steer across accounts is refused.
 
 The standalone `::link-slack-account{}` directive offers personal Slack account linking in a web reply. It shows the account card or linked status, requires the company bot to be installed first, and does not include the app picker. `::add-to-slack{}` remains the company installation trigger.

@@ -117,6 +117,11 @@ test("only people on the allowlist resolve to their own account; everyone else k
   assert.equal(await second.getModelAccountDurable("bob@acme.com"), "anthropic");
 });
 
+const policyOf = (modes: ModelAccountModes, fallbackWhenUnavailable = false, allowed = true) => ({
+  getModelAccountPolicyDurable: async () => ({ ...modes, fallbackWhenUnavailable, fallbackWhenRejected: false }),
+  personalAccountAllowed: async () => allowed,
+});
+
 const credential = (provider: "anthropic" | "openai"): UserModelCredential => ({
   provider,
   kind: "apikey",
@@ -130,12 +135,7 @@ test("routing serves org-mode providers from the org account for every mode, acc
   const models = ["claude-sonnet-5-5", "gpt-6-astra", undefined];
   for (const modes of MODES) {
     for (const account of accounts) {
-      const access = await loadPersonalModelAccess(
-        { getModelAccountPolicyDurable: async () => modes },
-        store,
-        "U1",
-        account,
-      );
+      const access = await loadPersonalModelAccess(policyOf(modes), store, "U1", account);
       const own = (account === "personal" ? (["anthropic", "openai"] as const) : [account]).filter(
         (provider) => modes[provider] === "personal",
       );
@@ -159,7 +159,7 @@ test("routing serves org-mode providers from the org account for every mode, acc
 
 test("a person with both accounts keeps Claude personal while ChatGPT turns fall back to the org", async () => {
   const access = await loadPersonalModelAccess(
-    { getModelAccountPolicyDurable: async () => ({ anthropic: "personal", openai: "org" }) },
+    policyOf({ anthropic: "personal", openai: "org" }),
     { get: async (_userId, provider) => credential(provider as "anthropic" | "openai") },
     "U1",
     "personal",
@@ -181,11 +181,28 @@ test("a pin to a provider switched to org falls back to the org account", async 
 
 test("routing fails closed for a personal-mode provider with no connected account", async () => {
   const access = await loadPersonalModelAccess(
-    { getModelAccountPolicyDurable: async () => ({ anthropic: "personal", openai: "org" }) },
+    policyOf({ anthropic: "personal", openai: "org" }),
     { get: async () => null },
     "U1",
     "personal",
   );
   assert.equal(routePersonalModelAccess(access, "claude-sonnet-5-5", "pi"), null);
   assert.equal(routePersonalModelAccess(access, "gpt-6-astra", "pi"), "org");
+});
+
+test("the unavailable fallback and the allowlist make missing or disallowed providers org-served", async () => {
+  const modes: ModelAccountModes = { anthropic: "personal", openai: "personal" };
+  const onlyAnthropic = {
+    get: async (_userId: string, provider: string) => (provider === "anthropic" ? credential("anthropic") : null),
+  };
+  const strict = await loadPersonalModelAccess(policyOf(modes), onlyAnthropic, "U1", "personal");
+  assert.equal(routePersonalModelAccess(strict, "gpt-6-astra", "pi") === "org", false);
+  const lenient = await loadPersonalModelAccess(policyOf(modes, true), onlyAnthropic, "U1", "personal");
+  assert.equal(routePersonalModelAccess(lenient, "gpt-6-astra", "pi"), "org");
+  assert.notEqual(routePersonalModelAccess(lenient, "claude-sonnet-5-5", "pi"), "org");
+  const pinned = await loadPersonalModelAccess(policyOf(modes, true), { get: async () => null }, "U1", "openai");
+  assert.equal(routePersonalModelAccess(pinned, "gpt-6-astra", "pi"), "org");
+  const revoked = await loadPersonalModelAccess(policyOf(modes, false, false), onlyAnthropic, "U1", "personal");
+  assert.equal(revoked.anthropic, null);
+  assert.equal(routePersonalModelAccess(revoked, "claude-sonnet-5-5", "pi"), "org");
 });

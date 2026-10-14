@@ -182,7 +182,11 @@ import type { Orchestrator, OrchestratorDeps, OrchestratorInput } from "./orches
 import { isHarnessId, resolveModel, CODEX_SUBSCRIPTION_PROVIDER } from "../model/pi-models.ts";
 import type { ProviderKeys } from "../harness/pi-harness.ts";
 import type { CodexTurnAuth } from "../harness/harness.ts";
-import { loadPersonalModelAccess, routePersonalModelAccess } from "./individual-auth-routing.ts";
+import {
+  loadPersonalModelAccess,
+  routePersonalModelAccess,
+  servedByUnavailableFallback,
+} from "./individual-auth-routing.ts";
 import {
   MAX_AUTO_ATTACHMENT_SCREEN_BYTES,
   approvalGrantId,
@@ -3248,24 +3252,42 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           humanTurn &&
           (await deps.config?.getInteractiveFastModeDurable());
         const effectiveFastMode = resolveTurnFastMode(input.fastMode, humanTurn, wantsOrgFastMode === true);
+        const runtimeRequest = (harness: string | undefined, model: string | undefined): Partial<RuntimeChoice> => ({
+          ...(harness && isHarnessId(harness) ? { harnessId: harness } : {}),
+          ...(model ? { modelId: model } : {}),
+          ...(input.thinkingLevel ? { effortLevel: input.thinkingLevel } : {}),
+          ...(typeof effectiveFastMode === "boolean" ? { fastMode: effectiveFastMode } : {}),
+        });
+        const resolvedRuntime = async (runtime: Partial<RuntimeChoice>) => {
+          const [scoped, org] = await Promise.all([
+            scopeId === resolution.orgScopeId ? null : deps.config?.getRuntimeSelectionDurable(scopeId),
+            deps.config?.getRuntimeSelectionDurable(resolution.orgScopeId),
+          ]);
+          return {
+            harnessId:
+              runtime.harnessId ??
+              input.harness ??
+              purposeDefault?.harnessId ??
+              scoped?.harnessId ??
+              org?.harnessId ??
+              deps.defaultHarness,
+            modelId:
+              runtime.modelId ??
+              input.model ??
+              purposeDefault?.modelId ??
+              scoped?.modelId ??
+              org?.modelId ??
+              deps.resolveBaseModelId?.(),
+          };
+        };
         let orgFallback = false;
+        let adoptedRuntime: Partial<RuntimeChoice> | undefined;
+        const orgFallbackRuntime = () => adoptedRuntime ?? runtimeRequest(input.harness, input.model);
         const orgFallbackAllowed = async (reason: "unavailable" | "rejected", runtime: Partial<RuntimeChoice>) => {
           const policy = await deps.config?.getModelAccountPolicyDurable();
           if (!(reason === "unavailable" ? policy?.fallbackWhenUnavailable : policy?.fallbackWhenRejected))
             return false;
-          const orgRuntime = await deps.config?.getRuntimeSelectionDurable(resolution.orgScopeId);
-          const modelId =
-            runtime.modelId ??
-            input.model ??
-            purposeDefault?.modelId ??
-            orgRuntime?.modelId ??
-            deps.resolveBaseModelId?.();
-          const harnessId =
-            runtime.harnessId ??
-            input.harness ??
-            purposeDefault?.harnessId ??
-            orgRuntime?.harnessId ??
-            deps.defaultHarness;
+          const { harnessId, modelId } = await resolvedRuntime(runtime);
           return !modelId || !harnessId || !deps.orgServesModel || deps.orgServesModel(harnessId, modelId);
         };
         const useOrgFallback = (reason: "unavailable" | "rejected", detail = "") => {
@@ -3274,14 +3296,29 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           console.log(
             `[individual-auth] user=${actor.id} fallback=org reason=${reason}${detail ? ` error=${headSlice(detail, 200)}` : ""}`,
           );
+          deps.auditLog.record({
+            at: Date.now(),
+            principalId: actor.id,
+            action: "model_account.org_fallback",
+            resource: input.runId ?? session.id,
+            scopeLabel: scopeId,
+            status: reason,
+            detail: JSON.stringify({
+              reason,
+              sessionId: session.id,
+              ...(input.runId ? { runId: input.runId } : {}),
+              ...(detail ? { error: headSlice(detail, 500) } : {}),
+            }),
+          });
         };
-        const loadRuntimeAuth = async (runtime: Partial<RuntimeChoice>) => {
+        const loadRuntimeAuth = async (runtime: Partial<RuntimeChoice>, allowFallback = false) => {
           let userProviderKeys: ProviderKeys | undefined;
           let userModelOverride: string | undefined;
           let userHarnessOverride: string | undefined;
           let claudeOauthToken: string | undefined;
           let codexTurnAuth: CodexTurnAuth | undefined;
           let unavailableFallback = false;
+          let refreshFailed = false;
           const userCredStore = external ? undefined : deps.userModelCredentials;
           const account =
             external || orgFallback
@@ -3290,22 +3327,14 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           if (userCredStore && humanTurn && account !== "company") {
             const access = await loadPersonalModelAccess(deps.config, userCredStore, actor.id, account);
             const { anthropic: anthCred, openai: oaiCred } = access;
-            const orgRuntime = await deps.config?.getRuntimeSelectionDurable(resolution.orgScopeId);
-            const preferredHarness =
-              runtime.harnessId ??
-              input.harness ??
-              purposeDefault?.harnessId ??
-              orgRuntime?.harnessId ??
-              deps.defaultHarness;
-            const routed = routePersonalModelAccess(
-              access,
-              account === "personal" || input.surface === "web"
-                ? (runtime.modelId ?? input.model ?? purposeDefault?.modelId)
-                : (runtime.modelId ?? purposeDefault?.modelId),
-              account === "personal" || input.surface === "web"
-                ? preferredHarness
-                : (runtime.harnessId ?? purposeDefault?.harnessId),
-            );
+            const preferredHarness = (await resolvedRuntime(runtime)).harnessId;
+            const followsTurn = account === "personal" || input.surface === "web";
+            const routeModel = followsTurn
+              ? (runtime.modelId ?? input.model ?? purposeDefault?.modelId)
+              : (runtime.modelId ?? purposeDefault?.modelId);
+            const routeHarness = followsTurn ? preferredHarness : (runtime.harnessId ?? purposeDefault?.harnessId);
+            const routed = routePersonalModelAccess(access, routeModel, routeHarness);
+            const missingCredential = servedByUnavailableFallback(access, routeModel, routeHarness);
             const routing = routed === "org" ? null : routed;
             if (routing?.kind === "apikey") {
               userHarnessOverride = "pi";
@@ -3313,6 +3342,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               userModelOverride = routing.model;
             } else if (routing?.kind === "oauth" && routing.provider === "anthropic" && anthCred?.oauth) {
               const derived = await userCredStore.derivedOAuth(actor.id, "anthropic");
+              refreshFailed = !derived;
               if (derived) {
                 claudeOauthToken = derived.accessToken;
                 userHarnessOverride = routing.harness;
@@ -3325,6 +3355,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               oaiCred?.oauth
             ) {
               const derived = await userCredStore.derivedOAuth(actor.id, "openai");
+              refreshFailed = !derived;
               if (derived) {
                 userProviderKeys = { [CODEX_SUBSCRIPTION_PROVIDER]: derived.accessToken };
                 userHarnessOverride = routing.harness;
@@ -3332,6 +3363,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               }
             } else if (routing?.kind === "oauth" && routing.provider === "openai" && oaiCred?.oauth) {
               const derived = await userCredStore.derivedOAuth(actor.id, "openai");
+              refreshFailed = !derived?.idToken;
               if (derived?.idToken) {
                 codexTurnAuth = {
                   accessToken: derived.accessToken,
@@ -3343,8 +3375,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 userModelOverride = routing.model;
               }
             }
-            if (!userHarnessOverride && routed !== "org") {
-              unavailableFallback = await orgFallbackAllowed("unavailable", runtime);
+            if (missingCredential || (!userHarnessOverride && routed !== "org")) {
+              unavailableFallback =
+                allowFallback &&
+                (missingCredential || refreshFailed) &&
+                (await orgFallbackAllowed("unavailable", orgFallbackRuntime()));
               if (!unavailableFallback)
                 throw new NonRetryableTurnError(
                   "Your personal AI account is unavailable. Open Settings → AI access to reconnect Claude or ChatGPT / Codex, or choose company access. The chat cannot continue on company access.",
@@ -3360,7 +3395,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             unavailableFallback,
           };
         };
-        const initialAuth = await loadRuntimeAuth({});
+        const initialAuth = await loadRuntimeAuth({}, true);
         let { userProviderKeys, userModelOverride, userHarnessOverride, claudeOauthToken, codexTurnAuth } = initialAuth;
         if (initialAuth.unavailableFallback) useOrgFallback("unavailable");
         if (
@@ -3385,12 +3420,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         }
         if (input.harness && !isHarnessId(input.harness))
           throw new NonRetryableTurnError(`runtime ${input.harness} is not approved`);
-        const runtimeRequest = (harness: string | undefined, model: string | undefined): Partial<RuntimeChoice> => ({
-          ...(harness && isHarnessId(harness) ? { harnessId: harness } : {}),
-          ...(model ? { modelId: model } : {}),
-          ...(input.thinkingLevel ? { effortLevel: input.thinkingLevel } : {}),
-          ...(typeof effectiveFastMode === "boolean" ? { fastMode: effectiveFastMode } : {}),
-        });
         let requestedRuntime = runtimeRequest(effectiveHarness, effectiveModel);
         let runtimeDefaults = requestedRuntime;
         const runtimeClaims: CapabilityClaims = controlClaims ?? {
@@ -3419,10 +3448,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const adoptRuntime = async (choice: RuntimeChoice) => {
           const error = await checkRuntimeAuth(choice);
           if (error) throw new NonRetryableTurnError(error);
-          const auth = await loadRuntimeAuth(choice);
-          ({ userProviderKeys, userModelOverride, userHarnessOverride, claudeOauthToken, codexTurnAuth } = auth);
-          if (auth.unavailableFallback) useOrgFallback("unavailable");
+          ({ userProviderKeys, userModelOverride, userHarnessOverride, claudeOauthToken, codexTurnAuth } =
+            await loadRuntimeAuth(choice));
           requestedRuntime = choice;
+          adoptedRuntime = choice;
         };
         if (restoredRuntime) await adoptRuntime(restoredRuntime);
         if (automatedTurn && input.model && input.harness && isHarnessId(input.harness)) {
@@ -3869,7 +3898,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           });
         };
         let runtimeHandoffs = restoredRuntime ? 1 : 0;
-        const resumeSegment = async (recovery: boolean, note: string) => {
+        const resumeArgs = async (recovery: boolean, note: string): Promise<Parameters<typeof runHarnessSegment>> => {
           let resumedHistory = filterHistory(
             forModelContext((await deps.sessions.getContextWindow(session.id)).entries, {
               includeSecurityTainted: false,
@@ -3901,11 +3930,12 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 mode: "shadow" as const,
               }
             : undefined;
-          return runHarnessSegment(
+          return [
             resumeNote() +
               `\n${note}` +
               " Continue the user's unfinished request using the saved conversation and tool results. Do not repeat completed actions or ask the user to repeat the request." +
-              (!resumedHistory.some(
+              (recovery &&
+              !resumedHistory.some(
                 (entry) =>
                   entry.type === "user" &&
                   isObj(entry.payload) &&
@@ -3916,10 +3946,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 : ""),
             inbound.images.length ? { images: inbound.images } : {},
             { history: resumedHistory, ...(resumedTape ? { tape: resumedTape } : {}) },
-          );
+          ];
         };
         const withOrgFallback = (run: () => ReturnType<typeof runHarnessSegment>) =>
           run().catch(async (error: unknown) => {
+            const fallbackRuntime = orgFallbackRuntime();
             if (
               !userHarnessOverride ||
               turnAbort.signal.aborted ||
@@ -3927,17 +3958,18 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               error instanceof CommandDenied ||
               error instanceof ProjectRosterChanged ||
               !credentialRejected(error) ||
-              !(await orgFallbackAllowed("rejected", requestedRuntime))
+              !(await orgFallbackAllowed("rejected", fallbackRuntime))
             )
               throw error;
             useOrgFallback("rejected", errMessage(error));
             ({ userProviderKeys, userModelOverride, userHarnessOverride, claudeOauthToken, codexTurnAuth } =
-              await loadRuntimeAuth({}));
-            requestedRuntime = runtimeRequest(input.harness, input.model);
-            runtimeDefaults = requestedRuntime;
+              await loadRuntimeAuth(fallbackRuntime));
+            requestedRuntime = fallbackRuntime;
+            runtimeDefaults = fallbackRuntime;
             runtimeHandoffs++;
             await deps.harness.turns.resetSession?.(session.id);
-            return resumeSegment(false, "Switched to the organization's AI account.");
+            if (spine.turnUserEntrySeq === undefined) return run();
+            return runHarnessSegment(...(await resumeArgs(false, "Switched to the organization's AI account.")));
           });
         const runHarnessTurn = async (...args: Parameters<typeof runHarnessSegment>) => {
           let segment = await withOrgFallback(() => runHarnessSegment(...args));
@@ -3958,12 +3990,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               await adoptRuntime(segment.runtimeHandoff.choice);
               await deps.harness.turns.resetSession?.(session.id);
             }
-            segment = await withOrgFallback(() =>
-              resumeSegment(
-                recovery,
-                recovery ? "Context reduced without a new summary." : "Runtime handoff completed.",
-              ),
+            const resumed = await resumeArgs(
+              recovery,
+              recovery ? "Context reduced without a new summary." : "Runtime handoff completed.",
             );
+            segment = await withOrgFallback(() => runHarnessSegment(...resumed));
             modelCalls += segment.modelCalls ?? 0;
             addUsage();
           }

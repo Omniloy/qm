@@ -9,6 +9,7 @@ import type { AddressInfo } from "node:net";
 import {
   credentialRejected,
   NonRetryableTurnError,
+  providerStatusError,
   providerLimit,
   providerLimitMessage,
   settleProviderLimit,
@@ -263,12 +264,21 @@ test("credential rejections cover auth failures, billing, and provider limits bu
     'OpenAI API error (429): {"code":"usage_limit_reached"}',
     "Codex reported insufficient_quota for this account",
     "Model provider API error (rate_limit_error): Number of request tokens has exceeded your per-minute rate limit",
+    "You have hit your ChatGPT usage limit (plus plan). Try again in ~120 min.",
+    "Your authentication token has expired. Please try signing in again.",
+    "Codex: not logged in",
+    "stream error: missing bearer token",
+    "unexpected status 401 Unauthorized: token revoked",
   ])
     assert.equal(credentialRejected(new NonRetryableTurnError(message)), true, message);
   for (const message of [
     "Model provider API error (invalid_request_error): prompt is too long",
     "Model provider API error (overloaded_error): Overloaded",
     "request id 4013a9 failed with 500",
+    "MCP tool github.get_repo failed: 403 rate limited by upstream",
+    "tool error: unauthorized to read /etc/shadow",
   ])
     assert.equal(credentialRejected(new Error(message)), false, message);
+  assert.equal(credentialRejected(providerStatusError(401, "anything")), true);
+  assert.equal(credentialRejected(providerStatusError(500, "invalid x-api-key")), false);
 });

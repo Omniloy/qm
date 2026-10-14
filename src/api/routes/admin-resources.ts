@@ -606,11 +606,11 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
     kind: "custom",
     target: "org",
     label:
-      "Personal AI accounts: per provider, org means the organization's own Claude or ChatGPT account serves every turn for that provider and personal lets each allowed person opt into their own account for it. fallbackWhenUnavailable runs a turn on the organization's account when the person's own account is disconnected or cannot be refreshed; fallbackWhenRejected retries a turn on the organization's account when the provider rejects the person's account (authentication failure or usage or rate limit). Both default to false, which fails the turn instead.",
+      "Personal AI accounts: per provider, org means the organization's own Claude or ChatGPT account serves every turn for that provider and personal lets each allowed person opt into their own account for it. fallbackWhenUnavailable runs a turn on the organization's account when the person's own account is disconnected or cannot be refreshed; fallbackWhenRejected retries a turn on the organization's account when the provider rejects the person's account (authentication failure or usage or rate limit). Both default to false, which fails the turn instead; a fallback flag left out of the body keeps its stored value.",
     readKey: "modelAccountModes",
     get: (deps, scope) =>
       parseScopeId(scope).kind === "org" ? deps.config!.getModelAccountPolicyDurable() : undefined,
-    apply: generic<ModelAccountPolicy>(
+    apply: generic<ModelAccountModes & Partial<ModelAccountPolicy>>(
       (body, { scope }) => {
         const bad = orgOnly(scope, "personal AI account modes are org-wide");
         if (bad) return bad;
@@ -630,8 +630,12 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
           value: {
             anthropic: policy.anthropic as ModelAccountModes["anthropic"],
             openai: policy.openai as ModelAccountModes["openai"],
-            fallbackWhenUnavailable: policy.fallbackWhenUnavailable === true,
-            fallbackWhenRejected: policy.fallbackWhenRejected === true,
+            ...(typeof policy.fallbackWhenUnavailable === "boolean"
+              ? { fallbackWhenUnavailable: policy.fallbackWhenUnavailable }
+              : {}),
+            ...(typeof policy.fallbackWhenRejected === "boolean"
+              ? { fallbackWhenRejected: policy.fallbackWhenRejected }
+              : {}),
           },
         };
       },

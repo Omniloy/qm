@@ -480,15 +480,14 @@ export function createMemoryConfigStore(
   const personalAccountAllowed = async (principalId: string) =>
     peopleListAllows(await personalAccountAccess.get(), opts.directory?.(), principalId);
   const modelAccountOf = async (principalId: string): Promise<ModelAccount> => {
-    const [row, policy, allowed] = await Promise.all([
+    const [row, policy] = await Promise.all([
       individualModelAuthStore.get(scopeId("personal", principalId)),
       modelAccountPolicy(),
-      personalAccountAllowed(principalId),
     ]);
     const providers = PERSONAL_MODEL_PROVIDERS.filter((provider) => policy[provider] === "personal");
-    if (!row?.on || !allowed || !providers.length) return "company";
-    const chosen = row.provider ?? "personal";
-    return chosen === "personal" || providers.includes(chosen) ? chosen : "company";
+    const chosen = row?.on ? (row.provider ?? "personal") : undefined;
+    if (!chosen || !(chosen === "personal" ? providers.length : providers.includes(chosen))) return "company";
+    return (await personalAccountAllowed(principalId)) ? chosen : "company";
   };
   const webuiModelStore = canonicalRows(opts.webuiModels ?? createMemoryMap<PersistedWebuiModels>(), (row) => ({
     ...row,
@@ -1136,11 +1135,12 @@ export function createMemoryConfigStore(
     getModelAccountDurable: modelAccountOf,
     getModelAccountPolicyDurable: modelAccountPolicy,
     async setModelAccountPolicy(policy) {
+      const stored = await modelAccountPolicy();
       await modelAccountModesStore.put(org, {
         scopeId: org,
         modes: { anthropic: policy.anthropic, openai: policy.openai },
-        fallbackWhenUnavailable: policy.fallbackWhenUnavailable === true,
-        fallbackWhenRejected: policy.fallbackWhenRejected === true,
+        fallbackWhenUnavailable: policy.fallbackWhenUnavailable ?? stored.fallbackWhenUnavailable,
+        fallbackWhenRejected: policy.fallbackWhenRejected ?? stored.fallbackWhenRejected,
       });
     },
     getPersonalAccountAccess: personalAccountAccess.get,

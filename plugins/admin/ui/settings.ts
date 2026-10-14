@@ -15,7 +15,7 @@ export { configureProviders, openProvider, loadProviders } from "./settings-prov
 import { mountFlags } from "./settings-flags.ts";
 export { configureFlags, loadFlags } from "./settings-flags.ts";
 import { brandingCard } from "./settings-branding.ts";
-import { modelAccountModesCard, modelAccountModesDraft } from "./model-account-modes.ts";
+import { modelAccountModesCard, modelAccountModesDraft, personalAccountsOffered } from "./model-account-modes.ts";
 import { PEOPLE_ACCESS, peopleAccessBody, peopleAccessCard, peopleAccessDraft } from "./people-access.ts";
 import { html } from "lit";
 import { classMap } from "lit/directives/class-map.js";
@@ -206,7 +206,11 @@ function card(s: SettingsState) {
   if (s.key === "soul") return soulCard(s);
   if (s.key === "branding") return brandingCard(s);
   if (s.key === "model-account-modes") return modelAccountModesCard(s);
-  if (s.key in PEOPLE_ACCESS) return peopleAccessCard(s);
+  if (s.key in PEOPLE_ACCESS)
+    return peopleAccessCard(
+      s,
+      s.key === "personal-account-access" && !personalAccountsOffered(states.get("model-account-modes")!.draft),
+    );
   if (runtimeKeys.includes(s.key)) {
     const prefix = s.key === "runtime" ? "base" : s.key;
     const purpose = s.key !== "runtime";
@@ -368,9 +372,17 @@ export function mountCards() {
   const renderRuntimes = mountTemplate('template[data-settings-card="card-base-model"]', () =>
     [...runtimeKeys, "fast-mode-access"].map((key) => card(states.get(key)!)),
   );
+  const personalAccountKeys = ["model-account-modes", "personal-account-access"];
+  const renderPersonalAccounts = mountTemplate('template[data-settings-card="card-model-account-modes"]', () =>
+    personalAccountKeys.map((key) => card(states.get(key)!)),
+  );
   for (const [key, s] of states) {
     if (runtimeKeys.includes(key) || key === "fast-mode-access") {
       s.render = renderRuntimes;
+      continue;
+    }
+    if (personalAccountKeys.includes(key)) {
+      s.render = renderPersonalAccounts;
       continue;
     }
     const id = (
@@ -378,8 +390,6 @@ export function mountCards() {
         soul: "card-soul",
         branding: "card-branding",
         "webui-models": "card-webui-models",
-        "model-account-modes": "card-model-account-modes",
-        "personal-account-access": "card-personal-account-access",
       } as Record<string, string>
     )[key];
     s.render = mountTemplate(`template[data-settings-card="${id}"]`, () => card(s));

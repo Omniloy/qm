@@ -26,15 +26,21 @@ function connectProvider(raw: unknown): PersonalModelProvider | null {
   return null;
 }
 
-async function modelAccountModes(ctx: ApiCtx, principal: string): Promise<ModelAccountModes> {
+async function personalAccess(ctx: ApiCtx, principal: string) {
   const config = ctx.deps.config;
-  if (!config || !(await config.personalAccountAllowed(principal))) return DEFAULT_MODEL_ACCOUNT_MODES;
-  const { anthropic, openai } = await config.getModelAccountPolicyDurable();
-  return { anthropic, openai };
+  if (!config) return { allowed: true, fallbackWhenUnavailable: false, modes: DEFAULT_MODEL_ACCOUNT_MODES };
+  const [allowed, policy] = await Promise.all([
+    config.personalAccountAllowed(principal),
+    config.getModelAccountPolicyDurable(),
+  ]);
+  const modes: ModelAccountModes = allowed
+    ? { anthropic: policy.anthropic, openai: policy.openai }
+    : DEFAULT_MODEL_ACCOUNT_MODES;
+  return { allowed, fallbackWhenUnavailable: policy.fallbackWhenUnavailable, modes };
 }
 
 async function savedConnections(ctx: ApiCtx, principal: string) {
-  const modes = await modelAccountModes(ctx, principal);
+  const { modes } = await personalAccess(ctx, principal);
   const connections = (await ctx.deps.userModelCredentials?.connections(principal)) ?? [];
   const usable = (c: (typeof connections)[number]) =>
     (c.provider === "anthropic" || c.provider === "openai") && modes[c.provider] === "personal";
@@ -50,7 +56,14 @@ async function refusePersonalProvider(
   principal: string,
   provider: PersonalModelProvider | undefined,
 ): Promise<boolean> {
-  const modes = await modelAccountModes(ctx, principal);
+  const { allowed, modes } = await personalAccess(ctx, principal);
+  if (!allowed) {
+    sendJson(ctx.res, 403, {
+      error: "personal_account_not_allowed",
+      message: "Your organization has not enabled personal AI accounts for you.",
+    });
+    return true;
+  }
   if ((provider ? [provider] : PERSONAL_MODEL_PROVIDERS).some((p) => modes[p] === "personal")) return false;
   sendJson(ctx.res, 403, {
     error: "personal_accounts_disabled",
@@ -64,10 +77,13 @@ async function getStatus(ctx: ApiCtx): Promise<void> {
   if (!principal) return sendJson(ctx.res, 401, { error: "unauthorized" });
   const { connections, orgServedConnections } = await savedConnections(ctx, principal);
   const account = (await ctx.deps.config?.getModelAccountDurable(principal)) ?? "company";
-  const modes = await modelAccountModes(ctx, principal);
+  const { allowed, fallbackWhenUnavailable, modes } = await personalAccess(ctx, principal);
+  const connected = connections.some((c) => account === "personal" || account === c.provider);
   return sendJson(ctx.res, 200, {
     individualModelAuth: account !== "company",
     account,
+    allowed,
+    ready: account === "company" || connected || fallbackWhenUnavailable,
     connections,
     ...(orgServedConnections.length ? { orgServedConnections } : {}),
     modes,

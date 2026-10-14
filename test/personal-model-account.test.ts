@@ -76,6 +76,8 @@ test("account API binds choice to the signed-in person, preserves connections, a
     assert.deepEqual(await enabled.json(), {
       individualModelAuth: true,
       account: "personal",
+      allowed: true,
+      ready: true,
       connections: [{ provider: "anthropic", kind: "apikey" }],
       modes: { anthropic: "personal", openai: "personal" },
     });
@@ -85,6 +87,28 @@ test("account API binds choice to the signed-in person, preserves connections, a
     assert.equal((await request("personal")).status, 200);
     await built.userModelCredentials.delete("alice@default-org", "anthropic");
     assert.equal(await built.config.getModelAccountDurable("alice@default-org"), "personal");
+    const statusOf = async () => {
+      const path = "/v1/user-model-auth/status?principalId=alice%40default-org";
+      const ts = Math.floor(Date.now() / 1000);
+      const response = await fetch(base + path, {
+        headers: {
+          "x-timestamp": String(ts),
+          "x-signature": signRequest(SECRET, ts, `GET\n${path}\n`),
+          "x-portal-identity": await mintPortalIdentity(
+            { p: "alice@default-org", exp: Date.now() + 60_000 },
+            SECRET + "portal",
+          ),
+        },
+      });
+      return (await response.json()) as { ready: boolean };
+    };
+    assert.equal((await statusOf()).ready, false);
+    await built.config.setModelAccountPolicy({
+      anthropic: "personal",
+      openai: "personal",
+      fallbackWhenUnavailable: true,
+    });
+    assert.equal((await statusOf()).ready, true);
     assert.equal((await request("company")).status, 200);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -124,16 +148,18 @@ test("provider modes refuse sign-in for org-served providers and trim the status
       ...(method === "GET" ? {} : { body }),
     });
   }
-  const refused = async (path: string, fields: Record<string, unknown> = {}) => {
+  const refused = async (path: string, fields: Record<string, unknown> = {}, error = "personal_accounts_disabled") => {
     const response = await call("POST", path, fields);
     assert.equal(response.status, 403, path);
-    assert.equal(((await response.json()) as { error: string }).error, "personal_accounts_disabled");
+    assert.equal(((await response.json()) as { error: string }).error, error);
   };
   try {
     const status = async () => (await call("GET", "/v1/user-model-auth/status")).json();
     assert.deepEqual(await status(), {
       individualModelAuth: false,
       account: "company",
+      allowed: true,
+      ready: true,
       connections: [],
       orgServedConnections: [
         { provider: "anthropic", kind: "apikey" },
@@ -158,6 +184,8 @@ test("provider modes refuse sign-in for org-served providers and trim the status
     assert.deepEqual(await chosen.json(), {
       individualModelAuth: true,
       account: "anthropic",
+      allowed: true,
+      ready: true,
       connections: [{ provider: "anthropic", kind: "apikey" }],
       orgServedConnections: [{ provider: "openai", kind: "apikey" }],
       modes: { anthropic: "personal", openai: "org" },
@@ -167,6 +195,8 @@ test("provider modes refuse sign-in for org-served providers and trim the status
     assert.deepEqual(await status(), {
       individualModelAuth: false,
       account: "company",
+      allowed: false,
+      ready: true,
       connections: [],
       orgServedConnections: [
         { provider: "anthropic", kind: "apikey" },
@@ -174,9 +204,17 @@ test("provider modes refuse sign-in for org-served providers and trim the status
       ],
       modes: { anthropic: "org", openai: "org" },
     });
-    await refused("/v1/user-model-auth/claude/start");
-    await refused("/v1/user-model-auth/api-key", { provider: "claude", apiKey: "test-new-key" });
-    await refused("/v1/user-model-auth/account", { account: "personal", provider: "anthropic" });
+    await refused("/v1/user-model-auth/claude/start", {}, "personal_account_not_allowed");
+    await refused(
+      "/v1/user-model-auth/api-key",
+      { provider: "claude", apiKey: "test-new-key" },
+      "personal_account_not_allowed",
+    );
+    await refused(
+      "/v1/user-model-auth/account",
+      { account: "personal", provider: "anthropic" },
+      "personal_account_not_allowed",
+    );
     await built.config.setPersonalAccountAccess(["Alice@default-org"]);
     assert.equal(((await status()) as { account: string }).account, "anthropic");
     await built.config.setPersonalAccountAccess(null);
