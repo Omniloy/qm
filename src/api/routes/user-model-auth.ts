@@ -5,6 +5,8 @@ import { sendJson } from "../http.ts";
 import { validateProviderApiKey } from "./admin/model-providers.ts";
 import type { ApiCtx, Route } from "./route.ts";
 import { audit } from "./shared.ts";
+import { runtimeFallback } from "../runtime-config.ts";
+import { orgScope } from "../../config.ts";
 import {
   DEFAULT_MODEL_ACCOUNT_MODES,
   PERSONAL_MODEL_PROVIDERS,
@@ -37,6 +39,13 @@ async function personalAccess(ctx: ApiCtx, principal: string) {
     ? { anthropic: policy.anthropic, openai: policy.openai }
     : DEFAULT_MODEL_ACCOUNT_MODES;
   return { allowed, fallbackWhenUnavailable: policy.fallbackWhenUnavailable, modes };
+}
+
+async function orgServesDefaultRuntime(ctx: ApiCtx): Promise<boolean> {
+  if (!ctx.deps.orgServesModel || !ctx.deps.config) return true;
+  const stored = await ctx.deps.config.getRuntimeSelectionDurable(orgScope());
+  const runtime = stored ?? runtimeFallback(ctx);
+  return ctx.deps.orgServesModel(runtime.harnessId, runtime.modelId).catch(() => false);
 }
 
 async function savedConnections(ctx: ApiCtx, principal: string) {
@@ -83,7 +92,7 @@ async function getStatus(ctx: ApiCtx): Promise<void> {
     individualModelAuth: account !== "company",
     account,
     allowed,
-    ready: account === "company" || connected || fallbackWhenUnavailable,
+    ready: account === "company" || connected || (fallbackWhenUnavailable && (await orgServesDefaultRuntime(ctx))),
     connections,
     ...(orgServedConnections.length ? { orgServedConnections } : {}),
     modes,

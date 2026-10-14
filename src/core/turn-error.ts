@@ -42,7 +42,7 @@ export interface ProviderLimit {
 const USAGE_LIMIT_CODE = /model_cooldown|usage_limit_reached/;
 const RATE_LIMIT_CODE = /rate_limit_error|API error \(429\)/;
 const BILLING_CODE = /insufficient_quota|billing_hard_limit/;
-const SUBSCRIPTION_LIMIT = /usage limit|limit reached|hit your (?:\w+ )?limit/i;
+const SUBSCRIPTION_LIMIT = /usage limit|hit your (?:\w+ )?limit/i;
 const TRANSIENT_RESET_MS = 60_000;
 
 function resetAtFrom(text: string, now: number): number | undefined {
@@ -125,8 +125,8 @@ const CREDENTIAL_STATUSES = new Set([401, 403, 429]);
 const CREDENTIAL_REJECTION =
   /authentication_error|permission_error|invalid[_ -]?(?:x-)?api[_ -]?key|incorrect api key|authentication (?:error|failed)|failed to authenticate|(?:oauth|authentication|access) token (?:has )?(?:expired|been revoked)|token_expired|missing bearer|missing (?:api key|credentials)|not logged in|codex login|insufficient[_ -]?quota|exceeded your current quota|credit(?: balance| limit)|out of credits|credits_depleted|api error\W{0,3}(?:401|403)\b|status(?: code)?\W{0,3}(?:401|403)\b|\b(?:401|403) (?:unauthorized|forbidden)\b/i;
 
-export function providerStatusError(status: number, message: string): Error {
-  const error = status === 429 ? new Error(message) : new NonRetryableTurnError(message);
+export function providerStatusError(status: number, message: string, options?: ErrorOptions): Error {
+  const error = status === 429 ? new Error(message, options) : new NonRetryableTurnError(message, options);
   return Object.assign(error, { providerStatus: status });
 }
 
@@ -139,7 +139,11 @@ export function credentialRejected(err: unknown): boolean {
   if (typeof status === "number") return CREDENTIAL_STATUSES.has(status);
   if (providerLimit(err)) return true;
   const text = err instanceof Error ? err.message : String(err);
-  return credentialRejectionMessage(text) || BILLING_CODE.test(text) || /usage limit/i.test(text);
+  return (
+    credentialRejectionMessage(text) ||
+    BILLING_CODE.test(text) ||
+    /usage limit|last status: 429|429 too many requests/i.test(text)
+  );
 }
 
 export function turnFailureMessage(err: unknown): string {

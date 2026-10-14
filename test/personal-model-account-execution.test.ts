@@ -4,7 +4,7 @@ import { mock, test } from "node:test";
 import * as piHarness from "../src/harness/pi-harness.ts";
 import * as mockHarness from "../src/harness/mock-harness.ts";
 import type { HarnessTurnInput } from "../src/harness/harness.ts";
-import { resolveModel } from "../src/model/pi-models.ts";
+import { defaultModelForHarness, resolveModel } from "../src/model/pi-models.ts";
 import { NonRetryableTurnError } from "../src/core/turn-error.ts";
 import { testConfig } from "./support/test-config.ts";
 
@@ -594,4 +594,56 @@ test("every org fallback leaves a durable audit event", async () => {
     personalRejection = null;
     await built.runtime.stop();
   }
+});
+
+test("a scoped claude selection does not steer a personal ChatGPT sign-in onto an unapproved harness", async () => {
+  turns.length = 0;
+  const built = buildApp(testConfig({ harness: "pi" }));
+  built.config.setApprovedHarnesses(["pi", "claude"]);
+  await built.config.flushScope("org:default-org");
+  await built.config.setRuntimeSelectionLatest("org:default-org", { harnessId: "pi", modelId: "gpt-6-astra" });
+  await built.userModelCredentials.setOAuth("U1", "openai", {
+    accessToken: "personal-oauth",
+    idToken: "x.eyJlbWFpbCI6ImFAYi5jIn0.y",
+    expiresAt: Date.now() + 3_600_000,
+  });
+  await built.config.setModelAccountPolicy({ anthropic: "personal", openai: "personal" });
+  await built.config.setPersonalModelAuth("U1", true);
+  await built.config.setRuntimeSelectionLatest("personal:U1", {
+    harnessId: "claude",
+    modelId: defaultModelForHarness("claude"),
+  });
+  const submitted = await built.app.turn({
+    surface: "slack",
+    actor: { externalId: "U1" },
+    conversation: { kind: "dm", threadRef: "dm-scoped" },
+    text: "hello",
+    liveActor: true,
+    async: true,
+  });
+  built.runtime.start();
+  try {
+    const finished = await built.runs.waitFor(submitted.runId!, 5_000);
+    assert.equal(finished.status, "done", JSON.stringify(finished.result));
+    assert.equal(turns.length, 1);
+    assert.equal(turns[0]!.runtime?.harnessId, "pi");
+    assert.deepEqual(Object.keys(turns[0]!.providerKeys ?? {}), ["openai-codex"]);
+  } finally {
+    await built.runtime.stop();
+  }
+});
+
+test("the org capability check models real org credentials", async () => {
+  const claudeModel = defaultModelForHarness("claude");
+  const bare = buildApp(testConfig({ harness: "pi" }));
+  assert.equal(await bare.orgServesModel("claude", claudeModel), false);
+  assert.equal(await bare.orgServesModel("pi", "codex/gpt-6-astra"), false);
+  assert.equal(await bare.orgServesModel("pi", "gpt-6-astra"), false);
+  const gateway = buildApp(
+    testConfig({ harness: "pi", claudeProcessEnv: { ANTHROPIC_BASE_URL: "https://gateway.example.test" } }),
+  );
+  assert.equal(await gateway.orgServesModel("claude", claudeModel), true);
+  const codex = buildApp(testConfig({ harness: "pi", codexProcessEnv: { CODEX_ACCESS_TOKEN: "org-codex" } }));
+  assert.equal(await codex.orgServesModel("pi", "codex/gpt-6-astra"), true);
+  assert.equal(await codex.orgServesModel("codex", "gpt-6-astra"), true);
 });

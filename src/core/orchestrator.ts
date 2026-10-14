@@ -3327,7 +3327,13 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           if (userCredStore && humanTurn && account !== "company") {
             const access = await loadPersonalModelAccess(deps.config, userCredStore, actor.id, account);
             const { anthropic: anthCred, openai: oaiCred } = access;
-            const preferredHarness = (await resolvedRuntime(runtime)).harnessId;
+            const orgRuntime = await deps.config?.getRuntimeSelectionDurable(resolution.orgScopeId);
+            const preferredHarness =
+              runtime.harnessId ??
+              input.harness ??
+              purposeDefault?.harnessId ??
+              orgRuntime?.harnessId ??
+              deps.defaultHarness;
             const followsTurn = account === "personal" || input.surface === "web";
             const routeModel = followsTurn
               ? (runtime.modelId ?? input.model ?? purposeDefault?.modelId)
@@ -3379,7 +3385,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               unavailableFallback =
                 allowFallback &&
                 (missingCredential || refreshFailed) &&
-                (await orgFallbackAllowed("unavailable", orgFallbackRuntime()));
+                (await orgFallbackAllowed("unavailable", orgFallbackRuntime()).catch(() => false));
               if (!unavailableFallback)
                 throw new NonRetryableTurnError(
                   "Your personal AI account is unavailable. Open Settings → AI access to reconnect Claude or ChatGPT / Codex, or choose company access. The chat cannot continue on company access.",
@@ -3958,7 +3964,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               error instanceof CommandDenied ||
               error instanceof ProjectRosterChanged ||
               !credentialRejected(error) ||
-              !(await orgFallbackAllowed("rejected", fallbackRuntime))
+              !(await orgFallbackAllowed("rejected", fallbackRuntime).catch(() => false))
             )
               throw error;
             useOrgFallback("rejected", errMessage(error));

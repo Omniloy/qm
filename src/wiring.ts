@@ -338,7 +338,7 @@ import { createCodexHarness, codexHarnessConfigOptions } from "./harness/codex-h
 import { keychainCodexAuthStore } from "./harness/codex-auth-store.ts";
 import { keychainHarnessAuthEnv } from "./credentials/harness-auth-env.ts";
 import { probeClaudeSubscription } from "./credentials/claude-subscription-probe.ts";
-import { createClaudeHarness, claudeHarnessConfigOptions } from "./harness/claude-harness.ts";
+import { claudeEnvCarriesAuth, createClaudeHarness, claudeHarnessConfigOptions } from "./harness/claude-harness.ts";
 import { createPiHarness, piHarnessConfigOptions } from "./harness/pi-harness.ts";
 import { createHarnessRouter, resolveRuntimeChoiceDurable } from "./harness/harness-router.ts";
 import { selectableModelCatalog } from "./model/model-catalog.ts";
@@ -544,6 +544,7 @@ export interface BuiltApp {
   browserProviders: readonly BrowserProviderSpec[];
   browserRelay: RelayHub;
   userModelCredentials: UserModelCredentialStore;
+  orgServesModel: (harnessId: string, modelId: string) => Promise<boolean>;
   modelRegistry: ModelOverlayStore;
   modelVerifier: ModelVerifier;
   refreshModels: () => Promise<void>;
@@ -1500,18 +1501,26 @@ export function buildApp(
         : {};
     return claudeHarnessAuthEnv(harnessAuth, keychainEnv);
   };
+  const orgCodexSignIn = Boolean(
+    config.codexAuthFile ||
+    config.codexAuthCredential ||
+    config.codexProcessEnv.CODEX_ACCESS_TOKEN ||
+    config.codexProxy,
+  );
   const orgServesModel = async (harnessId: string, modelId: string) => {
-    if (resolveModel(modelId)?.provider === CODEX_SUBSCRIPTION_PROVIDER)
-      return Boolean(config.codexAuthFile || config.codexAuthCredential || config.codexProxy);
-    if (harnessId === "claude") {
-      const env = { ...config.claudeProcessEnv, ...(await claudeAuthEnv()) };
-      return Boolean(
-        config.anthropicApiKey || env.ANTHROPIC_API_KEY || env.CLAUDE_CODE_OAUTH_TOKEN || env.ANTHROPIC_AUTH_TOKEN,
+    if (resolveModel(modelId)?.provider === CODEX_SUBSCRIPTION_PROVIDER) return orgCodexSignIn;
+    if (harnessId === "claude")
+      return (
+        Boolean(config.anthropicApiKey) ||
+        claudeEnvCarriesAuth({ ...config.claudeProcessEnv, ...(await claudeAuthEnv()) })
       );
-    }
     return modelServiceable(
       modelId,
-      modelProviderAvailabilityFor(harnessId, providerKeysPresent(config), await modelCredentials.availability()),
+      modelProviderAvailabilityFor(
+        harnessId,
+        { ...providerKeysPresent(config), codexOAuth: orgCodexSignIn },
+        await modelCredentials.availability(),
+      ),
     );
   };
   const adapters = new Map<HarnessId, Harness>([
@@ -2984,6 +2993,7 @@ export function buildApp(
     browserProviders,
     browserRelay,
     userModelCredentials,
+    orgServesModel,
     modelRegistry,
     modelVerifier,
     refreshModels,
@@ -3102,6 +3112,7 @@ export function serverDeps(
     browserRelay: built.browserRelay,
     ...(config.relayPublicUrl ? { relayPublicUrl: config.relayPublicUrl } : {}),
     userModelCredentials: built.userModelCredentials,
+    orgServesModel: built.orgServesModel,
     modelRegistry: built.modelRegistry,
     modelVerifier: built.modelVerifier,
     refreshModels: built.refreshModels,

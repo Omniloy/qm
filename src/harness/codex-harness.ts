@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { CONFIG_DEFAULTS, type Config } from "../config.ts";
-import { credentialRejectionMessage, NonRetryableTurnError } from "../core/turn-error.ts";
+import { NonRetryableTurnError } from "../core/turn-error.ts";
 import { auxiliaryModelForProvider, DEFAULT_CODEX_MODEL_ID, modelSupportedByHarness } from "../model/pi-models.ts";
 import { startSignalPoll, type RunSignalStore } from "../runs/run-signal-store.ts";
 import type { TaskStatus, TaskStore } from "../tasks/task-store.ts";
@@ -165,10 +165,10 @@ type StartingRuntime = {
 const CODEX_START_TIMEOUT_MS = 30_000;
 
 const CODEX_NON_RETRYABLE_PATTERN =
-  /\b(?:401|402|403)\b|unauthoriz|forbidden|billing|must be verified|model[_ -]?not[_ -]?found|does not exist or you do not have access|unsupported[_ -]?model/i;
+  /\b(?:401|402|403)\b|unauthoriz|forbidden|invalid[_ -]?api[_ -]?key|incorrect api key|authentication (?:error|failed)|missing bearer|missing (?:api key|credentials)|not logged in|codex login|insufficient[_ -]?quota|exceeded your current quota|billing|credit(?: balance| limit)|out of credits|credits_depleted|must be verified|model[_ -]?not[_ -]?found|does not exist or you do not have access|unsupported[_ -]?model/i;
 
 export function codexNonRetryable(message: string): boolean {
-  return credentialRejectionMessage(message) || CODEX_NON_RETRYABLE_PATTERN.test(message);
+  return CODEX_NON_RETRYABLE_PATTERN.test(message);
 }
 
 export function codexProviderFailure(message: string): Error {

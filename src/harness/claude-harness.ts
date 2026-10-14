@@ -21,7 +21,7 @@ import { fromJSONSchema, type ZodObject } from "zod";
 import { contentText, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { CONFIG_DEFAULTS, type Config } from "../config.ts";
 import { isDeliveryNote } from "../core/attachments.ts";
-import { NonRetryableTurnError, providerStatusError } from "../core/turn-error.ts";
+import { credentialRejectionMessage, NonRetryableTurnError, providerStatusError } from "../core/turn-error.ts";
 import {
   contextTokenBudgetForModel,
   getRequiredModel,
@@ -108,6 +108,12 @@ const CLAUDE_ENV_PASSTHROUGH = [
   "CLAUDE_CODE_OAUTH_TOKEN",
 ] as const;
 
+export function claudeEnvCarriesAuth(env: NodeJS.ProcessEnv): boolean {
+  return Boolean(
+    env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN || env.CLAUDE_CODE_OAUTH_TOKEN || env.ANTHROPIC_BASE_URL,
+  );
+}
+
 const CLAUDE_CREDENTIALS_OUTRANKING_SUBSCRIPTION = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] as const;
 
 export function claudeChildEnv(source: NodeJS.ProcessEnv, jail: string): NodeJS.ProcessEnv {
@@ -121,15 +127,19 @@ export function claudeChildEnv(source: NodeJS.ProcessEnv, jail: string): NodeJS.
   return env;
 }
 
-function claudeRejection(result: { api_error_status?: number | null; result: string }): Error | null {
-  const status = result.api_error_status;
-  if (status === 429) return providerStatusError(status, `Claude API error (429): ${result.result.trim()}`);
-  if (status === 401 || status === 403)
-    return providerStatusError(
-      status,
-      `Claude did not accept this account's sign-in (HTTP ${status}). Reconnect the account or use a different one.`,
-    );
-  return null;
+function claudeRejection(
+  result: { api_error_status?: number | null; result: string },
+  personal: boolean,
+): Error | null {
+  const raw = result.result.trim();
+  const authWording = personal && (credentialRejectionMessage(raw) || /please run \/login/i.test(raw));
+  const status = result.api_error_status ?? (authWording ? 401 : undefined);
+  if (status === 429) return providerStatusError(status, `Claude API error (429): ${raw}`);
+  if (status !== 401 && status !== 403) return null;
+  const message = personal
+    ? `Claude did not accept this account's sign-in (HTTP ${status}). Reconnect the account or use a different one.`
+    : `Claude rejected the organization's credentials (HTTP ${status}).`;
+  return providerStatusError(status, message, { cause: new Error(raw) });
 }
 
 export function perUserClaudeEnv(env: NodeJS.ProcessEnv, oauthToken: string | undefined): NodeJS.ProcessEnv {
@@ -760,7 +770,10 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
           await recordStep(message);
           await flushThinking();
           if (interrupted) break;
-          const rejection = message.subtype === "success" && message.is_error ? claudeRejection(message) : null;
+          const rejection =
+            message.subtype === "success" && message.is_error
+              ? claudeRejection(message, !!turn.claudeOauthToken)
+              : null;
           if (rejection) throw rejection;
           const terminal = ref.runtimeHandoff || ref.silentRequested || ref.pausedOnApproval;
           const text = message.subtype === "success" && !terminal ? message.result.trim() : "";

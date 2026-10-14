@@ -792,3 +792,39 @@ test("Claude retains a queued message which the SDK never consumes", async () =>
   assert.equal(entries.filter((entry) => entry.type === "user").length, 1);
   assert.equal((await signals.pending("no-echo"))[0]?.signal.ts, "pending");
 });
+
+test("an org Claude 401 keeps a neutral message and the provider's own text as the cause", async () => {
+  currentScript = async function* (prompts) {
+    await prompts[Symbol.asyncIterator]().next();
+    yield resultMessage("Invalid API key · Please run /login", { is_error: true, api_error_status: 401 });
+  };
+  const harness = createClaudeHarness({});
+  const { turn } = harnessTurn();
+  const error = await harness.turns.runTurn(turn).then(
+    () => assert.fail("expected the turn to fail"),
+    (e: unknown) => e as Error,
+  );
+  assert.match(error.message, /organization's credentials \(HTTP 401\)/);
+  assert.doesNotMatch(error.message, /Reconnect/);
+  assert.equal((error.cause as Error).message, "Invalid API key · Please run /login");
+});
+
+test("a personal Claude error with sign-in wording and no status is a 401, while an org one stays the reply", async () => {
+  const script = async function* (prompts: AsyncIterable<{ message: { content: unknown } }>) {
+    await prompts[Symbol.asyncIterator]().next();
+    yield resultMessage("Invalid API key · Please run /login", { is_error: true });
+  };
+  currentScript = script;
+  const harness = createClaudeHarness({});
+  const personal = harnessTurn({ claudeOauthToken: "sk-ant-oat-personal" });
+  const error = await harness.turns.runTurn(personal.turn).then(
+    () => assert.fail("expected the turn to fail"),
+    (e: unknown) => e as Error,
+  );
+  assert.equal(credentialRejected(error), true);
+  assert.match(error.message, /Reconnect the account/);
+  assert.equal(personal.entries.filter((entry) => entry.type === "assistant").length, 0);
+  currentScript = script;
+  const org = harnessTurn();
+  assert.equal((await harness.turns.runTurn(org.turn)).reply, "Invalid API key · Please run /login");
+});

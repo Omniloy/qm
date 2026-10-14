@@ -40,6 +40,7 @@ test("account API binds choice to the signed-in person, preserves connections, a
   await built.config.setModelAccountPolicy({ anthropic: "personal", openai: "personal" });
   built.config.setInternalMemberOverrides(["alice@default-org", "bob@default-org"]);
   await built.config.flushScope("org:default-org");
+  let orgServes = true;
   const server = createServer(built.app, {
     signingSecret: SECRET,
     requireSignedPortalIdentity: true,
@@ -48,6 +49,7 @@ test("account API binds choice to the signed-in person, preserves connections, a
     config: built.config,
     userModelCredentials: built.userModelCredentials,
     auditLog: built.auditLog,
+    orgServesModel: async () => orgServes,
   });
   server.listen(0);
   const base = `http://localhost:${(server.address() as AddressInfo).port}`;
@@ -109,6 +111,8 @@ test("account API binds choice to the signed-in person, preserves connections, a
       fallbackWhenUnavailable: true,
     });
     assert.equal((await statusOf()).ready, true);
+    orgServes = false;
+    assert.equal((await statusOf()).ready, false, "the fallback only counts when the org can serve the turn");
     assert.equal((await request("company")).status, 200);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));

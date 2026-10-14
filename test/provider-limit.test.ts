@@ -269,6 +269,7 @@ test("credential rejections cover auth failures, billing, and provider limits bu
     "Codex: not logged in",
     "stream error: missing bearer token",
     "unexpected status 401 Unauthorized: token revoked",
+    "exceeded retry limit, last status: 429 Too Many Requests",
   ])
     assert.equal(credentialRejected(new NonRetryableTurnError(message)), true, message);
   for (const message of [
@@ -281,4 +282,19 @@ test("credential rejections cover auth failures, billing, and provider limits bu
     assert.equal(credentialRejected(new Error(message)), false, message);
   assert.equal(credentialRejected(providerStatusError(401, "anything")), true);
   assert.equal(credentialRejected(providerStatusError(500, "invalid x-api-key")), false);
+});
+
+test("a per-minute OpenAI rate limit stays a transient, retryable rate limit", async () => {
+  const error = new Error(
+    "Model provider API error (429): Rate limit reached for gpt-6-astra in organization org-abc on tokens per min (TPM): Limit 30000, Used 29500, Requested 1200. Please try again in 1.4s.",
+  );
+  assert.equal(providerLimit(error)?.kind, "rate");
+  const settled = await settleProviderLimit(error, {});
+  assert.equal(settled, error);
+  assert.ok(!(settled instanceof NonRetryableTurnError));
+  assert.equal(
+    providerLimit(new Error("Claude API error (429): Claude AI usage limit reached|1700000000"))?.kind,
+    "usage",
+  );
+  assert.equal(providerLimit(new Error("Claude API error (429): You've hit your limit · resets 5pm"))?.kind, "usage");
 });
