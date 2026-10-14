@@ -65,14 +65,46 @@ function redactPipedIntoWithToken(command: string): string {
   return `${upstream.slice(0, producer.index)}echo <redacted>${upstream.slice(upstream.trimEnd().length)}|${consumed}${rest}`;
 }
 
+const NOT_REDACTED = "(?!['\"]?<redacted)";
+
+const SECRET_PATTERNS: ReadonlyArray<[RegExp, string]> = [
+  [
+    new RegExp(`(--?(?:token|password|passwd|secret|client[-_]?secret|api[-_]?key)[ =])${NOT_REDACTED}\\S+`, "gi"),
+    "$1<redacted>",
+  ],
+  [
+    new RegExp(`((?:proxy-)?authorization:\\s*(?:bearer|basic|token)\\s+)${NOT_REDACTED}[^\\s'"]+`, "gi"),
+    "$1<redacted>",
+  ],
+  [new RegExp(`((?:x-api-key|x-auth-token|cookie):\\s*)${NOT_REDACTED}[^'"\\r\\n]+`, "gi"), "$1<redacted>"],
+  [new RegExp(`((?:^|\\s)(?:-u|--user)[ =]?['"]?[^\\s:'"]{1,200}:)${NOT_REDACTED}[^\\s'"]+`, "g"), "$1<redacted>"],
+  [new RegExp(`(\\bmysql(?:dump|admin)?\\b[^\\n|;&]{0,200}?\\s-p)${NOT_REDACTED}\\S+`, "g"), "$1<redacted>"],
+  [
+    new RegExp(`(\\b[a-z][a-z0-9+.-]{0,30}:\\/\\/[^\\s:@/'"]{1,200}:)${NOT_REDACTED}[^\\s@/'"]{1,500}@`, "gi"),
+    "$1<redacted>@",
+  ],
+  [
+    new RegExp(
+      `([?&](?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password|sig|signature)=)${NOT_REDACTED}[^&\\s'"#]+`,
+      "gi",
+    ),
+    "$1<redacted>",
+  ],
+  [
+    new RegExp(
+      `(\\b[A-Z][A-Z0-9_]{0,60}(?:PASS|PASSWORD|PASSWD|SECRET|TOKEN|KEY|IDENTIFIER|CREDENTIAL|PROXY_USER)[A-Z0-9_]{0,60}=)${NOT_REDACTED}('[^']*'|"[^"]*"|[^\\s'";&|]+)`,
+      "g",
+    ),
+    "$1<redacted>",
+  ],
+];
+
+export function redactSecretText(text: string, mask: (text: string) => string = (t) => t): string {
+  let out = mask(text);
+  for (const [pattern, replacement] of SECRET_PATTERNS) out = out.replace(pattern, replacement);
+  return out;
+}
+
 export function redactCommand(command: string, env?: Record<string, string>): string {
-  const flagsRedacted = createSecretValueMasker(env)(command)
-    .replace(/(--?(?:token|password|secret|client[-_]?secret|api[-_]?key)[ =])\S+/gi, "$1<redacted>")
-    .replace(/(authorization:\s*(?:bearer|basic|token)\s+)(?!<redacted)[^\s'"]+/gi, "$1<redacted>");
-  return redactPipedIntoWithToken(flagsRedacted)
-    .replace(
-      /(export\s+\w*(?:PASS|PASSWORD|SECRET|TOKEN|KEY|IDENTIFIER|CREDENTIAL|PROXY_USER)\w*=')[^']*'/gi,
-      "$1<redacted>'",
-    )
-    .slice(0, 500);
+  return redactPipedIntoWithToken(redactSecretText(command, createSecretValueMasker(env))).slice(0, 500);
 }

@@ -343,6 +343,10 @@ class FakeCore implements SlackCoreClient {
   async reportSecurityHold(): Promise<{ state: "unavailable" }> {
     return { state: "unavailable" };
   }
+  async resolveScheduledHold(): Promise<{ state: "unavailable" }> {
+    return { state: "unavailable" };
+  }
+  async recordApprovalCard(): Promise<void> {}
   readonly agentRequests = new Map<string, SlackAgentRequestContext>();
   async putAgentRequest(requestId: string, record: SlackAgentRequestContext): Promise<void> {
     this.agentRequests.set(requestId, record);

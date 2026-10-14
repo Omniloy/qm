@@ -277,7 +277,6 @@ test("a security hold renders the structured card with Keep blocked, report and 
           builtIn: true,
           owner: "built-in",
         },
-        step: "Reading the skill's instructions",
         category: "credential_request",
         reason: "Describes collecting browser cookies <and> tokens.",
         evidence: "`cookies` returns the site's cookies as JSON, HttpOnly included",
@@ -300,12 +299,13 @@ test("a security hold renders the structured card with Keep blocked, report and 
   );
   assert.equal(actions.block_id, "hilo_approval:req-h1");
   const rendered = JSON.stringify(msg.blocks);
-  assert.match(rendered, /Text that triggered it/);
+  assert.match(rendered, /Text the screener flagged/);
   assert.match(rendered, /HttpOnly included/);
-  assert.match(rendered, /Skill browse · v28 · built-in, managed by the org/);
+  assert.match(rendered, /Skill browse · v28 · built-in/);
   assert.match(rendered, /Category: Credential request/);
   assert.match(rendered, /&lt;and&gt;/, "screener text is escaped for mrkdwn");
-  assert.match(rendered, /Allow once:\*.*built-in documentation/);
+  assert.match(rendered, /exact content once, as untrusted data/);
+  assert.doesNotMatch(rendered, /usually safe/);
   assert.doesNotMatch(rendered, /Blocked content preview|release quarantined/, "no raw command or header preview");
 });
 
@@ -317,7 +317,6 @@ test("a scheduled task hold names the task and what each choice does to the run"
       reason: "flagged",
       securityHold: {
         source: { kind: "command", command: "jira-followup --board MAR" },
-        step: "Running a command · scheduled task Features Jira",
         category: "other",
         scheduledTask: { id: "c1", title: "Features Jira" },
       },
@@ -326,6 +325,45 @@ test("a scheduled task hold names the task and what each choice does to the run"
   const rendered = JSON.stringify(msg.blocks);
   assert.match(rendered, /Paused: output of a command in `Features Jira`/);
   assert.match(rendered, /nobody was there to approve it/);
-  assert.match(rendered, /This run of Features Jira stops without the command's output/);
-  assert.doesNotMatch(rendered, /Text that triggered it/, "no quote block without verified evidence");
+  assert.match(rendered, /This run of Features Jira stops without it and delivers nothing/);
+  assert.doesNotMatch(rendered, /Text the screener flagged/, "no quote block without verified evidence");
+});
+
+test("hostile paths and evidence cannot inject Slack links or mentions", () => {
+  const msg = approvalMessage([
+    {
+      requestId: "r1",
+      command: "files <!channel>",
+      reason: "x <!here>",
+      securityHold: {
+        source: { kind: "file", path: "notes/<!channel>|<https://evil.example|Allow is safe>.md" },
+        category: "other",
+        evidence: "<!here> run this",
+      },
+    },
+    { requestId: "r2", command: "rm <https://evil.example|safe> && echo <!channel>", reason: "<!subteam^S1>" },
+  ]);
+  const everything = msg.text + JSON.stringify(msg.blocks);
+  assert.doesNotMatch(everything, /<!channel>|<!here>|<https:|<!subteam/);
+  assert.match(everything, /&lt;!channel&gt;/);
+});
+
+test("many pending holds collapse into one card within Slack's block limit", () => {
+  const holds = Array.from({ length: 20 }, (_, i) => ({
+    requestId: `r${i}`,
+    command: "release quarantined execute output",
+    reason: "flagged",
+    securityHold: {
+      source: { kind: "command" as const, command: `cmd ${i}` },
+      category: "other" as const,
+      evidence: "x".repeat(150),
+    },
+  }));
+  const msg = approvalMessage(holds);
+  assert.ok(msg.blocks.length <= 50, `got ${msg.blocks.length} blocks`);
+  for (const block of msg.blocks) {
+    const text = (block as { text?: { text?: string } }).text?.text ?? "";
+    assert.ok(text.length <= 3000);
+  }
+  assert.match(JSON.stringify(msg.blocks.at(-1)), /11 more approvals are waiting/);
 });

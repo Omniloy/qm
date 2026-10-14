@@ -37,7 +37,7 @@ import type { AdminService } from "../admin/admin-service.ts";
 import type { InviteMailer } from "../admin/invite-email.ts";
 import type { SessionStore } from "../sessions/session-store.ts";
 import type { SecurityScreenProbe } from "../security/security-screener.ts";
-import type { ScreeningReportStore, SkillTrustStore } from "../security/screening-reports.ts";
+import type { ScreeningHoldCountStore, ScreeningReportStore, SkillTrustStore } from "../security/screening-reports.ts";
 import type { AuditLog } from "../audit/audit-log.ts";
 import type { ErrorLog } from "../admin/error-log.ts";
 import type { MetricsSink } from "../admin/metrics-sink.ts";
@@ -176,6 +176,7 @@ export interface ServerDeps {
   screenSecurity?: SecurityScreenProbe;
   screeningReports?: ScreeningReportStore;
   skillTrusts?: SkillTrustStore;
+  screeningHoldCounts?: ScreeningHoldCountStore;
   auditLog?: AuditLog;
   errors?: ErrorLog;
   metrics?: MetricsSink;

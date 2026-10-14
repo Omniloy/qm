@@ -498,7 +498,9 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
             provenance,
             ...(sourceScopeId ? { sourceScopeId } : {}),
             ...(screenAs?.source ? { source: screenAs.source } : {}),
-            context: screenAs?.context ?? toolResultContextOf(originalTool, call, summary),
+            context:
+              screenAs?.context ??
+              toolResultContextOf(originalTool, call, summary, (text) => ref.current?.maskSecrets?.(text) ?? text),
           })
           .catch((): ToolResultScreen => ({ outcome: "unscreened" }));
         if (screen.outcome === "quarantine") {

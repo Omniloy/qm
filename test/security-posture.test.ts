@@ -439,3 +439,40 @@ test("the screened source is described from the tool call, bounded and secret-ma
     server: "linear",
   });
 });
+
+test("evidence is checked against the screened data only, never the envelope around it", () => {
+  const strict = { decision: "strict" as const, category: "other" as const };
+  assert.equal(
+    withVerifiedEvidence(
+      { ...strict, evidence: "tool_result" },
+      JSON.stringify({ source: "tool_result:execute", data: "hello" }),
+    )?.evidence,
+    undefined,
+  );
+  assert.equal(
+    withVerifiedEvidence(
+      { ...strict, evidence: "tool_result:skills" },
+      JSON.stringify([{ source: "tool_result:skills", content: "plain docs" }]),
+    )?.evidence,
+    undefined,
+    "the source label is host metadata",
+  );
+  assert.equal(
+    withVerifiedEvidence(
+      { ...strict, evidence: "inspect the document" },
+      JSON.stringify({
+        request: { origin: "human", text: "inspect the document" },
+        payload: JSON.stringify([{ source: "tool_result:read", content: "quarterly data" }]),
+      }),
+    )?.evidence,
+    undefined,
+    "the request context is not the screened data",
+  );
+  assert.equal(
+    withVerifiedEvidence(
+      { ...strict, evidence: "quarterly data" },
+      JSON.stringify({ request: { text: "x" }, payload: JSON.stringify([{ source: "s", content: "quarterly data" }]) }),
+    )?.evidence,
+    "quarterly data",
+  );
+});

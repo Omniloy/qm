@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import { JSDOM } from "jsdom";
 import type { ApprovalDecision, PendingApproval } from "../src/core-bridge.ts";
@@ -17,7 +16,7 @@ for (const [key, value] of Object.entries(globals))
   Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
 
 const { render } = await import("lit");
-const { securityHoldCard, securityHoldMarker } = await import("../src/security-hold-card.ts");
+const { pruneHoldUi, securityHoldCard, securityHoldMarker } = await import("../src/security-hold-card.ts");
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -30,6 +29,7 @@ function holdApproval(requestId: string): PendingApproval {
     summaryDetail: "--- name: browse\n`cookies` returns the site's cookies as JSON, HttpOnly included.",
     securityHoldView: {
       title: "Paused: content from the browse skill",
+      held: "content from the browse skill",
       subject: "browse",
       categoryLabel: "Credential request",
       explanation: "The security screen held back the browse skill's instructions before the assistant read it.",
@@ -80,7 +80,7 @@ test("a security hold renders the structured card without the raw release comman
     host.querySelector(".hold-quote mark")?.textContent,
     "returns the site's cookies as JSON, HttpOnly included",
   );
-  assert.match(text, /Text that triggered it/);
+  assert.match(text, /Text the screener flagged/);
   assert.match(text, /Allow once:.*carries on/);
   assert.match(text, /Keep blocked:.*without the browse instructions/);
   assert.doesNotMatch(text, /release quarantined/);
@@ -114,6 +114,7 @@ test("reporting a false positive sends the note, keeps the choice open and hides
   const { host, decisions } = mount(holdApproval("h4"), async (id, note) => {
     sent.push([id, note]);
   });
+  document.body.append(host);
   buttonNamed(host, "Looks wrong? Report a false positive")!.click();
   assert.match(host.querySelector(".hold-report label")?.textContent ?? "", /Why does this look wrong\? \(optional\)/);
   const textarea = host.querySelector<HTMLTextAreaElement>(".hold-report textarea")!;
@@ -124,8 +125,11 @@ test("reporting a false positive sends the note, keeps the choice open and hides
   assert.deepEqual(sent, [["h4", "our own built-in skill"]]);
   assert.match(
     host.querySelector(".hold-sent")?.textContent ?? "",
-    /Reported to your admins as a possible false positive/,
+    /Saved for your admins to review as a possible false positive/,
   );
+  assert.equal(host.querySelector(".hold-title")?.textContent, "Paused: content from the browse skill");
+  assert.equal(host.querySelector(".hold-category")?.textContent, "Credential request");
+  assert.equal(document.activeElement, host.querySelector(".hold-sent"), "focus moves to the saved status");
   assert.equal(buttonNamed(host, "Looks wrong? Report a false positive"), undefined);
   assert.ok(buttonNamed(host, "Allow once"), "the person still chooses after reporting");
   assert.deepEqual(decisions, []);
@@ -149,12 +153,26 @@ test("the transcript marker shows only the hold heading", () => {
   assert.equal(host.querySelector("button"), null);
 });
 
-test("approvals without a hold view keep the legacy card and buttons", () => {
-  const composer = readFileSync(new URL("../src/composer.ts", import.meta.url), "utf8");
-  const chat = readFileSync(new URL("../src/chat.ts", import.meta.url), "utf8");
-  assert.match(composer, /a\.securityHoldView\s*\?\s*securityHoldCard\(/);
-  assert.match(composer, /class="approval-btn deny"[\s\S]*?Deny/);
-  assert.match(composer, /Allow for session/);
-  assert.match(chat, /<span class="approval-title">Approval needed<\/span>/);
-  assert.match(chat, /if \(a\.securityHoldView\) return securityHoldMarker\(a\.securityHoldView\);/);
+test("the toggles expose their expanded state and the report form takes focus", async () => {
+  const { host } = mount(holdApproval("h7"));
+  document.body.append(host);
+  const show = buttonNamed(host, "Show what was blocked")!;
+  assert.equal(show.getAttribute("aria-expanded"), "false");
+  show.click();
+  assert.equal(buttonNamed(host, "Hide what was blocked")!.getAttribute("aria-expanded"), "true");
+  const report = buttonNamed(host, "Looks wrong? Report a false positive")!;
+  assert.equal(report.getAttribute("aria-expanded"), "false");
+  report.click();
+  await flush();
+  assert.equal(buttonNamed(host, "Looks wrong? Report a false positive")!.getAttribute("aria-expanded"), "true");
+  assert.equal(document.activeElement, host.querySelector(".hold-report textarea"));
+  host.remove();
+});
+
+test("hold UI state is pruned once an approval is no longer pending", () => {
+  const { host } = mount(holdApproval("h8"));
+  buttonNamed(host, "Show what was blocked")!.click();
+  pruneHoldUi([]);
+  const again = mount(holdApproval("h8"));
+  assert.equal(again.host.querySelector(".hold-blocked"), null, "a resolved hold starts fresh");
 });

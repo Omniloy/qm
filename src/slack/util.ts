@@ -1,13 +1,10 @@
+import { xmlEscape } from "../util/message-tag.ts";
 import { safeCutIndex, safeClip } from "./safe-cut.ts";
 
 export function inlineCode(text: string): string {
-  const cleaned = text.replace(/`/g, "'");
+  const cleaned = xmlEscape(text.replace(/`/g, "'"));
   const safe = cleaned.slice(0, safeCutIndex(cleaned, 2000));
   return `\`${safe}${cleaned.length > safe.length ? "..." : ""}\``;
-}
-
-export function escapeMrkdwn(text: string): string {
-  return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
 export function clip(text: string, max: number): string {

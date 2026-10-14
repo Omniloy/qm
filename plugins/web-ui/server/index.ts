@@ -692,7 +692,7 @@ async function requesterApproval(
   res: ServerResponse,
   user: string,
   requestId: string,
-): Promise<{ record: CoreApprovalRecord; threadRef: string } | null> {
+): Promise<{ record: CoreApprovalRecord; threadRef: string; cronHold: boolean } | null> {
   const fetched = await coreFetch("GET", `/v1/approvals/${encodeURIComponent(requestId)}`);
   if (fetched.status !== 200) {
     sendBuffered(res, fetched.status, { "content-type": "application/json" }, fetched.text);
@@ -708,6 +708,9 @@ async function requesterApproval(
   const threadRef =
     typeof record.request?.conversation?.threadRef === "string" ? record.request.conversation.threadRef : "";
   const actor = typeof record.request?.actor?.externalId === "string" ? record.request.actor.externalId : "";
+  const cronHold =
+    threadRef.startsWith("cron:") && typeof record.securityHold === "object" && record.securityHold !== null;
+  if (cronHold) return { record, threadRef, cronHold };
   const resolvable = APPROVAL_THREAD_PREFIXES.some((prefix) => threadRef.startsWith(prefix));
   if (!resolvable || actor !== user || !record.request) {
     json(res, 404, { error: "not_found" });
@@ -733,7 +736,7 @@ async function requesterApproval(
       }
     }
   }
-  return { record, threadRef };
+  return { record, threadRef, cronHold };
 }
 
 function namespacedSendKey(user: string, raw: unknown): string | undefined {
@@ -853,7 +856,7 @@ interface CoreAttachment {
   blobId: string;
 }
 
-const APPROVAL_THREAD_PREFIXES = ["web:", "swarm:", "cron:"];
+const APPROVAL_THREAD_PREFIXES = ["web:", "swarm:"];
 
 interface CoreApprovalRecord {
   requestId: string;
@@ -866,6 +869,7 @@ interface CoreApprovalRecord {
     conversation?: { threadRef?: unknown };
     text?: unknown;
   } & Record<string, unknown>;
+  securityHold?: unknown;
 }
 
 function uploadFileName(url: URL): string {
@@ -2703,6 +2707,13 @@ const apiRoutes: readonly WebRoute[] = [
       const owned = await requesterApproval(res, user, requestId);
       if (!owned) return;
       const { record, threadRef } = owned;
+      if (owned.cronHold)
+        return relayCore(
+          res,
+          "POST",
+          `/v1/approvals/${encodeURIComponent(requestId)}/resolve-hold`,
+          JSON.stringify({ actorId: user, approved }),
+        );
 
       const approval = { requestId, approved, ...(scope ? { scope } : {}) };
       const replay: Record<string, unknown> = { ...record.request!, approval };

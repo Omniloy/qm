@@ -41,7 +41,7 @@ import type { RuntimeChoice } from "../harness/harness.ts";
 import { modelDisplayName } from "../model/pi-models.ts";
 import type { ConversationEvent } from "../loops/sources/adapter.ts";
 import { slackConversationRef } from "../loops/sources/slack.ts";
-import type { SecurityHoldReportOutcome } from "./app-security-holds.ts";
+import type { ScheduledHoldOutcome, SecurityHoldReportOutcome } from "./app-security-holds.ts";
 
 interface SlackRunHooks {
   onReplying?(): void;
@@ -121,6 +121,8 @@ export interface SlackCoreClient {
   reportRunEditRef(runId: string, editRef: string): Promise<void>;
   getApproval(requestId: string): Promise<StoredApprovalView | null>;
   reportSecurityHold(requestId: string, reporterId: string, note?: string): Promise<SecurityHoldReportOutcome>;
+  resolveScheduledHold(requestId: string, actorId: string, approved: boolean): Promise<ScheduledHoldOutcome>;
+  recordApprovalCard(requestId: string, card: { channel: string; ts: string }): Promise<void>;
   putAgentRequest(requestId: string, record: SlackAgentRequestContext): Promise<void>;
   getAgentRequest(requestId: string): Promise<SlackAgentRequestContext | null>;
   takeAgentRequest(requestId: string): Promise<SlackAgentRequestContext | null>;
@@ -480,6 +482,14 @@ export function createSlackCoreClient(deps: SlackCoreClientDeps): SlackCoreClien
 
     reportSecurityHold(requestId, reporterId, note) {
       return deps.app.reportSecurityHold(requestId, reporterId, note);
+    },
+
+    resolveScheduledHold(requestId, actorId, approved) {
+      return deps.app.resolveScheduledHold(requestId, actorId, approved);
+    },
+
+    recordApprovalCard(requestId, card) {
+      return deps.app.recordApprovalCard(requestId, card);
     },
 
     ...createAgentRequestStore(deps.agentRequests),

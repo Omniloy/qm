@@ -37,7 +37,7 @@ import {
 } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
 import { browserRenderableImage, fieldSelect, icon } from "./ui";
-import { securityHoldCard } from "./security-hold-card";
+import { pruneHoldUi, securityHoldCard } from "./security-hold-card";
 import {
   defaultEffortForModel,
   defaultModelValue,
@@ -537,6 +537,7 @@ export function createComposerSurface(ctx: ConvCtx, options: ComposerOptions = {
       </div>`;
     }
     const approvalPauses = ctx.chat.activePendingApprovals();
+    pruneHoldUi(approvalPauses.map((approval) => approval.requestId));
     const blockingPauses = approvalPauses.filter(approvalBlocksComposer);
     const runtimePending = activeRuntimeConfig === null;
     const inputBlocked = runtimePending || ctx.chat.state.resolvingApprovals.size > 0 || blockingPauses.length > 0;

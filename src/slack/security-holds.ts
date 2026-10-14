@@ -6,6 +6,7 @@ import { samePerson } from "../directory/person.ts";
 import { errMessage, swallowAs } from "../util/errors.ts";
 import { isObj } from "../util/objects.ts";
 import { MAX_REPORT_NOTE_CHARS } from "../security/screening-reports.ts";
+import { approvalDeliveryRecipient } from "../core/approval-store.ts";
 
 export const SECURITY_HOLD_REPORT_CALLBACK = "security_hold_report";
 const NOTE_BLOCK = "note";
@@ -52,20 +53,20 @@ function blockedContentModal(content: string): Record<string, unknown> {
   };
 }
 
-function reportModal(meta: { requestId: string; channel?: string }): Record<string, unknown> {
+function reportModal(requestId: string): Record<string, unknown> {
   return {
     type: "modal",
     callback_id: SECURITY_HOLD_REPORT_CALLBACK,
-    private_metadata: JSON.stringify(meta),
+    private_metadata: requestId,
     title: plain("Report false positive"),
-    submit: plain("Send to admins"),
+    submit: plain("Save for admins"),
     close: plain("Cancel"),
     blocks: [
       {
         type: "section",
         text: {
           type: "mrkdwn",
-          text: "Your admins will see the flagged text, the screener's reason and your note. Reporting never releases the content; you still choose *Allow once* or *Keep blocked*.",
+          text: "Your admins will see the full blocked content, the flagged text, the screener's reason and your note. Reporting never releases the content; you still choose *Allow once* or *Keep blocked*.",
         },
       },
       {
@@ -85,92 +86,73 @@ function reportModal(meta: { requestId: string; channel?: string }): Record<stri
   };
 }
 
-function reportedModal(): Record<string, unknown> {
+function noticeModal(title: string, text: string): Record<string, unknown> {
   return {
     type: "modal",
-    title: plain("Report sent"),
+    title: plain(title),
     close: plain("Close"),
-    blocks: [
-      {
-        type: "section",
-        text: plain(
-          "Reported to your admins as a possible false positive. The content is still blocked; choose Allow once or Keep blocked on the card.",
-        ),
-      },
-    ],
+    blocks: [{ type: "section", text: plain(text) }],
   };
 }
 
-function reportedRequestId(metadata: unknown): string {
-  try {
-    const meta = JSON.parse(String(metadata ?? "{}")) as { requestId?: unknown };
-    return typeof meta.requestId === "string" ? meta.requestId : "";
-  } catch {
-    return "";
-  }
-}
+const NOT_YOURS = "This hold was already resolved, or it isn't waiting on you.";
 
-async function requesterOf(deps: HoldActionDeps, client: any, requestId: string, clickerId: string) {
+async function holdFor(deps: HoldActionDeps, client: any, requestId: string, clickerId: string) {
   const stored = await deps.core.getApproval(requestId).catch(swallowAs("slack: security hold lookup", null));
-  const requester = (stored?.request as { actor?: { externalId?: unknown } } | undefined)?.actor?.externalId;
-  if (!stored?.securityHold || typeof requester !== "string") return null;
-  if (clickerId === requester) return { stored, actorId: requester };
+  if (!stored?.securityHold) return null;
+  const decider = approvalDeliveryRecipient(stored as unknown as Parameters<typeof approvalDeliveryRecipient>[0]);
+  if (!decider) return null;
+  if (clickerId === decider) return { stored, actorId: decider };
   const actor = await deps.directory.classifyActor(client, clickerId);
-  return samePerson(actor.externalId, requester) ? { stored, actorId: actor.externalId } : null;
+  return samePerson(actor.externalId, decider) ? { stored, actorId: actor.externalId } : null;
 }
 
 export function registerSecurityHoldActions(app: SlackRegistrar, deps: HoldActionDeps): void {
   app.action(/^security_hold_/, async ({ ack, body, action, client }) => {
     await ack();
     const parsed = parseBlockAction(action, SECURITY_HOLD_ACTION_IDS);
-    const { clickerId, channel } = parseInteractionBody(body);
+    const { clickerId } = parseInteractionBody(body);
     const triggerId = isObj(body) && typeof body.trigger_id === "string" ? body.trigger_id : "";
     if (!parsed || !clickerId || !triggerId) return;
     try {
-      const found = await requesterOf(deps, client, parsed.value, clickerId);
-      if (!found) {
-        if (channel)
-          await client.chat
-            .postEphemeral({
-              channel,
-              user: clickerId,
-              text: "Only the person this security hold is waiting on can open it, and it may have been resolved already.",
-            })
-            .catch(swallowAs("slack: chat.postEphemeral", undefined));
+      if (parsed.actionId === "security_hold_report") {
+        await client.views.open({ trigger_id: triggerId, view: reportModal(parsed.value) });
         return;
       }
-      const view =
-        parsed.actionId === "security_hold_show"
+      const opened = await client.views.open({
+        trigger_id: triggerId,
+        view: noticeModal("What was blocked", "Loading the blocked content…"),
+      });
+      const found = await holdFor(deps, client, parsed.value, clickerId);
+      await client.views.update({
+        view_id: opened?.view?.id,
+        view: found
           ? blockedContentModal(found.stored.summaryDetail ?? "")
-          : reportModal({ requestId: parsed.value, ...(channel ? { channel } : {}) });
-      await client.views.open({ trigger_id: triggerId, view });
+          : noticeModal("What was blocked", NOT_YOURS),
+      });
     } catch (error) {
       console.error("[slack] security hold action failed:", errMessage(error));
     }
   });
 
   app.view(SECURITY_HOLD_REPORT_CALLBACK, async ({ ack, body, view, client }) => {
-    const requestId = reportedRequestId(view?.private_metadata);
+    const requestId = typeof view?.private_metadata === "string" ? view.private_metadata : "";
     const clickerId = String(body?.user?.id ?? "");
     const note = view?.state?.values?.[NOTE_BLOCK]?.[NOTE_ACTION]?.value;
-    const found = requestId && clickerId ? await requesterOf(deps, client, requestId, clickerId) : null;
+    const found = requestId && clickerId ? await holdFor(deps, client, requestId, clickerId) : null;
     if (!found) {
-      await ack({
-        response_action: "errors",
-        errors: { [NOTE_BLOCK]: "This hold was already resolved, or it isn't yours to report." },
-      });
-      return;
-    }
-    const outcome = await deps.core
-      .reportSecurityHold(requestId, found.actorId, typeof note === "string" ? note : undefined)
-      .catch(swallowAs("slack: security hold report", { state: "unavailable" as const }));
-    if (outcome.state === "created" || outcome.state === "exists") {
-      await ack({ response_action: "update", view: reportedModal() });
+      await ack({ response_action: "errors", errors: { [NOTE_BLOCK]: NOT_YOURS } });
       return;
     }
     await ack({
-      response_action: "errors",
-      errors: { [NOTE_BLOCK]: "I couldn't send the report just now. Try again in a moment." },
+      response_action: "update",
+      view: noticeModal(
+        "Report saved",
+        "Saved for your admins to review as a possible false positive. The content is still blocked; choose Allow once or Keep blocked on the card.",
+      ),
     });
+    await deps.core
+      .reportSecurityHold(requestId, found.actorId, typeof note === "string" ? note : undefined)
+      .catch(swallowAs("slack: security hold report", undefined));
   });
 }

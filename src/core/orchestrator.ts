@@ -93,8 +93,9 @@ import type {
   RuntimeChoice,
 } from "../harness/harness.ts";
 import { forModelContext, forSearchView } from "../harness/context-compaction.ts";
-import { securityHoldStep, securityHoldView, type SecurityHold } from "../security/security-hold.ts";
-import { trustedSkillVersion } from "../security/screening-reports.ts";
+import { securityHoldSourceKey, securityHoldView, type SecurityHold } from "../security/security-hold.ts";
+import { redactSecretText } from "../security/secret-masking.ts";
+import { countHold, trustedSkillVersion } from "../security/screening-reports.ts";
 import {
   renderSecurityPolicyPrompt,
   quarantineReleaseKey,
@@ -1430,16 +1431,22 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       const securityHoldFor = async (
         context: ToolResultContext,
         verdict: SecurityScreenVerdict,
+        mask: (text: string) => string,
       ): Promise<SecurityHold> => {
         const cronId = cronIdOf(input.conversation.threadRef);
         const cron = cronId ? await deps.crons?.get(cronId).catch(swallowAs("orchestrator: cron lookup", null)) : null;
-        const scheduledTask = cronId ? { id: cronId, ...(cron?.title ? { title: cron.title } : {}) } : undefined;
+        const scheduledTask = cronId
+          ? {
+              id: cronId,
+              ...(cron?.title ? { title: cron.title } : {}),
+              ...(cron?.owner ? { ownerId: cron.owner } : {}),
+            }
+          : undefined;
         return {
           source: context,
-          step: securityHoldStep(context, scheduledTask),
           category: verdict.category ?? "other",
           ...(verdict.reason ? { reason: verdict.reason } : {}),
-          ...(verdict.evidence ? { evidence: verdict.evidence } : {}),
+          ...(verdict.evidence ? { evidence: mask(verdict.evidence) } : {}),
           ...(scheduledTask ? { scheduledTask } : {}),
         };
       };
@@ -2160,7 +2167,12 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             const decisionEntry = await withManagedRosterVersion(() =>
               deps.sessions.append(lease, {
                 type: "approval_resolved",
-                payload: { requestId: input.approval!.requestId, command: p.command, approved: false },
+                payload: {
+                  requestId: input.approval!.requestId,
+                  command: p.command,
+                  approved: false,
+                  ...(p.securityHold ? { held: securityHoldView(p.securityHold).held } : {}),
+                },
                 scopeLabel: scopeId as ScopeId,
               }),
             );
@@ -2266,7 +2278,13 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             const decisionEntry = await withManagedRosterVersion(() =>
               deps.sessions.append(lease, {
                 type: "approval_resolved",
-                payload: { requestId: input.approval!.requestId, command: p.command, approved: true, scope },
+                payload: {
+                  requestId: input.approval!.requestId,
+                  command: p.command,
+                  approved: true,
+                  scope,
+                  ...(p.securityHold ? { held: securityHoldView(p.securityHold).held } : {}),
+                },
                 scopeLabel: scopeId as ScopeId,
               }),
             );
@@ -3739,11 +3757,17 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                           ...(verdict.category ? { category: verdict.category } : {}),
                         }),
                       });
+                      const maskHeld = (text: string): string =>
+                        redactSecretText(text, (raw) => tools.maskSecrets?.(raw) ?? raw);
                       const securityHold = context
-                        ? await securityHoldFor(context, verdict).catch(
+                        ? await securityHoldFor(context, verdict, maskHeld).catch(
                             swallowAs("orchestrator: security hold", undefined),
                           )
                         : undefined;
+                      if (securityHold)
+                        await countHold(deps.screeningHoldCounts, securityHoldSourceKey(securityHold.source)).catch(
+                          swallowAs("orchestrator: count hold", undefined),
+                        );
                       if (
                         !quarantineReleaseApprovals.some(
                           (qa) =>
@@ -3759,7 +3783,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                             : `security screen flagged this ${toolLabel} output`,
                           purpose: `Release the quarantined ${toolLabel} output into the conversation (once), or keep it blocked.`,
                           summary: `Blocked content preview: ${quarantinePreview(result)}`,
-                          summaryDetail: quarantineFullText(result),
+                          summaryDetail: maskHeld(quarantineFullText(result)),
                           ...(securityHold ? { securityHold } : {}),
                           ...(!toolLabel.startsWith("session_message_")
                             ? {

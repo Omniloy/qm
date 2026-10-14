@@ -437,6 +437,7 @@ export function workPausedForApproval(work: WorkBlock): boolean {
 
 export interface SecurityHoldView {
   title: string;
+  held: string;
   subject?: string;
   categoryLabel: string;
   explanation: string;
@@ -985,13 +986,20 @@ export function makeRunResumeStreamFn(
   return fn as unknown as StreamFn;
 }
 
-export async function resolveApproval(decision: ApprovalDecision): Promise<string> {
-  const submit = await api<{ runId?: string }>(`/api/approvals/${encodeURIComponent(decision.requestId)}`, {
-    method: "POST",
-    body: JSON.stringify({ approved: decision.approved, ...(decision.scope ? { scope: decision.scope } : {}) }),
-  });
+export type ApprovalResolution = { runId: string } | { outcome: "allowed" | "kept"; message: string };
+
+export async function resolveApproval(decision: ApprovalDecision): Promise<ApprovalResolution> {
+  const submit = await api<{ runId?: string; outcome?: unknown; message?: unknown }>(
+    `/api/approvals/${encodeURIComponent(decision.requestId)}`,
+    {
+      method: "POST",
+      body: JSON.stringify({ approved: decision.approved, ...(decision.scope ? { scope: decision.scope } : {}) }),
+    },
+  );
+  if ((submit.outcome === "allowed" || submit.outcome === "kept") && typeof submit.message === "string")
+    return { outcome: submit.outcome, message: submit.message };
   if (!submit.runId) throw new Error("Could not continue after the approval.");
-  return submit.runId;
+  return { runId: submit.runId };
 }
 
 export async function reportSecurityHold(requestId: string, note: string): Promise<void> {
@@ -1753,6 +1761,7 @@ export interface HistoryApprovalDecision {
   approved: boolean;
   command: string;
   scope?: string;
+  held?: string;
   timestamp: number;
 }
 
@@ -1765,6 +1774,7 @@ function approvalDecisionMessage(
     approved?: unknown;
     command?: unknown;
     scope?: unknown;
+    held?: unknown;
   } | null;
   if (typeof decision?.approved !== "boolean" || typeof decision.command !== "string") return null;
   return {
@@ -1774,6 +1784,7 @@ function approvalDecisionMessage(
     command: decision.command,
     ...(typeof decision.requestId === "string" ? { requestId: decision.requestId } : {}),
     ...(typeof decision.scope === "string" ? { scope: decision.scope } : {}),
+    ...(typeof decision.held === "string" && decision.held ? { held: decision.held } : {}),
     timestamp: entry.createdAt,
   };
 }

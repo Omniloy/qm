@@ -208,6 +208,7 @@ export interface Destination {
   keychainAskId?: string;
   deploymentAccess?: { deploymentId: string; requesterId: string };
   commandApprovalId?: string;
+  cardUpdate?: { channel: string; ts: string };
   type: string;
   target: string;
   audienceScopeId?: ScopeId;
@@ -742,6 +743,7 @@ export interface PendingApprovalRecord {
   blocksInput?: boolean;
   kind?: "approval" | "input";
   securityHold?: SecurityHold;
+  card?: { channel: string; ts: string };
 }
 
 type ApprovalScope = "once" | "session" | "always";

@@ -1,3 +1,4 @@
+import { xmlEscape } from "../util/message-tag.ts";
 import { slackMessageToIngestEvent } from "./mirror.ts";
 import { messageWithForwardedContent } from "./forwards.ts";
 import type { SlackContextSource } from "./config.ts";
@@ -9,7 +10,6 @@ import type { BotIdentity } from "./directory.ts";
 import type { SlackHistoryMessage } from "./payloads.ts";
 import { parseMessageList } from "./payloads.ts";
 import { swallow } from "../util/errors.ts";
-import { escapeMrkdwn } from "./util.ts";
 
 interface SlackHistoryPage {
   raw: SlackHistoryMessage[];
@@ -224,7 +224,7 @@ export function createSlackHistoryReader(deps: {
           .map((m) => ({
             ts: m.ts,
             ...(m.subtype !== undefined ? { subtype: m.subtype } : {}),
-            text: escapeMrkdwn(m.text),
+            text: xmlEscape(m.text),
             ...(m.mentionsSelf ? { mentionsSelf: true } : {}),
             ...(m.sub ? { thread_ts: m.sub } : {}),
             ...(m.self || m.authorId ? { user: m.self ? deps.ids.botUserId : m.authorId } : {}),

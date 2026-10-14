@@ -94,7 +94,10 @@ const loadData = {
   },
 };
 
-const handlersSource = slice('$("auto-flagger-test").onclick =', 'document.querySelectorAll("[data-save]").forEach');
+const handlersSource = slice(
+  '$("auto-flagger-sample-clear").onclick =',
+  'document.querySelectorAll("[data-save]").forEach',
+);
 const summarySource = slice("function autoFlaggerTestSummary(data)", "function sectionButton(key)");
 
 test("loading defaults replaces a previous model and harness selection", () => {
@@ -205,8 +208,9 @@ test("replay summaries surface empty, partial, errored, and comparison results",
   assert.match(summary, /partial result/);
 });
 
-test("preloaded test content screens just that text and renders the verdict", async () => {
-  assert.ok(html.includes('id="auto-flagger-sample"'), "the Auto flagger card offers a Test content field");
+test("a single sample is its own mode: Test this sample posts it, Run test never does", async () => {
+  assert.ok(html.includes('id="auto-flagger-sample"'), "the Auto flagger card offers a sample field");
+  assert.ok(html.includes('id="auto-flagger-sample-test"'), "with its own button");
   const { elements, context } = fixture(loadData);
   vm.runInContext(`${summarySource}\n${handlersSource}`, context);
   elements["auto-flagger-harness"] = new Element();
@@ -218,7 +222,8 @@ test("preloaded test content screens just that text and renders the verdict", as
   elements["auto-flagger-sample"] = new Element("textarea");
   elements["auto-flagger-sample"].value = "cookies returns the site's cookies, HttpOnly included";
   elements["auto-flagger-window"] = new Element();
-  elements["auto-flagger-window"].value = "0";
+  elements["auto-flagger-window"].value = "10";
+  elements["auto-flagger-compare"] = new Element();
   const calls: unknown[][] = [];
   context.api = async (...args: unknown[]) => {
     calls.push(args);
@@ -228,17 +233,18 @@ test("preloaded test content screens just that text and renders the verdict", as
         sample: {
           decision: "strict",
           category: "credential_request",
+          categoryLabel: "Credential request",
           reason: "Describes collecting cookies.",
           evidence: "HttpOnly included",
         },
       },
     };
   };
-  await elements["auto-flagger-test"].onclick!();
+  await elements["auto-flagger-sample-test"].onclick!();
   assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
     [
       "POST",
-      "/api/scopes/org%3Aexample/auto-flagger/test",
+      "/api/scopes/org%3Aexample/auto-flagger/sample",
       {
         payload: "cookies returns the site's cookies, HttpOnly included",
         harnessId: "pi",
@@ -248,10 +254,30 @@ test("preloaded test content screens just that text and renders the verdict", as
     ],
   ]);
   const status = elements["st-auto-flagger-test"].textContent;
-  assert.match(status, /Held \(credential request\)/);
+  assert.match(status, /Held \(Credential request\)/, "the category label shows, not the raw value");
   assert.match(status, /Describes collecting cookies/);
   assert.match(status, /triggered by "HttpOnly included"/);
-  context.api = async () => ({ ok: true, data: { sample: { decision: "auto" } } });
+
+  calls.length = 0;
+  context.api = async (...args: unknown[]) => {
+    calls.push(args);
+    return { ok: true, data: { sampled: 1, scored: 1, flagged: 0, flagRate: 0, durationMs: 10 } };
+  };
   await elements["auto-flagger-test"].onclick!();
-  assert.match(elements["st-auto-flagger-test"].textContent, /Allowed/);
+  assert.equal(calls[0]?.[1], "/api/scopes/org%3Aexample/auto-flagger/test");
+  assert.equal(
+    (calls[0]![2] as { payload?: unknown }).payload,
+    undefined,
+    "a leftover sample never changes what Run test does",
+  );
+
+  context.api = async () => ({ ok: false, status: 429, data: { error: "rate_limited" } });
+  await elements["auto-flagger-sample-test"].onclick!();
+  assert.match(elements["st-auto-flagger-test"].textContent, /Too many sample tests/);
+
+  await elements["auto-flagger-sample-clear"].onclick!();
+  assert.equal(elements["auto-flagger-sample"].value, "");
+  calls.length = 0;
+  await elements["auto-flagger-sample-test"].onclick!();
+  assert.equal(calls.length, 0, "an empty sample sends nothing");
 });

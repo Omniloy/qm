@@ -285,6 +285,7 @@ export function createChatSurface(
     pins: [] as SessionPin[],
     pinsExpanded: false,
     labelSpeakers: false,
+    holdOutcome: null as { threadRef: string; message: string } | null,
   };
 
   const inlineSteers = new Map<number, { message: AgentMessage; index: number }>();
@@ -833,7 +834,12 @@ export function createChatSurface(
     drawActiveChat(agent);
     try {
       const threadRef = chatState.threadRef;
-      const runId = await resolveApproval(decision);
+      const resolution = await resolveApproval(decision);
+      if ("message" in resolution) {
+        chatState.holdOutcome = { threadRef, message: resolution.message };
+        return;
+      }
+      const { runId } = resolution;
       if (chatState.normalStreamFn && chatState.onWork)
         await resumeRun(agent, threadRef, chatState.normalStreamFn, chatState.onWork, runId, undefined, () => {
           releaseSubmission();
@@ -1592,6 +1598,7 @@ export function createChatSurface(
               ${emptyChat && !isNewUser && !editingApp && !showWelcome ? html`<h1 class="chat-cta">${chatCta()}</h1>` : nothing}
               ${ctx.pane ? suggestions : nothing}
               ${showStateError(messages, agent.state.errorMessage) ? html`<div class="composer-error inline">${agent.state.errorMessage}</div>` : nothing}
+              ${chatState.holdOutcome && chatState.holdOutcome.threadRef === chatState.threadRef ? html`<div class="hold-outcome" role="status">${chatState.holdOutcome.message}</div>` : nothing}
             </div>
           </section>
           <div class="chat-bottom-dock">
@@ -1829,6 +1836,14 @@ export function createChatSurface(
     }
     if (role === "approval-decision") {
       const decision = message as unknown as HistoryApprovalDecision;
+      if (decision.held)
+        return html`<article
+          class="message-row system-note-row"
+          data-index=${index}
+          data-entry-seqs=${messageEntrySeqs(message).join(" ")}
+        >
+          <div class="system-note">${decision.approved ? "Allowed once" : "Kept blocked"}: ${decision.held}</div>
+        </article>`;
       let label = "Approval denied";
       if (decision.approved) {
         const labels: Record<string, string> = {

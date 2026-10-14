@@ -142,11 +142,26 @@ async function postApprovalReport(ctx: ApiCtx): Promise<void> {
   if (!reporterId) return sendJson(res, 400, { error: "bad_request", message: "reporterId required" });
   const note = isObj(body) && typeof body.note === "string" ? body.note : undefined;
   const outcome = await app.reportSecurityHold(id, reporterId, note);
-  if (outcome.state === "created" || outcome.state === "exists")
+  if (outcome.state === "created" || outcome.state === "updated" || outcome.state === "exists")
     return sendJson(res, outcome.state === "created" ? 201 : 200, { reported: true, reportId: outcome.report.id });
   if (outcome.state === "unavailable") return sendJson(res, 501, { error: "unsupported" });
   if (outcome.state === "not_a_hold")
     return sendJson(res, 400, { error: "bad_request", message: "only security holds can be reported" });
+  return sendJson(res, 404, { error: "not_found" });
+}
+
+async function postScheduledHoldDecision(ctx: ApiCtx): Promise<void> {
+  const { res, app, actor, body } = ctx;
+  const id = ctx.params.id!;
+  if (!id || id.includes("/")) return sendJson(res, 404, { error: "not_found" });
+  const actorId = actor?.p ?? (isObj(body) && typeof body.actorId === "string" ? body.actorId : "");
+  const approved = isObj(body) ? body.approved : undefined;
+  if (!actorId || typeof approved !== "boolean")
+    return sendJson(res, 400, { error: "bad_request", message: "actorId and approved are required" });
+  const outcome = await app.resolveScheduledHold(id, actorId, approved);
+  if (outcome.state === "resolved") return sendJson(res, 200, { outcome: outcome.outcome, message: outcome.message });
+  if (outcome.state === "not_owner") return sendJson(res, 403, { error: "not_owner" });
+  if (outcome.state === "unavailable") return sendJson(res, 501, { error: "unsupported" });
   return sendJson(res, 404, { error: "not_found" });
 }
 
@@ -311,6 +326,7 @@ export const turnRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/approvals/pending", auth: "source", handle: getPendingApproval },
   { method: "GET", path: "/v1/approvals/:id", auth: "source", handle: getApproval },
   { method: "POST", path: "/v1/approvals/:id/report", auth: "source", handle: postApprovalReport },
+  { method: "POST", path: "/v1/approvals/:id/resolve-hold", auth: "source", handle: postScheduledHoldDecision },
   { method: "POST", path: "/v1/runs/:id/delivery-state", auth: "source", handle: postRunDeliveryState },
   { method: "POST", path: "/v1/runs/:id/signal", auth: "source", handle: postRunSignal },
   { method: "PATCH", path: "/v1/runs/:id/input", auth: "source", handle: patchQueuedRun },

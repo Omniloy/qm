@@ -42,7 +42,12 @@ test("screening reports and skill trusts reach the core admin API", async () => 
   assert.equal((await send("GET", "/api/screening-reports?status=all")).status, 200);
   assert.equal((await send("POST", "/api/screening-reports/r1/status", { status: "screen_correct" })).status, 200);
   assert.equal((await send("GET", "/api/skill-trusts")).status, 200);
-  assert.equal((await send("POST", "/api/skill-trusts", { skillId: "s1", version: 3 })).status, 200);
+  assert.equal((await send("GET", "/api/skill-trusts/preview?skillId=s1&version=3")).status, 200);
+  assert.equal((await send("POST", "/api/skill-trusts", { skillId: "s1", version: 3, contentHash: "h" })).status, 200);
+  assert.equal(
+    (await send("POST", `/api/scopes/${encodeURIComponent("org:acme")}/auto-flagger/sample`, { payload: "x" })).status,
+    200,
+  );
   assert.equal((await send("DELETE", `/api/skill-trusts/${encodeURIComponent("s1@3")}`)).status, 200);
   const admin = calls.filter((c) => c.url.startsWith("/v1/admin/"));
   assert.deepEqual(
@@ -51,7 +56,9 @@ test("screening reports and skill trusts reach the core admin API", async () => 
       ["GET", "/v1/admin/screening-reports?status=all", "U-admin@acme"],
       ["POST", "/v1/admin/screening-reports/r1/status", "U-admin@acme"],
       ["GET", "/v1/admin/skill-trusts", "U-admin@acme"],
+      ["GET", "/v1/admin/skill-trusts/preview?skillId=s1&version=3", "U-admin@acme"],
       ["POST", "/v1/admin/skill-trusts", "U-admin@acme"],
+      ["POST", "/v1/admin/scopes/org%3Aacme/auto-flagger/sample", "U-admin@acme"],
       ["DELETE", "/v1/admin/skill-trusts/s1%403", "U-admin@acme"],
     ],
   );

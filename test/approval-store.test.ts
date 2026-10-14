@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createApprovalStore } from "../src/core/approval-store.ts";
+import { approvalDeliveryRecipient, createApprovalStore } from "../src/core/approval-store.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import { createDeliveryStore } from "../src/delivery/delivery-store.ts";
 import type { PendingApprovalRecord } from "../src/types.ts";
@@ -93,63 +93,67 @@ test("system approvals stay pending without enqueuing or reviving an impossible 
   assert.equal((await deliveries.get(stale.id))?.expiredAt, expiredAt, "a sweep must not revive the stale DM");
 });
 
-test("a scheduled task's security hold is sent to the owner's DM, other unattended approvals are not", async () => {
+function cronHold(
+  threadRef: string,
+  createdAt: number,
+  extra: Partial<PendingApprovalRecord> = {},
+): PendingApprovalRecord {
+  const base = record(threadRef, createdAt);
+  return {
+    ...base,
+    request: { ...base.request!, surface: "cron", triggered: true, actor: { externalId: "U-floor" } },
+    securityHold: {
+      source: { kind: "command", command: "jira-followup --board MAR" },
+      category: "credential_request",
+      scheduledTask: { id: "c1", title: "Jira follow-ups", ownerId: "U-owner" },
+    },
+    ...extra,
+  };
+}
+
+test("a scheduled task's hold goes to the cron owner, not the acting member; legacy cron approvals stay put", async () => {
   const backing = createMemoryMap<PendingApprovalRecord>();
   const deliveries = createDeliveryStore();
   const approvals = createApprovalStore(backing, deliveries);
-  const cron = (threadRef: string, held: boolean): PendingApprovalRecord => ({
-    ...record(threadRef),
-    request: { ...record(threadRef).request!, surface: "cron", triggered: true },
-    ...(held
-      ? {
-          securityHold: {
-            source: { kind: "command", command: "jira-followup --board MAR" },
-            step: "Running a command · scheduled task Jira follow-ups",
-            category: "credential_request",
-            scheduledTask: { id: "c1", title: "Jira follow-ups" },
-          },
-        }
-      : {}),
-  });
-  await approvals.put("H1", cron("cron:c1:fire:a", true));
-  await approvals.put("H2", cron("cron:c1:fire:b", false));
+  await approvals.put("H1", cronHold("cron:c1:fire:a", 1));
+  const legacy = cronHold("cron:c2:fire:a", 1);
+  delete legacy.securityHold;
+  await approvals.put("L1", legacy);
   await approvals.deliverPending();
   const pending = await deliveries.pending("principal");
   assert.deepEqual(
     pending.map((d) => [d.destination.commandApprovalId, d.destination.target]),
-    [["H1", "U1"]],
-    "only the structured hold reaches the owner; legacy unattended approvals stay where they were",
+    [["H1", "U-owner"]],
   );
   assert.match(pending[0]!.text, /scheduled task paused/);
+  assert.equal(approvalDeliveryRecipient(cronHold("x", 1)), "U-owner");
+  const ownerless = cronHold("x", 1);
+  delete ownerless.securityHold!.scheduledTask!.ownerId;
+  assert.equal(approvalDeliveryRecipient(ownerless), "U-floor", "the actor is the fallback when the cron has no owner");
 });
 
-test("repeat fires of a task held on the same source send the owner one card at a time", async () => {
+test("a newer fire held on the same source supersedes older holds and updates their posted card", async () => {
   const backing = createMemoryMap<PendingApprovalRecord>();
   const deliveries = createDeliveryStore();
   const approvals = createApprovalStore(backing, deliveries);
-  const fire = (threadRef: string, createdAt: number): PendingApprovalRecord => ({
-    ...record(threadRef, createdAt),
-    request: { ...record(threadRef).request!, surface: "cron", triggered: true },
-    securityHold: {
-      source: { kind: "command", command: "jira-followup" },
-      step: "Running a command · scheduled task c1",
-      category: "credential_request",
-      scheduledTask: { id: "c1" },
-    },
-  });
-  await approvals.put("F1", fire("cron:c1:fire:a", 1));
-  await approvals.put("F2", fire("cron:c1:fire:b", 2));
-  await approvals.put("F3", fire("cron:c1:fire:c", 3));
-  await approvals.deliverPending();
-  assert.deepEqual(
-    (await deliveries.pending("principal")).map((d) => d.destination.commandApprovalId),
-    ["F1"],
+  await approvals.put("F1", cronHold("cron:c1:fire:a", 1, { card: { channel: "D1", ts: "100.1" } }));
+  await approvals.put("F2", cronHold("cron:c1:fire:b", 2));
+  const other = cronHold("cron:c1:fire:c", 3);
+  other.securityHold!.source = { kind: "web", host: "x.test", tool: "fetch" };
+  await approvals.put("O1", other);
+  assert.equal(await backing.get("F1"), null, "the older hold on the same source is gone");
+  assert.ok(await backing.get("F2"));
+  assert.ok(await backing.get("O1"), "a hold on a different source is independent");
+  const update = (await deliveries.pending("principal")).find((d) => d.destination.cardUpdate);
+  assert.deepEqual(update?.destination.cardUpdate, { channel: "D1", ts: "100.1" });
+  assert.match(update!.text, /Superseded: a newer run of Jira follow-ups/);
+
+  await approvals.put("F0", cronHold("cron:c1:fire:z", 0));
+  assert.equal(await backing.get("F0"), null, "an out-of-order older hold is superseded on arrival");
+  assert.ok(
+    !(await deliveries.pending("principal")).some((d) => d.destination.commandApprovalId === "F0"),
+    "and never delivered",
   );
-  await approvals.take("F1");
   await approvals.deliverPending();
-  assert.deepEqual(
-    (await deliveries.pending("principal")).map((d) => d.destination.commandApprovalId).sort(),
-    ["F1", "F2"],
-    "once the first is resolved the next waiting hold is delivered",
-  );
+  assert.ok(await backing.get("F2"), "the sweep keeps the latest hold");
 });

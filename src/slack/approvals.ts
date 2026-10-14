@@ -1,3 +1,4 @@
+import { xmlEscape } from "../util/message-tag.ts";
 import { isSubagentThreadRef } from "../sessions/session-syscalls.ts";
 import { errMessage, swallow, swallowAs } from "../util/errors.ts";
 import { slackFailureClause, slackFailureText } from "./turn-flow.ts";
@@ -29,7 +30,8 @@ import {
   uploadFailureNote,
 } from "./lib.ts";
 import { securityHoldView, type SecurityHold } from "../security/security-hold.ts";
-import { escapeMrkdwn } from "./util.ts";
+import { scheduledHoldDecider } from "../core/approval-store.ts";
+import { samePerson } from "../directory/person.ts";
 import { resolveAgentRequestTarget } from "./approval-context.ts";
 import { parseBlockAction, parseInteractionBody } from "./payloads.ts";
 import type { SlackAgentRequestContext, SlackCoreClient } from "../api/slack-core-client.ts";
@@ -81,7 +83,7 @@ interface SlackApprovalContext {
 type ApprovalScope = "once" | "session" | "always";
 
 function heldOutcomeText(hold: SecurityHold, outcome: "allowed" | "kept"): string {
-  const title = escapeMrkdwn(securityHoldView(hold).title.replace(/^Paused: /, ""));
+  const title = xmlEscape(securityHoldView(hold).title.replace(/^Paused: /, ""));
   return outcome === "allowed"
     ? `:shield: Allowed once: ${title}. The assistant is reading it for this step...`
     : `:shield: Kept blocked: ${title}. The assistant stopped without it.`;
@@ -515,6 +517,50 @@ export function createApprovals(deps: {
     ].join("\n");
   }
 
+  const decidingHolds = new Set<string>();
+
+  async function decideScheduledHold(
+    client: any,
+    stored: StoredApproval,
+    clickerId: string,
+    channel: string,
+    messageTs: string | undefined,
+    approved: boolean,
+  ): Promise<void> {
+    const decider = scheduledHoldDecider(stored as never)!;
+    const actor = clickerId === decider ? { externalId: decider } : await directory.classifyActor(client, clickerId);
+    if (!samePerson(actor.externalId, decider)) {
+      await client.chat
+        .postEphemeral({ channel, user: clickerId, text: "Only the scheduled task's owner can decide this hold." })
+        .catch(swallowAs("slack: chat.postEphemeral", undefined));
+      return;
+    }
+    if (decidingHolds.has(stored.requestId)) return;
+    decidingHolds.add(stored.requestId);
+    try {
+      if (messageTs)
+        await updateSlackMessage(
+          client,
+          channel,
+          messageTs,
+          approved ? ":shield: Allowed once; continuing the scheduled run…" : ":shield: Keeping it blocked…",
+        ).catch(swallowAs("slack: update approval message", undefined));
+      const outcome = await core.resolveScheduledHold(stored.requestId, actor.externalId, approved);
+      let text = "That hold expired or was replaced by a newer run of the task.";
+      if (outcome.state === "resolved") text = outcome.message;
+      else if (outcome.state === "unavailable") text = "I couldn't resume the scheduled task here.";
+      if (messageTs) await updateSlackMessage(client, channel, messageTs, `:shield: ${xmlEscape(text)}`);
+    } catch (err) {
+      console.error("%s", `[slack] scheduled hold ${stored.requestId} decision failed:`, errMessage(err));
+      if (messageTs)
+        await updateSlackMessage(client, channel, messageTs, `⚠️ ${xmlEscape(slackFailureText(err))}`).catch(
+          swallowAs("slack: update approval message", undefined),
+        );
+    } finally {
+      decidingHolds.delete(stored.requestId);
+    }
+  }
+
   async function handleApprovalAction({ ack, body, action, client }: ActionArgs): Promise<void> {
     await ack();
     const parsed = parseBlockAction(action, APPROVAL_ACTION_IDS);
@@ -570,6 +616,10 @@ export function createApprovals(deps: {
           })
           .catch(swallowAs("slack: chat.postEphemeral", undefined));
       }
+      return;
+    }
+    if (fetched.state === "found" && scheduledHoldDecider(fetched.stored as never)) {
+      await decideScheduledHold(client, fetched.stored, clickerId, channel, messageTs, actionId !== "hilo_deny");
       return;
     }
     const rebuilt =

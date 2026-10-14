@@ -96,13 +96,21 @@ export function isSourceManagedSkill(skill: Pick<Skill, "createdBy" | "pack">): 
   return skill.pack !== undefined || PLATFORM_SKILL_AUTHOR.test(skill.createdBy);
 }
 
+function packIdOf(skill: Pick<Skill, "createdBy" | "pack">): string | undefined {
+  return (
+    skill.pack?.packId ?? (skill.createdBy.startsWith("pack:") ? skill.createdBy.slice("pack:".length) : undefined)
+  );
+}
+
 export function skillIdentity(skill: Skill): SkillIdentity {
+  const packId = packIdOf(skill);
   return {
     skillId: skill.id,
     name: skill.manifest.name,
     version: skill.version,
     contentHash: createHash("sha256").update(canonicalManifest(skill.manifest)).digest("hex").slice(0, 32),
-    builtIn: isSourceManagedSkill(skill),
+    builtIn: skill.pack === undefined && skill.createdBy.startsWith("system:"),
+    ...(packId ? { packId } : {}),
   };
 }
 

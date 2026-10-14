@@ -1,4 +1,5 @@
-import { clip, escapeMrkdwn, inlineCode } from "./util.ts";
+import { xmlEscape } from "../util/message-tag.ts";
+import { clip, inlineCode } from "./util.ts";
 import { securityHoldView, type SecurityHold } from "../security/security-hold.ts";
 import { parseDeliveryTarget } from "./delivery.ts";
 import type { AgentRequestActionId } from "./agent-requests.ts";
@@ -25,6 +26,8 @@ export interface SlackApprovalMessage {
 }
 
 const APPROVAL_BLOCK_PREFIX = "hilo_approval:";
+const MAX_CARD_BLOCKS = 50;
+const SECURITY_HOLD_BLOCKS = 5;
 
 export function button(
   text: string,
@@ -58,14 +61,27 @@ export function approvalMessage(approvals: readonly PendingApproval[]): SlackApp
     : [{ requestId: "", command: "unknown command", reason: "requires approval" }];
   const describe = (p: (typeof items)[number]): string => {
     if (p.kind === "input") return "My security screen flagged part of this message. Allow it?";
-    if (p.purpose) return `Approval needed: ${clip(p.purpose, 400)}`;
+    if (p.purpose) return `Approval needed: ${xmlEscape(clip(p.purpose, 400))}`;
     return `Approval needed before I can run ${inlineCode(p.command)}.`;
   };
   const text = items
-    .map((p) => (p.securityHold ? `${securityHoldView(p.securityHold).title} needs your OK.` : describe(p)))
+    .map((p) => (p.securityHold ? `${xmlEscape(securityHoldView(p.securityHold).title)} needs your OK.` : describe(p)))
     .join("\n");
   const blocks: Array<Record<string, unknown>> = [];
-  for (const p of items) {
+  for (const [index, p] of items.entries()) {
+    const needed = p.securityHold ? SECURITY_HOLD_BLOCKS : 2;
+    if (blocks.length + needed > MAX_CARD_BLOCKS - 1) {
+      blocks.push({
+        type: "context",
+        elements: [
+          {
+            type: "mrkdwn",
+            text: `${items.length - index} more ${items.length - index === 1 ? "approval is" : "approvals are"} waiting. Open the conversation in the web app to see them all.`,
+          },
+        ],
+      });
+      break;
+    }
     if (p.securityHold) {
       blocks.push(...securityHoldBlocks(p.requestId, p.securityHold));
       continue;
@@ -75,10 +91,10 @@ export function approvalMessage(approvals: readonly PendingApproval[]): SlackApp
         ? ":lock: *My security screen flagged part of this message. Allow it?*"
         : ":lock: *Approval needed.*",
     ];
-    if (p.summary) lines.push(clip(p.summary, 400));
-    if (p.purpose) lines.push(`*Why:* ${clip(p.purpose, 400)}`);
+    if (p.summary) lines.push(xmlEscape(clip(p.summary, 400)));
+    if (p.purpose) lines.push(`*Why:* ${xmlEscape(clip(p.purpose, 400))}`);
     if (p.kind !== "input") lines.push(`*Command:* ${inlineCode(p.command)}`);
-    lines.push(`*Flagged as:* ${clip(p.reason, 200)}`);
+    lines.push(`*Flagged as:* ${xmlEscape(clip(p.reason, 200))}`);
     blocks.push({
       type: "section",
       text: { type: "mrkdwn", text: clip(lines.join("\n"), 2900) },
@@ -100,29 +116,29 @@ export function approvalMessage(approvals: readonly PendingApproval[]): SlackApp
 function quoted(text: string): string {
   return text
     .split("\n")
-    .map((line) => `>${escapeMrkdwn(line)}`)
+    .map((line) => `>${xmlEscape(line)}`)
     .join("\n");
 }
 
 function securityHoldBlocks(requestId: string, hold: SecurityHold): Array<Record<string, unknown>> {
   const view = securityHoldView(hold);
   const title = view.subject
-    ? escapeMrkdwn(view.title).replace(escapeMrkdwn(view.subject), inlineCode(view.subject))
-    : escapeMrkdwn(view.title);
+    ? xmlEscape(view.title).replace(xmlEscape(view.subject), () => inlineCode(view.subject!))
+    : xmlEscape(view.title);
   const facts = view.facts.map((fact) => `${fact.label}: ${fact.value}`);
   return [
     {
       type: "section",
       text: {
         type: "mrkdwn",
-        text: clip(`:shield: *${title} needs your OK*\n${escapeMrkdwn(view.explanation)}`, 2900),
+        text: clip(`:shield: *${title} needs your OK*\n${xmlEscape(view.explanation)}`, 2900),
       },
     },
     ...(view.evidence
       ? [
           {
             type: "section",
-            text: { type: "mrkdwn", text: clip(`*Text that triggered it*\n${quoted(view.evidence)}`, 2900) },
+            text: { type: "mrkdwn", text: clip(`*Text the screener flagged*\n${quoted(view.evidence)}`, 2900) },
           },
         ]
       : []),
@@ -131,7 +147,7 @@ function securityHoldBlocks(requestId: string, hold: SecurityHold): Array<Record
       elements: [
         {
           type: "mrkdwn",
-          text: clip(escapeMrkdwn([...facts, `Category: ${view.categoryLabel}`].join(" · ")), 2900),
+          text: clip(xmlEscape([...facts, `Category: ${view.categoryLabel}`].join(" · ")), 2900),
         },
       ],
     },
@@ -139,10 +155,7 @@ function securityHoldBlocks(requestId: string, hold: SecurityHold): Array<Record
       type: "section",
       text: {
         type: "mrkdwn",
-        text: clip(
-          `*Allow once:* ${escapeMrkdwn(view.allowEffect)}\n*Keep blocked:* ${escapeMrkdwn(view.keepEffect)}`,
-          2900,
-        ),
+        text: clip(`*Allow once:* ${xmlEscape(view.allowEffect)}\n*Keep blocked:* ${xmlEscape(view.keepEffect)}`, 2900),
       },
     },
     {

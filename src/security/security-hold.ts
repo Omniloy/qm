@@ -2,11 +2,10 @@ import type { SecurityScreenCategory, ToolResultContext } from "./security-postu
 
 export interface SecurityHold {
   source: ToolResultContext;
-  step: string;
   category: SecurityScreenCategory;
   reason?: string;
   evidence?: string;
-  scheduledTask?: { id: string; title?: string };
+  scheduledTask?: { id: string; title?: string; ownerId?: string };
 }
 
 interface SecurityHoldFact {
@@ -16,6 +15,7 @@ interface SecurityHoldFact {
 
 export interface SecurityHoldView {
   title: string;
+  held: string;
   subject?: string;
   categoryLabel: string;
   explanation: string;
@@ -58,17 +58,18 @@ export function securityHoldSourceKey(source: ToolResultContext): string {
   }
 }
 
-export function securityHoldSourceLabel(source: ToolResultContext): string {
+function securityHoldSourceLabel(source: ToolResultContext): string {
   switch (source.kind) {
     case "skill": {
       let standing = source.owner ? `owned by ${source.owner}` : "shared skill";
-      if (source.builtIn) standing = "built-in, managed by the org";
+      if (source.packId) standing = `Skill pack ${source.packId}`;
+      if (source.builtIn) standing = "built-in";
       return `Skill ${source.name} · v${source.version} · ${standing}`;
     }
     case "command":
       return `Command: ${source.command}`;
     case "web":
-      return `Content from ${source.host} (via ${source.tool})`;
+      return `Requested URL host: ${source.host} (via ${source.tool})`;
     case "file":
       return `File ${source.path}`;
     case "tool":
@@ -76,11 +77,19 @@ export function securityHoldSourceLabel(source: ToolResultContext): string {
   }
 }
 
-export function securityHoldStep(source: ToolResultContext, scheduledTask?: SecurityHold["scheduledTask"]): string {
+export function securityHoldGroupLabel(source: ToolResultContext): string {
+  if (source.kind === "command") return "Commands";
+  if (source.kind === "file") return "Files";
+  if (source.kind === "skill") return `Skill ${source.name}`;
+  return securityHoldSourceLabel(source);
+}
+
+export function securityHoldStep(hold: Pick<SecurityHold, "source" | "scheduledTask">): string {
+  const { source, scheduledTask } = hold;
   let step: string;
   switch (source.kind) {
     case "skill":
-      step = source.path ? `Reading ${source.path} from the skill` : "Reading the skill's instructions";
+      step = skillAsset(source) ? `Reading ${source.path} from the skill` : "Reading the skill's instructions";
       break;
     case "command":
       step = source.purpose ? `Running a command: ${source.purpose}` : "Running a command";
@@ -98,37 +107,55 @@ export function securityHoldStep(source: ToolResultContext, scheduledTask?: Secu
   return scheduledTask ? `${step} · scheduled task ${scheduledTask.title ?? scheduledTask.id}` : step;
 }
 
-function heldContent(source: ToolResultContext): { title: string; subject?: string; what: string; without: string } {
+function skillAsset(source: Extract<ToolResultContext, { kind: "skill" }>): boolean {
+  return source.path !== undefined && source.path !== "SKILL.md";
+}
+
+interface HeldContent {
+  title: string;
+  subject?: string;
+  what: string;
+  plural: boolean;
+}
+
+function heldContent(source: ToolResultContext): HeldContent {
   switch (source.kind) {
     case "skill":
-      return {
-        title: `Paused: content from the ${source.name} skill`,
-        subject: source.name,
-        what: `the ${source.name} skill's instructions`,
-        without: `the ${source.name} instructions`,
-      };
+      return skillAsset(source)
+        ? {
+            title: `Paused: content from the ${source.name} skill`,
+            subject: source.name,
+            what: `content from the ${source.name} skill (${source.path})`,
+            plural: false,
+          }
+        : {
+            title: `Paused: content from the ${source.name} skill`,
+            subject: source.name,
+            what: `the ${source.name} skill's instructions`,
+            plural: true,
+          };
     case "command":
-      return { title: "Paused: output of a command", what: "the output of a command", without: "the command's output" };
+      return { title: "Paused: output of a command", what: "the output of a command", plural: false };
     case "web":
       return {
         title: `Paused: content from ${source.host}`,
         subject: source.host,
         what: `content fetched from ${source.host}`,
-        without: "this content",
+        plural: false,
       };
     case "file":
       return {
         title: `Paused: content of ${source.path}`,
         subject: source.path,
         what: `the file ${source.path}`,
-        without: "this file",
+        plural: false,
       };
     case "tool":
       return {
         title: `Paused: output of the ${source.tool} tool`,
         subject: source.tool,
         what: `the output of the ${source.tool} tool`,
-        without: "this output",
+        plural: false,
       };
   }
 }
@@ -136,29 +163,28 @@ function heldContent(source: ToolResultContext): { title: string; subject?: stri
 export function securityHoldView(hold: SecurityHold): SecurityHoldView {
   const held = heldContent(hold.source);
   const task = hold.scheduledTask ? (hold.scheduledTask.title ?? hold.scheduledTask.id) : undefined;
-  const title = task && hold.source.kind === "command" ? `Paused: output of a command in ${task}` : held.title;
-  const subject = task && hold.source.kind === "command" ? task : held.subject;
+  const commandInTask = task !== undefined && hold.source.kind === "command";
+  const title = commandInTask ? `Paused: output of a command in ${task}` : held.title;
+  const subject = commandInTask ? task : held.subject;
+  const [pronoun, verb] = held.plural ? ["them", "they appear"] : ["it", "it appears"];
   const unattended = task ? ` It happened in the scheduled task ${task}, so nobody was there to approve it.` : "";
-  const builtInNote =
-    hold.source.kind === "skill" && hold.source.builtIn
-      ? " It's built-in documentation, so allowing it is usually safe."
-      : "";
   return {
     title,
+    held: title.replace(/^Paused: /, ""),
     ...(subject ? { subject } : {}),
     categoryLabel: SECURITY_CATEGORY_LABELS[hold.category],
-    explanation: `The security screen held back ${held.what} before the assistant read it, because it appears to ${CATEGORY_CONCERNS[hold.category]}.${unattended}`,
+    explanation: `The security screen held back ${held.what} before the assistant read ${pronoun}, because ${verb} to ${CATEGORY_CONCERNS[hold.category]}.${unattended}`,
     facts: [
       { label: "Source", value: securityHoldSourceLabel(hold.source) },
-      { label: "Step", value: hold.step },
+      { label: "Step", value: securityHoldStep(hold) },
       ...(hold.reason ? [{ label: "Screener's reason", value: hold.reason }] : []),
     ],
     ...(hold.evidence ? { evidence: hold.evidence } : {}),
     allowEffect: task
-      ? `The content is passed to the assistant once and this run of ${task} continues.${builtInNote}`
-      : `The assistant reads this content for this step only and carries on.${builtInNote}`,
+      ? `The assistant gets this exact content once, as untrusted data, and this run of ${task} carries on and delivers as usual. It stays in that run's history.`
+      : "The assistant gets this exact content once, as untrusted data, and carries on. It stays in this conversation's history.",
     keepEffect: task
-      ? `This run of ${task} stops without ${held.without}. The next scheduled run starts fresh.`
-      : `The assistant stops here without ${held.without}. Send a message to carry on without it.`,
+      ? `This run of ${task} stops without it and delivers nothing. The next scheduled run starts fresh.`
+      : "The content stays out of the conversation and the assistant stops here. Send a message to carry on without it.",
   };
 }

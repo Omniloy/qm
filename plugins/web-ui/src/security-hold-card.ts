@@ -21,6 +21,15 @@ export interface SecurityHoldActions {
 
 const holdUi = new Map<string, HoldUiState>();
 
+export function pruneHoldUi(pendingRequestIds: Iterable<string>): void {
+  const live = new Set(pendingRequestIds);
+  for (const requestId of holdUi.keys()) if (!live.has(requestId)) holdUi.delete(requestId);
+}
+
+function focusAfterRender(card: HTMLElement | null, selector: string): void {
+  queueMicrotask(() => card?.querySelector<HTMLElement>(selector)?.focus());
+}
+
 function uiFor(requestId: string): HoldUiState {
   let state = holdUi.get(requestId);
   if (!state) {
@@ -56,8 +65,11 @@ export function securityHoldCard(
   actions: SecurityHoldActions,
 ): TemplateResult {
   const ui = uiFor(a.requestId);
+  const cardOf = (event: Event): HTMLElement | null =>
+    (event.currentTarget as HTMLElement | null)?.closest<HTMLElement>(".hold-card") ?? null;
   const sendReport = async (event: Event): Promise<void> => {
     event.preventDefault();
+    const card = cardOf(event);
     if (ui.sending) return;
     ui.sending = true;
     ui.error = undefined;
@@ -66,6 +78,7 @@ export function securityHoldCard(
       await actions.report(a.requestId, ui.note);
       ui.reported = true;
       ui.reporting = false;
+      focusAfterRender(card, ".hold-sent");
     } catch {
       ui.error = "Could not send the report. Try again.";
     } finally {
@@ -74,14 +87,16 @@ export function securityHoldCard(
     }
   };
   return html`<div class="hold-card" role="group" aria-label=${view.title}>
+    ${holdHead(view)}
     ${
       ui.reported
-        ? html`<div class="hold-sent" role="status">
+        ? html`<div class="hold-sent" role="status" tabindex="-1">
             ${icon(ShieldAlert, 16)}<span
-              >Reported to your admins as a possible false positive. The content is still blocked; choose below.</span
+              >Saved for your admins to review as a possible false positive. The content is still blocked; choose
+              below.</span
             >
           </div>`
-        : holdHead(view)
+        : nothing
     }
     <div class="hold-body">
       <p class="hold-explain">${view.explanation}</p>
@@ -95,7 +110,7 @@ export function securityHoldCard(
       ${
         view.evidence
           ? html`<div class="hold-quote">
-              <span class="hold-quote-label">Text that triggered it</span><mark>${view.evidence}</mark>
+              <span class="hold-quote-label">Text the screener flagged</span><mark>${view.evidence}</mark>
             </div>`
           : nothing
       }
@@ -145,6 +160,7 @@ export function securityHoldCard(
               ? html`<button
                   type="button"
                   class="hold-link"
+                  aria-expanded=${ui.showBlocked ? "true" : "false"}
                   @click=${() => {
                     ui.showBlocked = !ui.showBlocked;
                     actions.redraw();
@@ -160,9 +176,11 @@ export function securityHoldCard(
               : html`<button
                   type="button"
                   class="hold-link"
-                  @click=${() => {
-                    ui.reporting = true;
+                  aria-expanded=${ui.reporting ? "true" : "false"}
+                  @click=${(event: Event) => {
+                    ui.reporting = !ui.reporting;
                     actions.redraw();
+                    if (ui.reporting) focusAfterRender(cardOf(event), "textarea");
                   }}
                 >
                   Looks wrong? Report a false positive

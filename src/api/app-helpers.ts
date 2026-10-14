@@ -182,7 +182,7 @@ export function createAppHelpers(deps: AppDeps, app: App) {
       ...(r.grantModes ? { grantModes: r.grantModes } : {}),
       blocksInput: r.blocksInput !== false,
       ...(r.kind === "approval" ? { kind: r.kind } : {}),
-      ...(r.securityHold ? { securityHold: r.securityHold, securityHoldView: securityHoldView(r.securityHold) } : {}),
+      ...(r.securityHold ? { securityHoldView: securityHoldView(r.securityHold) } : {}),
     }));
   }
 

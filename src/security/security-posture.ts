@@ -104,6 +104,7 @@ export interface SkillIdentity {
   version: number;
   contentHash: string;
   builtIn: boolean;
+  packId?: string;
 }
 
 export type ToolResultContext =
@@ -133,11 +134,12 @@ export function toolResultContextOf(
   tool: string,
   call: Record<string, unknown> | undefined,
   summary: Record<string, unknown>,
+  mask: (text: string) => string = (text) => text,
 ): ToolResultContext {
   const action = nonEmpty(summary.action) ?? nonEmpty(call?.action);
   const command = nonEmpty(call?.command);
   if (command) {
-    const redacted = redactCommand(command);
+    const redacted = redactCommand(mask(command));
     const purpose = nonEmpty(call?.purpose);
     return {
       kind: "command",
@@ -266,23 +268,22 @@ export function securityScreenCategoryFromLabel(label: string): SecurityScreenCa
   return CATEGORY_SIGNALS.find(([pattern]) => pattern.test(normalized))?.[1] ?? "other";
 }
 
-function screenedStrings(payload: string): string[] {
+function screenedData(payload: string): string[] {
+  let parsed: unknown;
   try {
-    const out: string[] = [];
-    const walk = (value: unknown): void => {
-      if (typeof value === "string")
-        out.push(
-          value,
-          ...(value.trim().startsWith("[") || value.trim().startsWith("{") ? screenedStrings(value) : []),
-        );
-      else if (Array.isArray(value)) value.forEach(walk);
-      else if (value && typeof value === "object") Object.values(value).forEach(walk);
-    };
-    walk(JSON.parse(payload));
-    return out.length ? out : [payload];
+    parsed = JSON.parse(payload);
   } catch {
     return [payload];
   }
+  const envelopes = Array.isArray(parsed) ? parsed : [parsed];
+  return envelopes.flatMap((item): string[] => {
+    if (typeof item === "string") return [item];
+    if (!isObj(item)) return [];
+    if (typeof item.payload === "string") return screenedData(item.payload);
+    return Object.entries(item).flatMap(([key, value]) =>
+      key !== "source" && typeof value === "string" ? [value] : [],
+    );
+  });
 }
 
 const collapseWhitespace = (text: string): string => text.replace(/\s+/g, " ").trim();
@@ -293,7 +294,7 @@ export function withVerifiedEvidence(
 ): SecurityScreenVerdict | undefined {
   if (!verdict?.evidence) return verdict;
   const needle = collapseWhitespace(verdict.evidence);
-  const found = needle.length > 0 && screenedStrings(payload).some((text) => collapseWhitespace(text).includes(needle));
+  const found = needle.length > 0 && screenedData(payload).some((text) => collapseWhitespace(text).includes(needle));
   if (found) return { ...verdict, evidence: needle };
   const { evidence: _dropped, ...rest } = verdict;
   return rest;

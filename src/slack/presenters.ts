@@ -1,4 +1,5 @@
-import { escapeMrkdwn, sleep } from "./util.ts";
+import { xmlEscape } from "../util/message-tag.ts";
+import { sleep } from "./util.ts";
 import { slackSectionBlocks } from "./mrkdwn.ts";
 import type { DeliveryMetadata } from "./delivery.ts";
 
@@ -154,7 +155,7 @@ export function renderTaskList(tasks: RunTaskView[]): string {
       .replace(/\s+/g, " ")
       .trim();
     const bounded = oneLine.length > 120 ? `${oneLine.slice(0, 119)}…` : oneLine;
-    return escapeMrkdwn(bounded);
+    return xmlEscape(bounded);
   };
   const noun = tasks.length === 1 ? "task" : "tasks";
   const shown = tasks.slice(0, 20);
@@ -290,7 +291,7 @@ export function renderGoalNotice(goal: GoalNoticeView): string {
     .replace(/\s+/g, " ")
     .trim();
   const bounded = oneLine.length > 140 ? `${oneLine.slice(0, 139)}…` : oneLine;
-  const objective = escapeMrkdwn(bounded);
+  const objective = xmlEscape(bounded);
   if (goal.status === "complete") return `✓ Goal complete: ${objective}`;
   if (goal.status === "blocked") return `✕ Goal blocked: ${objective}`;
   if (goal.status === "paused") return `⏸ Goal paused: ${objective}`;

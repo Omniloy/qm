@@ -8777,7 +8777,8 @@
         if (sample.unscreened)
           return "The screener could not check this content" + (sample.reason ? ": " + sample.reason : ".");
         if (sample.decision !== "strict") return "Allowed — this rubric would not hold this content.";
-        const parts = ["Held" + (sample.category ? " (" + sample.category.replace(/_/g, " ") + ")" : "")];
+        const label = sample.categoryLabel || "";
+        const parts = ["Held" + (label ? " (" + label + ")" : "")];
         if (sample.reason) parts.push(sample.reason);
         if (sample.evidence) parts.push('triggered by "' + sample.evidence + '"');
         return parts.join(" · ");
@@ -8951,35 +8952,49 @@
         } else governanceUI.status(key, message, "ok");
       }
       let governanceSaveSeq = 0;
+      $("auto-flagger-sample-clear").onclick = () => {
+        $("auto-flagger-sample").value = "";
+      };
+      $("auto-flagger-sample-test").onclick = async () => {
+        const requestedScope = scope;
+        const button = $("auto-flagger-sample-test");
+        const sampleText = $("auto-flagger-sample").value || "";
+        $("auto-flagger-test-result").hidden = false;
+        if (!sampleText.trim())
+          return setStatus("st-auto-flagger-test", "Paste some content to test first.", "err", true);
+        setStatus("st-auto-flagger-test", "Screening the sample with this rubric…", "", true);
+        button.disabled = true;
+        try {
+          const r = await api("POST", "/api/scopes/" + encodeURIComponent(requestedScope) + "/auto-flagger/sample", {
+            payload: sampleText,
+            harnessId: $("auto-flagger-harness").value,
+            modelId: $("auto-flagger-model").value,
+            rubric: $("auto-flagger-rubric").value,
+          });
+          if (requestedScope !== scope) return;
+          if (r.status === 429)
+            return setStatus(
+              "st-auto-flagger-test",
+              "Too many sample tests just now. Wait a minute and try again.",
+              "err",
+              true,
+            );
+          if (!r.ok) return setStatus("st-auto-flagger-test", r.data?.message || "Sample test failed.", "err", true);
+          const decision = r.data?.sample?.decision;
+          setStatus(
+            "st-auto-flagger-test",
+            autoFlaggerSampleSummary(r.data?.sample),
+            { strict: "warn", auto: "ok" }[decision] || "err",
+            true,
+          );
+        } finally {
+          button.disabled = false;
+        }
+      };
       $("auto-flagger-test").onclick = async () => {
         const requestedScope = scope;
         const button = $("auto-flagger-test");
         $("auto-flagger-test-result").hidden = false;
-        const sampleText = $("auto-flagger-sample").value || "";
-        if (sampleText.trim()) {
-          setStatus("st-auto-flagger-test", "Screening the test content with this rubric…", "", true);
-          button.disabled = true;
-          try {
-            const r = await api("POST", "/api/scopes/" + encodeURIComponent(requestedScope) + "/auto-flagger/test", {
-              payload: sampleText,
-              harnessId: $("auto-flagger-harness").value,
-              modelId: $("auto-flagger-model").value,
-              rubric: $("auto-flagger-rubric").value,
-            });
-            if (requestedScope !== scope) return;
-            if (!r.ok) return setStatus("st-auto-flagger-test", r.data?.message || "Test run failed.", "err", true);
-            const decision = r.data?.sample?.decision;
-            setStatus(
-              "st-auto-flagger-test",
-              autoFlaggerSampleSummary(r.data?.sample),
-              { strict: "warn", auto: "ok" }[decision] || "err",
-              true,
-            );
-          } finally {
-            button.disabled = false;
-          }
-          return;
-        }
         const windowField = $("auto-flagger-window");
         const requested = Number(windowField.value);
         if (!Number.isInteger(requested) || requested < 1 || requested > 500) {
