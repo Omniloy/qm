@@ -4,7 +4,8 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createExecProcessSessions, type ExecProcessIo, redactCommand } from "../src/sandbox/exec-process-session.ts";
+import { createExecProcessSessions, type ExecProcessIo } from "../src/sandbox/exec-process-session.ts";
+import { redactCommand } from "../src/security/secret-masking.ts";
 import type { ExecResult, SandboxHandle } from "../src/sandbox/sandbox.ts";
 
 function shellIo(home: string): ExecProcessIo {

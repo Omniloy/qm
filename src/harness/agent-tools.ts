@@ -25,6 +25,8 @@ import {
   toolResultProvenance,
   unscreenedNotice,
   UNSCREENED_PREFIX,
+  toolResultContextOf,
+  type ToolResultContext,
   type ToolResultProvenance,
   type ToolResultScreen,
   type ToolResultScreenInput,
@@ -439,8 +441,11 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     await ref.emit({ type, payload, scopeLabel });
   };
 
-  const recordCall = (callId: string, payload: Record<string, unknown>): Promise<void> =>
-    log("tool_call", { ...sandboxLog(payload), callId });
+  const callPayloads = new Map<string, Record<string, unknown>>();
+  const recordCall = (callId: string, payload: Record<string, unknown>): Promise<void> => {
+    callPayloads.set(callId, payload);
+    return log("tool_call", { ...sandboxLog(payload), callId });
+  };
 
   const resultQueue = createKeyedQueue();
   const quarantinedMessages = new Set<string>();
@@ -452,10 +457,12 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     sourceScopeId?: ScopeId | null,
     coreAuthored = false,
     display?: Record<string, unknown>,
-    screenAs?: { provenance: ToolResultProvenance; source?: string },
+    screenAs?: { provenance?: ToolResultProvenance; source?: string; context?: ToolResultContext },
   ): Promise<T> =>
     resultQueue("result", async () => {
       const originalTool = String(summary.tool ?? "");
+      const call = callPayloads.get(callId);
+      callPayloads.delete(callId);
       summary = sandboxLog(summary);
       const t = ret.content
         .filter((c) => c.type === "text")
@@ -491,6 +498,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
             provenance,
             ...(sourceScopeId ? { sourceScopeId } : {}),
             ...(screenAs?.source ? { source: screenAs.source } : {}),
+            context: screenAs?.context ?? toolResultContextOf(originalTool, call, summary),
           })
           .catch((): ToolResultScreen => ({ outcome: "unscreened" }));
         if (screen.outcome === "quarantine") {
@@ -1047,7 +1055,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       await recordCall(callId, { tool: "skills", action: "read", name: p.name, ...(p.path ? { path: p.path } : {}) });
       const signal = ref.abortSignal;
       signal?.throwIfAborted();
-      const { content, sourceScopeId, dir, packDir, standing } = await tc.skill(p.name, {
+      const { content, sourceScopeId, dir, packDir, standing, identity } = await tc.skill(p.name, {
         ...(p.path ? { path: p.path } : {}),
         ...(p.sandbox_id ? { sandboxId: p.sandbox_id } : {}),
         ...(signal ? { signal } : {}),
@@ -1077,6 +1085,18 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         ),
         content === null,
         sourceScopeId,
+        false,
+        undefined,
+        identity
+          ? {
+              context: {
+                kind: "skill",
+                ...identity,
+                ...(standing?.owner ? { owner: standing.owner } : {}),
+                ...(p.path ? { path: p.path } : {}),
+              },
+            }
+          : undefined,
       );
     },
   });

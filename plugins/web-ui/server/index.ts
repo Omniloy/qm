@@ -688,6 +688,54 @@ async function readJson<T extends object>(
 
 const SEND_KEY_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
 
+async function requesterApproval(
+  res: ServerResponse,
+  user: string,
+  requestId: string,
+): Promise<{ record: CoreApprovalRecord; threadRef: string } | null> {
+  const fetched = await coreFetch("GET", `/v1/approvals/${encodeURIComponent(requestId)}`);
+  if (fetched.status !== 200) {
+    sendBuffered(res, fetched.status, { "content-type": "application/json" }, fetched.text);
+    return null;
+  }
+  let record: CoreApprovalRecord;
+  try {
+    record = JSON.parse(fetched.text) as CoreApprovalRecord;
+  } catch {
+    json(res, 502, { error: "bad_core_response" });
+    return null;
+  }
+  const threadRef =
+    typeof record.request?.conversation?.threadRef === "string" ? record.request.conversation.threadRef : "";
+  const actor = typeof record.request?.actor?.externalId === "string" ? record.request.actor.externalId : "";
+  const resolvable = APPROVAL_THREAD_PREFIXES.some((prefix) => threadRef.startsWith(prefix));
+  if (!resolvable || actor !== user || !record.request) {
+    json(res, 404, { error: "not_found" });
+    return null;
+  }
+  if (!threadRef.startsWith(`web:${user}:`)) {
+    const sessionId = typeof record.sessionId === "string" ? record.sessionId : "";
+    const visible = sessionId
+      ? await coreFetch(
+          "GET",
+          `/v1/sessions/${encodeURIComponent(sessionId)}?viewer=${encodeURIComponent(user)}&tailTurns=1`,
+        )
+      : null;
+    if (visible?.status !== 200) {
+      json(res, 404, { error: "not_found" });
+      return null;
+    }
+    if (threadRef.startsWith("swarm:")) {
+      const session = (JSON.parse(visible.text) as { session?: { threadRef?: string; surface?: string } }).session;
+      if (session?.surface !== "swarm" || session.threadRef !== threadRef) {
+        json(res, 404, { error: "not_found" });
+        return null;
+      }
+    }
+  }
+  return { record, threadRef };
+}
+
 function namespacedSendKey(user: string, raw: unknown): string | undefined {
   if (typeof raw !== "string") return undefined;
   const key = raw.trim();
@@ -804,6 +852,8 @@ interface CoreAttachment {
   sizeBytes: number;
   blobId: string;
 }
+
+const APPROVAL_THREAD_PREFIXES = ["web:", "swarm:", "cron:"];
 
 interface CoreApprovalRecord {
   requestId: string;
@@ -2619,6 +2669,25 @@ const apiRoutes: readonly WebRoute[] = [
   },
   {
     method: "POST",
+    path: "/api/approvals/:requestId/report",
+    handle: async (c) => {
+      const { req, res, user } = c;
+      const requestId = c.params.requestId!;
+      if (!requestId || requestId.includes("/")) return json(res, 404, { error: "not_found" });
+      const p = await readJson<{ note?: unknown }>(req, res, false);
+      if (!p) return;
+      const note = typeof p.note === "string" ? p.note : undefined;
+      if (!(await requesterApproval(res, user, requestId))) return;
+      return relayCore(
+        res,
+        "POST",
+        `/v1/approvals/${encodeURIComponent(requestId)}/report`,
+        JSON.stringify({ reporterId: user, ...(note ? { note } : {}) }),
+      );
+    },
+  },
+  {
+    method: "POST",
     path: "/api/approvals/:requestId",
     handle: async (c) => {
       const { req, res, user } = c;
@@ -2631,40 +2700,12 @@ const apiRoutes: readonly WebRoute[] = [
       const scope = p.scope === "once" || p.scope === "session" || p.scope === "always" ? p.scope : undefined;
       const idempotencyKey = namespacedSendKey(user, p.idempotencyKey);
 
-      const fetched = await coreFetch("GET", `/v1/approvals/${encodeURIComponent(requestId)}`);
-      if (fetched.status !== 200) {
-        return sendBuffered(res, fetched.status, { "content-type": "application/json" }, fetched.text);
-      }
-      let record: CoreApprovalRecord;
-      try {
-        record = JSON.parse(fetched.text) as CoreApprovalRecord;
-      } catch {
-        return json(res, 502, { error: "bad_core_response" });
-      }
-      const threadRef =
-        typeof record.request?.conversation?.threadRef === "string" ? record.request.conversation.threadRef : "";
-      const actor = typeof record.request?.actor?.externalId === "string" ? record.request.actor.externalId : "";
-      if ((!threadRef.startsWith("web:") && !threadRef.startsWith("swarm:")) || actor !== user || !record.request) {
-        return json(res, 404, { error: "not_found" });
-      }
-      if (!threadRef.startsWith(`web:${user}:`)) {
-        const sessionId = typeof record.sessionId === "string" ? record.sessionId : "";
-        const visible = sessionId
-          ? await coreFetch(
-              "GET",
-              `/v1/sessions/${encodeURIComponent(sessionId)}?viewer=${encodeURIComponent(user)}&tailTurns=1`,
-            )
-          : null;
-        if (visible?.status !== 200) return json(res, 404, { error: "not_found" });
-        if (threadRef.startsWith("swarm:")) {
-          const session = (JSON.parse(visible.text) as { session?: { threadRef?: string; surface?: string } }).session;
-          if (session?.surface !== "swarm" || session.threadRef !== threadRef)
-            return json(res, 404, { error: "not_found" });
-        }
-      }
+      const owned = await requesterApproval(res, user, requestId);
+      if (!owned) return;
+      const { record, threadRef } = owned;
 
       const approval = { requestId, approved, ...(scope ? { scope } : {}) };
-      const replay: Record<string, unknown> = { ...record.request, approval };
+      const replay: Record<string, unknown> = { ...record.request!, approval };
       delete replay.idempotencyKey;
       if (idempotencyKey) replay.idempotencyKey = idempotencyKey;
       return postTurnAndMint(req, res, replay, user, threadRef);

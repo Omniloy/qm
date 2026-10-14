@@ -435,15 +435,28 @@ export function workPausedForApproval(work: WorkBlock): boolean {
   );
 }
 
+export interface SecurityHoldView {
+  title: string;
+  subject?: string;
+  categoryLabel: string;
+  explanation: string;
+  facts: Array<{ label: string; value: string }>;
+  evidence?: string;
+  allowEffect: string;
+  keepEffect: string;
+}
+
 export interface PendingApproval {
   requestId: string;
   command: string;
   reason?: string;
   purpose?: string;
   summary?: string;
+  summaryDetail?: string;
   matched?: string;
   grantModes?: { session: boolean; always: boolean };
   blocksInput?: boolean;
+  securityHoldView?: SecurityHoldView;
 }
 
 export function approvalBlocksComposer(approval: PendingApproval): boolean {
@@ -979,6 +992,13 @@ export async function resolveApproval(decision: ApprovalDecision): Promise<strin
   });
   if (!submit.runId) throw new Error("Could not continue after the approval.");
   return submit.runId;
+}
+
+export async function reportSecurityHold(requestId: string, note: string): Promise<void> {
+  await api<{ reported?: boolean }>(`/api/approvals/${encodeURIComponent(requestId)}/report`, {
+    method: "POST",
+    body: JSON.stringify(note.trim() ? { note: note.trim() } : {}),
+  });
 }
 
 export async function runApprovalTurn(

@@ -1,4 +1,5 @@
 import type { ResolvedSecurityPolicy } from "./security/security-posture.ts";
+import type { SecurityHold, SecurityHoldView } from "./security/security-hold.ts";
 import type { SharingPosture } from "./resolution/sharing-posture.ts";
 
 export type PrincipalType = "internal" | "guest";
@@ -721,6 +722,8 @@ export interface PendingApproval {
   grantModes?: ApprovalGrantModes;
   blocksInput?: boolean;
   kind?: "approval" | "input";
+  securityHold?: SecurityHold;
+  securityHoldView?: SecurityHoldView;
 }
 
 export interface PendingApprovalRecord {
@@ -738,6 +741,7 @@ export interface PendingApprovalRecord {
   request?: TurnRequest;
   blocksInput?: boolean;
   kind?: "approval" | "input";
+  securityHold?: SecurityHold;
 }
 
 type ApprovalScope = "once" | "session" | "always";

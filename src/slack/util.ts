@@ -6,6 +6,10 @@ export function inlineCode(text: string): string {
   return `\`${safe}${cleaned.length > safe.length ? "..." : ""}\``;
 }
 
+export function escapeMrkdwn(text: string): string {
+  return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
 export function clip(text: string, max: number): string {
   return safeClip(text, max);
 }

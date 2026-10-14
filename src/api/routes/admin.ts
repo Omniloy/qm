@@ -64,6 +64,13 @@ import { completeCodexAuth, deleteCodexAuth, getCodexAuth, startCodexAuth } from
 import { deleteCustomProvider, getCustomProviders, putCustomProvider } from "./admin/custom-providers.ts";
 import { deleteMcpServer, getMcpServers, putMcpServer } from "./admin/mcp-servers.ts";
 import { listSecurityFlags, releaseSecurityTaint } from "./admin/security.ts";
+import {
+  grantSkillTrust,
+  listScreeningReports,
+  listSkillTrusts,
+  revokeSkillTrust,
+  setScreeningReportStatus,
+} from "./admin/screening.ts";
 import { spend } from "./admin/spend.ts";
 import { createPrincipalLink, deletePrincipalLink, listPrincipalLinks } from "./admin/principal-links.ts";
 
@@ -153,6 +160,11 @@ const routes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/admin/audit", auth: "either", handle: listAdminAudit },
   { method: "GET", path: "/v1/admin/security/flags", auth: "either", handle: listSecurityFlags },
   { method: "POST", path: "/v1/admin/security/release", auth: "either", handle: releaseSecurityTaint },
+  { method: "GET", path: "/v1/admin/screening-reports", auth: "either", handle: listScreeningReports },
+  { method: "POST", path: "/v1/admin/screening-reports/:id/status", auth: "either", handle: setScreeningReportStatus },
+  { method: "GET", path: "/v1/admin/skill-trusts", auth: "either", handle: listSkillTrusts },
+  { method: "POST", path: "/v1/admin/skill-trusts", auth: "either", handle: grantSkillTrust },
+  { method: "DELETE", path: "/v1/admin/skill-trusts/:id", auth: "either", handle: revokeSkillTrust },
   {
     match: (m, p) =>
       m === "GET" && (p === "/v1/admin/crons" || p === "/v1/admin/deployments" || p === "/v1/admin/skills"),

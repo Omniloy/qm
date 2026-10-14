@@ -3,6 +3,7 @@ import type { PendingApprovalRecord } from "../types.ts";
 import type { DurableMap } from "../persistence/durable-map.ts";
 import type { DeliveryStore } from "../delivery/delivery-store.ts";
 import { principalDestination } from "../reach/reach.ts";
+import { securityHoldSourceKey } from "../security/security-hold.ts";
 
 export function approvalDeliveryKey(id: string, record: Pick<PendingApprovalRecord, "createdAt">): string {
   return `command-approval:${id}:${record.createdAt ?? 0}`;
@@ -17,8 +18,23 @@ export function createApprovalStore(
   backing: DurableMap<PendingApprovalRecord>,
   deliveries: Pick<DeliveryStore, "enqueue">,
 ) {
+  async function earlierHoldPending(id: string, record: PendingApprovalRecord): Promise<boolean> {
+    const task = record.securityHold?.scheduledTask?.id;
+    if (!task || !record.securityHold) return false;
+    const key = securityHoldSourceKey(record.securityHold.source);
+    return (await backing.entries()).some(
+      ([otherId, other]) =>
+        otherId !== id &&
+        other.securityHold?.scheduledTask?.id === task &&
+        securityHoldSourceKey(other.securityHold.source) === key &&
+        (other.createdAt ?? 0) < (record.createdAt ?? 0),
+    );
+  }
+
   async function deliver(id: string, record: PendingApprovalRecord): Promise<void> {
-    if (record.request?.surface !== "slack") return;
+    const unattendedHold = record.request?.surface === "cron" && record.securityHold !== undefined;
+    if (!record.request || (record.request.surface !== "slack" && !unattendedHold)) return;
+    if (unattendedHold && (await earlierHoldPending(id, record))) return;
     const actorId = approvalDeliveryRecipient(record.request.actor);
     if (!actorId) return;
     await deliveries.enqueue({
@@ -29,7 +45,9 @@ export function createApprovalStore(
           ? { slackAccountId: record.request.slackSource.accountId, slackTeamId: record.request.slackSource.teamId }
           : {}),
       },
-      text: `Approval needed: ${record.summary ?? record.command}`,
+      text: unattendedHold
+        ? `A scheduled task paused for your OK: ${record.summary ?? record.command}`
+        : `Approval needed: ${record.summary ?? record.command}`,
       idempotencyKey: approvalDeliveryKey(id, record),
     });
   }

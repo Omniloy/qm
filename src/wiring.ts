@@ -145,6 +145,12 @@ import { createPostgresAuditLog } from "./admin/postgres-audit-log.ts";
 import { createRateLimiter, type RateLimiter } from "./ratelimit/rate-limiter.ts";
 import { createPostgresRateLimiter } from "./ratelimit/postgres-rate-limiter.ts";
 import { createBudgetTracker, estimateCostUsd } from "./ratelimit/budget.ts";
+import type {
+  ScreeningReport,
+  ScreeningReportStore,
+  SkillTrust,
+  SkillTrustStore,
+} from "./security/screening-reports.ts";
 import type { SecurityScreenProbe } from "./security/security-screener.ts";
 import { createPostgresBudgetTracker } from "./ratelimit/postgres-budget.ts";
 import { createCronStore, type CronStore } from "./cron/cron-store.ts";
@@ -515,6 +521,8 @@ export interface BuiltApp {
     lookupFolder: (accessToken: string, folderId: string) => Promise<{ id: string; name: string } | null>;
   };
   screenSecurity?: SecurityScreenProbe;
+  screeningReports: ScreeningReportStore;
+  skillTrusts: SkillTrustStore;
   deploymentLayer: DeploymentLayerRuntime;
   credentialTools: readonly LayerCredentialTool[];
   brokeredTools: readonly BrokeredLayerTool[];
@@ -1961,6 +1969,8 @@ export function buildApp(
     ],
   });
   const approvals = createApprovalStore(artifactMap<PendingApprovalRecord>("approvals"), deliveries);
+  const screeningReports: ScreeningReportStore = artifactMap<ScreeningReport>("screening_reports");
+  const skillTrusts: SkillTrustStore = artifactMap<SkillTrust>("skill_trusts");
   let securityScreener = overrides.securityScreener;
   if (!securityScreener && config.securityScreenBackend === "proxy") {
     securityScreener = createSecurityScreenProxy({
@@ -2127,6 +2137,7 @@ export function buildApp(
     serviceCreds: credentialStore,
     deliveries,
     approvals,
+    skillTrusts,
     approvalGrants: artifactMap<CommandApprovalGrant>("approval_grants"),
     ...(processes ? { processes } : {}),
     ...(liveBrowserSessions ? { liveBrowserSessions } : {}),
@@ -2312,6 +2323,7 @@ export function buildApp(
     sandbox,
     files,
     approvals,
+    screeningReports,
     sessionStateBus,
     ledgerEventBus,
     contextRequests: artifactMap<SurfaceContextRequest>("context_requests"),
@@ -2937,6 +2949,8 @@ export function buildApp(
       await pgArtifactMap?.pool.q("SELECT 1", [], { signal });
     },
     ...(screenSecurity ? { screenSecurity } : {}),
+    screeningReports,
+    skillTrusts,
     deploymentLayer,
     deploymentLayerStore,
     credentialTools,
@@ -3071,6 +3085,8 @@ export function serverDeps(
     ...(built.brokerSessions ? { brokerSessions: built.brokerSessions } : {}),
     config: built.config,
     ...(built.screenSecurity ? { screenSecurity: built.screenSecurity } : {}),
+    screeningReports: built.screeningReports,
+    skillTrusts: built.skillTrusts,
     ...(configuredModel ? { baseModelDefault: configuredModel } : {}),
     modelProviders: modelProviderAvailabilityFor(config.harness, providerKeysPresent(config)),
     providerKeys: providerKeysPresent(config),

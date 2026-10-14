@@ -292,6 +292,11 @@ export interface App {
   swarms?: SwarmService;
   turn(req: TurnRequest, replay?: { signalDedupKey: string }): Promise<TurnResult>;
   getApproval(requestId: string, viewer?: string): Promise<(PendingApprovalRecord & { requestId: string }) | null>;
+  reportSecurityHold(
+    requestId: string,
+    reporterId: string,
+    note?: string,
+  ): Promise<import("./app-security-holds.ts").SecurityHoldReportOutcome>;
   subscribeSessionStates(cb: (event: SessionStateEvent) => void, opts?: SubscribeOptions): () => void;
   subscribeLedgerEvents(cb: (event: OwnedLedgerEvent) => void, opts?: SubscribeOptions): () => void;
   listSessionApprovals(sessionId: string, viewer: string): Promise<PendingApproval[]>;
@@ -803,6 +808,7 @@ export interface AppDeps {
   deploymentLayer?: DeploymentLayerRuntime;
   files: FileArtifactStore;
   approvals?: DurableMap<PendingApprovalRecord>;
+  screeningReports?: import("../security/screening-reports.ts").ScreeningReportStore;
   sessionStateBus?: SessionStateBus;
   ledgerEventBus?: LedgerEventBus;
   contextRequests?: DurableMap<SurfaceContextRequest>;

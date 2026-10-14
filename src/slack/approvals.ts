@@ -28,6 +28,8 @@ import {
   uploadAttachments,
   uploadFailureNote,
 } from "./lib.ts";
+import { securityHoldView, type SecurityHold } from "../security/security-hold.ts";
+import { escapeMrkdwn } from "./util.ts";
 import { resolveAgentRequestTarget } from "./approval-context.ts";
 import { parseBlockAction, parseInteractionBody } from "./payloads.ts";
 import type { SlackAgentRequestContext, SlackCoreClient } from "../api/slack-core-client.ts";
@@ -67,6 +69,7 @@ interface SlackApprovalContext {
   summary?: string;
   kind?: "approval" | "input";
   grantModes?: { session: boolean; always: boolean };
+  securityHold?: SecurityHold;
   turn: Omit<CoreTurnBody, "approval">;
   allowedTs?: Set<string>;
   slackIdsByPrincipal?: ReadonlyMap<string, string>;
@@ -76,6 +79,13 @@ interface SlackApprovalContext {
 }
 
 type ApprovalScope = "once" | "session" | "always";
+
+function heldOutcomeText(hold: SecurityHold, outcome: "allowed" | "kept"): string {
+  const title = escapeMrkdwn(securityHoldView(hold).title.replace(/^Paused: /, ""));
+  return outcome === "allowed"
+    ? `:shield: Allowed once: ${title}. The assistant is reading it for this step...`
+    : `:shield: Kept blocked: ${title}. The assistant stopped without it.`;
+}
 
 function approvalScope(actionId: ApprovalActionId): ApprovalScope | "deny" {
   if (actionId === "hilo_allow_once") return "once";
@@ -160,6 +170,7 @@ export function createApprovals(deps: {
         ...(approval.summary ? { summary: approval.summary } : {}),
         ...(approval.kind ? { kind: approval.kind } : {}),
         ...(approval.grantModes ? { grantModes: approval.grantModes } : {}),
+        ...(approval.securityHold ? { securityHold: approval.securityHold } : {}),
       });
     }
   }
@@ -587,6 +598,7 @@ export function createApprovals(deps: {
         turn: rebuilt.turn as SlackApprovalContext["turn"],
         ...(rebuilt.kind ? { kind: rebuilt.kind } : {}),
         ...(rebuilt.grantModes ? { grantModes: rebuilt.grantModes } : {}),
+        ...(rebuilt.securityHold ? { securityHold: rebuilt.securityHold } : {}),
         recovered: true,
       };
     }
@@ -678,6 +690,7 @@ export function createApprovals(deps: {
             ...(ctx.summary ? { summary: ctx.summary } : {}),
             ...(ctx.kind ? { kind: ctx.kind } : {}),
             ...(ctx.grantModes ? { grantModes: ctx.grantModes } : {}),
+            ...(ctx.securityHold ? { securityHold: ctx.securityHold } : {}),
             ...retained,
           },
         ]);
@@ -695,7 +708,12 @@ export function createApprovals(deps: {
         const outcome = await runTurn({ ...ctx.turn, actor: approver, approval }, onQueued ? { onQueued } : {});
         settle();
         if (await sealedOut(outcome.result)) return;
-        await updateSlackMessage(client, cardChannel, messageTs, `Denied ${inlineCode(ctx.command)}.`);
+        await updateSlackMessage(
+          client,
+          cardChannel,
+          messageTs,
+          ctx.securityHold ? heldOutcomeText(ctx.securityHold, "kept") : `Denied ${inlineCode(ctx.command)}.`,
+        );
         if (ctx.agentRequest) {
           await failAgentRequest(
             client,
@@ -711,7 +729,14 @@ export function createApprovals(deps: {
       let scopeLabel = "Allowed always";
       if (selected === "once") scopeLabel = "Allowed once";
       else if (selected === "session") scopeLabel = "Allowed for this conversation";
-      await updateSlackMessage(client, cardChannel, messageTs, `${scopeLabel}; running ${inlineCode(ctx.command)}...`);
+      await updateSlackMessage(
+        client,
+        cardChannel,
+        messageTs,
+        ctx.securityHold
+          ? heldOutcomeText(ctx.securityHold, "allowed")
+          : `${scopeLabel}; running ${inlineCode(ctx.command)}...`,
+      );
       const outcome = await runTurn({ ...ctx.turn, actor: approver, approval }, onQueued ? { onQueued } : {});
       const result = outcome.result;
       settle();
@@ -837,6 +862,7 @@ export function createApprovals(deps: {
           ...(ctx.summary ? { summary: ctx.summary } : {}),
           ...(ctx.kind ? { kind: ctx.kind } : {}),
           ...(ctx.grantModes ? { grantModes: ctx.grantModes } : {}),
+          ...(ctx.securityHold ? { securityHold: ctx.securityHold } : {}),
         },
       ]);
       await updateSlackMessage(

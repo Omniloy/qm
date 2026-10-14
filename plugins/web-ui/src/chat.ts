@@ -24,6 +24,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
 import type { UserMessageWithAttachments } from "@earendil-works/pi-web-ui";
 import { markdown } from "./message-markdown";
+import { securityHoldMarker } from "./security-hold-card";
 import { html, nothing, render, type TemplateResult } from "lit";
 import { repeat } from "lit/directives/repeat.js";
 import { ref } from "lit/directives/ref.js";
@@ -2694,6 +2695,7 @@ export function createChatSurface(
   }
 
   function approvalMarker(a: PendingApproval): TemplateResult {
+    if (a.securityHoldView) return securityHoldMarker(a.securityHoldView);
     return html`<div class="approval-card inline-approval-marker">
       <div class="approval-text">${approvalSummaryView(a)}</div>
     </div>`;

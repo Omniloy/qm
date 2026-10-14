@@ -190,6 +190,11 @@ class FakeApp {
     this.actionHandlers.push({ pattern, handler });
   }
 
+  readonly viewHandlers = new Map<string, Handler>();
+  view(callbackId: string, handler: Handler): void {
+    this.viewHandlers.set(callbackId, handler);
+  }
+
   async start(): Promise<void> {
     this.started = true;
   }
@@ -334,6 +339,9 @@ class FakeCore implements SlackCoreClient {
   async reportRunEditRef(): Promise<void> {}
   async getApproval(): Promise<null> {
     return null;
+  }
+  async reportSecurityHold(): Promise<{ state: "unavailable" }> {
+    return { state: "unavailable" };
   }
   readonly agentRequests = new Map<string, SlackAgentRequestContext>();
   async putAgentRequest(requestId: string, record: SlackAgentRequestContext): Promise<void> {

@@ -2,7 +2,7 @@ import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ScopeId } from "../types.ts";
-import type { SecurityScreenVerdict } from "./security-posture.ts";
+import { securityScreenCategoryFromLabel, type SecurityScreenVerdict } from "./security-posture.ts";
 import { swallow } from "../util/errors.ts";
 import { retryAfterMs } from "../util/async.ts";
 
@@ -186,7 +186,11 @@ function classification(body: string, provider: string): SecurityScreenClassific
   const malicious = score >= threshold;
   return {
     verdict: malicious
-      ? { decision: "strict", reason: `${provider}:${typeof outcome === "string" ? outcome : "malicious"}` }
+      ? {
+          decision: "strict",
+          reason: `${provider}:${typeof outcome === "string" ? outcome : "malicious"}`,
+          category: securityScreenCategoryFromLabel(typeof outcome === "string" ? outcome : ""),
+        }
       : { decision: "auto" },
     score,
     threshold,

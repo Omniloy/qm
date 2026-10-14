@@ -45,6 +45,7 @@ import { SESSION_BUSY_FIRE_TEXT, SESSION_BUSY_USER_TEXT } from "./failure-copy.t
 import { CONFIG_DEFAULTS } from "../config.ts";
 import {
   acquireLeaseWithin,
+  cronIdOf,
   entrySecurityTainted,
   isOverheardEntry,
   TAPE_IMPORT_MAX_ENTRIES,
@@ -92,6 +93,8 @@ import type {
   RuntimeChoice,
 } from "../harness/harness.ts";
 import { forModelContext, forSearchView } from "../harness/context-compaction.ts";
+import { securityHoldStep, securityHoldView, type SecurityHold } from "../security/security-hold.ts";
+import { trustedSkillVersion } from "../security/screening-reports.ts";
 import {
   renderSecurityPolicyPrompt,
   quarantineReleaseKey,
@@ -101,6 +104,7 @@ import {
   UNSCREENED_REASON,
   unscreenedNotice,
   type SecurityScreenVerdict,
+  type ToolResultContext,
   type ToolResultScreen,
   type ToolResultScreenInput,
 } from "../security/security-posture.ts";
@@ -1412,6 +1416,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         summary: string;
         summaryDetail: string;
         screenedOutput?: PendingApprovalRecord["screenedOutput"];
+        securityHold?: SecurityHold;
         approvalKey: string;
         grantModes: { session: boolean; always: boolean };
       }> = [];
@@ -1421,6 +1426,22 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           .replace(/\s+/g, " ")
           .trim();
         return cleaned.length > 240 ? `${cleaned.slice(0, 240)}…` : cleaned;
+      };
+      const securityHoldFor = async (
+        context: ToolResultContext,
+        verdict: SecurityScreenVerdict,
+      ): Promise<SecurityHold> => {
+        const cronId = cronIdOf(input.conversation.threadRef);
+        const cron = cronId ? await deps.crons?.get(cronId).catch(swallowAs("orchestrator: cron lookup", null)) : null;
+        const scheduledTask = cronId ? { id: cronId, ...(cron?.title ? { title: cron.title } : {}) } : undefined;
+        return {
+          source: context,
+          step: securityHoldStep(context, scheduledTask),
+          category: verdict.category ?? "other",
+          ...(verdict.reason ? { reason: verdict.reason } : {}),
+          ...(verdict.evidence ? { evidence: verdict.evidence } : {}),
+          ...(scheduledTask ? { scheduledTask } : {}),
+        };
       };
       const quarantineFullText = (payload: string): string => {
         const cleaned = payload.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, " ").trim();
@@ -3623,9 +3644,33 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                     provenance,
                     sourceScopeId,
                     source,
+                    context,
                   }: ToolResultScreenInput): Promise<ToolResultScreen> => {
                     if (provenance !== "external") return { outcome: "allow" };
                     const toolLabel = toolLabelOf(tool);
+                    if (context?.kind === "skill") {
+                      const trust = await trustedSkillVersion(deps.skillTrusts, context).catch(
+                        swallowAs("orchestrator: skill trust lookup", null),
+                      );
+                      if (trust) {
+                        deps.auditLog.record({
+                          at: Date.now(),
+                          principalId: actor.id,
+                          action: "security_posture.tool_result_trusted_skill",
+                          resource: input.surface ?? "unknown",
+                          scopeLabel: scopeId,
+                          status: "allowed",
+                          detail: JSON.stringify({
+                            tool: toolLabel,
+                            skillId: context.skillId,
+                            version: context.version,
+                            contentHash: context.contentHash,
+                            grantedBy: trust.grantedBy,
+                          }),
+                        });
+                        return { outcome: "allow" };
+                      }
+                    }
                     const sourceLabel = source ? `:${source.replace(/[^A-Za-z0-9_-]/g, "_")}` : "";
                     if (authorizeCommand(quarantineReleaseKey(tool), quarantineReleaseKey(tool))) {
                       deps.auditLog.record({
@@ -3691,8 +3736,14 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                           tool: toolLabel,
                           ...(source ? { source } : {}),
                           ...(verdict.reason ? { verdict: verdict.reason } : {}),
+                          ...(verdict.category ? { category: verdict.category } : {}),
                         }),
                       });
+                      const securityHold = context
+                        ? await securityHoldFor(context, verdict).catch(
+                            swallowAs("orchestrator: security hold", undefined),
+                          )
+                        : undefined;
                       if (
                         !quarantineReleaseApprovals.some(
                           (qa) =>
@@ -3709,6 +3760,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                           purpose: `Release the quarantined ${toolLabel} output into the conversation (once), or keep it blocked.`,
                           summary: `Blocked content preview: ${quarantinePreview(result)}`,
                           summaryDetail: quarantineFullText(result),
+                          ...(securityHold ? { securityHold } : {}),
                           ...(!toolLabel.startsWith("session_message_")
                             ? {
                                 screenedOutput: {
@@ -4244,6 +4296,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               summary?: string;
               summaryDetail?: string;
               screenedOutput?: PendingApprovalRecord["screenedOutput"];
+              securityHold?: SecurityHold;
               grantModes?: { session: boolean; always: boolean };
             }
           > = [...(result.pendingApprovals ?? []), ...quarantineReleaseApprovals];
@@ -4280,6 +4333,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 ...(summary ? { summary } : {}),
                 ...(pa.summaryDetail ? { summaryDetail: pa.summaryDetail } : {}),
                 ...(pa.screenedOutput ? { screenedOutput: pa.screenedOutput } : {}),
+                ...(pa.securityHold ? { securityHold: pa.securityHold } : {}),
                 ...(pa.approvalKey ? { approvalKey: pa.approvalKey } : {}),
                 ...(pa.kind ? { kind: pa.kind } : {}),
               },
@@ -4295,6 +4349,9 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 ...(pa.summaryDetail ? { summaryDetail: pa.summaryDetail } : {}),
                 ...(pa.approvalKey ? { approvalKey: pa.approvalKey } : {}),
                 ...(pa.kind ? { kind: pa.kind } : {}),
+                ...(pa.securityHold
+                  ? { securityHold: pa.securityHold, securityHoldView: securityHoldView(pa.securityHold) }
+                  : {}),
               },
             });
           }

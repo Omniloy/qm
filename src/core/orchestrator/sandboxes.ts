@@ -21,7 +21,7 @@ import {
   skillDir,
   SKILLS_DIR,
 } from "../../skills/materialize.ts";
-import { safeSkillFilePath, type SkillResolution } from "../../skills/skill-store.ts";
+import { safeSkillFilePath, skillIdentity, type SkillResolution } from "../../skills/skill-store.ts";
 import type { CapabilityClaims } from "../../auth/capability-token.ts";
 import { isSafeSkillName } from "../../skills/skill-name.ts";
 import type { SkillResult } from "../../tools/primitives.ts";
@@ -395,7 +395,12 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
             .catch(swallowAs("orchestrator: skill standing", undefined))
         : undefined),
     };
-    const found = { content, sourceScopeId: resolution.skill.scopeId, standing };
+    const found = {
+      content,
+      sourceScopeId: resolution.skill.scopeId,
+      standing,
+      identity: skillIdentity(resolution.skill),
+    };
     if (!shipsFiles) return found;
     const access = sandboxId ? await accessResource(sandboxId) : undefined;
     if (access?.crossScope) return found;

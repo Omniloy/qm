@@ -54,12 +54,25 @@ test("admin shell groups control, logs, and artifacts like the reorganization", 
   assert.ok(sections);
   const actual = JSON.parse(JSON.stringify(vm.runInNewContext(sections)));
   assert.deepEqual(actual, [
-    { views: ["governance", "models", "credentials", "connectors", "slack-settings", "customize", "users", "spend"] },
+    {
+      views: [
+        "governance",
+        "screening",
+        "models",
+        "credentials",
+        "connectors",
+        "slack-settings",
+        "customize",
+        "users",
+        "spend",
+      ],
+    },
     { label: "Logs", views: ["history", "slack", "judgments", "errors", "audit", "egress"] },
     { label: "Artifacts", views: ["files", "skills", "memory", "deployments", "crons"] },
     { views: ["design-system"] },
   ]);
   assert.match(html, /history: "Sessions"/);
+  assert.match(html, /screening: "Screening reports"/);
   assert.match(
     html,
     /const VIEWS = \[\.\.\.SECTIONS\.flatMap\(\(s\) => s\.views\), "onboarding", "user", "ackemoji", "keychain"\];/,

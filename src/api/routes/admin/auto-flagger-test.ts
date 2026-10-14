@@ -1,7 +1,12 @@
 import { sendJson } from "../../http.ts";
 import { audit, authorizeAdmin, orgScope } from "../shared.ts";
 import type { ApiCtx } from "../route.ts";
-import { securityScreenSystemPrompt, type SecurityScreenVerdict } from "../../../security/security-posture.ts";
+import {
+  securityScreenChunks,
+  securityScreenSystemPrompt,
+  withVerifiedEvidence,
+  type SecurityScreenVerdict,
+} from "../../../security/security-posture.ts";
 import { defaultAutoFlaggerConfig, parseAutoFlaggerDraft, type AutoFlaggerDraft } from "../admin-resources.ts";
 import { isHarnessId } from "../../../model/pi-models.ts";
 import type { ScreenSample } from "../../../sessions/session-store.ts";
@@ -12,6 +17,8 @@ const MAX_WINDOW = 500;
 const CONCURRENCY = 4;
 const PER_SAMPLE_TIMEOUT_MS = 20_000;
 const RUN_DEADLINE_MS = 120_000;
+const MAX_SAMPLE_CHARS = 100_000;
+const MAX_SAMPLE_CHUNKS = 8;
 
 interface RunTotals {
   flagged: number;
@@ -78,6 +85,35 @@ async function replay(
   return { totals, verdicts, complete };
 }
 
+async function screenSample(
+  probe: SecurityScreenProbe,
+  config: AutoFlaggerDraft,
+  payload: string,
+  actorId: string,
+  scopeLabel: ScreenSample["scopeLabel"],
+): Promise<SecurityScreenVerdict | undefined> {
+  const systemPrompt = securityScreenSystemPrompt(config.rubric);
+  const chunks = securityScreenChunks("tool_result:sample", payload).slice(0, MAX_SAMPLE_CHUNKS);
+  let fallback: SecurityScreenVerdict | undefined;
+  for (const chunk of chunks) {
+    const verdict = withVerifiedEvidence(
+      await probe({
+        payload: chunk,
+        harnessId: config.harnessId,
+        modelId: config.modelId,
+        systemPrompt,
+        actorId,
+        scopeLabel,
+        signal: AbortSignal.timeout(PER_SAMPLE_TIMEOUT_MS),
+      }).catch(() => undefined),
+      chunk,
+    );
+    if (verdict?.decision === "strict") return verdict;
+    fallback ??= verdict;
+  }
+  return fallback;
+}
+
 /**
  * POST /v1/admin/scopes/:scope/auto-flagger/test — run a candidate flagger over the most recent
  * real screenings and report how often it flags. Org-wide, admin-only, aggregates only.
@@ -98,6 +134,7 @@ export async function testAutoFlagger(ctx: ApiCtx): Promise<void> {
     modelId?: unknown;
     rubric?: unknown;
     compare?: unknown;
+    payload?: unknown;
   };
   const requestedWindow = body.window === undefined ? DEFAULT_WINDOW : Number(body.window);
   if (!Number.isInteger(requestedWindow) || requestedWindow < 1 || requestedWindow > MAX_WINDOW) {
@@ -130,6 +167,43 @@ export async function testAutoFlagger(ctx: ApiCtx): Promise<void> {
     return;
   }
   const candidate = parsed.value;
+  if (typeof body.payload === "string") {
+    if (!body.payload.trim() || body.payload.length > MAX_SAMPLE_CHARS) {
+      sendJson(ctx.res, 400, {
+        error: "bad_request",
+        message: `payload must be non-empty text of at most ${MAX_SAMPLE_CHARS} characters`,
+      });
+      return;
+    }
+    const verdict = await screenSample(screenSecurity, candidate, body.payload, actor.id, scope);
+    audit(ctx.deps, {
+      principalId: actor.id,
+      action: "auto_flagger.test_sample",
+      resource: "auto-flagger",
+      scopeLabel: scope,
+      status: verdict ? verdict.decision : "error",
+      detail: JSON.stringify({
+        chars: body.payload.length,
+        harnessId: candidate.harnessId,
+        modelId: candidate.modelId,
+      }),
+    });
+    sendJson(ctx.res, 200, {
+      scopeId: scope,
+      harnessId: candidate.harnessId,
+      modelId: candidate.modelId,
+      sample: verdict
+        ? {
+            decision: verdict.decision,
+            ...(verdict.unscreened ? { unscreened: true } : {}),
+            ...(verdict.reason ? { reason: verdict.reason } : {}),
+            ...(verdict.category ? { category: verdict.category } : {}),
+            ...(verdict.evidence ? { evidence: verdict.evidence } : {}),
+          }
+        : { decision: "error" },
+    });
+    return;
+  }
   const samples = await sessions.listScreenSamples(requestedWindow);
   const startedAt = Date.now();
   const deadline = startedAt + RUN_DEADLINE_MS;

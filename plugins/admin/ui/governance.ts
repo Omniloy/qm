@@ -133,6 +133,14 @@ const cards: Record<string, (s: GovernanceState) => TemplateResult> = {
               </label>
               <button id="auto-flagger-test" type="button">Run test</button>
             </div>
+            <div class="governance-prompt">
+              <label for="auto-flagger-sample">Test content</label>
+              <textarea
+                id="auto-flagger-sample"
+                rows="4"
+                placeholder="Optional. Paste blocked content to screen just this text instead of replaying recent screenings."
+              ></textarea>
+            </div>
           </div>
         </div>
       </div>

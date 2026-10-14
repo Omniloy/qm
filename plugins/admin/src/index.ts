@@ -312,6 +312,8 @@ const WRITES = new Map<string, string[]>([
   ["custom-providers", ["PUT", "DELETE"]],
   ["codex-auth", ["POST", "DELETE"]],
   ["mcp-servers", ["PUT", "DELETE"]],
+  ["screening-reports", ["POST"]],
+  ["skill-trusts", ["POST", "DELETE"]],
 ]);
 
 const READS = [
@@ -344,6 +346,8 @@ const READS = [
   "codex-auth",
   "principal-links",
   "mcp-servers",
+  "screening-reports",
+  "skill-trusts",
 ];
 
 export async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {

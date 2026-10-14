@@ -258,3 +258,74 @@ test("a quarantine-release card offers only Allow once and Deny, with the screen
   assert.match(rendered, /instruction in untrusted data/);
   assert.match(rendered, /Blocked content preview/);
 });
+
+test("a security hold renders the structured card with Keep blocked, report and show actions", () => {
+  const msg = approvalMessage([
+    {
+      requestId: "req-h1",
+      command: "release quarantined skills output",
+      reason: "security screen flagged this skills output: cookies",
+      summary: "Blocked content preview: [skill id de98 · home org · owner built-in]",
+      grantModes: { session: false, always: false },
+      securityHold: {
+        source: {
+          kind: "skill",
+          skillId: "de98",
+          name: "browse",
+          version: 28,
+          contentHash: "abc",
+          builtIn: true,
+          owner: "built-in",
+        },
+        step: "Reading the skill's instructions",
+        category: "credential_request",
+        reason: "Describes collecting browser cookies <and> tokens.",
+        evidence: "`cookies` returns the site's cookies as JSON, HttpOnly included",
+      },
+    },
+  ]);
+  assert.match(msg.text, /Paused: content from the browse skill needs your OK/);
+  const actions = msg.blocks.find((b) => b.type === "actions") as {
+    block_id: string;
+    elements: Array<{ action_id: string; text: { text: string } }>;
+  };
+  assert.deepEqual(
+    actions.elements.map((e) => [e.text.text, e.action_id]),
+    [
+      ["Allow once", "hilo_allow_once"],
+      ["Keep blocked", "hilo_deny"],
+      ["Report false positive", "security_hold_report"],
+      ["Show what was blocked", "security_hold_show"],
+    ],
+  );
+  assert.equal(actions.block_id, "hilo_approval:req-h1");
+  const rendered = JSON.stringify(msg.blocks);
+  assert.match(rendered, /Text that triggered it/);
+  assert.match(rendered, /HttpOnly included/);
+  assert.match(rendered, /Skill browse · v28 · built-in, managed by the org/);
+  assert.match(rendered, /Category: Credential request/);
+  assert.match(rendered, /&lt;and&gt;/, "screener text is escaped for mrkdwn");
+  assert.match(rendered, /Allow once:\*.*built-in documentation/);
+  assert.doesNotMatch(rendered, /Blocked content preview|release quarantined/, "no raw command or header preview");
+});
+
+test("a scheduled task hold names the task and what each choice does to the run", () => {
+  const msg = approvalMessage([
+    {
+      requestId: "req-h2",
+      command: "release quarantined execute output",
+      reason: "flagged",
+      securityHold: {
+        source: { kind: "command", command: "jira-followup --board MAR" },
+        step: "Running a command · scheduled task Features Jira",
+        category: "other",
+        scheduledTask: { id: "c1", title: "Features Jira" },
+      },
+    },
+  ]);
+  const rendered = JSON.stringify(msg.blocks);
+  assert.match(rendered, /Paused: output of a command in `Features Jira`/);
+  assert.match(rendered, /nobody was there to approve it/);
+  assert.match(rendered, /This run of Features Jira stops without the command's output/);
+  assert.doesNotMatch(rendered, /Text that triggered it/, "no quote block without verified evidence");
+});

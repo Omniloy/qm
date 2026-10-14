@@ -14,6 +14,7 @@ export * as modelSubscriptions from "./model-subscriptions.ts";
 export * as users from "./users.ts";
 export * as userDetail from "./user-detail.ts";
 export * as keychain from "./keychain.ts";
+export * as screening from "./screening.ts";
 export * as metrics from "./metrics.ts";
 export * as spend from "./spend.ts";
 export * as transcript from "./transcript.ts";

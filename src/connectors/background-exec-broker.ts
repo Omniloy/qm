@@ -2,7 +2,7 @@ import type { ProcessSandbox, ProcessState, SandboxHandle } from "../sandbox/san
 import type { ProcessRegistry, ProcessStatus } from "../processes/process-registry.ts";
 import { awaitProcessExit } from "../sandbox/await-process-exit.ts";
 import { pollProcess, processIsGone } from "../sandbox/process-poll.ts";
-import { redactCommand } from "../sandbox/exec-process-session.ts";
+import { redactCommand } from "../security/secret-masking.ts";
 import { CONFIG_DEFAULTS } from "../config.ts";
 
 export interface BackgroundExecBrokerDeps {

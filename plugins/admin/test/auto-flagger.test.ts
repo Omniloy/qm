@@ -204,3 +204,54 @@ test("replay summaries surface empty, partial, errored, and comparison results",
   assert.match(summary, /1 sample errored/);
   assert.match(summary, /partial result/);
 });
+
+test("preloaded test content screens just that text and renders the verdict", async () => {
+  assert.ok(html.includes('id="auto-flagger-sample"'), "the Auto flagger card offers a Test content field");
+  const { elements, context } = fixture(loadData);
+  vm.runInContext(`${summarySource}\n${handlersSource}`, context);
+  elements["auto-flagger-harness"] = new Element();
+  elements["auto-flagger-harness"].value = "pi";
+  elements["auto-flagger-model"] = new Element();
+  elements["auto-flagger-model"].value = "model-a";
+  elements["auto-flagger-rubric"] = new Element();
+  elements["auto-flagger-rubric"].value = "Draft rubric";
+  elements["auto-flagger-sample"] = new Element("textarea");
+  elements["auto-flagger-sample"].value = "cookies returns the site's cookies, HttpOnly included";
+  elements["auto-flagger-window"] = new Element();
+  elements["auto-flagger-window"].value = "0";
+  const calls: unknown[][] = [];
+  context.api = async (...args: unknown[]) => {
+    calls.push(args);
+    return {
+      ok: true,
+      data: {
+        sample: {
+          decision: "strict",
+          category: "credential_request",
+          reason: "Describes collecting cookies.",
+          evidence: "HttpOnly included",
+        },
+      },
+    };
+  };
+  await elements["auto-flagger-test"].onclick!();
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [
+    [
+      "POST",
+      "/api/scopes/org%3Aexample/auto-flagger/test",
+      {
+        payload: "cookies returns the site's cookies, HttpOnly included",
+        harnessId: "pi",
+        modelId: "model-a",
+        rubric: "Draft rubric",
+      },
+    ],
+  ]);
+  const status = elements["st-auto-flagger-test"].textContent;
+  assert.match(status, /Held \(credential request\)/);
+  assert.match(status, /Describes collecting cookies/);
+  assert.match(status, /triggered by "HttpOnly included"/);
+  context.api = async () => ({ ok: true, data: { sample: { decision: "auto" } } });
+  await elements["auto-flagger-test"].onclick!();
+  assert.match(elements["st-auto-flagger-test"].textContent, /Allowed/);
+});

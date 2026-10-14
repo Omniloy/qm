@@ -184,6 +184,7 @@ export interface OrchestratorDeps {
   liveBrowserSessions?: LiveBrowserSessionStore;
   monitors?: MonitorStore;
   crons?: CronStore;
+  skillTrusts?: import("../../security/screening-reports.ts").SkillTrustStore;
   webhooks?: WebhookStore;
   control?: ControlService;
   runtime?: RuntimeService;

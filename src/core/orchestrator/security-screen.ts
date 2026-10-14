@@ -5,6 +5,7 @@ import { runShadowScreen, type SecurityScreenHook } from "../../security/securit
 import {
   securityScreenSystemPrompt,
   UNSCREENED_REASON,
+  withVerifiedEvidence,
   type SecurityScreenVerdict,
 } from "../../security/security-posture.ts";
 import { estimateCostUsd } from "../../ratelimit/budget.ts";
@@ -169,9 +170,9 @@ export function createSecurityClassifier(deps: OrchestratorDeps): SecurityClassi
     };
     const startedAt = Date.now();
     const first = await attempt();
-    if (first) return first;
+    if (first) return withVerifiedEvidence(first, payload);
     if (Date.now() - startedAt >= timeoutMs / 2) return unscreenedVerdict();
     await sleep(250);
-    return (await attempt()) ?? unscreenedVerdict();
+    return withVerifiedEvidence((await attempt()) ?? unscreenedVerdict(), payload);
   };
 }

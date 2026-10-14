@@ -78,6 +78,7 @@ import type {
 } from "../api/control-service.ts";
 import type { ShareArtifactRequest, ShareArtifactResult } from "../api/artifact-share.ts";
 import type { SkillStanding } from "../skills/skill-store.ts";
+import type { SkillIdentity } from "../security/security-posture.ts";
 import type { Cron, Webhook } from "../types.ts";
 import type { CapabilityClaims } from "../auth/capability-token.ts";
 import type { VisibleCron } from "../api/app.ts";
@@ -160,6 +161,7 @@ export interface SkillResult {
   content: string | null;
   sourceScopeId: ScopeId | null;
   standing?: SkillStanding;
+  identity?: SkillIdentity;
   dir?: string;
   packDir?: string;
 }

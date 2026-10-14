@@ -112,6 +112,7 @@ test("a body read avoids sandbox work and a file request materializes that skill
   const { createTurnSandboxes } = await import("../src/core/orchestrator/sandboxes.ts");
   type TurnSandboxContext = import("../src/core/orchestrator/sandboxes.ts").TurnSandboxContext;
   type SkillResolution = import("../src/skills/skill-store.ts").SkillResolution;
+  const { skillIdentity } = await import("../src/skills/skill-store.ts");
   const files = new Map<string, string>();
   let provisions = 0;
   const sandboxIds: Array<string | undefined> = [];
@@ -119,8 +120,12 @@ test("a body read avoids sandbox work and a file request materializes that skill
     skill: {
       id: "s",
       scopeId: "personal:U1",
+      createdBy: "U1",
+      version: 3,
       manifest: {
         name: "source-helper",
+        description: "source test",
+        requiredCapabilities: [],
         body: "BODY",
         files: [{ path: "references/example.txt", content: "v1" }],
       },
@@ -183,7 +188,9 @@ test("a body read avoids sandbox work and a file request materializes that skill
     content: "BODY",
     sourceScopeId: "personal:U1",
     standing: { id: "body-only", home: "personal (yours)", edit: "editable" },
+    identity: skillIdentity(bodyOnly.skill!),
   });
+  assert.equal(skillIdentity(bodyOnly.skill!).version, 3, "the loaded skill names its exact version");
   await turn.provision();
   assert.equal(provisions, 1);
   assert.equal(files.size, 0);
