@@ -27,6 +27,7 @@ import { parseScopeId, scopeId } from "../types.ts";
 import {
   armBodyDeadline,
   canonicalPayload,
+  isCanonicalRequestPath,
   PayloadTooLargeError,
   readRawBody,
   sendJson,
@@ -554,6 +555,10 @@ function buildServer(app: App, deps: ServerOptions, allowUnsignedSourceAuth: boo
     if (raw) {
       if ("path" in raw.route) requestNames.set(req, raw.route.path);
       await run(raw.route, raw.params, base);
+      return;
+    }
+    if (!isCanonicalRequestPath(req.url ?? "")) {
+      sendJson(res, 400, { error: "bad_request", message: "request path must be canonical" });
       return;
     }
     const matched = findRoute(apiRoutes, base.method, base.pathname);
