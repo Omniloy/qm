@@ -1,5 +1,5 @@
 import type { RuntimePurpose, ScopedConfigStore } from "../resolution/config-store.ts";
-import { samePersonMatcher, type RosterPerson } from "../directory/person.ts";
+import { peopleListAllows, type PersonLookup } from "../directory/person.ts";
 import { parseScopeId, type ScopeId } from "../types.ts";
 import {
   defaultWebuiModelIds,
@@ -34,19 +34,15 @@ export function resolveTurnFastMode(
 
 export async function fastModeAllowed(
   config: Pick<ScopedConfigStore, "getFastModeAccess"> | undefined,
-  directory: { get(principalId: string): Promise<RosterPerson | null> } | undefined,
+  directory: PersonLookup | undefined,
   actorId: string | undefined,
 ): Promise<boolean> {
-  const people = (await config?.getFastModeAccess()) ?? null;
-  if (people === null) return true;
-  if (!actorId || !people.length) return false;
-  const matches = await samePersonMatcher(directory ?? { get: async () => null }, actorId);
-  return (await Promise.all(people.map(matches))).some(Boolean);
+  return peopleListAllows((await config?.getFastModeAccess()) ?? null, directory, actorId);
 }
 
 export async function scopeFastModeAllowed(
   config: Pick<ScopedConfigStore, "getFastModeAccess"> | undefined,
-  directory: { get(principalId: string): Promise<RosterPerson | null> } | undefined,
+  directory: PersonLookup | undefined,
   actorId: string,
   scope: ScopeId,
 ): Promise<boolean> {

@@ -47,7 +47,7 @@ import type { ApprovalGrantModes } from "../../types.ts";
 import {
   PERSONAL_MODEL_PROVIDERS,
   type ModelAccountModes,
-  type PersonalModelProvider,
+  type ModelAccountPolicy,
   type SkillSharingPolicy,
 } from "../../resolution/config-store.ts";
 import { parseEgressPolicy } from "../../resolution/egress-policy.ts";
@@ -143,6 +143,49 @@ const orgOnly = (scope: string, label: string): { error: string } | null =>
   parseScopeId(scope).kind === "org" ? null : { error: `${label}; target an org scope` };
 
 const boolBody = (body: unknown): { value: boolean } => ({ value: !!(body as { on?: unknown }).on });
+
+function peopleAccessResource(input: {
+  id: string;
+  readKey: string;
+  label: string;
+  get: (deps: ServerDeps) => Promise<string[] | null>;
+  set: (deps: ServerDeps, people: string[] | null) => Promise<void>;
+}): AdminResource {
+  return {
+    id: input.id,
+    kind: "custom",
+    target: "org",
+    label: input.label,
+    readKey: input.readKey,
+    get: async (deps, scope) =>
+      parseScopeId(scope).kind === "org"
+        ? {
+            people: await input.get(deps),
+            directory: ((await deps.directory?.list()) ?? []).map(({ principalId, displayName }) => ({
+              principalId,
+              displayName,
+            })),
+          }
+        : undefined,
+    apply: generic<string[] | null>(
+      (body, { scope }) => {
+        const bad = orgOnly(scope, `${input.id} is org-wide`);
+        if (bad) return bad;
+        const people = (body as { people?: unknown } | null)?.people;
+        if (people === null) return { value: null };
+        if (
+          !Array.isArray(people) ||
+          people.length > 500 ||
+          people.some((p) => typeof p !== "string" || !p.trim() || p.length > 320 || /[\s\p{Cc}]/u.test(p.trim()))
+        )
+          return { error: `${input.id} requires { people: null } or { people: string[] } (at most 500 IDs)` };
+        if (!people.length) return { error: "add at least one person, or set people to null to allow everyone" };
+        return { value: people.map((p: string) => p.trim()) };
+      },
+      (deps, _scope, people) => input.set(deps, people),
+    ),
+  };
+}
 
 const credentialServices = async (
   deps: Pick<ServerDeps, "credentialServices" | "brokeredServices" | "deviceFlowCutover">,
@@ -542,79 +585,57 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
       (deps, _scope, on) => deps.config!.setInteractiveFastMode(on),
     ),
   },
-  {
+  peopleAccessResource({
     id: "fast-mode-access",
-    kind: "custom",
-    target: "org",
+    readKey: "fastModeAccess",
     label:
       "Who may use fast mode org-wide: people null means everyone; a list of principal IDs or emails limits it to those people. Turns by anyone else, including their crons and sub-agents, run at normal speed.",
-    readKey: "fastModeAccess",
-    get: async (deps, scope) =>
-      parseScopeId(scope).kind === "org"
-        ? {
-            people: await deps.config!.getFastModeAccess(),
-            directory: ((await deps.directory?.list()) ?? []).map(({ principalId, displayName }) => ({
-              principalId,
-              displayName,
-            })),
-          }
-        : undefined,
-    apply: generic<string[] | null>(
-      (body, { scope }) => {
-        const bad = orgOnly(scope, "fast-mode access is org-wide");
-        if (bad) return bad;
-        const people = (body as { people?: unknown } | null)?.people;
-        if (people === null) return { value: null };
-        if (
-          !Array.isArray(people) ||
-          people.length > 500 ||
-          people.some((p) => typeof p !== "string" || !p.trim() || p.length > 320 || /[\s\p{Cc}]/u.test(p.trim()))
-        )
-          return { error: "fast-mode-access requires { people: null } or { people: string[] } (at most 500 IDs)" };
-        if (!people.length) return { error: "add at least one person, or set people to null to allow everyone" };
-        return { value: people.map((p: string) => p.trim()) };
-      },
-      (deps, _scope, people) => deps.config!.setFastModeAccess(people),
-    ),
-  },
-  {
-    id: "individual-model-auth",
-    kind: "boolean",
-    target: "org",
+    get: (deps) => deps.config!.getFastModeAccess(),
+    set: (deps, people) => deps.config!.setFastModeAccess(people),
+  }),
+  peopleAccessResource({
+    id: "personal-account-access",
+    readKey: "personalAccountAccess",
     label:
-      "Individual authorization for AI usage org-wide: on means each user must connect their own account (API key or subscription login) for every provider that model-account-modes sets to personal, and those turns never fall back to the org's shared credentials. Providers set to org keep using the org account, so with every provider on org this has no effect.",
-    readKey: "individualModelAuth",
-    get: (deps, scope) => (parseScopeId(scope).kind === "org" ? deps.config!.getIndividualModelAuth() : undefined),
-    apply: generic<boolean>(
-      (body, { scope }) => {
-        const bad = orgOnly(scope, "the individual-authorization switch is org-wide");
-        if (bad) return bad;
-        return boolBody(body);
-      },
-      (deps, _scope, on) => deps.config!.setIndividualModelAuth(on),
-    ),
-  },
+      "Who may opt into their own AI account org-wide, for every provider model-account-modes sets to personal: people null means everyone; a list of principal IDs or emails limits it to those people. Anyone else runs on the organization's account; their saved sign-ins are kept but unused.",
+    get: (deps) => deps.config!.getPersonalAccountAccess(),
+    set: (deps, people) => deps.config!.setPersonalAccountAccess(people),
+  }),
   {
     id: "model-account-modes",
     kind: "custom",
     target: "org",
     label:
-      "Personal AI accounts per provider: org means the organization's own Claude or ChatGPT account serves every turn for that provider; personal lets each person sign in with their own account for it.",
+      "Personal AI accounts: per provider, org means the organization's own Claude or ChatGPT account serves every turn for that provider and personal lets each allowed person opt into their own account for it. fallbackWhenUnavailable runs a turn on the organization's account when the person's own account is disconnected or cannot be refreshed; fallbackWhenRejected retries a turn on the organization's account when the provider rejects the person's account (authentication failure or usage or rate limit). Both default to false, which fails the turn instead.",
     readKey: "modelAccountModes",
-    get: (deps, scope) => (parseScopeId(scope).kind === "org" ? deps.config!.getModelAccountModesDurable() : undefined),
-    apply: generic<ModelAccountModes>(
+    get: (deps, scope) =>
+      parseScopeId(scope).kind === "org" ? deps.config!.getModelAccountPolicyDurable() : undefined,
+    apply: generic<ModelAccountPolicy>(
       (body, { scope }) => {
         const bad = orgOnly(scope, "personal AI account modes are org-wide");
         if (bad) return bad;
-        const modes = body as Partial<Record<PersonalModelProvider, unknown>>;
-        const valid = (mode: unknown) => mode === "org" || mode === "personal";
-        if (!PERSONAL_MODEL_PROVIDERS.every((provider) => valid(modes[provider])))
+        const policy = (body ?? {}) as Partial<Record<keyof ModelAccountPolicy, unknown>>;
+        const mode = (value: unknown) => value === "org" || value === "personal";
+        const flag = (value: unknown) => value === undefined || typeof value === "boolean";
+        if (
+          !PERSONAL_MODEL_PROVIDERS.every((provider) => mode(policy[provider])) ||
+          !flag(policy.fallbackWhenUnavailable) ||
+          !flag(policy.fallbackWhenRejected)
+        )
           return {
-            error: 'model-account-modes requires { anthropic: "org" | "personal", openai: "org" | "personal" }',
+            error:
+              'model-account-modes requires { anthropic: "org" | "personal", openai: "org" | "personal", fallbackWhenUnavailable?: boolean, fallbackWhenRejected?: boolean }',
           };
-        return { value: modes as ModelAccountModes };
+        return {
+          value: {
+            anthropic: policy.anthropic as ModelAccountModes["anthropic"],
+            openai: policy.openai as ModelAccountModes["openai"],
+            fallbackWhenUnavailable: policy.fallbackWhenUnavailable === true,
+            fallbackWhenRejected: policy.fallbackWhenRejected === true,
+          },
+        };
       },
-      (deps, _scope, modes) => deps.config!.setModelAccountModes(modes),
+      (deps, _scope, policy) => deps.config!.setModelAccountPolicy(policy),
     ),
   },
   {

@@ -16,7 +16,7 @@ import { mountFlags } from "./settings-flags.ts";
 export { configureFlags, loadFlags } from "./settings-flags.ts";
 import { brandingCard } from "./settings-branding.ts";
 import { modelAccountModesCard, modelAccountModesDraft } from "./model-account-modes.ts";
-import { fastModeAccessBody, fastModeAccessCard, fastModeAccessDraft } from "./fast-mode-access.ts";
+import { PEOPLE_ACCESS, peopleAccessBody, peopleAccessCard, peopleAccessDraft } from "./people-access.ts";
 import { html } from "lit";
 import { classMap } from "lit/directives/class-map.js";
 import { repeat } from "lit/directives/repeat.js";
@@ -38,7 +38,7 @@ export class SettingsState extends SettingState {
       const { inherit: _inherit, ...selection } = this.draft;
       return structuredClone(selection);
     }
-    if (this.key === "fast-mode-access") return fastModeAccessBody(this.draft, _validate);
+    if (this.key in PEOPLE_ACCESS) return peopleAccessBody(this.draft, _validate);
     if (this.key === "branding")
       return Object.fromEntries(Object.entries(this.draft).map(([key, value]) => [key, String(value).trim()]));
     return structuredClone(this.draft);
@@ -103,10 +103,15 @@ export class SettingsState extends SettingState {
   }
 }
 export const states = new Map(
-  [...runtimeKeys, "fast-mode-access", "webui-models", "model-account-modes", "soul", "branding"].map((key) => [
-    key,
-    new SettingsState(key),
-  ]),
+  [
+    ...runtimeKeys,
+    "fast-mode-access",
+    "webui-models",
+    "model-account-modes",
+    "personal-account-access",
+    "soul",
+    "branding",
+  ].map((key) => [key, new SettingsState(key)]),
 );
 export const { owns, collect, capture, commit, status, statusKey } = settingRegistry(states);
 export function load(data: Data, scope: string, only?: string) {
@@ -126,9 +131,9 @@ export function load(data: Data, scope: string, only?: string) {
       capture(key);
       continue;
     }
-    if (key === "fast-mode-access") {
-      s.draft = fastModeAccessDraft(data);
-      s.available = scope.startsWith("org:") && "fastModeAccess" in data;
+    if (key in PEOPLE_ACCESS) {
+      s.draft = peopleAccessDraft(key, data);
+      s.available = scope.startsWith("org:") && PEOPLE_ACCESS[key]!.readKey in data;
       s.saving = false;
       capture(key);
       continue;
@@ -201,7 +206,7 @@ function card(s: SettingsState) {
   if (s.key === "soul") return soulCard(s);
   if (s.key === "branding") return brandingCard(s);
   if (s.key === "model-account-modes") return modelAccountModesCard(s);
-  if (s.key === "fast-mode-access") return fastModeAccessCard(s);
+  if (s.key in PEOPLE_ACCESS) return peopleAccessCard(s);
   if (runtimeKeys.includes(s.key)) {
     const prefix = s.key === "runtime" ? "base" : s.key;
     const purpose = s.key !== "runtime";
@@ -374,6 +379,7 @@ export function mountCards() {
         branding: "card-branding",
         "webui-models": "card-webui-models",
         "model-account-modes": "card-model-account-modes",
+        "personal-account-access": "card-personal-account-access",
       } as Record<string, string>
     )[key];
     s.render = mountTemplate(`template[data-settings-card="${id}"]`, () => card(s));

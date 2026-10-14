@@ -90,6 +90,7 @@ export function claudeHarnessConfigOptions(config: Config): ClaudeHarnessOptions
 }
 
 const CLAUDE_CHILD_AGENT_TYPES = new Set(["research", "code", "consult"]);
+const CREDENTIAL_STATUSES = new Set([401, 403, 429]);
 const CLAUDE_ENV_PASSTHROUGH = [
   "PATH",
   "TMPDIR",
@@ -749,6 +750,12 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
           await recordStep(message);
           await flushThinking();
           if (interrupted) break;
+          if (
+            message.subtype === "success" &&
+            message.is_error &&
+            CREDENTIAL_STATUSES.has(message.api_error_status ?? 0)
+          )
+            throw new NonRetryableTurnError(`Claude API error (${message.api_error_status}): ${message.result.trim()}`);
           const terminal = ref.runtimeHandoff || ref.silentRequested || ref.pausedOnApproval;
           const text = message.subtype === "success" && !terminal ? message.result.trim() : "";
           if (text) {

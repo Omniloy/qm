@@ -5,14 +5,18 @@ import * as piHarness from "../src/harness/pi-harness.ts";
 import * as mockHarness from "../src/harness/mock-harness.ts";
 import type { HarnessTurnInput } from "../src/harness/harness.ts";
 import { resolveModel } from "../src/model/pi-models.ts";
+import { NonRetryableTurnError } from "../src/core/turn-error.ts";
 import { testConfig } from "./support/test-config.ts";
 
 const turns: HarnessTurnInput[] = [];
+let personalRejection: string | null = null;
 function observedHarness() {
   const harness = mockHarness.createMockHarness();
   const runTurn = harness.turns.runTurn;
   harness.turns.runTurn = async (turn) => {
     turns.push(turn);
+    if (personalRejection && JSON.stringify(turn.providerKeys ?? {}).includes("personal-"))
+      throw new NonRetryableTurnError(personalRejection);
     return runTurn(turn);
   };
   return harness;
@@ -32,7 +36,7 @@ for (const provider of ["anthropic", "openai"] as const) {
     const built = buildApp(testConfig({ anthropicApiKey: "company-anthropic", openaiApiKey: "company-openai" }));
     await built.userModelCredentials.setApiKey("U1", "anthropic", "personal-anthropic");
     await built.userModelCredentials.setApiKey("U1", "openai", "personal-openai");
-    await built.config.setModelAccountModes({ anthropic: "personal", openai: "personal" });
+    await built.config.setModelAccountPolicy({ anthropic: "personal", openai: "personal" });
     await built.config.setPersonalModelAuth("U1", true, provider);
     const submitted = await built.app.turn({
       surface: "slack",
@@ -62,7 +66,7 @@ test("disconnecting a queued personal account fails without invoking any main ha
   const built = buildApp(testConfig({ anthropicApiKey: "company-anthropic", openaiApiKey: "company-openai" }));
   await built.userModelCredentials.setApiKey("U1", "anthropic", "personal-anthropic");
   await built.userModelCredentials.setApiKey("U1", "openai", "personal-openai");
-  await built.config.setModelAccountModes({ anthropic: "personal", openai: "personal" });
+  await built.config.setModelAccountPolicy({ anthropic: "personal", openai: "personal" });
   await built.config.setPersonalModelAuth("U1", true, "openai");
   const submitted = await built.app.turn({
     surface: "slack",
@@ -85,6 +89,98 @@ test("disconnecting a queued personal account fails without invoking any main ha
   }
 });
 
+async function disconnectedTurn(fallbackWhenUnavailable: boolean, companyKeys: boolean) {
+  turns.length = 0;
+  const built = buildApp(
+    testConfig({
+      harness: "pi",
+      ...(companyKeys ? { anthropicApiKey: "company-anthropic", openaiApiKey: "company-openai" } : {}),
+    }),
+  );
+  await built.userModelCredentials.setApiKey("U1", "openai", "personal-openai");
+  await built.config.setModelAccountPolicy({ anthropic: "personal", openai: "personal", fallbackWhenUnavailable });
+  await built.config.setPersonalModelAuth("U1", true, "openai");
+  const submitted = await built.app.turn({
+    surface: "slack",
+    actor: { externalId: "U1" },
+    conversation: { kind: "dm", threadRef: `execute-fallback-${crypto.randomUUID()}` },
+    text: "hello",
+    liveActor: true,
+    async: true,
+  });
+  await built.userModelCredentials.delete("U1", "openai");
+  built.runtime.start();
+  try {
+    return await built.runs.waitFor(submitted.runId!, 5_000);
+  } finally {
+    await built.runtime.stop();
+  }
+}
+
+test("an unavailable personal account runs the turn on the org account when the org allows that fallback", async () => {
+  const finished = await disconnectedTurn(true, true);
+  assert.equal(finished.status, "done", JSON.stringify(finished.result));
+  assert.equal(turns.length, 1);
+  assert.ok(!JSON.stringify(turns[0]!.providerKeys ?? {}).includes("personal-"));
+});
+
+test("the unavailable fallback stays closed when the org has no account for the provider", async () => {
+  const finished = await disconnectedTurn(true, false);
+  assert.equal(finished.status, "failed");
+  assert.match(JSON.stringify(finished), /personal AI account is unavailable/);
+  assert.equal(turns.length, 0);
+});
+
+async function rejectedTurn(fallbackWhenRejected: boolean, rejection: string) {
+  turns.length = 0;
+  personalRejection = rejection;
+  const built = buildApp(testConfig({ anthropicApiKey: "company-anthropic", openaiApiKey: "company-openai" }));
+  await built.userModelCredentials.setApiKey("U1", "anthropic", "personal-anthropic");
+  await built.config.setModelAccountPolicy({ anthropic: "personal", openai: "personal", fallbackWhenRejected });
+  await built.config.setPersonalModelAuth("U1", true, "anthropic");
+  const submitted = await built.app.turn({
+    surface: "slack",
+    actor: { externalId: "U1" },
+    conversation: { kind: "dm", threadRef: `execute-rejected-${crypto.randomUUID()}` },
+    text: "hello",
+    liveActor: true,
+    async: true,
+  });
+  built.runtime.start();
+  try {
+    return await built.runs.waitFor(submitted.runId!, 5_000);
+  } finally {
+    personalRejection = null;
+    await built.runtime.stop();
+  }
+}
+
+for (const rejection of [
+  "Model provider API error (authentication_error): invalid x-api-key",
+  "Claude API error (429): You've hit your usage limit",
+]) {
+  test(`a rejected personal account retries the turn on the org account: ${rejection}`, async () => {
+    const finished = await rejectedTurn(true, rejection);
+    assert.equal(finished.status, "done", JSON.stringify(finished.result));
+    assert.equal(turns.length, 2);
+    assert.deepEqual(turns[0]!.providerKeys, { anthropic: "personal-anthropic" });
+    assert.ok(!JSON.stringify(turns[1]!.providerKeys ?? {}).includes("personal-"));
+    assert.match(turns[1]!.input, /organization's AI account/);
+  });
+}
+
+test("a rejected personal account fails the turn when the rejection fallback is off", async () => {
+  const finished = await rejectedTurn(false, "Model provider API error (authentication_error): invalid x-api-key");
+  assert.equal(finished.status, "failed");
+  assert.equal(turns.length, 1);
+});
+
+test("errors that are not credential rejections never move a personal turn to the org account", async () => {
+  const finished = await rejectedTurn(true, "Model provider API error (invalid_request_error): prompt is too long");
+  assert.equal(finished.status, "failed");
+  assert.equal(turns.length, 1);
+});
+
 for (const account of ["personal", "openai", "anthropic"] as const) {
   test(`web ${account} account honors the chosen model, effort and fast mode`, async () => {
     turns.length = 0;
@@ -94,7 +190,7 @@ for (const account of ["personal", "openai", "anthropic"] as const) {
     built.config.setApprovedHarnesses(["pi"]);
     await built.config.flushScope("org:default-org");
     await built.userModelCredentials.setApiKey("U1", provider, `personal-${provider}`);
-    await built.config.setModelAccountModes({ anthropic: "personal", openai: "personal" });
+    await built.config.setModelAccountPolicy({ anthropic: "personal", openai: "personal" });
     await built.config.setPersonalModelAuth("U1", true, account === "personal" ? undefined : account);
     const submitted = await built.app.turn({
       surface: "web",
@@ -136,7 +232,7 @@ test("mixed provider modes run Claude on the personal key and ChatGPT on the org
   await built.config.flushScope("org:default-org");
   await built.userModelCredentials.setApiKey("U1", "anthropic", "personal-anthropic");
   await built.userModelCredentials.setApiKey("U1", "openai", "personal-openai");
-  await built.config.setModelAccountModes({ anthropic: "personal", openai: "org" });
+  await built.config.setModelAccountPolicy({ anthropic: "personal", openai: "org" });
   await built.config.setPersonalModelAuth("U1", true);
   const run = async (surface: "web" | "slack", model: string) => {
     turns.length = 0;
@@ -167,7 +263,7 @@ test("mixed provider modes run Claude on the personal key and ChatGPT on the org
     assert.equal(chatgpt.runtime?.modelId, "gpt-6-astra");
     const slack = await run("slack", "gpt-6-astra");
     assert.deepEqual(slack.providerKeys, { anthropic: "personal-anthropic" });
-    await built.config.setModelAccountModes({ anthropic: "org", openai: "org" });
+    await built.config.setModelAccountPolicy({ anthropic: "org", openai: "org" });
     const company = await run("slack", "gpt-6-astra");
     assert.ok(!JSON.stringify(company.providerKeys ?? {}).includes("personal-"));
     assert.equal(await built.userModelCredentials.get("U1", "anthropic").then((c) => c?.apiKey), "personal-anthropic");
@@ -181,7 +277,7 @@ test("personal web selections reject wrong providers, harnesses, policy exclusio
   built.config.setApprovedHarnesses(["pi", "claude"]);
   await built.config.flushScope("org:default-org");
   await built.userModelCredentials.setApiKey("U1", "openai", "personal-openai");
-  await built.config.setModelAccountModes({ anthropic: "personal", openai: "personal" });
+  await built.config.setModelAccountPolicy({ anthropic: "personal", openai: "personal" });
   await built.config.setPersonalModelAuth("U1", true, "openai");
   const submit = (model: string, harness = "pi") =>
     built.app.turn({
@@ -214,7 +310,7 @@ test("a queued web selection cannot fall back to another personal provider after
   await built.config.flushScope("org:default-org");
   await built.userModelCredentials.setApiKey("U1", "anthropic", "personal-anthropic");
   await built.userModelCredentials.setApiKey("U1", "openai", "personal-openai");
-  await built.config.setModelAccountModes({ anthropic: "personal", openai: "personal" });
+  await built.config.setModelAccountPolicy({ anthropic: "personal", openai: "personal" });
   await built.config.setPersonalModelAuth("U1", true);
   const submitted = await built.app.turn({
     surface: "web",
@@ -248,7 +344,7 @@ test("web subscription selections use the namespaced model and personal OAuth on
     accessToken: "personal-oauth",
     expiresAt: Date.now() + 3_600_000,
   });
-  await built.config.setModelAccountModes({ anthropic: "personal", openai: "personal" });
+  await built.config.setModelAccountPolicy({ anthropic: "personal", openai: "personal" });
   await built.config.setPersonalModelAuth("U1", true, "openai");
   const submitted = await built.app.turn({
     surface: "web",
@@ -286,7 +382,7 @@ test("partial personal web choices queue the complete validated scoped runtime",
   await built.config.setRuntimeSelectionLatest("org:default-org", { harnessId: "pi", modelId: "gpt-6.1-sol" });
   await built.config.setRuntimeSelectionLatest("personal:U1", { harnessId: "pi", modelId: "gpt-6-astra" });
   await built.userModelCredentials.setApiKey("U1", "openai", "personal-openai");
-  await built.config.setModelAccountModes({ anthropic: "personal", openai: "personal" });
+  await built.config.setModelAccountPolicy({ anthropic: "personal", openai: "personal" });
   await built.config.setPersonalModelAuth("U1", true, "openai");
   const submit = (choice: { harness?: string; model?: string }) =>
     built.app.turn({

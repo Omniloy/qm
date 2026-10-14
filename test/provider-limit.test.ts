@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import {
+  credentialRejected,
   NonRetryableTurnError,
   providerLimit,
   providerLimitMessage,
@@ -251,4 +252,23 @@ test("an OpenAI billing quota 429 keeps its own message instead of a rate-limit 
   );
   assert.equal(providerLimit(err), null);
   assert.equal(turnFailureMessage(err), err.message);
+});
+
+test("credential rejections cover auth failures, billing, and provider limits but not other provider errors", () => {
+  for (const message of [
+    "Model provider API error (authentication_error): invalid x-api-key",
+    "Claude API error (401): Invalid API key · Please run /login",
+    "Claude API error (403): Your organization does not allow this OAuth token",
+    "OAuth token has expired",
+    'OpenAI API error (429): {"code":"usage_limit_reached"}',
+    "Codex reported insufficient_quota for this account",
+    "Model provider API error (rate_limit_error): Number of request tokens has exceeded your per-minute rate limit",
+  ])
+    assert.equal(credentialRejected(new NonRetryableTurnError(message)), true, message);
+  for (const message of [
+    "Model provider API error (invalid_request_error): prompt is too long",
+    "Model provider API error (overloaded_error): Overloaded",
+    "request id 4013a9 failed with 500",
+  ])
+    assert.equal(credentialRejected(new Error(message)), false, message);
 });

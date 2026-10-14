@@ -116,6 +116,15 @@ export async function settleProviderLimit(
   return new ProviderLimitError(providerLimitMessage(settled, now), { cause: err });
 }
 
+const CREDENTIAL_REJECTED =
+  /\b(?:401|403)\b|authentication_error|permission_error|unauthori[sz]ed|invalid[_ -]?(?:x-)?api[_ -]?key|incorrect api key|authentication (?:error|failed)|failed to authenticate|oauth token (?:has )?(?:expired|been revoked)|token_expired/i;
+
+export function credentialRejected(err: unknown): boolean {
+  if (providerLimit(err)) return true;
+  const text = err instanceof Error ? err.message : String(err);
+  return CREDENTIAL_REJECTED.test(text) || BILLING_CODE.test(text);
+}
+
 export function turnFailureMessage(err: unknown): string {
   const limit = providerLimit(err);
   if (limit) return providerLimitMessage(limit);

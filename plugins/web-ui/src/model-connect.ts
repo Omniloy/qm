@@ -68,7 +68,6 @@ interface DevicePrompt {
 export interface StatusResponse {
   account: "company" | "personal" | "anthropic" | "openai";
   individualModelAuth: boolean;
-  required: boolean;
   connections: { provider: "anthropic" | "openai"; kind: ConnKind }[];
   orgServedConnections?: { provider: "anthropic" | "openai"; kind: ConnKind }[];
   modes?: Partial<Record<"anthropic" | "openai", "org" | "personal">>;
@@ -97,7 +96,6 @@ interface State {
   loaded: boolean;
   notice: string;
   controller: AbortController;
-  required: boolean;
   personal: boolean;
   account: StatusResponse["account"];
   modes: StatusResponse["modes"];
@@ -127,7 +125,6 @@ function fresh(mode: Mode): State {
     loaded: false,
     notice: "",
     controller: new AbortController(),
-    required: false,
     personal: false,
     account: "company",
     modes: {},
@@ -169,7 +166,6 @@ function current(state: State, revision = state.revision): boolean {
 }
 
 function applyStatus(status: StatusResponse): void {
-  s.required = status.required === true;
   s.personal = status.individualModelAuth === true;
   s.account = status.account;
   s.modes = status.modes ?? {};
@@ -429,7 +425,7 @@ function methodRow(title: string, detail: string, selected: boolean, onPick: () 
     <button
       type="button"
       class="mc-method ${selected ? "selected" : ""}"
-      ?disabled=${s.busy || s.saving || (title === "Company access" && s.required)}
+      ?disabled=${s.busy || s.saving}
       aria-pressed=${selected}
       @click=${onPick}
     >
@@ -694,14 +690,9 @@ function view(): TemplateResult {
     </div>`;
   else
     choices = html`<div class="mc-providers">
-      ${methodRow(
-        "Company access",
-        s.required ? "Your organization requires a personal account." : "Use the access provided by your organization.",
-        !s.personal,
-        () => {
-          if (!s.required) void switchAccount("company");
-        },
-      )}
+      ${methodRow("Company access", "Use the access provided by your organization.", !s.personal, () => {
+        void switchAccount("company");
+      })}
       <p class="mc-account-hint">
         ${s.personal ? "Using a personal account. Choose a connected provider below." : "Or use your own account. Connect a provider, then choose Use account."}
       </p>

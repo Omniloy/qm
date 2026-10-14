@@ -61,7 +61,6 @@ test("AI account modal interactions", async (t) => {
   ) => ({
     account,
     individualModelAuth: account !== "company",
-    required: false,
     connections,
     modes,
   });

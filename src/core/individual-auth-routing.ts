@@ -17,7 +17,7 @@ import {
   PERSONAL_MODEL_PROVIDERS,
   type ModelAccount,
   type PersonalModelProvider,
-  type ScopedConfigStore,
+  type ModelAccountModes,
 } from "../resolution/config-store.ts";
 
 export type IndividualAuthRouting =
@@ -39,12 +39,12 @@ function requestedProviderOf(model: string | undefined) {
 }
 
 export async function loadPersonalModelAccess(
-  config: Pick<ScopedConfigStore, "getModelAccountModesDurable"> | undefined,
+  config: { getModelAccountPolicyDurable(): Promise<ModelAccountModes> } | undefined,
   store: Pick<UserModelCredentialStore, "get">,
   actorId: string,
   account: Exclude<ModelAccount, "company">,
 ): Promise<PersonalModelAccess> {
-  const modes = (await config?.getModelAccountModesDurable()) ?? DEFAULT_MODEL_ACCOUNT_MODES;
+  const modes = (await config?.getModelAccountPolicyDurable()) ?? DEFAULT_MODEL_ACCOUNT_MODES;
   const own = account === "personal" ? PERSONAL_MODEL_PROVIDERS : [account];
   const orgServed = new Set(PERSONAL_MODEL_PROVIDERS.filter((provider) => modes[provider] === "org"));
   const usable = (provider: PersonalModelProvider) => own.includes(provider) && !orgServed.has(provider);

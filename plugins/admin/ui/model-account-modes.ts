@@ -1,4 +1,4 @@
-import { html, nothing } from "lit";
+import { html } from "lit";
 import { classMap } from "lit/directives/class-map.js";
 import { choiceGroup, saveFooter } from "./setting-controls.ts";
 import type { SettingsState } from "./settings.ts";
@@ -8,22 +8,27 @@ const PROVIDERS = [
   ["openai", "ChatGPT"],
 ] as const;
 
-export function modelAccountModesDraft(data: Record<string, any>) {
-  return Object.fromEntries(
-    PROVIDERS.map(([provider]) => [provider, data.modelAccountModes?.[provider] === "personal" ? "personal" : "org"]),
-  );
-}
+const FALLBACKS = [
+  [
+    "fallbackWhenUnavailable",
+    "Use the organization's account when a personal account is unavailable",
+    "If someone's own account is disconnected or its sign-in cannot be refreshed, the turn runs on the organization's account instead of failing.",
+  ],
+  [
+    "fallbackWhenRejected",
+    "Use the organization's account when the provider rejects a personal account",
+    "If the provider refuses someone's own account during a turn, for a failed sign-in or a usage or rate limit, the turn continues on the organization's account instead of failing.",
+  ],
+] as const;
 
-function requirementNote(s: SettingsState) {
-  if (s.context?.individualModelAuth !== true) return nothing;
-  const personal = PROVIDERS.filter(([provider]) => s.draft[provider] === "personal").map(([, name]) => name);
-  return html`<p class="model-account-requirement" id="model-account-requirement">
-    ${
-      personal.length
-        ? `The organization requires personal accounts. That applies only to ${personal.join(" and ")}: people must connect their own account and cannot fall back to the organization's. Providers on the org account are unaffected.`
-        : "The organization requires personal accounts, but no provider allows them, so the requirement has no effect: every turn uses the organization's account."
-    }
-  </p>`;
+export function modelAccountModesDraft(data: Record<string, any>) {
+  const policy = data.modelAccountModes ?? {};
+  return {
+    ...Object.fromEntries(
+      PROVIDERS.map(([provider]) => [provider, policy[provider] === "personal" ? "personal" : "org"]),
+    ),
+    ...Object.fromEntries(FALLBACKS.map(([key]) => [key, policy[key] === true])),
+  };
 }
 
 export function modelAccountModesCard(s: SettingsState) {
@@ -34,10 +39,10 @@ export function modelAccountModesCard(s: SettingsState) {
     <div class="head">
       <h2>Personal AI accounts</h2>
       <p>
-        Choose, per provider, whether every turn runs on the organization's account or people may sign in with their
-        own. Switching a provider back to the organization's account keeps saved sign-ins but stops using them.
+        Personal accounts are always opt-in: nobody is required to connect one. Choose, per provider, whether every turn
+        runs on the organization's account or allowed people may opt into their own. The list below decides who is
+        allowed. Switching a provider back to the organization's account keeps saved sign-ins but stops using them.
       </p>
-      ${requirementNote(s)}
     </div>
     <div class="body">
       ${PROVIDERS.map(
@@ -52,10 +57,22 @@ export function modelAccountModesCard(s: SettingsState) {
               },
               [
                 ["org", "Org account", `Every ${name} turn uses the organization's account.`],
-                ["personal", "Each person's own account", `People may connect their own ${name} account.`],
+                ["personal", "Each person's own account", `Allowed people may opt into their own ${name} account.`],
               ],
             )}
           </fieldset>`,
+      )}
+      ${FALLBACKS.map(
+        ([key, title, detail]) =>
+          html`<label class="setting-toggle" id=${`model-account-${key}-control`}
+            ><input
+              type="checkbox"
+              id=${`model-account-${key}`}
+              .checked=${!!s.draft[key]}
+              @change=${(e: Event) => s.change(key, (e.target as HTMLInputElement).checked)}
+            /><span class="setting-switch" aria-hidden="true"></span
+            ><span class="setting-copy"><strong>${title}</strong><small>${detail}</small></span></label
+          >`,
       )}
     </div>
     ${saveFooter(s)}

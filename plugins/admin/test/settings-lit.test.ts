@@ -241,21 +241,44 @@ test("purpose runtime cards independently set and clear overrides using the runt
     dom.window.close();
   }
 });
-test("personal AI account card says which providers the org requirement applies to", () => {
+test("personal AI account card edits the two org fallback switches, both off by default", () => {
   const dom = setup();
   try {
     const doc = dom.window.document;
-    const note = () => doc.getElementById("model-account-requirement")?.textContent?.trim() ?? null;
-    const load = (data: unknown) =>
-      dom.window.eval("settingsUI.load(" + JSON.stringify(data) + ',"org:test","model-account-modes")');
-    load({ modelAccountModes: { anthropic: "personal", openai: "org" }, individualModelAuth: false });
-    assert.equal(note(), null);
-    load({ modelAccountModes: { anthropic: "personal", openai: "org" }, individualModelAuth: true });
-    assert.match(note()!, /applies only to Claude:/);
-    load({ modelAccountModes: { anthropic: "org", openai: "org" }, individualModelAuth: true });
-    assert.match(note()!, /no provider allows them, so the requirement has no effect/);
-    doc.querySelector<HTMLInputElement>('input[name="model-account-mode-openai"][value="personal"]')!.click();
-    assert.match(note()!, /applies only to ChatGPT:/);
+    const collect = () =>
+      JSON.parse(String(dom.window.eval('JSON.stringify(settingsUI.collect("model-account-modes"))')));
+    dom.window.eval(
+      "settingsUI.load(" +
+        JSON.stringify({ modelAccountModes: { anthropic: "personal", openai: "org" } }) +
+        ',"org:test","model-account-modes")',
+    );
+    assert.equal(doc.getElementById("model-account-requirement"), null);
+    const unavailable = doc.getElementById("model-account-fallbackWhenUnavailable") as HTMLInputElement;
+    const rejected = doc.getElementById("model-account-fallbackWhenRejected") as HTMLInputElement;
+    assert.equal(unavailable.checked, false);
+    assert.equal(rejected.checked, false);
+    rejected.click();
+    assert.deepEqual(collect(), {
+      anthropic: "personal",
+      openai: "org",
+      fallbackWhenUnavailable: false,
+      fallbackWhenRejected: true,
+    });
+    assert.equal((doc.querySelector('[data-save="model-account-modes"]') as HTMLButtonElement).disabled, false);
+    dom.window.eval(
+      "settingsUI.load(" +
+        JSON.stringify({
+          modelAccountModes: {
+            anthropic: "personal",
+            openai: "personal",
+            fallbackWhenUnavailable: true,
+            fallbackWhenRejected: false,
+          },
+        }) +
+        ',"org:test","model-account-modes")',
+    );
+    assert.equal((doc.getElementById("model-account-fallbackWhenUnavailable") as HTMLInputElement).checked, true);
+    assert.equal((doc.querySelector('[data-save="model-account-modes"]') as HTMLButtonElement).disabled, true);
   } finally {
     dom.window.close();
   }
@@ -285,12 +308,16 @@ test("personal AI account card edits one mode per provider and stays org-only", 
     assert.deepEqual(JSON.parse(String(dom.window.eval('JSON.stringify(settingsUI.collect("model-account-modes"))'))), {
       anthropic: "personal",
       openai: "personal",
+      fallbackWhenUnavailable: false,
+      fallbackWhenRejected: false,
     });
     assert.equal((doc.querySelector('[data-save="model-account-modes"]') as HTMLButtonElement).disabled, false);
     dom.window.eval('settingsUI.load({},"org:test","model-account-modes")');
     assert.deepEqual(JSON.parse(String(dom.window.eval('JSON.stringify(settingsUI.collect("model-account-modes"))'))), {
       anthropic: "org",
       openai: "org",
+      fallbackWhenUnavailable: false,
+      fallbackWhenRejected: false,
     });
     assert.equal(card().classList.contains("hidden"), true);
     dom.window.eval(
@@ -303,53 +330,50 @@ test("personal AI account card edits one mode per provider and stays org-only", 
     dom.window.close();
   }
 });
-test("fast mode access card switches between everyone and a picked list of people", () => {
-  const dom = setup();
-  const document = dom.window.document;
-  const data = {
-    ...models,
-    fastModeAccess: { people: null, directory: [{ principalId: "carol@acme.com", displayName: "Carol" }] },
-  };
-  try {
-    dom.window.eval("settingsUI.load(" + JSON.stringify(data) + ',"org:test","fast-mode-access")');
-    const card = document.getElementById("card-fast-mode-access")!;
-    assert.equal(card.classList.contains("hidden"), false);
-    assert.deepEqual(JSON.parse(String(dom.window.eval('JSON.stringify(settingsUI.collect("fast-mode-access"))'))), {
-      people: null,
-    });
-    assert.equal(document.getElementById("fast-mode-access-add"), null);
-    const limited = card.querySelector<HTMLInputElement>('input[name="fast-mode-access"][value="people"]')!;
-    limited.checked = true;
-    limited.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
-    assert.ok(document.getElementById("fast-mode-access-empty"));
-    assert.throws(() => dom.window.eval('settingsUI.collect("fast-mode-access")'), /at least one person/);
-    assert.equal(
-      document.querySelector('#fast-mode-access-options option[value="carol@acme.com"]')?.getAttribute("label"),
-      "Carol",
-    );
-    const input = document.getElementById("fast-mode-access-add") as HTMLInputElement;
-    for (const value of ["carol@acme.com", "Erin@Acme.com", "carol@acme.com"]) {
-      input.value = value;
-      input.dispatchEvent(new dom.window.Event("input"));
-      document.getElementById("fast-mode-access-add-button")!.click();
+for (const [key, readKey] of [
+  ["fast-mode-access", "fastModeAccess"],
+  ["personal-account-access", "personalAccountAccess"],
+] as const) {
+  test(`${key} card switches between everyone and a picked list of people`, () => {
+    const dom = setup();
+    const document = dom.window.document;
+    const data = {
+      ...models,
+      [readKey]: { people: null, directory: [{ principalId: "carol@acme.com", displayName: "Carol" }] },
+    };
+    const collect = () => JSON.parse(String(dom.window.eval(`JSON.stringify(settingsUI.collect("${key}"))`)));
+    try {
+      dom.window.eval("settingsUI.load(" + JSON.stringify(data) + `,"org:test","${key}")`);
+      const card = document.getElementById(`card-${key}`)!;
+      assert.equal(card.classList.contains("hidden"), false);
+      assert.deepEqual(collect(), { people: null });
+      assert.equal(document.getElementById(`${key}-add`), null);
+      const limited = card.querySelector<HTMLInputElement>(`input[name="${key}"][value="people"]`)!;
+      limited.checked = true;
+      limited.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+      assert.ok(document.getElementById(`${key}-empty`));
+      assert.throws(() => dom.window.eval(`settingsUI.collect("${key}")`), /at least one person/);
+      assert.equal(
+        document.querySelector(`#${key}-options option[value="carol@acme.com"]`)?.getAttribute("label"),
+        "Carol",
+      );
+      const input = document.getElementById(`${key}-add`) as HTMLInputElement;
+      for (const value of ["carol@acme.com", "Erin@Acme.com", "carol@acme.com"]) {
+        input.value = value;
+        input.dispatchEvent(new dom.window.Event("input"));
+        document.getElementById(`${key}-add-button`)!.click();
+      }
+      assert.deepEqual(collect(), { people: ["carol@acme.com", "erin@acme.com"] });
+      assert.match(card.querySelector('[data-person="carol@acme.com"]')!.textContent!, /Carol \(carol@acme\.com\)/);
+      assert.equal((card.querySelector(`[data-save="${key}"]`) as HTMLButtonElement).disabled, false);
+      card.querySelector<HTMLButtonElement>('[aria-label="Remove erin@acme.com"]')!.click();
+      assert.deepEqual(collect().people, ["carol@acme.com"]);
+      dom.window.eval("settingsUI.load(" + JSON.stringify({ ...data, [readKey]: undefined }) + `,"org:test","${key}")`);
+      assert.equal(document.getElementById(`card-${key}`)!.classList.contains("hidden"), true);
+      dom.window.eval("settingsUI.load(" + JSON.stringify(data) + `,"personal:x","${key}")`);
+      assert.equal(document.getElementById(`card-${key}`)!.classList.contains("hidden"), true);
+    } finally {
+      dom.window.close();
     }
-    assert.deepEqual(JSON.parse(String(dom.window.eval('JSON.stringify(settingsUI.collect("fast-mode-access"))'))), {
-      people: ["carol@acme.com", "erin@acme.com"],
-    });
-    assert.match(card.querySelector('[data-person="carol@acme.com"]')!.textContent!, /Carol \(carol@acme\.com\)/);
-    assert.equal((card.querySelector('[data-save="fast-mode-access"]') as HTMLButtonElement).disabled, false);
-    card.querySelector<HTMLButtonElement>('[aria-label="Remove erin@acme.com"]')!.click();
-    assert.deepEqual(
-      JSON.parse(String(dom.window.eval('JSON.stringify(settingsUI.collect("fast-mode-access"))'))).people,
-      ["carol@acme.com"],
-    );
-    dom.window.eval(
-      "settingsUI.load(" + JSON.stringify({ ...data, fastModeAccess: undefined }) + ',"org:test","fast-mode-access")',
-    );
-    assert.equal(document.getElementById("card-fast-mode-access")!.classList.contains("hidden"), true);
-    dom.window.eval("settingsUI.load(" + JSON.stringify(data) + ',"personal:x","fast-mode-access")');
-    assert.equal(document.getElementById("card-fast-mode-access")!.classList.contains("hidden"), true);
-  } finally {
-    dom.window.close();
-  }
-});
+  });
+}
