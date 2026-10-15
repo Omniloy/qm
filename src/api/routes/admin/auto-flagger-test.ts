@@ -1,17 +1,26 @@
 import { sendJson } from "../../http.ts";
 import { audit, authorizeAdmin, orgScope } from "../shared.ts";
 import type { ApiCtx } from "../route.ts";
-import { securityScreenSystemPrompt, type SecurityScreenVerdict } from "../../../security/security-posture.ts";
+import {
+  securityScreenChunks,
+  securityScreenSystemPrompt,
+  withVerifiedEvidence,
+  boundVerdictText,
+  type SecurityScreenVerdict,
+} from "../../../security/security-posture.ts";
 import { defaultAutoFlaggerConfig, parseAutoFlaggerDraft, type AutoFlaggerDraft } from "../admin-resources.ts";
 import { isHarnessId } from "../../../model/pi-models.ts";
 import type { ScreenSample } from "../../../sessions/session-store.ts";
 import type { SecurityScreenProbe } from "../../../security/security-screener.ts";
+import { SECURITY_CATEGORY_LABELS } from "../../../security/security-hold.ts";
 
 const DEFAULT_WINDOW = 100;
 const MAX_WINDOW = 500;
 const CONCURRENCY = 4;
 const PER_SAMPLE_TIMEOUT_MS = 20_000;
 const RUN_DEADLINE_MS = 120_000;
+const MAX_SAMPLE_CHARS = 100_000;
+const MAX_SAMPLE_CHUNKS = 8;
 
 interface RunTotals {
   flagged: number;
@@ -76,6 +85,37 @@ async function replay(
   };
   await Promise.all(Array.from({ length: Math.min(CONCURRENCY, samples.length) }, worker));
   return { totals, verdicts, complete };
+}
+
+async function screenSample(
+  probe: SecurityScreenProbe,
+  config: AutoFlaggerDraft,
+  payload: string,
+  actorId: string,
+  scopeLabel: ScreenSample["scopeLabel"],
+): Promise<SecurityScreenVerdict | undefined> {
+  const systemPrompt = securityScreenSystemPrompt(config.rubric);
+  const chunks = securityScreenChunks("tool_result:sample", payload).slice(0, MAX_SAMPLE_CHUNKS);
+  let fallback: SecurityScreenVerdict | undefined;
+  for (const chunk of chunks) {
+    const verdict = boundVerdictText(
+      withVerifiedEvidence(
+        await probe({
+          payload: chunk,
+          harnessId: config.harnessId,
+          modelId: config.modelId,
+          systemPrompt,
+          actorId,
+          scopeLabel,
+          signal: AbortSignal.timeout(PER_SAMPLE_TIMEOUT_MS),
+        }).catch(() => undefined),
+        chunk,
+      ),
+    );
+    if (verdict?.decision === "strict") return verdict;
+    fallback ??= verdict;
+  }
+  return fallback;
 }
 
 /**
@@ -214,4 +254,76 @@ export async function testAutoFlagger(ctx: ApiCtx): Promise<void> {
     }),
   });
   sendJson(ctx.res, 200, result);
+}
+
+export async function sampleAutoFlagger(ctx: ApiCtx): Promise<void> {
+  const scope = orgScope();
+  const requestedScope = decodeURIComponent(ctx.params.scope ?? scope);
+  const actor = await authorizeAdmin(ctx, scope);
+  if (!actor) return;
+  if (requestedScope !== scope) {
+    sendJson(ctx.res, 400, { error: "bad_request", message: "the Auto flagger is org-wide; request an org scope" });
+    return;
+  }
+  const body = (ctx.body ?? {}) as { payload?: unknown; harnessId?: unknown; modelId?: unknown; rubric?: unknown };
+  if (typeof body.payload !== "string" || !body.payload.trim() || body.payload.length > MAX_SAMPLE_CHARS) {
+    sendJson(ctx.res, 400, {
+      error: "bad_request",
+      message: `payload must be non-empty text of at most ${MAX_SAMPLE_CHARS} characters`,
+    });
+    return;
+  }
+  const { screenSecurity, config: configStore } = ctx.deps;
+  if (!screenSecurity || !configStore) {
+    sendJson(ctx.res, 501, {
+      error: "unsupported",
+      message: "this deployment has no screening model wired, so the flagger cannot be tested",
+    });
+    return;
+  }
+  const rate = await ctx.deps.rateLimiter?.check(`auto-flagger-sample:${actor.id}`);
+  if (rate && !rate.allowed) {
+    sendJson(ctx.res, 429, { error: "rate_limited" });
+    return;
+  }
+  await ctx.deps.refreshModels?.();
+  const saved = configStore.getAutoFlaggerConfig();
+  const effective: AutoFlaggerDraft =
+    saved && isHarnessId(saved.harnessId)
+      ? { harnessId: saved.harnessId, modelId: saved.modelId, rubric: saved.rubric }
+      : defaultAutoFlaggerConfig(ctx.deps);
+  const draftGiven = body.harnessId !== undefined || body.modelId !== undefined || body.rubric !== undefined;
+  const parsed = draftGiven
+    ? await parseAutoFlaggerDraft(ctx.deps, body)
+    : ({ value: effective } as { value: AutoFlaggerDraft });
+  if ("error" in parsed) {
+    sendJson(ctx.res, 400, { error: "bad_request", message: parsed.error });
+    return;
+  }
+  const candidate = parsed.value;
+  const verdict = await screenSample(screenSecurity, candidate, body.payload, actor.id, scope);
+  audit(ctx.deps, {
+    principalId: actor.id,
+    action: "auto_flagger.test_sample",
+    resource: "auto-flagger",
+    scopeLabel: scope,
+    status: verdict ? verdict.decision : "error",
+    detail: JSON.stringify({ chars: body.payload.length, harnessId: candidate.harnessId, modelId: candidate.modelId }),
+  });
+  sendJson(ctx.res, 200, {
+    scopeId: scope,
+    harnessId: candidate.harnessId,
+    modelId: candidate.modelId,
+    sample: verdict
+      ? {
+          decision: verdict.decision,
+          ...(verdict.unscreened ? { unscreened: true } : {}),
+          ...(verdict.reason ? { reason: verdict.reason } : {}),
+          ...(verdict.category
+            ? { category: verdict.category, categoryLabel: SECURITY_CATEGORY_LABELS[verdict.category] }
+            : {}),
+          ...(verdict.evidence ? { evidence: verdict.evidence } : {}),
+        }
+      : { decision: "error" },
+  });
 }

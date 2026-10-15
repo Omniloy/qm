@@ -9,7 +9,7 @@ import {
   retention,
   whoami,
 } from "./admin/scope-config.ts";
-import { testAutoFlagger } from "./admin/auto-flagger-test.ts";
+import { sampleAutoFlagger, testAutoFlagger } from "./admin/auto-flagger-test.ts";
 import { egress, listAdminAudit, listAdminErrors, listAdminRuns, metrics } from "./admin/observability.ts";
 import { getAdminSession, getAdminSessionLlm, listAdminSessions, listAdminShadowDeliveries } from "./admin/sessions.ts";
 import { downloadAdminFile, listAdminFiles, readAdminFile, uploadAdminFile } from "./admin/files.ts";
@@ -64,6 +64,14 @@ import { completeCodexAuth, deleteCodexAuth, getCodexAuth, startCodexAuth } from
 import { deleteCustomProvider, getCustomProviders, putCustomProvider } from "./admin/custom-providers.ts";
 import { deleteMcpServer, getMcpServers, putMcpServer } from "./admin/mcp-servers.ts";
 import { listSecurityFlags, releaseSecurityTaint } from "./admin/security.ts";
+import {
+  grantSkillTrust,
+  listScreeningReports,
+  listSkillTrusts,
+  previewSkillTrust,
+  revokeSkillTrust,
+  setScreeningReportStatus,
+} from "./admin/screening.ts";
 import { spend } from "./admin/spend.ts";
 import { createPrincipalLink, deletePrincipalLink, listPrincipalLinks } from "./admin/principal-links.ts";
 
@@ -121,6 +129,12 @@ const routes: ReadonlyArray<Route<ApiCtx>> = [
     auth: "either",
     handle: testAutoFlagger,
   },
+  {
+    method: "POST",
+    path: "/v1/admin/scopes/:scope/auto-flagger/sample",
+    auth: "either",
+    handle: sampleAutoFlagger,
+  },
   { method: "PUT", path: "/v1/admin/scopes/:scope/:resource", auth: "either", handle: putScopeConfig },
   { method: "GET", path: "/v1/admin/whoami", auth: "either", handle: whoami },
   { method: "GET", path: "/v1/admin/scopes", auth: "either", handle: listAdminScopes },
@@ -153,6 +167,12 @@ const routes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/admin/audit", auth: "either", handle: listAdminAudit },
   { method: "GET", path: "/v1/admin/security/flags", auth: "either", handle: listSecurityFlags },
   { method: "POST", path: "/v1/admin/security/release", auth: "either", handle: releaseSecurityTaint },
+  { method: "GET", path: "/v1/admin/screening-reports", auth: "either", handle: listScreeningReports },
+  { method: "POST", path: "/v1/admin/screening-reports/:id/status", auth: "either", handle: setScreeningReportStatus },
+  { method: "GET", path: "/v1/admin/skill-trusts/preview", auth: "either", handle: previewSkillTrust },
+  { method: "GET", path: "/v1/admin/skill-trusts", auth: "either", handle: listSkillTrusts },
+  { method: "POST", path: "/v1/admin/skill-trusts", auth: "either", handle: grantSkillTrust },
+  { method: "DELETE", path: "/v1/admin/skill-trusts/:id", auth: "either", handle: revokeSkillTrust },
   {
     match: (m, p) =>
       m === "GET" && (p === "/v1/admin/crons" || p === "/v1/admin/deployments" || p === "/v1/admin/skills"),

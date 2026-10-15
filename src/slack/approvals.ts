@@ -1,3 +1,4 @@
+import { xmlEscape } from "../util/message-tag.ts";
 import { isSubagentThreadRef } from "../sessions/session-syscalls.ts";
 import { errMessage, swallow, swallowAs } from "../util/errors.ts";
 import { slackFailureClause, slackFailureText } from "./turn-flow.ts";
@@ -28,6 +29,9 @@ import {
   uploadAttachments,
   uploadFailureNote,
 } from "./lib.ts";
+import { securityHoldView, type SecurityHold } from "../security/security-hold.ts";
+import { scheduledHoldDecider } from "../core/approval-store.ts";
+import { samePerson } from "../directory/person.ts";
 import { resolveAgentRequestTarget } from "./approval-context.ts";
 import { parseBlockAction, parseInteractionBody } from "./payloads.ts";
 import type { SlackAgentRequestContext, SlackCoreClient } from "../api/slack-core-client.ts";
@@ -67,6 +71,7 @@ interface SlackApprovalContext {
   summary?: string;
   kind?: "approval" | "input";
   grantModes?: { session: boolean; always: boolean };
+  securityHold?: SecurityHold;
   turn: Omit<CoreTurnBody, "approval">;
   allowedTs?: Set<string>;
   slackIdsByPrincipal?: ReadonlyMap<string, string>;
@@ -76,6 +81,13 @@ interface SlackApprovalContext {
 }
 
 type ApprovalScope = "once" | "session" | "always";
+
+function heldOutcomeText(hold: SecurityHold, outcome: "allowed" | "kept"): string {
+  const title = xmlEscape(securityHoldView(hold).title.replace(/^Paused: /, ""));
+  return outcome === "allowed"
+    ? `:shield: Allowed once: ${title}. The assistant is reading it for this step...`
+    : `:shield: Kept blocked: ${title}. The assistant stopped without it.`;
+}
 
 function approvalScope(actionId: ApprovalActionId): ApprovalScope | "deny" {
   if (actionId === "hilo_allow_once") return "once";
@@ -160,6 +172,7 @@ export function createApprovals(deps: {
         ...(approval.summary ? { summary: approval.summary } : {}),
         ...(approval.kind ? { kind: approval.kind } : {}),
         ...(approval.grantModes ? { grantModes: approval.grantModes } : {}),
+        ...(approval.securityHold ? { securityHold: approval.securityHold } : {}),
       });
     }
   }
@@ -504,6 +517,50 @@ export function createApprovals(deps: {
     ].join("\n");
   }
 
+  async function decideScheduledHold(
+    client: any,
+    stored: StoredApproval,
+    clickerId: string,
+    channel: string,
+    messageTs: string | undefined,
+    approved: boolean,
+  ): Promise<void> {
+    const decider = scheduledHoldDecider(stored as never)!;
+    const actor = clickerId === decider ? { externalId: decider } : await directory.classifyActor(client, clickerId);
+    const ephemeral = (text: string) =>
+      client.chat
+        .postEphemeral({ channel, user: clickerId, text })
+        .catch(swallowAs("slack: chat.postEphemeral", undefined));
+    if (!samePerson(actor.externalId, decider)) {
+      await ephemeral("Only the scheduled task's owner can decide this hold.");
+      return;
+    }
+    await ephemeral(approved ? "Allowing it once and continuing the scheduled run…" : "Keeping it blocked…");
+    try {
+      const outcome = await core.resolveScheduledHold(stored.requestId, actor.externalId, approved);
+      if (outcome.state === "already_resolved") {
+        await ephemeral("This hold is already being resolved.");
+        return;
+      }
+      if (outcome.state === "resolved" && outcome.outcome === "failed") {
+        await ephemeral(`${outcome.message} The hold is still waiting; you can decide again.`);
+        return;
+      }
+      if (outcome.state === "unavailable") {
+        await ephemeral("I couldn't resume the scheduled task here. The hold is still waiting.");
+        return;
+      }
+      const text =
+        outcome.state === "resolved"
+          ? outcome.message
+          : "That hold expired or was replaced by a newer run of the task.";
+      if (messageTs) await updateSlackMessage(client, channel, messageTs, `:shield: ${xmlEscape(text)}`);
+    } catch (err) {
+      console.error("%s", `[slack] scheduled hold ${stored.requestId} decision failed:`, errMessage(err));
+      await ephemeral(`⚠️ ${slackFailureText(err)} The hold is still waiting; try again.`);
+    }
+  }
+
   async function handleApprovalAction({ ack, body, action, client }: ActionArgs): Promise<void> {
     await ack();
     const parsed = parseBlockAction(action, APPROVAL_ACTION_IDS);
@@ -561,6 +618,10 @@ export function createApprovals(deps: {
       }
       return;
     }
+    if (fetched.state === "found" && scheduledHoldDecider(fetched.stored as never)) {
+      await decideScheduledHold(client, fetched.stored, clickerId, channel, messageTs, actionId !== "hilo_deny");
+      return;
+    }
     const rebuilt =
       fetched.state === "found"
         ? recoveredApprovalContext(fetched.stored, {
@@ -587,6 +648,7 @@ export function createApprovals(deps: {
         turn: rebuilt.turn as SlackApprovalContext["turn"],
         ...(rebuilt.kind ? { kind: rebuilt.kind } : {}),
         ...(rebuilt.grantModes ? { grantModes: rebuilt.grantModes } : {}),
+        ...(rebuilt.securityHold ? { securityHold: rebuilt.securityHold } : {}),
         recovered: true,
       };
     }
@@ -678,6 +740,7 @@ export function createApprovals(deps: {
             ...(ctx.summary ? { summary: ctx.summary } : {}),
             ...(ctx.kind ? { kind: ctx.kind } : {}),
             ...(ctx.grantModes ? { grantModes: ctx.grantModes } : {}),
+            ...(ctx.securityHold ? { securityHold: ctx.securityHold } : {}),
             ...retained,
           },
         ]);
@@ -695,7 +758,12 @@ export function createApprovals(deps: {
         const outcome = await runTurn({ ...ctx.turn, actor: approver, approval }, onQueued ? { onQueued } : {});
         settle();
         if (await sealedOut(outcome.result)) return;
-        await updateSlackMessage(client, cardChannel, messageTs, `Denied ${inlineCode(ctx.command)}.`);
+        await updateSlackMessage(
+          client,
+          cardChannel,
+          messageTs,
+          ctx.securityHold ? heldOutcomeText(ctx.securityHold, "kept") : `Denied ${inlineCode(ctx.command)}.`,
+        );
         if (ctx.agentRequest) {
           await failAgentRequest(
             client,
@@ -711,7 +779,14 @@ export function createApprovals(deps: {
       let scopeLabel = "Allowed always";
       if (selected === "once") scopeLabel = "Allowed once";
       else if (selected === "session") scopeLabel = "Allowed for this conversation";
-      await updateSlackMessage(client, cardChannel, messageTs, `${scopeLabel}; running ${inlineCode(ctx.command)}...`);
+      await updateSlackMessage(
+        client,
+        cardChannel,
+        messageTs,
+        ctx.securityHold
+          ? heldOutcomeText(ctx.securityHold, "allowed")
+          : `${scopeLabel}; running ${inlineCode(ctx.command)}...`,
+      );
       const outcome = await runTurn({ ...ctx.turn, actor: approver, approval }, onQueued ? { onQueued } : {});
       const result = outcome.result;
       settle();
@@ -837,6 +912,7 @@ export function createApprovals(deps: {
           ...(ctx.summary ? { summary: ctx.summary } : {}),
           ...(ctx.kind ? { kind: ctx.kind } : {}),
           ...(ctx.grantModes ? { grantModes: ctx.grantModes } : {}),
+          ...(ctx.securityHold ? { securityHold: ctx.securityHold } : {}),
         },
       ]);
       await updateSlackMessage(

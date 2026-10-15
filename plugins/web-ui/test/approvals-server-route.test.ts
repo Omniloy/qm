@@ -31,6 +31,44 @@ const core = createServer((req: IncomingMessage, res) => {
       body: raw ? (JSON.parse(raw) as Record<string, unknown>) : {},
     });
     res.setHeader("content-type", "application/json");
+    if (req.method === "POST" && url.split("?")[0]!.endsWith("/report")) {
+      res.statusCode = 201;
+      res.end(JSON.stringify({ reported: true, reportId: "rep-1" }));
+      return;
+    }
+    if (req.method === "POST" && url.split("?")[0]!.endsWith("/resolve-hold")) {
+      res.end(
+        JSON.stringify({ outcome: "allowed", message: "Allowed once — the run continued and delivered to you." }),
+      );
+      return;
+    }
+    if (url.startsWith("/v1/approvals/a-cron")) {
+      res.end(
+        JSON.stringify({
+          sessionId: "cron-fire",
+          request: {
+            ...storedRequest,
+            surface: "cron",
+            actor: { externalId: url.includes("hold") ? "first-member" : "alice" },
+            conversation: { kind: "dm", threadRef: "cron:c1:fire:abc" },
+          },
+          ...(url.includes("hold")
+            ? {
+                securityHold: {
+                  source: { kind: "command", command: "ls" },
+                  category: "other",
+                  scheduledTask: { id: "c1", ownerId: "alice" },
+                },
+              }
+            : {}),
+        }),
+      );
+      return;
+    }
+    if (url.startsWith("/v1/sessions/cron-fire")) {
+      res.end(JSON.stringify({ session: { id: "cron-fire", surface: "cron", threadRef: "cron:c1:fire:abc" } }));
+      return;
+    }
     if (url.startsWith("/v1/approvals/a-swarm")) {
       let sessionId = "worker";
       if (url.includes("hidden")) sessionId = "hidden";
@@ -189,4 +227,64 @@ test("worker replay rejects a mismatched thread or non-worker session", async ()
     assert.equal(response.status, 404);
     assert.equal(turnPosts(before).length, 0);
   }
+});
+
+test("a scheduled task's hold resolves through core's owner check and never replays the turn", async () => {
+  const before = calls.length;
+  const r = await fetch(`${base}/api/approvals/a-cron-hold`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ approved: true, scope: "once" }),
+  });
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), {
+    outcome: "allowed",
+    message: "Allowed once — the run continued and delivered to you.",
+  });
+  const resolved = calls.slice(before).filter((c) => c.url.split("?")[0]!.endsWith("/resolve-hold"));
+  assert.equal(resolved.length, 1);
+  assert.equal(resolved[0]!.url.split("?")[0], "/v1/approvals/a-cron-hold/resolve-hold");
+  assert.deepEqual(resolved[0]!.body, { actorId: "alice", approved: true });
+  assert.equal(turnPosts(before).length, 0);
+});
+
+test("a scheduled task's ordinary approval keeps failing closed on the web", async () => {
+  const before = calls.length;
+  const r = await fetch(`${base}/api/approvals/a-cron`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ approved: true }),
+  });
+  assert.equal(r.status, 404);
+  assert.equal(turnPosts(before).length, 0);
+  assert.equal(calls.slice(before).filter((c) => c.url.includes("/resolve-hold")).length, 0);
+});
+
+function reportPosts(since: number): Call[] {
+  return calls.slice(since).filter((c) => c.method === "POST" && c.url.split("?")[0]!.endsWith("/report"));
+}
+
+test("reporting a hold forwards the requester as reporter with the note and never resolves it", async () => {
+  const before = calls.length;
+  const r = await fetch(`${base}/api/approvals/a-1/report`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ note: "our own built-in skill", reporterId: "mallory" }),
+  });
+  assert.equal(r.status, 201);
+  assert.deepEqual(await r.json(), { reported: true, reportId: "rep-1" });
+  const posts = reportPosts(before);
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0]!.url.split("?")[0], "/v1/approvals/a-1/report");
+  assert.deepEqual(posts[0]!.body, { reporterId: "alice", note: "our own built-in skill" });
+  assert.equal(turnPosts(before).length, 0, "reporting never releases the content");
+});
+
+test("only the requester can report a hold", async () => {
+  const before = calls.length;
+  for (const id of ["a-theirs", "a-cron"]) {
+    const r = await fetch(`${base}/api/approvals/${id}/report`, { method: "POST", headers, body: "{}" });
+    assert.equal(r.status, 404, id);
+  }
+  assert.equal(reportPosts(before).length, 0);
 });

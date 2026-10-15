@@ -1,4 +1,5 @@
 import type { ResolvedSecurityPolicy } from "./security/security-posture.ts";
+import type { SecurityHold, SecurityHoldView } from "./security/security-hold.ts";
 import type { SharingPosture } from "./resolution/sharing-posture.ts";
 
 export type PrincipalType = "internal" | "guest";
@@ -207,6 +208,7 @@ export interface Destination {
   keychainAskId?: string;
   deploymentAccess?: { deploymentId: string; requesterId: string };
   commandApprovalId?: string;
+  cardUpdate?: { channel: string; ts: string };
   type: string;
   target: string;
   audienceScopeId?: ScopeId;
@@ -721,6 +723,8 @@ export interface PendingApproval {
   grantModes?: ApprovalGrantModes;
   blocksInput?: boolean;
   kind?: "approval" | "input";
+  securityHold?: SecurityHold;
+  securityHoldView?: SecurityHoldView;
 }
 
 export interface PendingApprovalRecord {
@@ -738,6 +742,13 @@ export interface PendingApprovalRecord {
   request?: TurnRequest;
   blocksInput?: boolean;
   kind?: "approval" | "input";
+  securityHold?: SecurityHold;
+  card?: { channel: string; ts: string };
+  claimedBy?: string;
+  claimedAt?: number;
+  supersededBy?: string;
+  cardRetired?: boolean;
+  deliveryRound?: number;
 }
 
 type ApprovalScope = "once" | "session" | "always";
@@ -762,7 +773,8 @@ export interface TurnResult {
   reply?: string;
   reactions?: string[];
   reason?: string;
-  refusalKind?: "security_quarantine" | "session_busy" | "provider_limit";
+  refusalKind?:
+    "security_quarantine" | "session_busy" | "provider_limit" | "rate_limited" | "budget_exceeded" | "approval_denied";
   adminUrl?: string;
   runId?: string;
   steered?: true;

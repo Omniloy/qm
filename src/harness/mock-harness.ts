@@ -14,6 +14,7 @@ import { countTokens } from "../util/tokens.ts";
 import {
   SECURITY_SCREEN_STEP,
   SECURITY_SCREEN_SYSTEM_PROMPT,
+  toolResultContextOf,
   type ToolResultScreen,
 } from "../security/security-posture.ts";
 
@@ -29,6 +30,7 @@ const READ_ONLY_BLOCKED_PREFIXES = [
   "!collect-approval ",
   "!collect-exec ",
   "!screened-run ",
+  "!screened-skill ",
   "!double-exec ",
   "!read ",
   "!skill ",
@@ -417,6 +419,7 @@ export function createMockHarness(): Harness {
                   result: output,
                   unscreenable: false,
                   provenance: "external",
+                  context: toolResultContextOf("execute", { command }, { tool: "execute" }),
                 })
                 .catch((): ToolResultScreen => ({ outcome: "unscreened" }))
             : ({ outcome: "allow" } as ToolResultScreen);
@@ -571,6 +574,32 @@ export function createMockHarness(): Harness {
             const ran = await turn.tools.execute(command);
             reply = (ran.stdout || ran.stderr).trim();
           }
+        } else if (command0.startsWith("!screened-skill ")) {
+          const name = command0.slice("!screened-skill ".length).trim();
+          const r = await turn.tools.skill(name);
+          usedTool = true;
+          const screen =
+            r.content != null && turn.screenToolResult
+              ? await turn
+                  .screenToolResult({
+                    tool: "skills",
+                    result: r.content,
+                    unscreenable: false,
+                    provenance: "external",
+                    ...(r.identity
+                      ? {
+                          context: {
+                            kind: "skill" as const,
+                            ...r.identity,
+                            ...(r.standing?.owner ? { owner: r.standing.owner } : {}),
+                          },
+                        }
+                      : {}),
+                  })
+                  .catch((): ToolResultScreen => ({ outcome: "unscreened" }))
+              : ({ outcome: "allow" } as ToolResultScreen);
+          if (r.content == null) reply = `(no skill file: ${name}/SKILL.md)`;
+          else reply = screen.outcome === "quarantine" ? "[tool output quarantined by the security screen]" : r.content;
         } else if (command0.startsWith("!skill ")) {
           const [name, path] = command0.slice(7).trim().split(/\s+/);
           const r = await turn.tools.skill(name!, path ? { path } : undefined);
@@ -1007,11 +1036,18 @@ export function createMockHarness(): Harness {
           flakyScreens.add(payload);
           return Promise.resolve(undefined);
         }
-        const strict = /ignore (?:all|prior|previous) instructions|reveal (?:the )?secrets?|!security-risk/i.test(
+        const matched = /ignore (?:all|prior|previous) instructions|reveal (?:the )?secrets?|!security-risk/i.exec(
           payload,
         );
         return Promise.resolve(
-          strict ? { decision: "strict", reason: "instruction in untrusted data" } : { decision: "auto" },
+          matched
+            ? {
+                decision: "strict",
+                reason: "instruction in untrusted data",
+                category: "instruction_override",
+                evidence: matched[0],
+              }
+            : { decision: "auto" },
         );
       },
 

@@ -1,4 +1,9 @@
-import { MaskedExecutionError, executionSecretEnv, createExactSecretValueMasker } from "../security/secret-masking.ts";
+import {
+  MaskedExecutionError,
+  executionSecretEnv,
+  createExactSecretValueMasker,
+  createSecretValueMasker,
+} from "../security/secret-masking.ts";
 import { withAbort } from "../util/async.ts";
 import type { RuntimeRequest, RuntimeResult } from "../harness/runtime-types.ts";
 import { readContextFile } from "../resolution/context-files.ts";
@@ -78,6 +83,7 @@ import type {
 } from "../api/control-service.ts";
 import type { ShareArtifactRequest, ShareArtifactResult } from "../api/artifact-share.ts";
 import type { SkillStanding } from "../skills/skill-store.ts";
+import type { SkillIdentity } from "../security/security-posture.ts";
 import type { Cron, Webhook } from "../types.ts";
 import type { CapabilityClaims } from "../auth/capability-token.ts";
 import type { VisibleCron } from "../api/app.ts";
@@ -160,6 +166,7 @@ export interface SkillResult {
   content: string | null;
   sourceScopeId: ScopeId | null;
   standing?: SkillStanding;
+  identity?: SkillIdentity;
   dir?: string;
   packDir?: string;
 }
@@ -201,6 +208,7 @@ export type AttachResult = { ok: true; files: AttachedFileMeta[]; staged: number
 export type AttachFiles = (files: readonly string[]) => Promise<AttachResult>;
 
 export interface ToolContext extends SurfaceToolDeps {
+  maskSecrets?(text: string): string;
   runtime?(request: RuntimeRequest, signal?: AbortSignal): Promise<RuntimeResult>;
   attach: AttachFiles;
   sessionSyscalls?: SessionSyscalls;
@@ -530,6 +538,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
   const fallbackMounts = deps.layers.filter((l) => l.mode === "ro" && l.mountPath);
   const persistExclude = deps.persistWritesToStore?.excludeDirs;
   const orgScopeId = deps.layers.find((l) => l.mountPath === "global")?.scopeId ?? null;
+  const turnSecrets = new Map<string, string>();
 
   const accessSandbox = async (id: string): Promise<SandboxAccessPlan> => {
     if (!deps.sandboxResources || !deps.accessSandboxResource) throw new Error("sandbox inventory unavailable");
@@ -622,6 +631,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
   }
 
   return {
+    maskSecrets: (text) => createSecretValueMasker(Object.fromEntries(turnSecrets))(text),
     ...(deps.registerLogin ? { registerLogin: deps.registerLogin } : {}),
     ...(deps.commandCredentials?.length
       ? { commandCredentialHandles: deps.commandCredentials.map((credential) => credential.handle) }
@@ -891,6 +901,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
             commandHandle.env,
             prepared.flatMap((credential) => credential.env),
           );
+          for (const [key, value] of Object.entries(secretEnv)) turnSecrets.set(key, value);
           const mask = createExactSecretValueMasker(Object.values(secretEnv));
           let r: ExecResult;
           try {

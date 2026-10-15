@@ -118,3 +118,17 @@ test("isBoundaryRefusal: only internal-only reasons are boundary refusals", () =
   assert.equal(isBoundaryRefusal("An unknown error occurred"), false);
   assert.equal(isBoundaryRefusal(undefined), false);
 });
+
+for (const [refusalKind, reason] of [
+  ["rate_limited", "rate limit exceeded — try again in 12s"],
+  ["budget_exceeded", "budget exceeded ($5.00 of $5); try again later"],
+  ["approval_denied", "approval denied for git push"],
+] as const) {
+  test(`refusalNote: a ${refusalKind} refusal keeps the usual framing and admin link`, () => {
+    const withKind = refusalNote({ status: "refused", refusalKind, reason, adminUrl: ADMIN_URL }, "channel");
+    const withoutKind = refusalNote({ status: "refused", reason, adminUrl: ADMIN_URL }, "channel");
+    assert.equal(withKind, withoutKind, "the new refusal kinds do not change the Slack wording");
+    assert.match(withKind, /Full error: https:\/\/portal\.example\.com/);
+    assert.notEqual(withKind, reason);
+  });
+}

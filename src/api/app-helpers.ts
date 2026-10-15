@@ -37,6 +37,7 @@ import {
   createMembershipControlsScope,
 } from "../resolution/scope-membership.ts";
 import { samePerson } from "../directory/person.ts";
+import { securityHoldView } from "../security/security-hold.ts";
 import { actorAssertionActive } from "../identity/identity-service.ts";
 import type { Deployment } from "../deploy/deploy-store.ts";
 import { swallow } from "../util/errors.ts";
@@ -166,7 +167,8 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     if (!session) return [];
     const candidates: Array<{ key: string; record: PendingApprovalRecord }> = [];
     for (const [key, record] of entries) {
-      if (record.sessionId !== sessionId || (opts.blockingOnly && record.blocksInput === false)) continue;
+      if (record.sessionId !== sessionId || record.supersededBy || (opts.blockingOnly && record.blocksInput === false))
+        continue;
       if (await approvalRecordIsCurrent(record, session)) candidates.push({ key, record });
     }
     const visible = opts.viewer ? await approvalsVisibleToViewer(session, opts.viewer, candidates) : candidates;
@@ -181,6 +183,7 @@ export function createAppHelpers(deps: AppDeps, app: App) {
       ...(r.grantModes ? { grantModes: r.grantModes } : {}),
       blocksInput: r.blocksInput !== false,
       ...(r.kind === "approval" ? { kind: r.kind } : {}),
+      ...(r.securityHold ? { securityHoldView: securityHoldView(r.securityHold) } : {}),
     }));
   }
 

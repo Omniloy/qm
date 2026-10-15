@@ -4,7 +4,8 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createExecProcessSessions, type ExecProcessIo, redactCommand } from "../src/sandbox/exec-process-session.ts";
+import { createExecProcessSessions, type ExecProcessIo } from "../src/sandbox/exec-process-session.ts";
+import { createSecretValueMasker, redactCommand, redactSecretText } from "../src/security/secret-masking.ts";
 import type { ExecResult, SandboxHandle } from "../src/sandbox/sandbox.ts";
 
 function shellIo(home: string): ExecProcessIo {
@@ -192,9 +193,10 @@ test("redactCommand masks known injected env values the pattern layer misses", (
     assert.ok(!out.includes("ghp_secretvalue12345"), `leaked in: ${out}`);
     assert.match(out, /<redacted:GITHUB_TOKEN>/);
   }
-  assert.ok(
-    redactCommand("curl -u me:ghp_secretvalue12345 https://x.test").includes("ghp_secretvalue12345"),
-    "without env the value layer has nothing to mask by",
+  assert.equal(
+    redactCommand("curl -u me:ghp_secretvalue12345 https://x.test"),
+    "curl -u me:<redacted> https://x.test",
+    "without env the pattern layer still catches basic-auth credentials",
   );
 });
 
@@ -305,5 +307,43 @@ test("a session from the current boot keeps running, and one with no boot marker
     sessions.find((s) => s.processId === legacy.processId)?.status,
     { state: "running" },
     "sessions predating this change have no marker and must not be reaped on a guess",
+  );
+});
+
+test("redactCommand masks credentials in common command shapes without env", () => {
+  const cases: Array<[string, string]> = [
+    ["curl -u admin:hunter2 https://x", "curl -u admin:<redacted> https://x"],
+    ["PGPASSWORD=s3cret psql -h db", "PGPASSWORD=<redacted> psql -h db"],
+    ["mysql -psecret123 db", "mysql -p<redacted> db"],
+    ["curl 'https://u:p4ss@host/x?api_key=sk-live-123'", "curl 'https://u:<redacted>@host/x?api_key=<redacted>'"],
+    ["curl 'https://host/x?a=1&access_token=abc'", "curl 'https://host/x?a=1&access_token=<redacted>'"],
+    ["curl -H 'X-Api-Key: abc123' https://x", "curl -H 'X-Api-Key: <redacted>' https://x"],
+    ["curl -H 'Cookie: sid=abc; t=2' https://x", "curl -H 'Cookie: <redacted>' https://x"],
+    ["export GITHUB_TOKEN=ghp_abcdef && make", "export GITHUB_TOKEN=<redacted> && make"],
+    ['API_KEY="q w" node x', "API_KEY=<redacted> node x"],
+    ["export DB_PASSWORD='a b'; run", "export DB_PASSWORD=<redacted>; run"],
+  ];
+  for (const [input, expected] of cases) assert.equal(redactCommand(input), expected);
+  assert.equal(redactCommand("ls -la /tmp && echo monkey=1"), "ls -la /tmp && echo monkey=1", "ordinary text survives");
+});
+
+test("the value masker catches JSON-escaped and encoded forms and leaves short values alone", () => {
+  const mask = createSecretValueMasker({ API_TOKEN: 'tok"en/with+chars', SHORT: "abc" });
+  assert.equal(mask(JSON.stringify({ v: 'tok"en/with+chars' })), '{"v":"<redacted:API_TOKEN>"}');
+  assert.equal(mask(encodeURIComponent('tok"en/with+chars')), "<redacted:API_TOKEN>");
+  assert.equal(mask("abc"), "abc");
+  assert.equal(
+    redactSecretText('{"api_key": "sk-123", "token":"a\\"b", "password": 1234, "name":"x"}'),
+    '{"api_key": "<redacted>", "token":"<redacted>", "password": "<redacted>", "name":"x"}',
+  );
+});
+
+test("exported secret assignments are masked whatever their case, and JSON nested in a string is too", () => {
+  assert.equal(redactCommand("export gh_token='abc123secret' && make"), "export gh_token=<redacted> && make");
+  assert.equal(redactCommand('export Api_Key="xyz"; run'), "export Api_Key=<redacted>; run");
+  assert.equal(redactCommand("echo monkey=1"), "echo monkey=1");
+  assert.equal(
+    redactSecretText('{"text":"{\\"password\\":\\"hunter2\\",\\"n\\":1}"}'),
+    '{"text":"{\\"password\\":\\"<redacted>\\",\\"n\\":1}"}',
   );
 });

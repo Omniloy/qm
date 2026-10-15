@@ -312,6 +312,8 @@ const WRITES = new Map<string, string[]>([
   ["custom-providers", ["PUT", "DELETE"]],
   ["codex-auth", ["POST", "DELETE"]],
   ["mcp-servers", ["PUT", "DELETE"]],
+  ["screening-reports", ["POST"]],
+  ["skill-trusts", ["POST", "DELETE"]],
 ]);
 
 const READS = [
@@ -344,6 +346,8 @@ const READS = [
   "codex-auth",
   "principal-links",
   "mcp-servers",
+  "screening-reports",
+  "skill-trusts",
 ];
 
 export async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -445,9 +449,10 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       const scopeId = decodeURIComponent(rest);
       return forward(req, res, principal, "GET", `/v1/admin/scopes/${encodeURIComponent(scopeId)}${url.search}`);
     }
-    if (method === "POST" && rest.endsWith("/auto-flagger/test")) {
-      const scope = decodeURIComponent(rest.slice(0, -"/auto-flagger/test".length));
-      const corePath = `/v1/admin/scopes/${encodeURIComponent(scope)}/auto-flagger/test`;
+    const flaggerRun = ["/auto-flagger/test", "/auto-flagger/sample"].find((suffix) => rest.endsWith(suffix));
+    if (method === "POST" && flaggerRun) {
+      const scope = decodeURIComponent(rest.slice(0, -flaggerRun.length));
+      const corePath = `/v1/admin/scopes/${encodeURIComponent(scope)}${flaggerRun}`;
       return forward(req, res, principal, "POST", corePath, await readBody(req));
     }
     if (method === "PUT") {

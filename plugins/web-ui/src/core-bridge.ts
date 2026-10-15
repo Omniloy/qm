@@ -435,15 +435,29 @@ export function workPausedForApproval(work: WorkBlock): boolean {
   );
 }
 
+export interface SecurityHoldView {
+  title: string;
+  held: string;
+  subject?: string;
+  categoryLabel: string;
+  explanation: string;
+  facts: Array<{ label: string; value: string }>;
+  evidence?: string;
+  allowEffect: string;
+  keepEffect: string;
+}
+
 export interface PendingApproval {
   requestId: string;
   command: string;
   reason?: string;
   purpose?: string;
   summary?: string;
+  summaryDetail?: string;
   matched?: string;
   grantModes?: { session: boolean; always: boolean };
   blocksInput?: boolean;
+  securityHoldView?: SecurityHoldView;
 }
 
 export function approvalBlocksComposer(approval: PendingApproval): boolean {
@@ -972,13 +986,27 @@ export function makeRunResumeStreamFn(
   return fn as unknown as StreamFn;
 }
 
-export async function resolveApproval(decision: ApprovalDecision): Promise<string> {
-  const submit = await api<{ runId?: string }>(`/api/approvals/${encodeURIComponent(decision.requestId)}`, {
-    method: "POST",
-    body: JSON.stringify({ approved: decision.approved, ...(decision.scope ? { scope: decision.scope } : {}) }),
-  });
+export type ApprovalResolution = { runId: string } | { outcome: "allowed" | "kept"; message: string };
+
+export async function resolveApproval(decision: ApprovalDecision): Promise<ApprovalResolution> {
+  const submit = await api<{ runId?: string; outcome?: unknown; message?: unknown }>(
+    `/api/approvals/${encodeURIComponent(decision.requestId)}`,
+    {
+      method: "POST",
+      body: JSON.stringify({ approved: decision.approved, ...(decision.scope ? { scope: decision.scope } : {}) }),
+    },
+  );
+  if ((submit.outcome === "allowed" || submit.outcome === "kept") && typeof submit.message === "string")
+    return { outcome: submit.outcome, message: submit.message };
   if (!submit.runId) throw new Error("Could not continue after the approval.");
-  return submit.runId;
+  return { runId: submit.runId };
+}
+
+export async function reportSecurityHold(requestId: string, note: string): Promise<void> {
+  await api<{ reported?: boolean }>(`/api/approvals/${encodeURIComponent(requestId)}/report`, {
+    method: "POST",
+    body: JSON.stringify(note.trim() ? { note: note.trim() } : {}),
+  });
 }
 
 export async function runApprovalTurn(
@@ -1380,7 +1408,7 @@ function applyRun(
   }
   const approvals = res?.pendingApprovals ?? [];
   const paused = approvals.length > 0;
-  const approvalDenied = approvalDeniedMessage(res?.reason);
+  const approvalDenied = approvalDeniedMessage(res?.refusalKind);
   const quiet = res?.status === "silent" || res?.status === "react";
   if (work) {
     work.finishedAt = typeof run.finishedAt === "number" ? run.finishedAt : Date.now();
@@ -1647,11 +1675,8 @@ function deliveredFilesFromAttachments(
     }));
 }
 
-function approvalDeniedMessage(reason?: string): string | null {
-  const trimmed = reason?.trim();
-  if (!trimmed) return null;
-  if (trimmed === "approval denied") return "Denied.";
-  return trimmed.startsWith("approval denied for ") ? "Denied." : null;
+function approvalDeniedMessage(refusalKind?: string): string | null {
+  return refusalKind === "approval_denied" ? "Denied." : null;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -1733,6 +1758,7 @@ export interface HistoryApprovalDecision {
   approved: boolean;
   command: string;
   scope?: string;
+  held?: string;
   timestamp: number;
 }
 
@@ -1745,6 +1771,7 @@ function approvalDecisionMessage(
     approved?: unknown;
     command?: unknown;
     scope?: unknown;
+    held?: unknown;
   } | null;
   if (typeof decision?.approved !== "boolean" || typeof decision.command !== "string") return null;
   return {
@@ -1754,6 +1781,7 @@ function approvalDecisionMessage(
     command: decision.command,
     ...(typeof decision.requestId === "string" ? { requestId: decision.requestId } : {}),
     ...(typeof decision.scope === "string" ? { scope: decision.scope } : {}),
+    ...(typeof decision.held === "string" && decision.held ? { held: decision.held } : {}),
     timestamp: entry.createdAt,
   };
 }

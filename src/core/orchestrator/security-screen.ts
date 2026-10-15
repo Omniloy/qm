@@ -5,6 +5,8 @@ import { runShadowScreen, type SecurityScreenHook } from "../../security/securit
 import {
   securityScreenSystemPrompt,
   UNSCREENED_REASON,
+  withVerifiedEvidence,
+  boundVerdictText,
   type SecurityScreenVerdict,
 } from "../../security/security-posture.ts";
 import { estimateCostUsd } from "../../ratelimit/budget.ts";
@@ -34,6 +36,7 @@ export type SecurityClassifier = (
     origin?: TurnOrigin["kind"];
     requestId?: string;
     request?: string;
+    mask?: (text: string) => string;
   },
 ) => Promise<SecurityScreenVerdict | undefined>;
 
@@ -169,9 +172,9 @@ export function createSecurityClassifier(deps: OrchestratorDeps): SecurityClassi
     };
     const startedAt = Date.now();
     const first = await attempt();
-    if (first) return first;
+    if (first) return boundVerdictText(withVerifiedEvidence(first, payload), context.mask);
     if (Date.now() - startedAt >= timeoutMs / 2) return unscreenedVerdict();
     await sleep(250);
-    return (await attempt()) ?? unscreenedVerdict();
+    return boundVerdictText(withVerifiedEvidence((await attempt()) ?? unscreenedVerdict(), payload), context.mask);
   };
 }

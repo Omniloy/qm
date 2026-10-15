@@ -9,6 +9,7 @@ import { reportFailure, swallow, swallowAs } from "../util/errors.ts";
 import { createEnvelopeStaging } from "./envelope-staging.ts";
 import { createSweeper } from "../util/sweeper.ts";
 import bolt from "@slack/bolt";
+import { registerSecurityHoldActions } from "./security-holds.ts";
 import { WebClient } from "@slack/web-api";
 import { createDeduper, createThreadTracker } from "./lib.ts";
 import { installDevIntrospection } from "./dev-introspection.ts";
@@ -283,6 +284,7 @@ export async function startSlackPlugin(
   const approvals = createApprovals({ core, flow, directory, threads, ids, externalAccess: !!cfg.externalAccess });
   registerKeychainApprovalActions(app, { core, directory, webUiPublicUrl: cfg.webUiPublicUrl });
   registerDeployAccessActions(app, { core, directory });
+  registerSecurityHoldActions(app, { core, directory });
   const ensureHeader = createSurfaceHeaderEnsurer({
     headerFacts: (scope) => core.surfaceHeaderFacts(scope as Parameters<typeof core.surfaceHeaderFacts>[0]),
     channelPinEnabled: (scope) =>

@@ -1,9 +1,13 @@
-import { clip, inlineCode } from "./util.ts";
+import { xmlEscape } from "../util/message-tag.ts";
+import { clip, escapedClip, inlineCode } from "./util.ts";
+import { securityHoldView, type SecurityHold } from "../security/security-hold.ts";
 import { parseDeliveryTarget } from "./delivery.ts";
 import type { AgentRequestActionId } from "./agent-requests.ts";
 
 export const APPROVAL_ACTION_IDS = ["hilo_allow_once", "hilo_allow_session", "hilo_allow_always", "hilo_deny"] as const;
 export type ApprovalActionId = (typeof APPROVAL_ACTION_IDS)[number];
+export const SECURITY_HOLD_ACTION_IDS = ["security_hold_report", "security_hold_show"] as const;
+export type SecurityHoldActionId = (typeof SECURITY_HOLD_ACTION_IDS)[number];
 
 export interface PendingApproval {
   requestId: string;
@@ -13,6 +17,7 @@ export interface PendingApproval {
   summary?: string;
   kind?: "approval" | "input";
   grantModes?: { session: boolean; always: boolean };
+  securityHold?: SecurityHold;
 }
 
 export interface SlackApprovalMessage {
@@ -21,10 +26,12 @@ export interface SlackApprovalMessage {
 }
 
 const APPROVAL_BLOCK_PREFIX = "hilo_approval:";
+const MAX_CARD_BLOCKS = 50;
+const SECURITY_HOLD_BLOCKS = 5;
 
 export function button(
   text: string,
-  actionId: ApprovalActionId | AgentRequestActionId,
+  actionId: ApprovalActionId | AgentRequestActionId | SecurityHoldActionId,
   value: string,
   style?: "primary" | "danger",
 ): Record<string, unknown> {
@@ -54,25 +61,41 @@ export function approvalMessage(approvals: readonly PendingApproval[]): SlackApp
     : [{ requestId: "", command: "unknown command", reason: "requires approval" }];
   const describe = (p: (typeof items)[number]): string => {
     if (p.kind === "input") return "My security screen flagged part of this message. Allow it?";
-    if (p.purpose) return `Approval needed: ${clip(p.purpose, 400)}`;
+    if (p.purpose) return `Approval needed: ${escapedClip(p.purpose, 400)}`;
     return `Approval needed before I can run ${inlineCode(p.command)}.`;
   };
-  const text = items.map(describe).join("\n");
+  const text = items
+    .map((p) => (p.securityHold ? `${xmlEscape(securityHoldView(p.securityHold).title)} needs your OK.` : describe(p)))
+    .join("\n");
   const blocks: Array<Record<string, unknown>> = [];
-  for (const p of items) {
+  for (const [index, p] of items.entries()) {
+    const needed = p.securityHold ? SECURITY_HOLD_BLOCKS : 2;
+    if (blocks.length + needed > MAX_CARD_BLOCKS - 1) {
+      blocks.push({
+        type: "context",
+        elements: [
+          {
+            type: "mrkdwn",
+            text: `${items.length - index} more ${items.length - index === 1 ? "approval is" : "approvals are"} waiting. Open the conversation in the web app to see them all.`,
+          },
+        ],
+      });
+      break;
+    }
+    if (p.securityHold) {
+      blocks.push(...securityHoldBlocks(p.requestId, p.securityHold));
+      continue;
+    }
     const lines = [
       p.kind === "input"
         ? ":lock: *My security screen flagged part of this message. Allow it?*"
         : ":lock: *Approval needed.*",
     ];
-    if (p.summary) lines.push(clip(p.summary, 400));
-    if (p.purpose) lines.push(`*Why:* ${clip(p.purpose, 400)}`);
-    if (p.kind !== "input") lines.push(`*Command:* ${inlineCode(p.command)}`);
-    lines.push(`*Flagged as:* ${clip(p.reason, 200)}`);
-    blocks.push({
-      type: "section",
-      text: { type: "mrkdwn", text: clip(lines.join("\n"), 2900) },
-    });
+    if (p.summary) lines.push(escapedClip(p.summary, 400));
+    if (p.purpose) lines.push(`*Why:* ${escapedClip(p.purpose, 400)}`);
+    if (p.kind !== "input") lines.push(`*Command:* ${inlineCode(p.command, 1400)}`);
+    lines.push(`*Flagged as:* ${escapedClip(p.reason, 600)}`);
+    blocks.push({ type: "section", text: { type: "mrkdwn", text: lines.join("\n") } });
     blocks.push({
       type: "actions",
       block_id: `${APPROVAL_BLOCK_PREFIX}${p.requestId || "unknown"}`.slice(0, 255),
@@ -87,6 +110,54 @@ export function approvalMessage(approvals: readonly PendingApproval[]): SlackApp
   return { text, blocks };
 }
 
+function quoted(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => `>${xmlEscape(line)}`)
+    .join("\n");
+}
+
+function mrkdwn(text: string, verbatim = false): Record<string, unknown> {
+  return { type: "mrkdwn", text, ...(verbatim ? { verbatim: true } : {}) };
+}
+
+function securityHoldBlocks(requestId: string, hold: SecurityHold): Array<Record<string, unknown>> {
+  const view = securityHoldView(hold);
+  const title = view.subject
+    ? escapedClip(view.title, 600).replace(xmlEscape(view.subject), () => inlineCode(view.subject!))
+    : escapedClip(view.title, 600);
+  const facts = view.facts.map((fact) => `${fact.label}: ${clip(fact.value, 600)}`);
+  return [
+    {
+      type: "section",
+      text: mrkdwn(`:shield: *${title} needs your OK*\n${escapedClip(view.explanation, 1500)}`, true),
+    },
+    ...(view.evidence
+      ? [{ type: "section", text: mrkdwn(`*Text the screener flagged*\n${quoted(clip(view.evidence, 400))}`, true) }]
+      : []),
+    {
+      type: "context",
+      elements: [mrkdwn(escapedClip([...facts, `Category: ${view.categoryLabel}`].join(" · "), 2900), true)],
+    },
+    {
+      type: "section",
+      text: mrkdwn(
+        `*Allow once:* ${escapedClip(view.allowEffect, 600)}\n*Keep blocked:* ${escapedClip(view.keepEffect, 600)}`,
+      ),
+    },
+    {
+      type: "actions",
+      block_id: `${APPROVAL_BLOCK_PREFIX}${requestId || "unknown"}`.slice(0, 255),
+      elements: [
+        button("Allow once", "hilo_allow_once", requestId, "primary"),
+        button("Keep blocked", "hilo_deny", requestId),
+        button("Report false positive", "security_hold_report", requestId),
+        button("Show what was blocked", "security_hold_show", requestId),
+      ],
+    },
+  ];
+}
+
 export interface StoredApproval {
   requestId: string;
   command: string;
@@ -95,6 +166,7 @@ export interface StoredApproval {
   summary?: string;
   kind?: "approval" | "input";
   grantModes?: { session: boolean; always: boolean };
+  securityHold?: SecurityHold;
   request?: Record<string, unknown>;
 }
 
@@ -110,11 +182,15 @@ export interface RecoveredApprovalContext {
   summary?: string;
   kind?: "approval" | "input";
   grantModes?: { session: boolean; always: boolean };
+  securityHold?: SecurityHold;
   turn: Record<string, unknown>;
 }
 
 export function recoveredApprovalContext(
-  stored: Pick<StoredApproval, "command" | "reason" | "purpose" | "summary" | "kind" | "grantModes" | "request">,
+  stored: Pick<
+    StoredApproval,
+    "command" | "reason" | "purpose" | "summary" | "kind" | "grantModes" | "securityHold" | "request"
+  >,
   click: { channel: string; threadTs?: string },
 ): RecoveredApprovalContext | null {
   const req = stored.request as
@@ -154,6 +230,7 @@ export function recoveredApprovalContext(
     ...(stored.summary ? { summary: stored.summary } : {}),
     ...(stored.kind ? { kind: stored.kind } : {}),
     ...(stored.grantModes ? { grantModes: stored.grantModes } : {}),
+    ...(stored.securityHold ? { securityHold: stored.securityHold } : {}),
     turn,
   };
 }

@@ -29,7 +29,11 @@ test("the security screen proxy sends the neutral classifier contract and maps i
   assert.deepEqual(benign.verdict, { decision: "auto" });
 
   const malicious = await screener.classify({ payload: "hostile tool output", hook: "tool_response" });
-  assert.deepEqual(malicious.verdict, { decision: "strict", reason: "example-screen:system_compromise" });
+  assert.deepEqual(malicious.verdict, {
+    decision: "strict",
+    reason: "example-screen:system_compromise",
+    category: "other",
+  });
   assert.equal(malicious.score, 0.96);
   assert.equal(screener.provider, "example-screen");
   assert.equal(screener.shadow, true);
@@ -88,7 +92,11 @@ test("the security screen proxy classifies long input in overlapping bounded win
     metadata: { request: { origin: "human", text: "inspect the document", truncated: false } },
   });
 
-  assert.deepEqual(result.verdict, { decision: "strict", reason: "example-screen:prompt_injection" });
+  assert.deepEqual(result.verdict, {
+    decision: "strict",
+    reason: "example-screen:prompt_injection",
+    category: "instruction_override",
+  });
   assert.equal(result.score, 0.8);
   assert.equal(bodies.length, 12);
   assert.equal(maxActive, 2);

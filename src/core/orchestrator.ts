@@ -45,6 +45,7 @@ import { SESSION_BUSY_FIRE_TEXT, SESSION_BUSY_USER_TEXT } from "./failure-copy.t
 import { CONFIG_DEFAULTS } from "../config.ts";
 import {
   acquireLeaseWithin,
+  cronIdOf,
   entrySecurityTainted,
   isOverheardEntry,
   TAPE_IMPORT_MAX_ENTRIES,
@@ -93,6 +94,14 @@ import type {
 } from "../harness/harness.ts";
 import { forModelContext, forSearchView } from "../harness/context-compaction.ts";
 import {
+  securityHoldSourceKey,
+  securityHoldView,
+  unverifiedScreenReason,
+  type SecurityHold,
+} from "../security/security-hold.ts";
+import { redactSecretText } from "../security/secret-masking.ts";
+import { countHold, trustedSkillVersion } from "../security/screening-reports.ts";
+import {
   renderSecurityPolicyPrompt,
   quarantineReleaseKey,
   securityScreenChunks,
@@ -101,6 +110,7 @@ import {
   UNSCREENED_REASON,
   unscreenedNotice,
   type SecurityScreenVerdict,
+  type ToolResultContext,
   type ToolResultScreen,
   type ToolResultScreenInput,
 } from "../security/security-posture.ts";
@@ -264,6 +274,11 @@ const MIN_SESSION_LEASE_TTL_MS = 15_000;
 const AUTOMATED_TURN_LEASE_WAIT_MS = 1_000;
 
 const SESSION_GONE_REASON = "this conversation is no longer available — start a new one";
+const STRICT_VERDICT_REASON = "strict security screen verdict";
+
+function screenApprovalReason(reason: string): string {
+  return reason === STRICT_VERDICT_REASON ? reason : unverifiedScreenReason(reason);
+}
 
 const DEFAULT_APPROVAL_SUMMARY_TIMEOUT_MS = 6_000;
 
@@ -638,8 +653,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         if (!managedGroupRef) return true;
         const expected = new Set(input.sessionParticipantIds ?? []);
         const [current, version] = await Promise.all([
-          deps.managedGroups!.members(managedGroupRef).catch(() => undefined),
-          deps.managedGroups!.version(managedGroupRef).catch(() => undefined),
+          deps.managedGroups!.members(managedGroupRef),
+          deps.managedGroups!.version(managedGroupRef),
         ]);
         return (
           !!current &&
@@ -706,6 +721,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       if (!rl.allowed) {
         return {
           status: "refused",
+          refusalKind: "rate_limited",
           reason: `rate limit exceeded — try again in ${Math.ceil((rl.retryAfterMs ?? 0) / 1000)}s`,
         };
       }
@@ -715,6 +731,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         if (!b.allowed) {
           return {
             status: "refused",
+            refusalKind: "budget_exceeded",
             reason: `budget exceeded ($${b.spentUsd.toFixed(2)} of $${b.limitUsd}); try again later`,
           };
         }
@@ -904,7 +921,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         if (verdict?.decision === "strict") {
           const sources = externalPromptData.map((item) => item.source);
           flaggedScreenedInput = {
-            reason: verdict.reason ?? "strict security screen verdict",
+            reason: verdict.reason ?? STRICT_VERDICT_REASON,
             sources,
           };
           deps.auditLog.record({
@@ -1034,7 +1051,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               resolution.approvalGrantModes.session && resolution.approvalGrantModes.always
                 ? {}
                 : { grantModes: resolution.approvalGrantModes };
-            const reason = `${flaggedScreenedInput.reason}; flagged sources: ${flaggedScreenedInput.sources.join(", ") || "message"}`;
+            const reason = `${screenApprovalReason(flaggedScreenedInput.reason)}; flagged sources: ${flaggedScreenedInput.sources.join(", ") || "message"}`;
             await pending.put(requestId, {
               sessionId: session.id,
               command,
@@ -1067,7 +1084,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             {
               requestId: inputApprovalId(session.id, replayableRequest(input)),
               command: "security-screen",
-              reason: `${flaggedScreenedInput.reason}; flagged sources: ${flaggedScreenedInput.sources.join(", ") || "message"}`,
+              reason: `${screenApprovalReason(flaggedScreenedInput.reason)}; flagged sources: ${flaggedScreenedInput.sources.join(", ") || "message"}`,
               blocksInput: true,
               kind: "input",
               approvalKey: `security-screen:${input.surface ?? "unknown"}`,
@@ -1417,6 +1434,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         summary: string;
         summaryDetail: string;
         screenedOutput?: PendingApprovalRecord["screenedOutput"];
+        securityHold?: SecurityHold;
         approvalKey: string;
         grantModes: { session: boolean; always: boolean };
       }> = [];
@@ -1426,6 +1444,28 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           .replace(/\s+/g, " ")
           .trim();
         return cleaned.length > 240 ? `${cleaned.slice(0, 240)}…` : cleaned;
+      };
+      const securityHoldFor = async (
+        context: ToolResultContext,
+        verdict: SecurityScreenVerdict,
+        mask: (text: string) => string,
+      ): Promise<SecurityHold> => {
+        const cronId = cronIdOf(input.conversation.threadRef);
+        const cron = cronId ? await deps.crons?.get(cronId).catch(swallowAs("orchestrator: cron lookup", null)) : null;
+        const scheduledTask = cronId
+          ? {
+              id: cronId,
+              ...(cron?.title ? { title: cron.title } : {}),
+              ...(cron?.owner ? { ownerId: cron.owner } : {}),
+            }
+          : undefined;
+        return {
+          source: context,
+          category: verdict.category ?? "other",
+          ...(verdict.reason ? { reason: mask(verdict.reason) } : {}),
+          ...(verdict.evidence ? { evidence: mask(verdict.evidence) } : {}),
+          ...(scheduledTask ? { scheduledTask } : {}),
+        };
       };
       const quarantineFullText = (payload: string): string => {
         const cleaned = payload.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, " ").trim();
@@ -2144,7 +2184,12 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             const decisionEntry = await withManagedRosterVersion(() =>
               deps.sessions.append(lease, {
                 type: "approval_resolved",
-                payload: { requestId: input.approval!.requestId, command: p.command, approved: false },
+                payload: {
+                  requestId: input.approval!.requestId,
+                  command: p.command,
+                  approved: false,
+                  ...(p.securityHold ? { held: securityHoldView(p.securityHold).held } : {}),
+                },
                 scopeLabel: scopeId as ScopeId,
               }),
             );
@@ -2162,6 +2207,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             return {
               status: "refused",
               sessionId: session.id,
+              refusalKind: "approval_denied",
               reason: `approval denied for ${p.command}`,
             };
           } else {
@@ -2250,7 +2296,13 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             const decisionEntry = await withManagedRosterVersion(() =>
               deps.sessions.append(lease, {
                 type: "approval_resolved",
-                payload: { requestId: input.approval!.requestId, command: p.command, approved: true, scope },
+                payload: {
+                  requestId: input.approval!.requestId,
+                  command: p.command,
+                  approved: true,
+                  scope,
+                  ...(p.securityHold ? { held: securityHoldView(p.securityHold).held } : {}),
+                },
                 scopeLabel: scopeId as ScopeId,
               }),
             );
@@ -3700,9 +3752,33 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                     provenance,
                     sourceScopeId,
                     source,
+                    context,
                   }: ToolResultScreenInput): Promise<ToolResultScreen> => {
                     if (provenance !== "external") return { outcome: "allow" };
                     const toolLabel = toolLabelOf(tool);
+                    if (context?.kind === "skill") {
+                      const trust = await trustedSkillVersion(deps.skillTrusts, context).catch(
+                        swallowAs("orchestrator: skill trust lookup", null),
+                      );
+                      if (trust) {
+                        deps.auditLog.record({
+                          at: Date.now(),
+                          principalId: actor.id,
+                          action: "security_posture.tool_result_trusted_skill",
+                          resource: input.surface ?? "unknown",
+                          scopeLabel: scopeId,
+                          status: "allowed",
+                          detail: JSON.stringify({
+                            tool: toolLabel,
+                            skillId: context.skillId,
+                            version: context.version,
+                            contentHash: context.contentHash,
+                            grantedBy: trust.grantedBy,
+                          }),
+                        });
+                        return { outcome: "allow" };
+                      }
+                    }
                     const sourceLabel = source ? `:${source.replace(/[^A-Za-z0-9_-]/g, "_")}` : "";
                     if (authorizeCommand(quarantineReleaseKey(tool), quarantineReleaseKey(tool))) {
                       deps.auditLog.record({
@@ -3730,6 +3806,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                               request: input.text,
                               surface: toolLabel,
                               origin: input.origin.kind,
+                              mask: (text) => tools.maskSecrets?.(text) ?? text,
                             }),
                           ),
                         )),
@@ -3756,6 +3833,9 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                         });
                         return { outcome: "allow" };
                       }
+                      const maskHeld = (text: string): string =>
+                        redactSecretText(text, (raw) => tools.maskSecrets?.(raw) ?? raw);
+                      const heldReason = verdict.reason ? maskHeld(verdict.reason) : undefined;
                       deps.auditLog.record({
                         at: Date.now(),
                         principalId: actor.id,
@@ -3767,9 +3847,15 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                           reason: "screen_verdict",
                           tool: toolLabel,
                           ...(source ? { source } : {}),
-                          ...(verdict.reason ? { verdict: verdict.reason } : {}),
+                          ...(heldReason ? { verdict: heldReason } : {}),
+                          ...(verdict.category ? { category: verdict.category } : {}),
                         }),
                       });
+                      const securityHold = context
+                        ? await securityHoldFor(context, verdict, maskHeld).catch(
+                            swallowAs("orchestrator: security hold", undefined),
+                          )
+                        : undefined;
                       if (
                         !quarantineReleaseApprovals.some(
                           (qa) =>
@@ -3778,14 +3864,19 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                             qa.screenedOutput?.sourceScopeId === sourceScopeId,
                         )
                       ) {
+                        if (securityHold)
+                          await countHold(deps.screeningHoldCounts, securityHoldSourceKey(securityHold.source)).catch(
+                            swallowAs("orchestrator: count hold", undefined),
+                          );
                         quarantineReleaseApprovals.push({
                           command: `release quarantined ${toolLabel} output`,
-                          reason: verdict.reason
-                            ? `security screen flagged this ${toolLabel} output: ${verdict.reason}`
+                          reason: heldReason
+                            ? `security screen flagged this ${toolLabel} output. ${unverifiedScreenReason(heldReason)}`
                             : `security screen flagged this ${toolLabel} output`,
                           purpose: `Release the quarantined ${toolLabel} output into the conversation (once), or keep it blocked.`,
-                          summary: `Blocked content preview: ${quarantinePreview(result)}`,
-                          summaryDetail: quarantineFullText(result),
+                          summary: `Blocked content preview: ${quarantinePreview(maskHeld(result))}`,
+                          summaryDetail: quarantineFullText(maskHeld(result)),
+                          ...(securityHold ? { securityHold } : {}),
                           ...(!toolLabel.startsWith("session_message_")
                             ? {
                                 screenedOutput: {
@@ -3802,7 +3893,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                       return {
                         outcome: "quarantine",
                         approvalRequested: true,
-                        ...(verdict.reason ? { reason: verdict.reason } : {}),
+                        ...(heldReason ? { reason: heldReason } : {}),
                       };
                     }
                     deps.auditLog.record({
@@ -4351,6 +4442,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               summary?: string;
               summaryDetail?: string;
               screenedOutput?: PendingApprovalRecord["screenedOutput"];
+              securityHold?: SecurityHold;
               grantModes?: { session: boolean; always: boolean };
             }
           > = [...(result.pendingApprovals ?? []), ...quarantineReleaseApprovals];
@@ -4387,6 +4479,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 ...(summary ? { summary } : {}),
                 ...(pa.summaryDetail ? { summaryDetail: pa.summaryDetail } : {}),
                 ...(pa.screenedOutput ? { screenedOutput: pa.screenedOutput } : {}),
+                ...(pa.securityHold ? { securityHold: pa.securityHold } : {}),
                 ...(pa.approvalKey ? { approvalKey: pa.approvalKey } : {}),
                 ...(pa.kind ? { kind: pa.kind } : {}),
               },
@@ -4402,6 +4495,9 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 ...(pa.summaryDetail ? { summaryDetail: pa.summaryDetail } : {}),
                 ...(pa.approvalKey ? { approvalKey: pa.approvalKey } : {}),
                 ...(pa.kind ? { kind: pa.kind } : {}),
+                ...(pa.securityHold
+                  ? { securityHold: pa.securityHold, securityHoldView: securityHoldView(pa.securityHold) }
+                  : {}),
               },
             });
           }

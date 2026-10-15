@@ -1,3 +1,4 @@
+import { xmlEscape } from "../util/message-tag.ts";
 import { extractPrivateContinuation } from "./external-access.ts";
 import { deployAccessMessage } from "./deploy-access.ts";
 import { approvalDeliveryKey, approvalDeliveryRecipient } from "../core/approval-store.ts";
@@ -157,10 +158,7 @@ export function createDeliveryPoller(deps: {
     const sender = d.destination.relaySender?.trim().replace(/^@+/, "");
     const attribution = sender ? [{ type: "plain_text", text: `Sent for @${sender}`, emoji: false }] : [];
     if (!base || !id) return attribution;
-    const title = (d.provenance?.sourceTitle?.trim() || "Cron")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;");
+    const title = xmlEscape(d.provenance?.sourceTitle?.trim() || "Cron");
     return [
       ...attribution,
       { type: "mrkdwn", text: `${title} · <${base}/crons/${encodeURIComponent(id)}|Settings>`, verbatim: true },
@@ -400,6 +398,17 @@ export function createDeliveryPoller(deps: {
           post: async () => {
             const tPost = performance.now();
             try {
+              if (d.destination.cardUpdate) {
+                await client.chat
+                  .update({
+                    channel: d.destination.cardUpdate.channel,
+                    ts: d.destination.cardUpdate.ts,
+                    text: xmlEscape(d.text),
+                    blocks: [{ type: "section", text: { type: "mrkdwn", text: `:shield: ${xmlEscape(d.text)}` } }],
+                  })
+                  .catch(swallowAs("slack: superseded hold card update", undefined));
+                return undefined;
+              }
               const approval =
                 d.destination.keychainAskId && core.keychainApprovals
                   ? await core.keychainApprovals.get(d.destination.keychainAskId, d.destination.target)
@@ -407,9 +416,11 @@ export function createDeliveryPoller(deps: {
               const commandApproval = d.destination.commandApprovalId
                 ? await core.getApproval(d.destination.commandApprovalId)
                 : null;
-              const requester = approvalDeliveryRecipient(
-                commandApproval?.request?.actor as { externalId?: string } | undefined,
-              );
+              const requester = commandApproval
+                ? approvalDeliveryRecipient(
+                    commandApproval as unknown as Parameters<typeof approvalDeliveryRecipient>[0],
+                  )
+                : undefined;
               if (
                 d.destination.commandApprovalId &&
                 (!commandApproval ||
@@ -454,6 +465,28 @@ export function createDeliveryPoller(deps: {
                     : undefined,
                 );
                 reused = Boolean(posted.reused);
+                if (commandApproval?.securityHold && posted.ts) {
+                  const live = await core
+                    .recordApprovalCard(commandApproval.requestId, { channel: posted.channel, ts: posted.ts })
+                    .catch(swallowAs("slack: record hold card", true));
+                  if (!live)
+                    await client.chat
+                      .update({
+                        channel: posted.channel,
+                        ts: posted.ts,
+                        text: "This hold is no longer waiting on you.",
+                        blocks: [
+                          {
+                            type: "section",
+                            text: {
+                              type: "mrkdwn",
+                              text: ":shield: This hold is no longer waiting on you: it was resolved or replaced by a newer run.",
+                            },
+                          },
+                        ],
+                      })
+                      .catch(swallowAs("slack: retire stale hold card", undefined));
+                }
               }
               if (d.attachments?.length && !reused) {
                 try {

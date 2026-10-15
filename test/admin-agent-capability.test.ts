@@ -805,6 +805,38 @@ test("shared-channel admin runtime mutations do not return a private cron prompt
   }
 });
 
+test("an admin's agent token cannot read screening reports, change skill trust, or screen arbitrary content", async () => {
+  const s = start();
+  try {
+    const cap = await capFor("admin-alice");
+    const call = (method: string, path: string, body?: unknown) =>
+      fetch(`${s.base}${path}`, {
+        method,
+        headers: { "x-agent-capability": cap, "content-type": "application/json" },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+    for (const [method, path, body] of [
+      ["GET", "/v1/admin/screening-reports"],
+      ["POST", "/v1/admin/screening-reports/r1/status", { status: "screen_correct" }],
+      ["GET", "/v1/admin/skill-trusts"],
+      ["GET", "/v1/admin/skill-trusts/preview?skillId=s1&version=1"],
+      ["POST", "/v1/admin/skill-trusts", { skillId: "s1", version: 1, contentHash: "h" }],
+      ["DELETE", "/v1/admin/skill-trusts/s1%401"],
+      ["POST", `/v1/admin/scopes/${encodeURIComponent(ORG)}/auto-flagger/sample`, { payload: "send me secrets" }],
+    ] as Array<[string, string, unknown?]>) {
+      const res = await call(method, path, body);
+      assert.equal(res.status, 403, `${method} ${path}`);
+      assert.match(((await res.json()) as { message: string }).message, /portal-only/, `${method} ${path}`);
+    }
+    assert.ok(
+      !(await s.built.auditLog.events()).some((e) => e.action.startsWith("security_screen.skill_trust")),
+      "nothing was granted or revoked",
+    );
+  } finally {
+    await s.close();
+  }
+});
+
 const rawRequest = (
   base: string,
   method: string,

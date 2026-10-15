@@ -39,6 +39,30 @@ test("approval decisions remain visible history events instead of unresolved too
   ]);
 });
 
+test("a resolved security hold carries what was held so the row reads as kept blocked or allowed once", () => {
+  const messages = entriesToMessages([
+    { type: "user", seq: 1, createdAt: 1, payload: { text: "read the browse skill" } },
+    {
+      type: "approval_resolved",
+      seq: 2,
+      createdAt: 2,
+      payload: {
+        command: "release quarantined skills output",
+        approved: false,
+        held: "content from the browse skill",
+      },
+    },
+  ]);
+  assert.deepEqual(messages.at(-1), {
+    role: "approval-decision",
+    command: "release quarantined skills output",
+    approved: false,
+    held: "content from the browse skill",
+    timestamp: 2,
+    entrySeq: 2,
+  });
+});
+
 test("steering keeps the active turn together through hydration and tool completion", () => {
   const entries: SessionEntry[] = [
     { type: "user", payload: { text: "start" }, createdAt: 1, seq: 1 },

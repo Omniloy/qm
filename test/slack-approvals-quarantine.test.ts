@@ -89,3 +89,61 @@ test("an approved resume that succeeds leaves no pin behind either", async () =>
   assert.equal(f.flow.inFlightRuns.has("R2"), false);
   assert.match(String(f.updates.at(-1)?.text ?? ""), /done/);
 });
+
+function scheduledHoldFixture(outcome: Record<string, unknown>) {
+  const updates: any[] = [];
+  const ephemerals: any[] = [];
+  const core = {
+    getApproval: async () => ({
+      requestId: "H1",
+      command: "release quarantined execute output",
+      securityHold: {
+        source: { kind: "command", command: "ls" },
+        category: "other",
+        scheduledTask: { id: "c1", ownerId: "U1" },
+      },
+      request: { surface: "cron", actor: { externalId: "U1" }, conversation: { kind: "dm", threadRef: "cron:c1:f" } },
+    }),
+    resolveScheduledHold: async () => outcome,
+  } as unknown as SlackCoreClient;
+  const directory = { classifyActor: async () => ({ externalId: "U1" }) } as never;
+  const approvals = createApprovals({
+    core,
+    flow: createTurnFlow(core),
+    directory,
+    threads: createThreadTracker(),
+    ids: {} as never,
+  });
+  const handlers: Array<{ pattern: RegExp; handler: ActionHandler }> = [];
+  approvals.registerActions({ action: (pattern, handler) => void handlers.push({ pattern, handler }) });
+  const client = {
+    chat: {
+      update: async (body: any) => void updates.push(body),
+      postEphemeral: async (body: any) => void ephemerals.push(body),
+      postMessage: async () => ({ ok: true }),
+    },
+  };
+  const click = () =>
+    handlers
+      .find((h) => h.pattern.test("hilo_allow_once"))!
+      .handler({
+        ack: async () => {},
+        body: { user: { id: "U1" }, channel: { id: "D1" }, message: { ts: "1.0" } },
+        action: { action_id: "hilo_allow_once", value: "H1" },
+        client,
+      });
+  return { click, updates, ephemerals };
+}
+
+test("a scheduled-hold decision that fails keeps the card's buttons and says so privately", async () => {
+  const f = scheduledHoldFixture({ state: "resolved", outcome: "failed", message: "The run could not continue." });
+  await f.click();
+  assert.equal(f.updates.length, 0, "the card keeps its buttons so the owner can decide again");
+  assert.match(String(f.ephemerals.at(-1)?.text), /could not continue.*still waiting/);
+});
+
+test("a scheduled-hold decision that succeeds rewrites the card with the outcome", async () => {
+  const f = scheduledHoldFixture({ state: "resolved", outcome: "kept", message: "Kept blocked: output of a command." });
+  await f.click();
+  assert.match(JSON.stringify(f.updates.at(-1)), /Kept blocked/);
+});

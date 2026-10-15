@@ -25,6 +25,7 @@ import {
   oversizeAttachmentNote,
   PENDING_APPROVAL_REASON,
   queueTurn,
+  reportSecurityHold,
   tooManyFilesNote,
   uploadAttachments,
   userSendMessage,
@@ -36,6 +37,7 @@ import {
 } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
 import { browserRenderableImage, fieldSelect, icon } from "./ui";
+import { pruneHoldUi, securityHoldCard } from "./security-hold-card";
 import {
   defaultEffortForModel,
   defaultModelValue,
@@ -535,6 +537,7 @@ export function createComposerSurface(ctx: ConvCtx, options: ComposerOptions = {
       </div>`;
     }
     const approvalPauses = ctx.chat.activePendingApprovals();
+    pruneHoldUi(approvalPauses.map((approval) => approval.requestId));
     const blockingPauses = approvalPauses.filter(approvalBlocksComposer);
     const runtimePending = activeRuntimeConfig === null;
     const inputBlocked = runtimePending || ctx.chat.state.resolvingApprovals.size > 0 || blockingPauses.length > 0;
@@ -947,53 +950,59 @@ export function createComposerSurface(ctx: ConvCtx, options: ComposerOptions = {
       if (!ctx.chat.state.resolvingApprovals.has(decision.requestId)) ctx.chat.resolveCommandApproval(decision);
     };
     return html`<div class="composer-approval-panel" role="group" aria-label="Command approval">
-      ${approvals.map(
-        (a) =>
-          html`<div class="composer-approval">
-            <div class="composer-approval-copy">${ctx.chat.approvalSummaryView(a, true)}</div>
-            <div class="approval-actions">
-              <button
-                class="approval-btn deny"
-                type="button"
-                ?disabled=${ctx.chat.state.resolvingApprovals.has(a.requestId)}
-                @click=${() => decide({ requestId: a.requestId, approved: false })}
-              >
-                Deny
-              </button>
-              <button
-                class="approval-btn"
-                type="button"
-                ?disabled=${ctx.chat.state.resolvingApprovals.has(a.requestId)}
-                @click=${() => decide({ requestId: a.requestId, approved: true, scope: "once" })}
-              >
-                Allow once
-              </button>
-              ${
-                a.grantModes?.session === false
-                  ? nothing
-                  : html`<button
-                      class="approval-btn primary"
-                      type="button"
-                      ?disabled=${ctx.chat.state.resolvingApprovals.has(a.requestId)}
-                      @click=${() => decide({ requestId: a.requestId, approved: true, scope: "session" })}
-                    >
-                      Allow for session
-                    </button>`
-              }
-              ${
-                a.grantModes?.always === false
-                  ? nothing
-                  : html`<button
-                      class="approval-btn"
-                      type="button"
-                      ?disabled=${ctx.chat.state.resolvingApprovals.has(a.requestId)}
-                      @click=${() => decide({ requestId: a.requestId, approved: true, scope: "always" })}
-                    >
-                      Allow always
-                    </button>`
-              }
-            </div>
-          </div>`,
+      ${approvals.map((a) =>
+        a.securityHoldView
+          ? securityHoldCard(a, a.securityHoldView, {
+              disabled: ctx.chat.state.resolvingApprovals.has(a.requestId),
+              decide,
+              report: reportSecurityHold,
+              redraw: () => ctx.chat.redraw(),
+            })
+          : html`<div class="composer-approval">
+              <div class="composer-approval-copy">${ctx.chat.approvalSummaryView(a, true)}</div>
+              <div class="approval-actions">
+                <button
+                  class="approval-btn deny"
+                  type="button"
+                  ?disabled=${ctx.chat.state.resolvingApprovals.has(a.requestId)}
+                  @click=${() => decide({ requestId: a.requestId, approved: false })}
+                >
+                  Deny
+                </button>
+                <button
+                  class="approval-btn"
+                  type="button"
+                  ?disabled=${ctx.chat.state.resolvingApprovals.has(a.requestId)}
+                  @click=${() => decide({ requestId: a.requestId, approved: true, scope: "once" })}
+                >
+                  Allow once
+                </button>
+                ${
+                  a.grantModes?.session === false
+                    ? nothing
+                    : html`<button
+                        class="approval-btn primary"
+                        type="button"
+                        ?disabled=${ctx.chat.state.resolvingApprovals.has(a.requestId)}
+                        @click=${() => decide({ requestId: a.requestId, approved: true, scope: "session" })}
+                      >
+                        Allow for session
+                      </button>`
+                }
+                ${
+                  a.grantModes?.always === false
+                    ? nothing
+                    : html`<button
+                        class="approval-btn"
+                        type="button"
+                        ?disabled=${ctx.chat.state.resolvingApprovals.has(a.requestId)}
+                        @click=${() => decide({ requestId: a.requestId, approved: true, scope: "always" })}
+                      >
+                        Allow always
+                      </button>`
+                }
+              </div>
+            </div>`,
       )}
     </div>`;
   }

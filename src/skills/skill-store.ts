@@ -1,4 +1,5 @@
-import { createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
+import type { SkillIdentity } from "../security/security-posture.ts";
 import type { SkillBundle } from "./skill-bundle-store.ts";
 import type { ScopeId } from "../types.ts";
 import { parseScopeId } from "../types.ts";
@@ -47,6 +48,17 @@ function canonicalFiles(files: SkillFile[] | undefined): Array<[string, string, 
     });
 }
 
+function canonicalManifest(manifest: SkillManifest): string {
+  const files = canonicalFiles(manifest.files);
+  return JSON.stringify({
+    name: manifest.name,
+    description: manifest.description,
+    requiredCapabilities: [...manifest.requiredCapabilities].sort(),
+    body: manifest.body,
+    ...(files.length ? { files } : {}),
+  });
+}
+
 export interface Skill {
   id: string;
   scopeId: ScopeId;
@@ -82,6 +94,24 @@ export const PLATFORM_SKILL_AUTHOR = /^(system|pack):/;
 
 export function isSourceManagedSkill(skill: Pick<Skill, "createdBy" | "pack">): boolean {
   return skill.pack !== undefined || PLATFORM_SKILL_AUTHOR.test(skill.createdBy);
+}
+
+function packIdOf(skill: Pick<Skill, "createdBy" | "pack">): string | undefined {
+  return (
+    skill.pack?.packId ?? (skill.createdBy.startsWith("pack:") ? skill.createdBy.slice("pack:".length) : undefined)
+  );
+}
+
+export function skillIdentity(skill: Skill): SkillIdentity {
+  const packId = packIdOf(skill);
+  return {
+    skillId: skill.id,
+    name: skill.manifest.name,
+    version: skill.version,
+    contentHash: createHash("sha256").update(canonicalManifest(skill.manifest)).digest("hex").slice(0, 32),
+    builtIn: skill.pack === undefined && skill.createdBy.startsWith("system:"),
+    ...(packId ? { packId } : {}),
+  };
 }
 
 export function managesSkill(access: SkillEditAccess): boolean {
@@ -200,15 +230,7 @@ export function createSkillStore(opts: SkillStoreOptions = {}): SkillStore {
   const secret = opts.signingSecret ?? randomUUID();
 
   function sign(manifest: SkillManifest): string {
-    const files = canonicalFiles(manifest.files);
-    const canonical = JSON.stringify({
-      name: manifest.name,
-      description: manifest.description,
-      requiredCapabilities: [...manifest.requiredCapabilities].sort(),
-      body: manifest.body,
-      ...(files.length ? { files } : {}),
-    });
-    return createHmac("sha256", secret).update(canonical).digest("hex");
+    return createHmac("sha256", secret).update(canonicalManifest(manifest)).digest("hex");
   }
 
   return {

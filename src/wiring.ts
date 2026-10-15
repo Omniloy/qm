@@ -1,5 +1,5 @@
 import { availableRuntimeError } from "./api/runtime-config.ts";
-import { createApprovalStore } from "./core/approval-store.ts";
+import { announceHoldDecision, createApprovalStore, type HeldContentEntry } from "./core/approval-store.ts";
 import { createKeychainApprovals } from "./credentials/keychain-approval.ts";
 import { flushErrorReporting, startTiming } from "../plugins/chassis/src/error-reporting.ts";
 import type { TimingStatus } from "../plugins/chassis/src/timing.ts";
@@ -137,6 +137,7 @@ import type {
   PendingApprovalRecord,
   ScopeId,
   SurfaceContextRequest,
+  TurnRequest,
   Webhook,
 } from "./types.ts";
 import { personalScope, scopeId } from "./types.ts";
@@ -145,6 +146,16 @@ import { createPostgresAuditLog } from "./admin/postgres-audit-log.ts";
 import { createRateLimiter, type RateLimiter } from "./ratelimit/rate-limiter.ts";
 import { createPostgresRateLimiter } from "./ratelimit/postgres-rate-limiter.ts";
 import { createBudgetTracker, estimateCostUsd } from "./ratelimit/budget.ts";
+import {
+  sweepScreeningReports,
+  type ScreeningHoldCount,
+  type ScreeningHoldCountStore,
+  type ScreeningReport,
+  type ScreeningReportStore,
+  type SkillTrust,
+  type SkillTrustStore,
+} from "./security/screening-reports.ts";
+import { resumeScheduledHold, supersedeScheduledHold } from "./triggers/security-hold-resume.ts";
 import type { SecurityScreenProbe } from "./security/security-screener.ts";
 import { createPostgresBudgetTracker } from "./ratelimit/postgres-budget.ts";
 import { createCronStore, type CronStore } from "./cron/cron-store.ts";
@@ -517,6 +528,10 @@ export interface BuiltApp {
     lookupFolder: (accessToken: string, folderId: string) => Promise<{ id: string; name: string } | null>;
   };
   screenSecurity?: SecurityScreenProbe;
+  screeningReports: ScreeningReportStore;
+  skillTrusts: SkillTrustStore;
+  screeningHoldCounts: ScreeningHoldCountStore;
+  approvals: ReturnType<typeof createApprovalStore>;
   deploymentLayer: DeploymentLayerRuntime;
   credentialTools: readonly LayerCredentialTool[];
   brokeredTools: readonly BrokeredLayerTool[];
@@ -1989,7 +2004,34 @@ export function buildApp(
       `UPDATE webhooks SET json = jsonb_set(json, '{enabled}', 'false'::jsonb) WHERE (json ->> 'enabled')::boolean`,
     ],
   });
-  const approvals = createApprovalStore(artifactMap<PendingApprovalRecord>("approvals"), deliveries);
+  const scheduledHoldDeps = () => ({
+    deliveries,
+    idempotency,
+    identity,
+    run: (req: TurnRequest) => app.turn(req),
+    directory,
+    currentScopeMembers,
+    isOpenScopeMember: openScopeMember,
+    sessions,
+    crons,
+    lock: advisoryLock,
+  });
+  const approvals = createApprovalStore(artifactMap<PendingApprovalRecord>("approvals"), deliveries, {
+    heldContent: artifactMap<HeldContentEntry>("held_content_index"),
+    supersede: async (id, record) => {
+      const decision = await supersedeScheduledHold(scheduledHoldDeps(), id, record);
+      if (!decision || decision.outcome === "failed") return "busy";
+      const message =
+        decision.outcome === "gone"
+          ? "This hold was replaced by a newer run of the task and is no longer waiting on you."
+          : decision.message;
+      await announceHoldDecision(deliveries, id, record, message);
+      return decision.outcome === "gone" ? "unresolvable" : "resolved";
+    },
+  });
+  const screeningReports: ScreeningReportStore = artifactMap<ScreeningReport>("screening_reports");
+  const skillTrusts: SkillTrustStore = artifactMap<SkillTrust>("skill_trusts");
+  const screeningHoldCounts: ScreeningHoldCountStore = artifactMap<ScreeningHoldCount>("screening_hold_counts");
   let securityScreener = overrides.securityScreener;
   if (!securityScreener && config.securityScreenBackend === "proxy") {
     securityScreener = createSecurityScreenProxy({
@@ -2157,6 +2199,8 @@ export function buildApp(
     serviceCreds: credentialStore,
     deliveries,
     approvals,
+    skillTrusts,
+    screeningHoldCounts,
     approvalGrants: artifactMap<CommandApprovalGrant>("approval_grants"),
     ...(processes ? { processes } : {}),
     ...(liveBrowserSessions ? { liveBrowserSessions } : {}),
@@ -2282,6 +2326,8 @@ export function buildApp(
         })
     : undefined;
   const app = createApp({
+    resumeScheduledHold: (requestId, record, approved) =>
+      resumeScheduledHold(scheduledHoldDeps(), requestId, record, approved),
     externalSlackPolicies: config.externalSlackPolicies,
     admittedWork,
     ...(pgArtifactMap ? { resourceSearch: createPostgresResourceSearch(pgArtifactMap.pool) } : {}),
@@ -2342,6 +2388,7 @@ export function buildApp(
     sandbox,
     files,
     approvals,
+    screeningReports,
     sessionStateBus,
     ledgerEventBus,
     contextRequests: artifactMap<SurfaceContextRequest>("context_requests"),
@@ -2469,7 +2516,10 @@ export function buildApp(
     }
   };
   const approvalDeliverySweeper = createSweeper(
-    () => advisoryLock.withLock("approval-deliveries", () => approvals.deliverPending()),
+    async () => {
+      await advisoryLock.withLock("approval-deliveries", () => approvals.deliverPending());
+      await approvals.resolveSupersededHolds();
+    },
     30_000,
     {
       label: "approval-deliveries",
@@ -2794,6 +2844,14 @@ export function buildApp(
     30 * 60_000,
     { label: "Composio consent returns", immediate: true },
   );
+  const screeningReportSweeper = createSweeper(
+    () =>
+      leaderLease.hold("screening-reports:retention", () =>
+        sweepScreeningReports(screeningReports, async (id) => Boolean(await sessions.get(id))),
+      ),
+    6 * 60 * 60_000,
+    { label: "screening-report retention", immediate: true },
+  );
   const blobSweeper = createSweeper(async () => {
     await blobTransfer.sweep(BLOB_TTL_MS);
     await files.sweepOrphanedBlobs();
@@ -2859,6 +2917,7 @@ export function buildApp(
       if (config.skillSyncPollMs > 0) skillSyncEngine.start(config.skillSyncPollMs);
       blobSweeper.start();
       composioReturnSweeper.start();
+      screeningReportSweeper.start();
       fileUploads?.start();
       idleSweeper?.start();
       keepWarmSweeper.start();
@@ -2891,6 +2950,7 @@ export function buildApp(
       deepIdleSweeper?.stop(),
       blobSweeper.stop(),
       composioReturnSweeper.stop(),
+      screeningReportSweeper.stop(),
       fileUploads?.stop(),
       wakeSweep.stop(),
       swarms?.stop(),
@@ -2967,6 +3027,10 @@ export function buildApp(
       await pgArtifactMap?.pool.q("SELECT 1", [], { signal });
     },
     ...(screenSecurity ? { screenSecurity } : {}),
+    screeningReports,
+    skillTrusts,
+    screeningHoldCounts,
+    approvals,
     deploymentLayer,
     deploymentLayerStore,
     credentialTools,
@@ -3102,6 +3166,9 @@ export function serverDeps(
     ...(built.brokerSessions ? { brokerSessions: built.brokerSessions } : {}),
     config: built.config,
     ...(built.screenSecurity ? { screenSecurity: built.screenSecurity } : {}),
+    screeningReports: built.screeningReports,
+    skillTrusts: built.skillTrusts,
+    screeningHoldCounts: built.screeningHoldCounts,
     ...(configuredModel ? { baseModelDefault: configuredModel } : {}),
     modelProviders: modelProviderAvailabilityFor(config.harness, providerKeysPresent(config)),
     providerKeys: providerKeysPresent(config),

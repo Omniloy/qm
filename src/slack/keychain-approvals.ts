@@ -1,3 +1,4 @@
+import { xmlEscape } from "../util/message-tag.ts";
 import type { SlackCoreClient } from "../api/slack-core-client.ts";
 import type { KeychainApprovalView } from "../credentials/keychain-approval.ts";
 import type { Directory } from "./directory.ts";
@@ -7,14 +8,13 @@ import { errMessage, swallowAs } from "../util/errors.ts";
 import { parseScopeId } from "../types.ts";
 
 const ACTIONS = ["keychain_allow_once", "keychain_allow_always", "keychain_deny"] as const;
-const escape = (text: string): string => text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
 export function keychainApprovalMessage(
   view: KeychainApprovalView,
   originUrl?: string,
 ): { text: string; blocks: Array<Record<string, unknown>> } {
   const { ask } = view;
-  const place = `in ${escape(view.conversation).replaceAll("|", "&#124;")}`;
+  const place = `in ${xmlEscape(view.conversation).replaceAll("|", "&#124;")}`;
   const origin =
     originUrl && /^https?:\/\//.test(originUrl)
       ? `<${originUrl.replaceAll("|", "%7C").replaceAll(">", "%3E")}|${place}>`
@@ -27,7 +27,7 @@ export function keychainApprovalMessage(
   const standing = `ongoing access across ${audience}`;
   const duration =
     pending && ask.requestedMode ? ` (${ask.requestedMode === "standing" ? standing : "one-time access"})` : "";
-  const summary = `Use your *${escape(view.service.slice(0, 150))}* credential ${origin}${duration}.`;
+  const summary = `Use your *${xmlEscape(view.service.slice(0, 150))}* credential ${origin}${duration}.`;
   let status = "This request expired.";
   if (ask.status === "approved") status = `Approved — ${view.mode === "standing" ? standing : "one-time access"}.`;
   if (ask.status === "declined") status = "Denied.";
@@ -39,7 +39,7 @@ export function keychainApprovalMessage(
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `${pending ? ":lock: *Approval needed.*" : `*${status}*`}\n${summary}\n*Why:* ${escape(ask.purpose.slice(0, 900))}`,
+        text: `${pending ? ":lock: *Approval needed.*" : `*${status}*`}\n${summary}\n*Why:* ${xmlEscape(ask.purpose.slice(0, 900))}`,
       },
     },
   ];

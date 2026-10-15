@@ -2114,3 +2114,107 @@ dialog.credential-dialog {
   margin-bottom: 8px;
   padding: 0;
 }
+
+.screening-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.screening-detail h3 {
+  margin: 0;
+  font-size: var(--section-font);
+}
+
+.screening-report {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--subtle);
+}
+
+.screening-verdict {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+}
+
+.screening-verdict > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: var(--control-font);
+  overflow-wrap: anywhere;
+}
+
+.screening-report .k {
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.screening-evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--warn-border);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  background: var(--warn-surface);
+  color: var(--text);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.screening-content pre,
+.screening-trust-file pre {
+  max-height: 260px;
+  overflow: auto;
+  margin: 6px 0 0;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.screening-actions,
+.screening-test {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+dialog.screening-trust-dialog {
+  width: min(760px, calc(100vw - 28px));
+  max-height: calc(100dvh - 40px);
+}
+
+.screening-trust-files {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 60dvh;
+  overflow: auto;
+}
+
+.screening-trust-file h3 {
+  margin: 0;
+  font-size: 12.5px;
+}

@@ -292,6 +292,17 @@ export interface App {
   swarms?: SwarmService;
   turn(req: TurnRequest, replay?: { signalDedupKey: string }): Promise<TurnResult>;
   getApproval(requestId: string, viewer?: string): Promise<(PendingApprovalRecord & { requestId: string }) | null>;
+  reportSecurityHold(
+    requestId: string,
+    reporterId: string,
+    note?: string,
+  ): Promise<import("./app-security-holds.ts").SecurityHoldReportOutcome>;
+  recordApprovalCard(requestId: string, card: { channel: string; ts: string }): Promise<boolean>;
+  resolveScheduledHold(
+    requestId: string,
+    actorId: string,
+    approved: boolean,
+  ): Promise<import("./app-security-holds.ts").ScheduledHoldOutcome>;
   subscribeSessionStates(cb: (event: SessionStateEvent) => void, opts?: SubscribeOptions): () => void;
   subscribeLedgerEvents(cb: (event: OwnedLedgerEvent) => void, opts?: SubscribeOptions): () => void;
   listSessionApprovals(sessionId: string, viewer: string): Promise<PendingApproval[]>;
@@ -803,6 +814,12 @@ export interface AppDeps {
   deploymentLayer?: DeploymentLayerRuntime;
   files: FileArtifactStore;
   approvals?: DurableMap<PendingApprovalRecord>;
+  screeningReports?: import("../security/screening-reports.ts").ScreeningReportStore;
+  resumeScheduledHold?: (
+    requestId: string,
+    record: PendingApprovalRecord,
+    approved: boolean,
+  ) => Promise<import("../triggers/security-hold-resume.ts").ScheduledHoldDecision>;
   sessionStateBus?: SessionStateBus;
   ledgerEventBus?: LedgerEventBus;
   contextRequests?: DurableMap<SurfaceContextRequest>;

@@ -18,8 +18,14 @@ interface FailureShape {
   refusalKind?: TurnResult["refusalKind"];
 }
 
+const STANDALONE_REFUSALS = new Set<FailureShape["refusalKind"]>([
+  "security_quarantine",
+  "session_busy",
+  "provider_limit",
+]);
+
 export function standaloneFailureText(result: FailureShape): string | undefined {
-  return result.refusalKind ? userFacingFailureText(result) : undefined;
+  return STANDALONE_REFUSALS.has(result.refusalKind) ? userFacingFailureText(result) : undefined;
 }
 
 export function userFacingFailureClause(result: FailureShape): string {

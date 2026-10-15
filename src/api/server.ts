@@ -66,6 +66,12 @@ async function capabilityAdminDenied(
   if (pathname.startsWith("/v1/admin/impersonate")) {
     return "impersonating a user is portal-only — the agent cannot act as another person";
   }
+  if (pathname.startsWith("/v1/admin/skill-trusts") || pathname.startsWith("/v1/admin/screening-reports")) {
+    return "security screening reports and skill trust are portal-only — the agent cannot read blocked content or loosen the screen";
+  }
+  if (/^\/v1\/admin\/scopes\/[^/]+\/auto-flagger\/sample$/.test(pathname)) {
+    return "testing the screen on arbitrary content is portal-only";
+  }
   if (pathname.startsWith("/v1/admin/principal-links")) {
     return "identity links are portal-only — the agent cannot decide which sign-ins belong to one person";
   }

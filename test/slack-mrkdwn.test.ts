@@ -17,7 +17,7 @@ test("inlineCode clamps long text and neutralizes backticks", () => {
   const clamped = inlineCode("`echo hi`" + "y".repeat(60000));
   assert.ok(clamped.length <= 2005, `clamped to ${clamped.length} chars`);
   assert.match(clamped, /^`'echo hi'/);
-  assert.match(clamped, /\.\.\.`$/);
+  assert.match(clamped, /…`$/);
 });
 
 test("decodeSlackEntities / stripMention", () => {

@@ -41,6 +41,7 @@ import type { RuntimeChoice } from "../harness/harness.ts";
 import { modelDisplayName } from "../model/pi-models.ts";
 import type { ConversationEvent } from "../loops/sources/adapter.ts";
 import { slackConversationRef } from "../loops/sources/slack.ts";
+import type { ScheduledHoldOutcome, SecurityHoldReportOutcome } from "./app-security-holds.ts";
 
 interface SlackRunHooks {
   onReplying?(): void;
@@ -72,6 +73,7 @@ export interface SlackAgentRequestContext {
 
 interface StoredApprovalView extends Omit<PendingApproval, "reason"> {
   createdAt?: number;
+  deliveryRound?: number;
   reason?: string;
   request?: Record<string, unknown>;
 }
@@ -119,6 +121,9 @@ export interface SlackCoreClient {
   reportTurnMetrics(runId: string, patch: { deliverMs?: number; slackInflightMs?: number }): Promise<void>;
   reportRunEditRef(runId: string, editRef: string): Promise<void>;
   getApproval(requestId: string): Promise<StoredApprovalView | null>;
+  reportSecurityHold(requestId: string, reporterId: string, note?: string): Promise<SecurityHoldReportOutcome>;
+  resolveScheduledHold(requestId: string, actorId: string, approved: boolean): Promise<ScheduledHoldOutcome>;
+  recordApprovalCard(requestId: string, card: { channel: string; ts: string }): Promise<boolean>;
   putAgentRequest(requestId: string, record: SlackAgentRequestContext): Promise<void>;
   getAgentRequest(requestId: string): Promise<SlackAgentRequestContext | null>;
   takeAgentRequest(requestId: string): Promise<SlackAgentRequestContext | null>;
@@ -464,6 +469,7 @@ export function createSlackCoreClient(deps: SlackCoreClientDeps): SlackCoreClien
       return {
         requestId: record.requestId,
         ...(record.createdAt !== undefined ? { createdAt: record.createdAt } : {}),
+        ...(record.deliveryRound !== undefined ? { deliveryRound: record.deliveryRound } : {}),
         command: record.command,
         ...(record.reason !== undefined ? { reason: record.reason } : {}),
         ...(record.purpose !== undefined ? { purpose: record.purpose } : {}),
@@ -471,8 +477,21 @@ export function createSlackCoreClient(deps: SlackCoreClientDeps): SlackCoreClien
         ...(record.summaryDetail !== undefined ? { summaryDetail: record.summaryDetail } : {}),
         ...(record.grantModes !== undefined ? { grantModes: record.grantModes } : {}),
         ...(record.kind !== undefined ? { kind: record.kind } : {}),
+        ...(record.securityHold !== undefined ? { securityHold: record.securityHold } : {}),
         ...(record.request !== undefined ? { request: record.request as unknown as Record<string, unknown> } : {}),
       };
+    },
+
+    reportSecurityHold(requestId, reporterId, note) {
+      return deps.app.reportSecurityHold(requestId, reporterId, note);
+    },
+
+    resolveScheduledHold(requestId, actorId, approved) {
+      return deps.app.resolveScheduledHold(requestId, actorId, approved);
+    },
+
+    recordApprovalCard(requestId, card) {
+      return deps.app.recordApprovalCard(requestId, card);
     },
 
     ...createAgentRequestStore(deps.agentRequests),

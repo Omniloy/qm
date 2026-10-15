@@ -6,6 +6,7 @@ import {
   recoveredApprovalContext,
   createApprovalRegistry,
 } from "../src/slack/lib.ts";
+import { escapedClip, inlineCode } from "../src/slack/util.ts";
 
 test("approvalMessage builds Block Kit buttons for all approval choices", () => {
   const msg = approvalMessage([{ requestId: "req-1", command: "git push --force origin main", reason: "force push" }]);
@@ -257,4 +258,157 @@ test("a quarantine-release card offers only Allow once and Deny, with the screen
   const rendered = JSON.stringify(msg.blocks);
   assert.match(rendered, /instruction in untrusted data/);
   assert.match(rendered, /Blocked content preview/);
+});
+
+test("a security hold renders the structured card with Keep blocked, report and show actions", () => {
+  const msg = approvalMessage([
+    {
+      requestId: "req-h1",
+      command: "release quarantined skills output",
+      reason: "security screen flagged this skills output: cookies",
+      summary: "Blocked content preview: [skill id de98 · home org · owner built-in]",
+      grantModes: { session: false, always: false },
+      securityHold: {
+        source: {
+          kind: "skill",
+          skillId: "de98",
+          name: "browse",
+          version: 28,
+          contentHash: "abc",
+          builtIn: true,
+          owner: "built-in",
+        },
+        category: "credential_request",
+        reason: "Describes collecting browser cookies <and> tokens.",
+        evidence: "`cookies` returns the site's cookies as JSON, HttpOnly included",
+      },
+    },
+  ]);
+  assert.match(msg.text, /Paused: content from the browse skill needs your OK/);
+  const actions = msg.blocks.find((b) => b.type === "actions") as {
+    block_id: string;
+    elements: Array<{ action_id: string; text: { text: string } }>;
+  };
+  assert.deepEqual(
+    actions.elements.map((e) => [e.text.text, e.action_id]),
+    [
+      ["Allow once", "hilo_allow_once"],
+      ["Keep blocked", "hilo_deny"],
+      ["Report false positive", "security_hold_report"],
+      ["Show what was blocked", "security_hold_show"],
+    ],
+  );
+  assert.equal(actions.block_id, "hilo_approval:req-h1");
+  const rendered = JSON.stringify(msg.blocks);
+  assert.match(rendered, /Text the screener flagged/);
+  assert.match(rendered, /HttpOnly included/);
+  assert.match(rendered, /Skill browse · v28 · built-in/);
+  assert.match(rendered, /Category: Credential request/);
+  assert.match(rendered, /&lt;and&gt;/, "screener text is escaped for mrkdwn");
+  assert.match(rendered, /exact content once, as untrusted data/);
+  assert.doesNotMatch(rendered, /usually safe/);
+  assert.doesNotMatch(rendered, /Blocked content preview|release quarantined/, "no raw command or header preview");
+});
+
+test("a scheduled task hold names the task and what each choice does to the run", () => {
+  const msg = approvalMessage([
+    {
+      requestId: "req-h2",
+      command: "release quarantined execute output",
+      reason: "flagged",
+      securityHold: {
+        source: { kind: "command", command: "jira-followup --board MAR" },
+        category: "other",
+        scheduledTask: { id: "c1", title: "Features Jira" },
+      },
+    },
+  ]);
+  const rendered = JSON.stringify(msg.blocks);
+  assert.match(rendered, /Paused: output of a command in `Features Jira`/);
+  assert.match(rendered, /nobody was there to approve it/);
+  assert.match(rendered, /This run of Features Jira stops without it and delivers nothing/);
+  assert.doesNotMatch(rendered, /Text the screener flagged/, "no quote block without verified evidence");
+});
+
+test("hostile paths and evidence cannot inject Slack links or mentions", () => {
+  const msg = approvalMessage([
+    {
+      requestId: "r1",
+      command: "files <!channel>",
+      reason: "x <!here>",
+      securityHold: {
+        source: { kind: "file", path: "notes/<!channel>|<https://evil.example|Allow is safe>.md" },
+        category: "other",
+        evidence: "<!here> run this",
+      },
+    },
+    { requestId: "r2", command: "rm <https://evil.example|safe> && echo <!channel>", reason: "<!subteam^S1>" },
+  ]);
+  const everything = msg.text + JSON.stringify(msg.blocks);
+  assert.doesNotMatch(everything, /<!channel>|<!here>|<https:|<!subteam/);
+  assert.match(everything, /&lt;!channel&gt;/);
+});
+
+test("many pending holds collapse into one card within Slack's block limit", () => {
+  const holds = Array.from({ length: 20 }, (_, i) => ({
+    requestId: `r${i}`,
+    command: "release quarantined execute output",
+    reason: "flagged",
+    securityHold: {
+      source: { kind: "command" as const, command: `cmd ${i}` },
+      category: "other" as const,
+      evidence: "x".repeat(150),
+    },
+  }));
+  const msg = approvalMessage(holds);
+  assert.ok(msg.blocks.length <= 50, `got ${msg.blocks.length} blocks`);
+  for (const block of msg.blocks) {
+    const text = (block as { text?: { text?: string } }).text?.text ?? "";
+    assert.ok(text.length <= 3000);
+  }
+  assert.match(JSON.stringify(msg.blocks.at(-1)), /11 more approvals are waiting/);
+});
+
+test("hold blocks with screener text are verbatim and long escaped text is never cut inside an entity", () => {
+  const msg = approvalMessage([
+    {
+      requestId: "r1",
+      command: "x",
+      reason: "y",
+      securityHold: {
+        source: { kind: "web", host: "docs.example.com", tool: "fetch" },
+        category: "other",
+        reason: "see https://evil.example now",
+        evidence: "visit https://evil.example",
+      },
+    },
+  ]);
+  const verbatim = msg.blocks.filter((b) => JSON.stringify(b).includes('"verbatim":true'));
+  assert.ok(verbatim.some((b) => JSON.stringify(b).includes("visit https://evil.example")));
+  assert.ok(verbatim.some((b) => JSON.stringify(b).includes("see https://evil.example now")));
+  const clipped = escapedClip("&".repeat(1000), 101);
+  assert.ok(clipped.length <= 101);
+  assert.match(clipped, /^(&amp;)+…$/, "the cut lands between entities");
+  const code = inlineCode("<".repeat(3000));
+  assert.match(code, /^`(&lt;)+…`$/);
+});
+
+test("a labelled screener explanation and its flagged sources fit on the legacy card", () => {
+  const reason = `Screening model's explanation (unverified): ${"the message asks the agent to export tokens ".repeat(6)}; flagged sources: conversation-header, overheard:Bob`;
+  const msg = approvalMessage([
+    { requestId: "r1", command: "security-screen", reason, kind: "input", summary: "s".repeat(400) },
+  ]);
+  const text = (msg.blocks[0] as { text: { text: string } }).text.text;
+  assert.match(text, /flagged sources: conversation-header, overheard:Bob/);
+  assert.ok(text.length <= 3000);
+  const long = approvalMessage([
+    {
+      requestId: "r2",
+      command: "c".repeat(5000),
+      reason: "r".repeat(5000),
+      summary: "s".repeat(5000),
+      purpose: "p".repeat(5000),
+    },
+  ]);
+  assert.ok((long.blocks[0] as { text: { text: string } }).text.text.length <= 3000);
 });

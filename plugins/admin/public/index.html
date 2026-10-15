@@ -6683,7 +6683,17 @@
       const EFFECT_LABELS = { allow: "Allow", deny: "Deny", require_approval: "Require approval" };
       const SECTIONS = [
         {
-          views: ["governance", "models", "credentials", "connectors", "slack-settings", "customize", "users", "spend"],
+          views: [
+            "governance",
+            "screening",
+            "models",
+            "credentials",
+            "connectors",
+            "slack-settings",
+            "customize",
+            "users",
+            "spend",
+          ],
         },
         {
           label: "Logs",
@@ -6836,6 +6846,7 @@
       const VIEW_TITLE = {
         onboarding: "Onboarding",
         governance: "Governance",
+        screening: "Screening reports",
         models: "Models",
         credentials: "Credentials",
         customize: "Customize",
@@ -6877,6 +6888,7 @@
         "deployments",
       ]);
       const ORG_WIDE = new Set([
+        "screening",
         "retention",
         "users",
         "spend",
@@ -6889,7 +6901,7 @@
         "customize",
         "slack-settings",
       ]);
-      const ENDPOINT = { history: "sessions", files: "files", live: "runs" };
+      const ENDPOINT = { history: "sessions", files: "files", live: "runs", screening: "screening-reports" };
       const HISTORY_PAGE_SIZE = 50;
       const ERRORS_PAGE_SIZE = 50;
 
@@ -7504,6 +7516,7 @@
           "judgments",
           "errors",
           "governance",
+          "screening",
           "models",
           "credentials",
           "connectors",
@@ -8777,6 +8790,17 @@
         parts.push("sampled " + data.sampled + " · " + Math.round(data.durationMs / 100) / 10 + "s");
         return parts.join(" · ");
       }
+      function autoFlaggerSampleSummary(sample) {
+        if (!sample || sample.decision === "error") return "The screener did not return a verdict for this content.";
+        if (sample.unscreened)
+          return "The screener could not check this content" + (sample.reason ? ": " + sample.reason : ".");
+        if (sample.decision !== "strict") return "Allowed — this rubric would not hold this content.";
+        const label = sample.categoryLabel || "";
+        const parts = ["Held" + (label ? " (" + label + ")" : "")];
+        if (sample.reason) parts.push(sample.reason);
+        if (sample.evidence) parts.push('triggered by "' + sample.evidence + '"');
+        return parts.join(" · ");
+      }
       function sectionButton(key) {
         return document.querySelector('[data-save="' + key + '"]');
       }
@@ -8946,6 +8970,45 @@
         } else governanceUI.status(key, message, "ok");
       }
       let governanceSaveSeq = 0;
+      $("auto-flagger-sample-clear").onclick = () => {
+        $("auto-flagger-sample").value = "";
+      };
+      $("auto-flagger-sample-test").onclick = async () => {
+        const requestedScope = scope;
+        const button = $("auto-flagger-sample-test");
+        const sampleText = $("auto-flagger-sample").value || "";
+        $("auto-flagger-test-result").hidden = false;
+        if (!sampleText.trim())
+          return setStatus("st-auto-flagger-test", "Paste some content to test first.", "err", true);
+        setStatus("st-auto-flagger-test", "Screening the sample with this rubric…", "", true);
+        button.disabled = true;
+        try {
+          const r = await api("POST", "/api/scopes/" + encodeURIComponent(requestedScope) + "/auto-flagger/sample", {
+            payload: sampleText,
+            harnessId: $("auto-flagger-harness").value,
+            modelId: $("auto-flagger-model").value,
+            rubric: $("auto-flagger-rubric").value,
+          });
+          if (requestedScope !== scope) return;
+          if (r.status === 429)
+            return setStatus(
+              "st-auto-flagger-test",
+              "Too many sample tests just now. Wait a minute and try again.",
+              "err",
+              true,
+            );
+          if (!r.ok) return setStatus("st-auto-flagger-test", r.data?.message || "Sample test failed.", "err", true);
+          const decision = r.data?.sample?.decision;
+          setStatus(
+            "st-auto-flagger-test",
+            autoFlaggerSampleSummary(r.data?.sample),
+            { strict: "warn", auto: "ok" }[decision] || "err",
+            true,
+          );
+        } finally {
+          button.disabled = false;
+        }
+      };
       $("auto-flagger-test").onclick = async () => {
         const requestedScope = scope;
         const button = $("auto-flagger-test");
@@ -9364,6 +9427,7 @@
           retention: renderRetention,
           users: renderUsers,
           keychain: renderKeychain,
+          screening: renderScreening,
         })[view](root, data);
       }
       async function renderData() {
@@ -10239,6 +10303,26 @@
       }
       function keychainPersonLabel(p) {
         return p.displayName ? `${p.displayName} (${p.principalId})` : p.principalId;
+      }
+      function openAutoFlaggerSample(content) {
+        go({ view: "governance", scope: "org:" + orgId, session: null });
+        const sample = $("auto-flagger-sample");
+        sample.value = content;
+        $("auto-flagger-test-result").hidden = true;
+        $("card-auto-flagger").scrollIntoView({ block: "start" });
+        sample.focus();
+      }
+      function renderScreening(root, d) {
+        governanceUI.screening.screening(root, d, {
+          api,
+          fmtTime,
+          defaultShell,
+          openAutoFlagger: openAutoFlaggerSample,
+          reload: () => {
+            dataCache.clear();
+            if (view === "screening") void renderData();
+          },
+        });
       }
       function renderKeychain(root, d) {
         governanceUI.keychain.keychain(root, d, {
