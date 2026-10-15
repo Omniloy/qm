@@ -6,6 +6,7 @@ import {
   recoveredApprovalContext,
   createApprovalRegistry,
 } from "../src/slack/lib.ts";
+import { escapedClip, inlineCode } from "../src/slack/util.ts";
 
 test("approvalMessage builds Block Kit buttons for all approval choices", () => {
   const msg = approvalMessage([{ requestId: "req-1", command: "git push --force origin main", reason: "force push" }]);
@@ -366,4 +367,28 @@ test("many pending holds collapse into one card within Slack's block limit", () 
     assert.ok(text.length <= 3000);
   }
   assert.match(JSON.stringify(msg.blocks.at(-1)), /11 more approvals are waiting/);
+});
+
+test("hold blocks with screener text are verbatim and long escaped text is never cut inside an entity", () => {
+  const msg = approvalMessage([
+    {
+      requestId: "r1",
+      command: "x",
+      reason: "y",
+      securityHold: {
+        source: { kind: "web", host: "docs.example.com", tool: "fetch" },
+        category: "other",
+        reason: "see https://evil.example now",
+        evidence: "visit https://evil.example",
+      },
+    },
+  ]);
+  const verbatim = msg.blocks.filter((b) => JSON.stringify(b).includes('"verbatim":true'));
+  assert.ok(verbatim.some((b) => JSON.stringify(b).includes("visit https://evil.example")));
+  assert.ok(verbatim.some((b) => JSON.stringify(b).includes("see https://evil.example now")));
+  const clipped = escapedClip("&".repeat(1000), 101);
+  assert.ok(clipped.length <= 101);
+  assert.match(clipped, /^(&amp;)+…$/, "the cut lands between entities");
+  const code = inlineCode("<".repeat(3000));
+  assert.match(code, /^`(&lt;)+…`$/);
 });

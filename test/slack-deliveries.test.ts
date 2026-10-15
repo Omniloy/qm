@@ -17,7 +17,13 @@ async function deliver(
   sourceThreadRef?: string,
   webUiPublicUrl?: string,
   text = "two screenshots and the notes",
-  row: { createdAt?: number; history?: Record<string, unknown>[]; loseAck?: boolean; approval?: unknown } = {},
+  row: {
+    createdAt?: number;
+    history?: Record<string, unknown>[];
+    loseAck?: boolean;
+    approval?: unknown;
+    cardLive?: boolean;
+  } = {},
 ) {
   const delivery = {
     id: "D1",
@@ -38,6 +44,8 @@ async function deliver(
   const probes: Record<string, unknown>[] = [];
   const history = row.history ?? [];
   const conversationsOpened: Record<string, unknown>[] = [];
+  const cards: Array<Record<string, unknown>> = [];
+  const updates: Record<string, unknown>[] = [];
   const probe = async (args: Record<string, unknown>) => {
     probes.push(args);
     return {
@@ -47,6 +55,10 @@ async function deliver(
   const core = {
     holdDeliveryDispatch: (fn: (lost: Promise<void>) => Promise<unknown>) => fn(new Promise<void>(() => {})),
     getApproval: async () => row.approval ?? null,
+    recordApprovalCard: async (requestId: string, card: { channel: string; ts: string }) => {
+      cards.push({ requestId, ...card });
+      return row.cardLive ?? true;
+    },
     readBlob: async (id: string) => Buffer.from(id),
     claimDeliveries: async (type: string) => queues.get(type)?.splice(0) ?? [],
     ackDelivery: async (id: string) => {
@@ -77,6 +89,10 @@ async function deliver(
         history.push({ ...args, ts: "separate-message" });
         return { ts: "separate-message" };
       },
+      update: async (args: Record<string, unknown>) => {
+        updates.push(args);
+        return { ok: true };
+      },
     },
   };
   const poller = createDeliveryPoller({
@@ -92,7 +108,7 @@ async function deliver(
   });
 
   await poller.pollDeliveries(client);
-  return { acknowledgements, uploads, posts, marks, probes, conversationsOpened };
+  return { acknowledgements, uploads, posts, marks, probes, conversationsOpened, cards, updates };
 }
 
 for (const type of ["slack", "group", "principal"]) {
@@ -385,3 +401,38 @@ for (const type of ["slack", "group", "principal"]) {
     assert.deepEqual(recovered.acknowledgements, ["D1"]);
   });
 }
+
+const scheduledHold = {
+  requestId: "H1",
+  command: "release quarantined execute output",
+  reason: "flagged",
+  securityHold: {
+    source: { kind: "command", command: "ls" },
+    category: "other",
+    scheduledTask: { id: "c1", ownerId: "U1" },
+  },
+  request: { surface: "cron", actor: { externalId: "U9" } },
+};
+
+test("a posted scheduled-hold card is recorded, and retired at once if the hold was superseded meanwhile", async () => {
+  const destination = { type: "principal", target: "U1", commandApprovalId: "H1" };
+  const live = await deliver(destination, undefined, undefined, "hold", { approval: scheduledHold });
+  assert.equal(live.posts.length, 1, "the card goes to the cron owner even though another member acted");
+  assert.deepEqual(live.cards, [{ requestId: "H1", channel: "C1", ts: "separate-message" }]);
+  assert.equal(live.updates.length, 0);
+  const gone = await deliver(destination, undefined, undefined, "hold", { approval: scheduledHold, cardLive: false });
+  assert.equal(gone.updates.length, 1);
+  assert.match(JSON.stringify(gone.updates[0]), /no longer waiting on you/);
+});
+
+test("a superseded hold rewrites its posted card instead of posting", async () => {
+  const out = await deliver(
+    { type: "principal", target: "U1", cardUpdate: { channel: "D1", ts: "5.5" } },
+    undefined,
+    undefined,
+    "Superseded: a newer run of <Jira> was held on the same content",
+  );
+  assert.equal(out.posts.length, 0);
+  assert.equal(out.updates[0]!.ts, "5.5");
+  assert.match(JSON.stringify(out.updates[0]), /&lt;Jira&gt;/);
+});

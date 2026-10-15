@@ -465,10 +465,28 @@ export function createDeliveryPoller(deps: {
                     : undefined,
                 );
                 reused = Boolean(posted.reused);
-                if (commandApproval?.securityHold && posted.ts)
-                  await core
+                if (commandApproval?.securityHold && posted.ts) {
+                  const live = await core
                     .recordApprovalCard(commandApproval.requestId, { channel: posted.channel, ts: posted.ts })
-                    .catch(swallowAs("slack: record hold card", undefined));
+                    .catch(swallowAs("slack: record hold card", true));
+                  if (!live)
+                    await client.chat
+                      .update({
+                        channel: posted.channel,
+                        ts: posted.ts,
+                        text: "This hold is no longer waiting on you.",
+                        blocks: [
+                          {
+                            type: "section",
+                            text: {
+                              type: "mrkdwn",
+                              text: ":shield: This hold is no longer waiting on you: it was resolved or replaced by a newer run.",
+                            },
+                          },
+                        ],
+                      })
+                      .catch(swallowAs("slack: retire stale hold card", undefined));
+                }
               }
               if (d.attachments?.length && !reused) {
                 try {

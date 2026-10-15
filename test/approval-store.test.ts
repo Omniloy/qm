@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { approvalDeliveryRecipient, createApprovalStore } from "../src/core/approval-store.ts";
+import {
+  approvalDeliveryRecipient,
+  claimApproval,
+  createApprovalStore,
+  type HeldContentEntry,
+} from "../src/core/approval-store.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import { createDeliveryStore } from "../src/delivery/delivery-store.ts";
 import type { PendingApprovalRecord } from "../src/types.ts";
@@ -132,28 +137,50 @@ test("a scheduled task's hold goes to the cron owner, not the acting member; leg
   assert.equal(approvalDeliveryRecipient(ownerless), "U-floor", "the actor is the fallback when the cron has no owner");
 });
 
-test("a newer fire held on the same source supersedes older holds and updates their posted card", async () => {
+test("only a different fire held on the same content supersedes, through the supersede hook", async () => {
   const backing = createMemoryMap<PendingApprovalRecord>();
   const deliveries = createDeliveryStore();
-  const approvals = createApprovalStore(backing, deliveries);
-  await approvals.put("F1", cronHold("cron:c1:fire:a", 1, { card: { channel: "D1", ts: "100.1" } }));
-  await approvals.put("F2", cronHold("cron:c1:fire:b", 2));
-  const other = cronHold("cron:c1:fire:c", 3);
-  other.securityHold!.source = { kind: "web", host: "x.test", tool: "fetch" };
-  await approvals.put("O1", other);
-  assert.equal(await backing.get("F1"), null, "the older hold on the same source is gone");
-  assert.ok(await backing.get("F2"));
-  assert.ok(await backing.get("O1"), "a hold on a different source is independent");
+  const superseded: string[] = [];
+  const approvals = createApprovalStore(backing, deliveries, {
+    heldContent: createMemoryMap<HeldContentEntry>(),
+    supersede: async (id) => {
+      superseded.push(id);
+      await backing.delete(id);
+    },
+  });
+  const held = (session: string, createdAt: number, text: string, extra: Partial<PendingApprovalRecord> = {}) =>
+    cronHold(`cron:c1:fire:${session}`, createdAt, {
+      sessionId: session,
+      screenedOutput: { tool: "execute", text },
+      ...extra,
+    });
+  await approvals.put("A1", held("fire-a", 1, "email from Alice", { card: { channel: "D1", ts: "100.1" } }));
+  await approvals.put("A2", held("fire-a", 2, "email from Bob"));
+  await approvals.put("A3", held("fire-a", 3, "email from Alice"));
+  assert.deepEqual(superseded, [], "holds within one fire never supersede each other, even on the same content");
+  await approvals.put("B1", held("fire-b", 4, "email from Bob"));
+  assert.deepEqual(superseded, ["A2"], "a later fire supersedes only the hold on the same content");
+  assert.ok(await backing.get("A1"), "a different email in the older fire stays pending");
+  await approvals.put("C1", held("fire-c", 5, "email from Alice"));
+  assert.deepEqual(superseded.sort(), ["A2", "A3"]);
   const update = (await deliveries.pending("principal")).find((d) => d.destination.cardUpdate);
-  assert.deepEqual(update?.destination.cardUpdate, { channel: "D1", ts: "100.1" });
-  assert.match(update!.text, /Superseded: a newer run of Jira follow-ups/);
+  assert.equal(update, undefined, "A3 never had a posted card");
 
-  await approvals.put("F0", cronHold("cron:c1:fire:z", 0));
-  assert.equal(await backing.get("F0"), null, "an out-of-order older hold is superseded on arrival");
-  assert.ok(
-    !(await deliveries.pending("principal")).some((d) => d.destination.commandApprovalId === "F0"),
-    "and never delivered",
-  );
-  await approvals.deliverPending();
-  assert.ok(await backing.get("F2"), "the sweep keeps the latest hold");
+  await approvals.put("D1", held("fire-d", 6, "email from Carol", { card: { channel: "D9", ts: "9.9" } }));
+  await approvals.put("E1", held("fire-e", 7, "email from Carol"));
+  const rewrite = (await deliveries.pending("principal")).find((d) => d.destination.cardUpdate);
+  assert.deepEqual(rewrite?.destination.cardUpdate, { channel: "D9", ts: "9.9" });
+  assert.match(rewrite!.text, /held on the same content/);
+
+  await approvals.put("Z0", held("fire-z", 0, "email from Carol"));
+  assert.ok((superseded as string[]).includes("Z0"), "an out-of-order older fire is superseded on arrival");
+  assert.ok(!(await deliveries.pending("principal")).some((d) => d.destination.commandApprovalId === "Z0"));
+});
+
+test("a claimed hold cannot be claimed twice or superseded", async () => {
+  const backing = createMemoryMap<PendingApprovalRecord>();
+  await backing.put("H1", cronHold("cron:c1:fire:a", 1));
+  const [first, second] = await Promise.all([claimApproval(backing, "H1"), claimApproval(backing, "H1")]);
+  assert.equal([first, second].filter(Boolean).length, 1);
+  assert.equal(await claimApproval(backing, "missing"), null);
 });

@@ -9,6 +9,7 @@ import {
   type SecurityScreenVerdict,
 } from "../../security/security-posture.ts";
 import { estimateCostUsd } from "../../ratelimit/budget.ts";
+import { redactSecretText } from "../../security/secret-masking.ts";
 import type { HarnessLlmRequestRecord } from "../../harness/harness.ts";
 import { swallowAs } from "../../util/errors.ts";
 import { sleep } from "../../util/async.ts";
@@ -37,6 +38,15 @@ export type SecurityClassifier = (
     request?: string;
   },
 ) => Promise<SecurityScreenVerdict | undefined>;
+
+function redactedVerdict(verdict: SecurityScreenVerdict | undefined): SecurityScreenVerdict | undefined {
+  if (!verdict) return verdict;
+  return {
+    ...verdict,
+    ...(verdict.reason ? { reason: redactSecretText(verdict.reason) } : {}),
+    ...(verdict.evidence ? { evidence: redactSecretText(verdict.evidence) } : {}),
+  };
+}
 
 export function createSecurityClassifier(deps: OrchestratorDeps): SecurityClassifier {
   return async function classifySecurityData(payload, actorId, scopeLabel, recordLlmRequest, context = {}) {
@@ -170,9 +180,9 @@ export function createSecurityClassifier(deps: OrchestratorDeps): SecurityClassi
     };
     const startedAt = Date.now();
     const first = await attempt();
-    if (first) return withVerifiedEvidence(first, payload);
+    if (first) return redactedVerdict(withVerifiedEvidence(first, payload));
     if (Date.now() - startedAt >= timeoutMs / 2) return unscreenedVerdict();
     await sleep(250);
-    return withVerifiedEvidence((await attempt()) ?? unscreenedVerdict(), payload);
+    return redactedVerdict(withVerifiedEvidence((await attempt()) ?? unscreenedVerdict(), payload));
   };
 }

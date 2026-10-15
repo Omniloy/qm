@@ -1,4 +1,9 @@
-import { MaskedExecutionError, executionSecretEnv, createExactSecretValueMasker } from "../security/secret-masking.ts";
+import {
+  MaskedExecutionError,
+  executionSecretEnv,
+  createExactSecretValueMasker,
+  createSecretValueMasker,
+} from "../security/secret-masking.ts";
 import { withAbort } from "../util/async.ts";
 import type { RuntimeRequest, RuntimeResult } from "../harness/runtime-types.ts";
 import { readContextFile } from "../resolution/context-files.ts";
@@ -533,7 +538,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
   const fallbackMounts = deps.layers.filter((l) => l.mode === "ro" && l.mountPath);
   const persistExclude = deps.persistWritesToStore?.excludeDirs;
   const orgScopeId = deps.layers.find((l) => l.mountPath === "global")?.scopeId ?? null;
-  const turnSecrets = new Set<string>();
+  const turnSecrets = new Map<string, string>();
 
   const accessSandbox = async (id: string): Promise<SandboxAccessPlan> => {
     if (!deps.sandboxResources || !deps.accessSandboxResource) throw new Error("sandbox inventory unavailable");
@@ -626,7 +631,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
   }
 
   return {
-    maskSecrets: (text) => createExactSecretValueMasker(turnSecrets)(text),
+    maskSecrets: (text) => createSecretValueMasker(Object.fromEntries(turnSecrets))(text),
     ...(deps.registerLogin ? { registerLogin: deps.registerLogin } : {}),
     ...(deps.commandCredentials?.length
       ? { commandCredentialHandles: deps.commandCredentials.map((credential) => credential.handle) }
@@ -896,7 +901,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
             commandHandle.env,
             prepared.flatMap((credential) => credential.env),
           );
-          for (const value of Object.values(secretEnv)) turnSecrets.add(value);
+          for (const [key, value] of Object.entries(secretEnv)) turnSecrets.set(key, value);
           const mask = createExactSecretValueMasker(Object.values(secretEnv));
           let r: ExecResult;
           try {

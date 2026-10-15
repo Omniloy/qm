@@ -1445,7 +1445,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         return {
           source: context,
           category: verdict.category ?? "other",
-          ...(verdict.reason ? { reason: verdict.reason } : {}),
+          ...(verdict.reason ? { reason: mask(verdict.reason) } : {}),
           ...(verdict.evidence ? { evidence: mask(verdict.evidence) } : {}),
           ...(scheduledTask ? { scheduledTask } : {}),
         };
@@ -3742,6 +3742,9 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                         });
                         return { outcome: "allow" };
                       }
+                      const maskHeld = (text: string): string =>
+                        redactSecretText(text, (raw) => tools.maskSecrets?.(raw) ?? raw);
+                      const heldReason = verdict.reason ? maskHeld(verdict.reason) : undefined;
                       deps.auditLog.record({
                         at: Date.now(),
                         principalId: actor.id,
@@ -3753,21 +3756,15 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                           reason: "screen_verdict",
                           tool: toolLabel,
                           ...(source ? { source } : {}),
-                          ...(verdict.reason ? { verdict: verdict.reason } : {}),
+                          ...(heldReason ? { verdict: heldReason } : {}),
                           ...(verdict.category ? { category: verdict.category } : {}),
                         }),
                       });
-                      const maskHeld = (text: string): string =>
-                        redactSecretText(text, (raw) => tools.maskSecrets?.(raw) ?? raw);
                       const securityHold = context
                         ? await securityHoldFor(context, verdict, maskHeld).catch(
                             swallowAs("orchestrator: security hold", undefined),
                           )
                         : undefined;
-                      if (securityHold)
-                        await countHold(deps.screeningHoldCounts, securityHoldSourceKey(securityHold.source)).catch(
-                          swallowAs("orchestrator: count hold", undefined),
-                        );
                       if (
                         !quarantineReleaseApprovals.some(
                           (qa) =>
@@ -3776,13 +3773,17 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                             qa.screenedOutput?.sourceScopeId === sourceScopeId,
                         )
                       ) {
+                        if (securityHold)
+                          await countHold(deps.screeningHoldCounts, securityHoldSourceKey(securityHold.source)).catch(
+                            swallowAs("orchestrator: count hold", undefined),
+                          );
                         quarantineReleaseApprovals.push({
                           command: `release quarantined ${toolLabel} output`,
-                          reason: verdict.reason
-                            ? `security screen flagged this ${toolLabel} output: ${verdict.reason}`
+                          reason: heldReason
+                            ? `security screen flagged this ${toolLabel} output: ${heldReason}`
                             : `security screen flagged this ${toolLabel} output`,
                           purpose: `Release the quarantined ${toolLabel} output into the conversation (once), or keep it blocked.`,
-                          summary: `Blocked content preview: ${quarantinePreview(result)}`,
+                          summary: `Blocked content preview: ${quarantinePreview(maskHeld(result))}`,
                           summaryDetail: maskHeld(quarantineFullText(result)),
                           ...(securityHold ? { securityHold } : {}),
                           ...(!toolLabel.startsWith("session_message_")
@@ -3801,7 +3802,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                       return {
                         outcome: "quarantine",
                         approvalRequested: true,
-                        ...(verdict.reason ? { reason: verdict.reason } : {}),
+                        ...(heldReason ? { reason: heldReason } : {}),
                       };
                     }
                     deps.auditLog.record({

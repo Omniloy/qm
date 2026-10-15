@@ -1,5 +1,5 @@
 import { availableRuntimeError } from "./api/runtime-config.ts";
-import { createApprovalStore } from "./core/approval-store.ts";
+import { createApprovalStore, type HeldContentEntry } from "./core/approval-store.ts";
 import { createKeychainApprovals } from "./credentials/keychain-approval.ts";
 import { flushErrorReporting, startTiming } from "../plugins/chassis/src/error-reporting.ts";
 import type { TimingStatus } from "../plugins/chassis/src/timing.ts";
@@ -137,6 +137,7 @@ import type {
   PendingApprovalRecord,
   ScopeId,
   SurfaceContextRequest,
+  TurnRequest,
   Webhook,
 } from "./types.ts";
 import { personalScope, scopeId } from "./types.ts";
@@ -1973,7 +1974,24 @@ export function buildApp(
       `UPDATE webhooks SET json = jsonb_set(json, '{enabled}', 'false'::jsonb) WHERE (json ->> 'enabled')::boolean`,
     ],
   });
-  const approvals = createApprovalStore(artifactMap<PendingApprovalRecord>("approvals"), deliveries);
+  const scheduledHoldDeps = () => ({
+    deliveries,
+    idempotency,
+    identity,
+    run: (req: TurnRequest) => app.turn(req),
+    directory,
+    currentScopeMembers,
+    isOpenScopeMember: openScopeMember,
+    sessions,
+    crons,
+    lock: advisoryLock,
+  });
+  const approvals = createApprovalStore(artifactMap<PendingApprovalRecord>("approvals"), deliveries, {
+    heldContent: artifactMap<HeldContentEntry>("held_content_index"),
+    supersede: async (id, record) => {
+      await resumeScheduledHold(scheduledHoldDeps(), id, record, false, "superseded");
+    },
+  });
   const screeningReports: ScreeningReportStore = artifactMap<ScreeningReport>("screening_reports");
   const skillTrusts: SkillTrustStore = artifactMap<SkillTrust>("skill_trusts");
   const screeningHoldCounts: ScreeningHoldCountStore = artifactMap<ScreeningHoldCount>("screening_hold_counts");
@@ -2271,22 +2289,7 @@ export function buildApp(
     : undefined;
   const app = createApp({
     resumeScheduledHold: (requestId, record, approved) =>
-      resumeScheduledHold(
-        {
-          deliveries,
-          idempotency,
-          identity,
-          run: (req) => app.turn(req),
-          directory,
-          currentScopeMembers,
-          isOpenScopeMember: openScopeMember,
-          sessions,
-          getCron: (id) => crons.get(id),
-        },
-        requestId,
-        record,
-        approved,
-      ),
+      resumeScheduledHold(scheduledHoldDeps(), requestId, record, approved),
     externalSlackPolicies: config.externalSlackPolicies,
     admittedWork,
     ...(pgArtifactMap ? { resourceSearch: createPostgresResourceSearch(pgArtifactMap.pool) } : {}),

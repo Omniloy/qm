@@ -4,7 +4,7 @@ import { scopeId } from "../types.ts";
 import { securityHoldSourceKey } from "../security/security-hold.ts";
 import { redactSecretText } from "../security/secret-masking.ts";
 import { samePerson } from "../directory/person.ts";
-import { scheduledHoldDecider } from "../core/approval-store.ts";
+import { claimApproval, releaseApprovalClaim, scheduledHoldDecider } from "../core/approval-store.ts";
 import type { PendingApprovalRecord } from "../types.ts";
 import type { ScheduledHoldDecision } from "../triggers/security-hold-resume.ts";
 import { MAX_REPORT_NOTE_CHARS, type ScreeningReport } from "../security/screening-reports.ts";
@@ -16,7 +16,8 @@ export type SecurityHoldReportOutcome =
   | { state: "not_found" | "not_a_hold" | "unavailable" };
 
 export type ScheduledHoldOutcome =
-  ({ state: "resolved" } & ScheduledHoldDecision) | { state: "not_found" | "not_owner" | "unavailable" };
+  | ({ state: "resolved" } & ScheduledHoldDecision)
+  | { state: "not_found" | "not_owner" | "unavailable" | "already_resolved" };
 
 const NOTE_SEPARATOR = "\n\n";
 
@@ -55,11 +56,20 @@ export function createSecurityHoldMethods(
       if (stored.createdAt !== report.createdAt) {
         if (!trimmed || stored.note?.split(NOTE_SEPARATOR).includes(trimmed))
           return { state: "exists", report: stored };
-        const note = (stored.note ? `${stored.note}${NOTE_SEPARATOR}${trimmed}` : trimmed).slice(
-          -MAX_REPORT_NOTE_CHARS,
-        );
-        const updated = (await deps.screeningReports.merge(report.id, { note, status: "open" })) ?? stored;
-        return { state: "updated", report: updated };
+        const append = (current: ScreeningReport): ScreeningReport =>
+          current.note?.split(NOTE_SEPARATOR).includes(trimmed)
+            ? current
+            : {
+                ...current,
+                note: (current.note ? `${current.note}${NOTE_SEPARATOR}${trimmed}` : trimmed).slice(
+                  -MAX_REPORT_NOTE_CHARS,
+                ),
+                status: "open",
+              };
+        const updated = deps.screeningReports.update
+          ? await deps.screeningReports.update(report.id, append)
+          : await deps.screeningReports.merge(report.id, append(stored));
+        return { state: "updated", report: updated ?? stored };
       }
       deps.auditLog.record({
         at: Date.now(),
@@ -74,7 +84,7 @@ export function createSecurityHoldMethods(
     },
 
     async recordApprovalCard(requestId, card) {
-      await deps.approvals?.merge(requestId, { card });
+      return Boolean(await deps.approvals?.merge(requestId, { card }));
     },
 
     async resolveScheduledHold(requestId, actorId, approved) {
@@ -83,7 +93,12 @@ export function createSecurityHoldMethods(
       if (!record || !decider || !(await h.approvalRecordIsCurrent(record))) return { state: "not_found" };
       if (!samePerson(decider, actorId)) return { state: "not_owner" };
       if (!deps.resumeScheduledHold) return { state: "unavailable" };
-      const decision = await deps.resumeScheduledHold(requestId, record, approved);
+      const claimed = await claimApproval(deps.approvals!, requestId);
+      if (!claimed) return { state: "already_resolved" };
+      const decision = await deps.resumeScheduledHold(requestId, claimed, approved).catch(async (error: unknown) => {
+        await releaseApprovalClaim(deps.approvals!, requestId);
+        throw error;
+      });
       deps.auditLog.record({
         at: Date.now(),
         principalId: actorId,
@@ -91,7 +106,10 @@ export function createSecurityHoldMethods(
         resource: requestId,
         scopeLabel: scopeId("org", orgIdOf()),
         status: decision.outcome,
-        detail: JSON.stringify({ cronId: record.securityHold!.scheduledTask!.id }),
+        detail: JSON.stringify({
+          cronId: record.securityHold!.scheduledTask!.id,
+          requested: approved ? "allow" : "keep",
+        }),
       });
       return { state: "resolved", ...decision };
     },

@@ -161,6 +161,8 @@ async function postScheduledHoldDecision(ctx: ApiCtx): Promise<void> {
   const outcome = await app.resolveScheduledHold(id, actorId, approved);
   if (outcome.state === "resolved") return sendJson(res, 200, { outcome: outcome.outcome, message: outcome.message });
   if (outcome.state === "not_owner") return sendJson(res, 403, { error: "not_owner" });
+  if (outcome.state === "already_resolved")
+    return sendJson(res, 409, { error: "already_resolved", message: "This hold is already being resolved." });
   if (outcome.state === "unavailable") return sendJson(res, 501, { error: "unsupported" });
   return sendJson(res, 404, { error: "not_found" });
 }

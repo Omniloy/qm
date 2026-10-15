@@ -53,11 +53,11 @@ function blockedContentModal(content: string): Record<string, unknown> {
   };
 }
 
-function reportModal(requestId: string): Record<string, unknown> {
+function reportModal(target: { requestId: string; actorId: string }): Record<string, unknown> {
   return {
     type: "modal",
     callback_id: SECURITY_HOLD_REPORT_CALLBACK,
-    private_metadata: requestId,
+    private_metadata: JSON.stringify(target),
     title: plain("Report false positive"),
     submit: plain("Save for admins"),
     close: plain("Cancel"),
@@ -107,6 +107,17 @@ async function holdFor(deps: HoldActionDeps, client: any, requestId: string, cli
   return samePerson(actor.externalId, decider) ? { stored, actorId: actor.externalId } : null;
 }
 
+function reportTarget(metadata: unknown): { requestId: string; actorId: string } | null {
+  try {
+    const parsed = JSON.parse(String(metadata ?? "")) as { requestId?: unknown; actorId?: unknown };
+    return typeof parsed.requestId === "string" && typeof parsed.actorId === "string"
+      ? { requestId: parsed.requestId, actorId: parsed.actorId }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export function registerSecurityHoldActions(app: SlackRegistrar, deps: HoldActionDeps): void {
   app.action(/^security_hold_/, async ({ ack, body, action, client }) => {
     await ack();
@@ -114,33 +125,23 @@ export function registerSecurityHoldActions(app: SlackRegistrar, deps: HoldActio
     const { clickerId } = parseInteractionBody(body);
     const triggerId = isObj(body) && typeof body.trigger_id === "string" ? body.trigger_id : "";
     if (!parsed || !clickerId || !triggerId) return;
+    const report = parsed.actionId === "security_hold_report";
+    const title = report ? "Report false positive" : "What was blocked";
     try {
-      if (parsed.actionId === "security_hold_report") {
-        await client.views.open({ trigger_id: triggerId, view: reportModal(parsed.value) });
-        return;
-      }
-      const opened = await client.views.open({
-        trigger_id: triggerId,
-        view: noticeModal("What was blocked", "Loading the blocked content…"),
-      });
+      const opened = await client.views.open({ trigger_id: triggerId, view: noticeModal(title, "Loading…") });
       const found = await holdFor(deps, client, parsed.value, clickerId);
-      await client.views.update({
-        view_id: opened?.view?.id,
-        view: found
-          ? blockedContentModal(found.stored.summaryDetail ?? "")
-          : noticeModal("What was blocked", NOT_YOURS),
-      });
+      let view = noticeModal(title, NOT_YOURS);
+      if (found && report) view = reportModal({ requestId: parsed.value, actorId: found.actorId });
+      else if (found) view = blockedContentModal(found.stored.summaryDetail ?? "");
+      await client.views.update({ view_id: opened?.view?.id, view });
     } catch (error) {
       console.error("[slack] security hold action failed:", errMessage(error));
     }
   });
 
-  app.view(SECURITY_HOLD_REPORT_CALLBACK, async ({ ack, body, view, client }) => {
-    const requestId = typeof view?.private_metadata === "string" ? view.private_metadata : "";
-    const clickerId = String(body?.user?.id ?? "");
-    const note = view?.state?.values?.[NOTE_BLOCK]?.[NOTE_ACTION]?.value;
-    const found = requestId && clickerId ? await holdFor(deps, client, requestId, clickerId) : null;
-    if (!found) {
+  app.view(SECURITY_HOLD_REPORT_CALLBACK, async ({ ack, view }) => {
+    const target = reportTarget(view?.private_metadata);
+    if (!target) {
       await ack({ response_action: "errors", errors: { [NOTE_BLOCK]: NOT_YOURS } });
       return;
     }
@@ -151,8 +152,9 @@ export function registerSecurityHoldActions(app: SlackRegistrar, deps: HoldActio
         "Saved for your admins to review as a possible false positive. The content is still blocked; choose Allow once or Keep blocked on the card.",
       ),
     });
+    const note = view?.state?.values?.[NOTE_BLOCK]?.[NOTE_ACTION]?.value;
     await deps.core
-      .reportSecurityHold(requestId, found.actorId, typeof note === "string" ? note : undefined)
+      .reportSecurityHold(target.requestId, target.actorId, typeof note === "string" ? note : undefined)
       .catch(swallowAs("slack: security hold report", undefined));
   });
 }

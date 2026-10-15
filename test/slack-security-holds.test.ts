@@ -63,15 +63,15 @@ function fixture(stored: Record<string, unknown> = {}) {
         action: { action_id: actionId, value: "req-1" },
         client,
       });
-  const submit = async (user: string, note?: string) => {
+  const submit = async (metadata: string, note?: string) => {
     const acks: any[] = [];
     await views.get(SECURITY_HOLD_REPORT_CALLBACK)!({
       ack: async (body?: unknown) => {
         events.push("ack");
         acks.push(body);
       },
-      body: { user: { id: user } },
-      view: { private_metadata: "req-1", state: { values: { note: { note: { value: note } } } } },
+      body: { user: { id: "U-any" } },
+      view: { private_metadata: metadata, state: { values: { note: { note: { value: note } } } } },
       client,
     });
     return acks;
@@ -88,29 +88,31 @@ test("show opens the modal before any lookup, then fills in what was blocked for
   assert.match(JSON.stringify(f.updated[0].view), /HttpOnly included/);
 });
 
-test("report opens immediately, discloses what admins see, and the submission acks before writing", async () => {
+test("report checks ownership at button time, discloses what admins see, and the submission acks before any call", async () => {
   const f = fixture();
   await f.click("security_hold_report", "U-owner");
-  assert.deepEqual(f.events, ["open"]);
-  const view = f.opened[0].view;
+  assert.deepEqual(f.events, ["open", "lookup"], "the trigger id is spent before the lookup");
+  const view = f.updated[0].view;
   assert.equal(view.callback_id, SECURITY_HOLD_REPORT_CALLBACK);
-  assert.equal(view.private_metadata, "req-1");
+  assert.deepEqual(JSON.parse(view.private_metadata), { requestId: "req-1", actorId: "owner@acme.test" });
   assert.equal(view.blocks.find((b: any) => b.type === "input").optional, true);
   assert.match(JSON.stringify(view), /full blocked content/);
   assert.match(JSON.stringify(view), /never releases the content/);
-  const acks = await f.submit("U-owner", "our own built-in skill");
-  assert.ok(f.events.indexOf("ack") < f.events.indexOf("report"), "ack lands before the write");
+  f.events.length = 0;
+  const acks = await f.submit(view.private_metadata, "our own built-in skill");
+  assert.deepEqual(f.events, ["ack", "report"], "no remote call happens before the ack");
   assert.deepEqual(f.reports, [["req-1", "owner@acme.test", "our own built-in skill"]]);
   assert.equal(acks[0].response_action, "update");
   assert.match(JSON.stringify(acks[0].view), /Saved for your admins to review/);
-  assert.doesNotMatch(JSON.stringify(acks[0].view), /Reported to your admins/);
 });
 
 test("someone other than the person the hold waits on can neither see nor report it", async () => {
   const f = fixture();
   await f.click("security_hold_show", "U-other");
   assert.doesNotMatch(JSON.stringify(f.updated[0].view), /HttpOnly/);
-  const acks = await f.submit("U-other", "sneaky");
+  await f.click("security_hold_report", "U-other");
+  assert.equal(f.updated[1].view.callback_id, undefined, "no report form is offered");
+  const acks = await f.submit("not-json", "sneaky");
   assert.equal(f.reports.length, 0);
   assert.equal(acks[0].response_action, "errors");
 });
@@ -124,8 +126,8 @@ test("a scheduled task's hold is decided by the cron owner, not the acting membe
       scheduledTask: { id: "c1", ownerId: "owner@acme.test" },
     },
   });
-  await f.submit("U-owner", "fine");
-  assert.deepEqual(f.reports, [["req-1", "owner@acme.test", "fine"]]);
-  const acks = await f.submit("U-floor", "not mine");
-  assert.equal(acks[0].response_action, "errors");
+  await f.click("security_hold_report", "U-owner");
+  assert.equal(f.updated[0].view.callback_id, SECURITY_HOLD_REPORT_CALLBACK);
+  await f.click("security_hold_report", "U-floor");
+  assert.equal(f.updated[1].view.callback_id, undefined);
 });

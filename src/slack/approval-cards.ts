@@ -1,5 +1,5 @@
 import { xmlEscape } from "../util/message-tag.ts";
-import { clip, inlineCode } from "./util.ts";
+import { clip, escapedClip, inlineCode } from "./util.ts";
 import { securityHoldView, type SecurityHold } from "../security/security-hold.ts";
 import { parseDeliveryTarget } from "./delivery.ts";
 import type { AgentRequestActionId } from "./agent-requests.ts";
@@ -61,7 +61,7 @@ export function approvalMessage(approvals: readonly PendingApproval[]): SlackApp
     : [{ requestId: "", command: "unknown command", reason: "requires approval" }];
   const describe = (p: (typeof items)[number]): string => {
     if (p.kind === "input") return "My security screen flagged part of this message. Allow it?";
-    if (p.purpose) return `Approval needed: ${xmlEscape(clip(p.purpose, 400))}`;
+    if (p.purpose) return `Approval needed: ${escapedClip(p.purpose, 400)}`;
     return `Approval needed before I can run ${inlineCode(p.command)}.`;
   };
   const text = items
@@ -91,14 +91,11 @@ export function approvalMessage(approvals: readonly PendingApproval[]): SlackApp
         ? ":lock: *My security screen flagged part of this message. Allow it?*"
         : ":lock: *Approval needed.*",
     ];
-    if (p.summary) lines.push(xmlEscape(clip(p.summary, 400)));
-    if (p.purpose) lines.push(`*Why:* ${xmlEscape(clip(p.purpose, 400))}`);
+    if (p.summary) lines.push(escapedClip(p.summary, 400));
+    if (p.purpose) lines.push(`*Why:* ${escapedClip(p.purpose, 400)}`);
     if (p.kind !== "input") lines.push(`*Command:* ${inlineCode(p.command)}`);
-    lines.push(`*Flagged as:* ${xmlEscape(clip(p.reason, 200))}`);
-    blocks.push({
-      type: "section",
-      text: { type: "mrkdwn", text: clip(lines.join("\n"), 2900) },
-    });
+    lines.push(`*Flagged as:* ${escapedClip(p.reason, 200)}`);
+    blocks.push({ type: "section", text: { type: "mrkdwn", text: lines.join("\n") } });
     blocks.push({
       type: "actions",
       block_id: `${APPROVAL_BLOCK_PREFIX}${p.requestId || "unknown"}`.slice(0, 255),
@@ -120,43 +117,33 @@ function quoted(text: string): string {
     .join("\n");
 }
 
+function mrkdwn(text: string, verbatim = false): Record<string, unknown> {
+  return { type: "mrkdwn", text, ...(verbatim ? { verbatim: true } : {}) };
+}
+
 function securityHoldBlocks(requestId: string, hold: SecurityHold): Array<Record<string, unknown>> {
   const view = securityHoldView(hold);
   const title = view.subject
-    ? xmlEscape(view.title).replace(xmlEscape(view.subject), () => inlineCode(view.subject!))
-    : xmlEscape(view.title);
-  const facts = view.facts.map((fact) => `${fact.label}: ${fact.value}`);
+    ? escapedClip(view.title, 600).replace(xmlEscape(view.subject), () => inlineCode(view.subject!))
+    : escapedClip(view.title, 600);
+  const facts = view.facts.map((fact) => `${fact.label}: ${clip(fact.value, 600)}`);
   return [
     {
       type: "section",
-      text: {
-        type: "mrkdwn",
-        text: clip(`:shield: *${title} needs your OK*\n${xmlEscape(view.explanation)}`, 2900),
-      },
+      text: mrkdwn(`:shield: *${title} needs your OK*\n${escapedClip(view.explanation, 1500)}`, true),
     },
     ...(view.evidence
-      ? [
-          {
-            type: "section",
-            text: { type: "mrkdwn", text: clip(`*Text the screener flagged*\n${quoted(view.evidence)}`, 2900) },
-          },
-        ]
+      ? [{ type: "section", text: mrkdwn(`*Text the screener flagged*\n${quoted(clip(view.evidence, 400))}`, true) }]
       : []),
     {
       type: "context",
-      elements: [
-        {
-          type: "mrkdwn",
-          text: clip(xmlEscape([...facts, `Category: ${view.categoryLabel}`].join(" · ")), 2900),
-        },
-      ],
+      elements: [mrkdwn(escapedClip([...facts, `Category: ${view.categoryLabel}`].join(" · "), 2900), true)],
     },
     {
       type: "section",
-      text: {
-        type: "mrkdwn",
-        text: clip(`*Allow once:* ${xmlEscape(view.allowEffect)}\n*Keep blocked:* ${xmlEscape(view.keepEffect)}`, 2900),
-      },
+      text: mrkdwn(
+        `*Allow once:* ${escapedClip(view.allowEffect, 600)}\n*Keep blocked:* ${escapedClip(view.keepEffect, 600)}`,
+      ),
     },
     {
       type: "actions",

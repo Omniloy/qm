@@ -744,6 +744,7 @@ export interface PendingApprovalRecord {
   kind?: "approval" | "input";
   securityHold?: SecurityHold;
   card?: { channel: string; ts: string };
+  claimedBy?: string;
 }
 
 type ApprovalScope = "once" | "session" | "always";

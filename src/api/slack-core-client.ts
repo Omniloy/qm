@@ -122,7 +122,7 @@ export interface SlackCoreClient {
   getApproval(requestId: string): Promise<StoredApprovalView | null>;
   reportSecurityHold(requestId: string, reporterId: string, note?: string): Promise<SecurityHoldReportOutcome>;
   resolveScheduledHold(requestId: string, actorId: string, approved: boolean): Promise<ScheduledHoldOutcome>;
-  recordApprovalCard(requestId: string, card: { channel: string; ts: string }): Promise<void>;
+  recordApprovalCard(requestId: string, card: { channel: string; ts: string }): Promise<boolean>;
   putAgentRequest(requestId: string, record: SlackAgentRequestContext): Promise<void>;
   getAgentRequest(requestId: string): Promise<SlackAgentRequestContext | null>;
   takeAgentRequest(requestId: string): Promise<SlackAgentRequestContext | null>;

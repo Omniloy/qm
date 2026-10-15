@@ -1,16 +1,25 @@
 import { cronTriggerAuthority } from "../cron/authority.ts";
-import type { Cron, Destination, PendingApprovalRecord } from "../types.ts";
+import type { Cron, CronFireLogEntry, Destination, PendingApprovalRecord, TurnResult } from "../types.ts";
+import type { CronStore } from "../cron/cron-store.ts";
+import type { AdvisoryLock } from "../persistence/advisory-lock.ts";
 import { runTrigger, type TriggerDeps } from "./run-trigger.ts";
 import { samePerson } from "../directory/person.ts";
 import { securityHoldView } from "../security/security-hold.ts";
 
 export interface ScheduledHoldDeps extends TriggerDeps {
-  getCron: (id: string) => Promise<Cron | null>;
+  crons: Pick<CronStore, "get" | "beginFire" | "recordFire" | "latestFireForThread">;
+  lock?: Pick<AdvisoryLock, "withLock">;
 }
 
 export interface ScheduledHoldDecision {
-  outcome: "allowed" | "kept";
+  outcome: "allowed" | "kept" | "failed";
   message: string;
+}
+
+export type ScheduledHoldReason = "owner" | "superseded";
+
+function scheduledHoldFireKey(requestId: string, record: Pick<PendingApprovalRecord, "createdAt">): string {
+  return `security-hold:${requestId}:${record.createdAt ?? 0}`;
 }
 
 async function destinationLabel(deps: ScheduledHoldDeps, cron: Cron, destination: Destination): Promise<string> {
@@ -23,61 +32,101 @@ async function destinationLabel(deps: ScheduledHoldDeps, cron: Cron, destination
   return "the task's destination";
 }
 
+function deniedResult(result: TurnResult): boolean {
+  return result.status === "refused" && (result.reason ?? "").startsWith("approval denied");
+}
+
 export async function resumeScheduledHold(
   deps: ScheduledHoldDeps,
   requestId: string,
   record: PendingApprovalRecord,
   approved: boolean,
+  reason: ScheduledHoldReason = "owner",
 ): Promise<ScheduledHoldDecision> {
-  const hold = record.securityHold!;
-  const task = hold.scheduledTask!;
-  const view = securityHoldView(hold);
-  const name = task.title ?? task.id;
-  const kept: ScheduledHoldDecision = {
-    outcome: "kept",
-    message: `Kept blocked: ${view.held}. This run of ${name} stopped without it and delivered nothing.`,
+  const task = record.securityHold!.scheduledTask!;
+  const held = securityHoldView(record.securityHold!).held;
+  const cron = await deps.crons.get(task.id);
+  const name = cron?.title ?? task.title ?? task.id;
+  let unavailable: string | undefined;
+  if (!cron || cron.archived) unavailable = `${name} no longer exists`;
+  else if (!cron.enabled && (cron.schedule.everyMs !== undefined || cron.schedule.cron !== undefined))
+    unavailable = `${name} is paused`;
+  const allow = approved && !unavailable;
+  const threadRef = record.request!.conversation.threadRef;
+  const fireKey = scheduledHoldFireKey(requestId, record);
+
+  const keep = async (): Promise<ScheduledHoldDecision> => {
+    const result = await deps.run({ ...record.request!, approval: { requestId, approved: false } });
+    if (!deniedResult(result)) return { outcome: "failed", message: "Already resolved." };
+    let message = `Kept blocked: ${held}. This run of ${name} stopped without it and delivered nothing.`;
+    if (reason === "superseded")
+      message = `Kept blocked: a newer run of ${name} was held on the same content, so this run stopped without it.`;
+    else if (unavailable)
+      message = `Kept blocked: ${unavailable}, so this run did not continue${approved ? " and nothing was released" : ""}.`;
+    return { outcome: "kept", message };
   };
-  const approval = { requestId, approved, ...(approved ? { scope: "once" as const } : {}) };
-  const cron = await deps.getCron(task.id);
-  if (!cron || cron.archived) {
-    await deps.run({ ...record.request!, approval });
-    return approved
-      ? { outcome: "allowed", message: `Allowed once, but ${name} no longer exists, so the run could not continue.` }
-      : kept;
-  }
-  const outcome = await runTrigger(deps, {
-    ...cronTriggerAuthority(cron),
-    input: record.request!.text,
-    fireKey: `security-hold:${requestId}:${approved ? "allow" : "keep"}`,
-    surface: "cron",
-    threadRef: record.request!.conversation.threadRef,
-    approval,
-    ...(cron.runtime ? { runtime: cron.runtime } : {}),
-    ...(cron.title ? { title: cron.title } : {}),
-    ...(cron.destination ? { destination: cron.destination } : {}),
-    ...(cron.recipientConsent ? { recipientConsent: cron.recipientConsent } : {}),
-    recipientConsentRequired: cron.schedule.everyMs !== undefined || cron.schedule.cron !== undefined,
-  });
-  if (!approved) return kept;
-  if (!outcome.ran)
+
+  const allowOnce = async (live: Cron): Promise<ScheduledHoldDecision> => {
+    const outcome = await runTrigger(deps, {
+      ...cronTriggerAuthority(live),
+      input: record.request!.text,
+      fireKey,
+      surface: "cron",
+      threadRef,
+      approval: { requestId, approved: true, scope: "once" },
+      ...(live.runtime ? { runtime: live.runtime } : {}),
+      ...(live.title ? { title: live.title } : {}),
+      ...(live.destination ? { destination: live.destination } : {}),
+      ...(live.recipientConsent ? { recipientConsent: live.recipientConsent } : {}),
+      recipientConsentRequired: live.schedule.everyMs !== undefined || live.schedule.cron !== undefined,
+    });
+    if (!outcome.ran)
+      return {
+        outcome: "failed",
+        message: outcome.note ? `The run could not continue: ${outcome.note}.` : "Already resolved.",
+      };
+    if (outcome.status === "silent")
+      return {
+        outcome: "allowed",
+        message: `Allowed once: the run of ${name} continued and had nothing new to report.`,
+      };
+    if (outcome.status === "ok" && live.destination && !outcome.note)
+      return {
+        outcome: "allowed",
+        message: `Allowed once: the run of ${name} continued and delivered to ${await destinationLabel(deps, live, live.destination)}.`,
+      };
+    if (outcome.status === "ok")
+      return {
+        outcome: "allowed",
+        message: `Allowed once: the run of ${name} continued${outcome.note ? ` (${outcome.note})` : ""}.`,
+      };
     return {
-      outcome: "allowed",
-      message: outcome.note ? `Allowed once, but the run could not continue: ${outcome.note}.` : "Already resolved.",
+      outcome: "failed",
+      message: `The run could not continue: ${outcome.userNote ?? outcome.note ?? outcome.status ?? "unknown error"}.`,
     };
-  if (outcome.status === "silent")
-    return { outcome: "allowed", message: `Allowed once: the run of ${name} continued and had nothing new to report.` };
-  if (outcome.status === "ok" && cron.destination && !outcome.note)
-    return {
-      outcome: "allowed",
-      message: `Allowed once: the run of ${name} continued and delivered to ${await destinationLabel(deps, cron, cron.destination)}.`,
-    };
-  if (outcome.status === "ok")
-    return {
-      outcome: "allowed",
-      message: `Allowed once: the run of ${name} continued${outcome.note ? ` (${outcome.note})` : ""}.`,
-    };
-  return {
-    outcome: "allowed",
-    message: `Allowed once, but the run could not continue: ${outcome.userNote ?? outcome.note ?? outcome.status ?? "unknown error"}.`,
   };
+
+  if (!cron) return keep();
+  const accounted = async (): Promise<ScheduledHoldDecision> => {
+    const original = await deps.crons.latestFireForThread(cron.id, threadRef);
+    const entry: CronFireLogEntry = {
+      fireKey: original?.fireKey ?? fireKey,
+      threadRef,
+      firedAt: original?.firedAt ?? record.createdAt ?? Date.now(),
+      ...(original?.scheduledAt !== undefined ? { scheduledAt: original.scheduledAt } : {}),
+    };
+    await deps.crons.beginFire(cron.id, { ...entry, status: "running" });
+    const decision = await (allow ? allowOnce(cron) : keep()).catch(async (error: unknown) => {
+      await deps.crons.recordFire(cron.id, { ...entry, endedAt: Date.now(), status: "failed" });
+      throw error;
+    });
+    await deps.crons.recordFire(cron.id, {
+      ...entry,
+      endedAt: Date.now(),
+      status: decision.outcome === "allowed" ? "ok" : "refused",
+      note: decision.message,
+    });
+    return decision;
+  };
+  return deps.lock ? deps.lock.withLock(`cron-lifecycle:${cron.id}`, accounted) : accounted();
 }

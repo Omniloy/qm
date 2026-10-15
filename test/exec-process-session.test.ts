@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createExecProcessSessions, type ExecProcessIo } from "../src/sandbox/exec-process-session.ts";
-import { redactCommand } from "../src/security/secret-masking.ts";
+import { createSecretValueMasker, redactCommand, redactSecretText } from "../src/security/secret-masking.ts";
 import type { ExecResult, SandboxHandle } from "../src/sandbox/sandbox.ts";
 
 function shellIo(home: string): ExecProcessIo {
@@ -325,4 +325,15 @@ test("redactCommand masks credentials in common command shapes without env", () 
   ];
   for (const [input, expected] of cases) assert.equal(redactCommand(input), expected);
   assert.equal(redactCommand("ls -la /tmp && echo monkey=1"), "ls -la /tmp && echo monkey=1", "ordinary text survives");
+});
+
+test("the value masker catches JSON-escaped and encoded forms and leaves short values alone", () => {
+  const mask = createSecretValueMasker({ API_TOKEN: 'tok"en/with+chars', SHORT: "abc" });
+  assert.equal(mask(JSON.stringify({ v: 'tok"en/with+chars' })), '{"v":"<redacted:API_TOKEN>"}');
+  assert.equal(mask(encodeURIComponent('tok"en/with+chars')), "<redacted:API_TOKEN>");
+  assert.equal(mask("abc"), "abc");
+  assert.equal(
+    redactSecretText('{"api_key": "sk-123", "token":"a\\"b", "password": 1234, "name":"x"}'),
+    '{"api_key": "<redacted>", "token":"<redacted>", "password": "<redacted>", "name":"x"}',
+  );
 });

@@ -53,7 +53,13 @@ const core = createServer((req: IncomingMessage, res) => {
             conversation: { kind: "dm", threadRef: "cron:c1:fire:abc" },
           },
           ...(url.includes("hold")
-            ? { securityHold: { source: { kind: "command", command: "ls" }, category: "other" } }
+            ? {
+                securityHold: {
+                  source: { kind: "command", command: "ls" },
+                  category: "other",
+                  scheduledTask: { id: "c1", ownerId: "alice" },
+                },
+              }
             : {}),
         }),
       );

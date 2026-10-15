@@ -22,6 +22,7 @@ import {
   type HttpMethod,
 } from "../../chassis/src/core-client.ts";
 import { findRoute } from "../../chassis/src/router.ts";
+import { isScheduledHoldRecord } from "../../chassis/src/scheduled-hold.ts";
 import {
   json,
   gzipAccepted,
@@ -708,8 +709,7 @@ async function requesterApproval(
   const threadRef =
     typeof record.request?.conversation?.threadRef === "string" ? record.request.conversation.threadRef : "";
   const actor = typeof record.request?.actor?.externalId === "string" ? record.request.actor.externalId : "";
-  const cronHold =
-    threadRef.startsWith("cron:") && typeof record.securityHold === "object" && record.securityHold !== null;
+  const cronHold = isScheduledHoldRecord(record);
   if (cronHold) return { record, threadRef, cronHold };
   const resolvable = APPROVAL_THREAD_PREFIXES.some((prefix) => threadRef.startsWith(prefix));
   if (!resolvable || actor !== user || !record.request) {
@@ -869,7 +869,7 @@ interface CoreApprovalRecord {
     conversation?: { threadRef?: unknown };
     text?: unknown;
   } & Record<string, unknown>;
-  securityHold?: unknown;
+  securityHold?: { scheduledTask?: unknown } | null;
 }
 
 function uploadFileName(url: URL): string {

@@ -517,8 +517,6 @@ export function createApprovals(deps: {
     ].join("\n");
   }
 
-  const decidingHolds = new Set<string>();
-
   async function decideScheduledHold(
     client: any,
     stored: StoredApproval,
@@ -529,35 +527,28 @@ export function createApprovals(deps: {
   ): Promise<void> {
     const decider = scheduledHoldDecider(stored as never)!;
     const actor = clickerId === decider ? { externalId: decider } : await directory.classifyActor(client, clickerId);
-    if (!samePerson(actor.externalId, decider)) {
-      await client.chat
-        .postEphemeral({ channel, user: clickerId, text: "Only the scheduled task's owner can decide this hold." })
+    const ephemeral = (text: string) =>
+      client.chat
+        .postEphemeral({ channel, user: clickerId, text })
         .catch(swallowAs("slack: chat.postEphemeral", undefined));
+    if (!samePerson(actor.externalId, decider)) {
+      await ephemeral("Only the scheduled task's owner can decide this hold.");
       return;
     }
-    if (decidingHolds.has(stored.requestId)) return;
-    decidingHolds.add(stored.requestId);
+    await ephemeral(approved ? "Allowing it once and continuing the scheduled run…" : "Keeping it blocked…");
     try {
-      if (messageTs)
-        await updateSlackMessage(
-          client,
-          channel,
-          messageTs,
-          approved ? ":shield: Allowed once; continuing the scheduled run…" : ":shield: Keeping it blocked…",
-        ).catch(swallowAs("slack: update approval message", undefined));
       const outcome = await core.resolveScheduledHold(stored.requestId, actor.externalId, approved);
+      if (outcome.state === "already_resolved") {
+        await ephemeral("This hold is already being resolved.");
+        return;
+      }
       let text = "That hold expired or was replaced by a newer run of the task.";
       if (outcome.state === "resolved") text = outcome.message;
       else if (outcome.state === "unavailable") text = "I couldn't resume the scheduled task here.";
       if (messageTs) await updateSlackMessage(client, channel, messageTs, `:shield: ${xmlEscape(text)}`);
     } catch (err) {
       console.error("%s", `[slack] scheduled hold ${stored.requestId} decision failed:`, errMessage(err));
-      if (messageTs)
-        await updateSlackMessage(client, channel, messageTs, `⚠️ ${xmlEscape(slackFailureText(err))}`).catch(
-          swallowAs("slack: update approval message", undefined),
-        );
-    } finally {
-      decidingHolds.delete(stored.requestId);
+      await ephemeral(`⚠️ ${slackFailureText(err)} The hold is still waiting; try again.`);
     }
   }
 

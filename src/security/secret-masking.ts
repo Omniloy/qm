@@ -19,6 +19,8 @@ export function createSecretValueMasker(env: Record<string, string> | undefined)
     variants.push({ needle: value, label: key });
     const uri = encodeURIComponent(value);
     if (uri !== value) variants.push({ needle: uri, label: key });
+    const json = JSON.stringify(value).slice(1, -1);
+    if (json !== value) variants.push({ needle: json, label: key });
     variants.push({ needle: Buffer.from(value, "utf8").toString("base64").replace(/=+$/, ""), label: key });
     variants.push({ needle: Buffer.from(value, "utf8").toString("base64url"), label: key });
   }
@@ -68,6 +70,13 @@ function redactPipedIntoWithToken(command: string): string {
 const NOT_REDACTED = "(?!['\"]?<redacted)";
 
 const SECRET_PATTERNS: ReadonlyArray<[RegExp, string]> = [
+  [
+    new RegExp(
+      `("(?:api[_-]?key|apikey|access[_-]?token|auth[_-]?token|refresh[_-]?token|token|secret|client[_-]?secret|password|passwd)"\\s*:\\s*)${NOT_REDACTED}("(?:[^"\\\\]|\\\\.)*"|[^\\s,}\\]]+)`,
+      "gi",
+    ),
+    '$1"<redacted>"',
+  ],
   [
     new RegExp(`(--?(?:token|password|passwd|secret|client[-_]?secret|api[-_]?key)[ =])${NOT_REDACTED}\\S+`, "gi"),
     "$1<redacted>",

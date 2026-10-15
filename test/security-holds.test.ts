@@ -253,6 +253,7 @@ test("blocked content is secret-masked before it is stored on the hold or in a r
     const result = await s.built.app.turn(dm(leaky, "masked"));
     const approval = (await s.built.app.getApproval(result.pendingApprovals![0]!.requestId))!;
     assert.doesNotMatch(approval.summaryDetail ?? "", /hunter2hunter2/);
+    assert.doesNotMatch(approval.summary ?? "", /hunter2hunter2/, "the legacy preview is masked too");
     assert.match(approval.summaryDetail ?? "", /DB_PASSWORD=<redacted>/);
     await fetch(`${s.base}/v1/approvals/${encodeURIComponent(approval.requestId)}/report`, {
       method: "POST",

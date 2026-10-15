@@ -297,7 +297,7 @@ export interface App {
     reporterId: string,
     note?: string,
   ): Promise<import("./app-security-holds.ts").SecurityHoldReportOutcome>;
-  recordApprovalCard(requestId: string, card: { channel: string; ts: string }): Promise<void>;
+  recordApprovalCard(requestId: string, card: { channel: string; ts: string }): Promise<boolean>;
   resolveScheduledHold(
     requestId: string,
     actorId: string,
