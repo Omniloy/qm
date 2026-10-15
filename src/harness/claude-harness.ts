@@ -21,7 +21,7 @@ import { fromJSONSchema, type ZodObject } from "zod";
 import { contentText, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { CONFIG_DEFAULTS, type Config } from "../config.ts";
 import { isDeliveryNote } from "../core/attachments.ts";
-import { NonRetryableTurnError } from "../core/turn-error.ts";
+import { NonRetryableTurnError, providerStatusError, subscriptionLimitMessage } from "../core/turn-error.ts";
 import {
   contextTokenBudgetForModel,
   getRequiredModel,
@@ -119,6 +119,26 @@ export function claudeChildEnv(source: NodeJS.ProcessEnv, jail: string): NodeJS.
     for (const name of CLAUDE_CREDENTIALS_OUTRANKING_SUBSCRIPTION) delete env[name];
   }
   return env;
+}
+
+const CLAUDE_SIGN_IN_FAILURE =
+  /not logged in|please run \/login|invalid[_ -]?(?:x-)?api[_ -]?key|authentication|(?:oauth|access) token (?:has )?(?:expired|been revoked)|token_expired/i;
+
+function claudeRejection(
+  result: { api_error_status?: number | null; result: string },
+  personal: boolean,
+): Error | null {
+  const raw = result.result.trim();
+  let inferred: number | undefined;
+  if (personal && CLAUDE_SIGN_IN_FAILURE.test(raw)) inferred = 401;
+  else if (personal && subscriptionLimitMessage(raw)) inferred = 429;
+  const status = result.api_error_status ?? inferred;
+  if (status === 429) return providerStatusError(status, `Claude API error (429): ${raw}`);
+  if (status !== 401 && status !== 403) return null;
+  const message = personal
+    ? `Claude did not accept this account's sign-in (HTTP ${status}). Reconnect the account or use a different one.`
+    : `Claude rejected the organization's credentials (HTTP ${status}).`;
+  return providerStatusError(status, message, { cause: new Error(raw) });
 }
 
 export function perUserClaudeEnv(env: NodeJS.ProcessEnv, oauthToken: string | undefined): NodeJS.ProcessEnv {
@@ -749,6 +769,11 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
           await recordStep(message);
           await flushThinking();
           if (interrupted) break;
+          const rejection =
+            message.subtype === "success" && message.is_error
+              ? claudeRejection(message, !!turn.claudeOauthToken)
+              : null;
+          if (rejection) throw rejection;
           const terminal = ref.runtimeHandoff || ref.silentRequested || ref.pausedOnApproval;
           const text = message.subtype === "success" && !terminal ? message.result.trim() : "";
           if (text) {

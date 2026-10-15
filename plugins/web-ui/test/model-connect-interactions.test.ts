@@ -61,7 +61,7 @@ test("AI account modal interactions", async (t) => {
   ) => ({
     account,
     individualModelAuth: account !== "company",
-    required: false,
+    ready: account === "company" || connections.some((c) => account === "personal" || account === c.provider),
     connections,
     modes,
   });
@@ -570,6 +570,14 @@ test("AI account modal interactions", async (t) => {
     await tick();
     assert.deepEqual(labels(), []);
     assert.ok(![...doc.querySelectorAll(".settings-row-title")].some((el) => el.textContent === "AI access"));
+    fetcher = async (path) =>
+      path.endsWith("/status") ? Response.json({ ...status("company", [], modes), allowed: false }) : base(path);
+    renderSettings();
+    await tick();
+    assert.match(
+      doc.querySelector("#ai-not-allowed")?.textContent ?? "",
+      /Personal AI accounts aren't enabled for you/,
+    );
     fetcher = async (path) =>
       path.endsWith("/status")
         ? Response.json({

@@ -142,6 +142,7 @@ export interface ServerDeps {
   codexProxy?: CodexProxy;
   harnessAuthProbe?: (token: string) => Promise<{ ok: boolean; detail?: string }>;
   userModelCredentials?: UserModelCredentialStore;
+  orgServesModel?: (harnessId: string, modelId: string) => Promise<boolean>;
   mcpServers?: McpServerStore;
   mcpToolService?: McpToolService;
   mcpOAuth?: McpOAuthStores;

@@ -24,24 +24,23 @@ test("personal account choice persists across instances without changing anyone 
   const modelAccountModes = createMemoryMap<PersistedModelAccountModes>();
   const first = createMemoryConfigStore("default-org", { individualModelAuth, modelAccountModes });
   const second = createMemoryConfigStore("default-org", { individualModelAuth, modelAccountModes });
-  await first.setModelAccountModes({ anthropic: "personal", openai: "personal" });
-  assert.equal(await first.getIndividualModelAuthDurable("alice"), false);
+  await first.setModelAccountPolicy({ anthropic: "personal", openai: "personal" });
+  assert.equal(await first.getModelAccountDurable("alice"), "company");
   await first.setPersonalModelAuth("alice", true);
-  assert.equal(await second.getIndividualModelAuthDurable("alice"), true);
-  assert.equal(await second.getIndividualModelAuthDurable("bob"), false);
-  assert.equal(await second.getIndividualModelAuthDurable(), false);
+  assert.equal(await second.getModelAccountDurable("alice"), "personal");
+  assert.equal(await second.getModelAccountDurable("bob"), "company");
   await second.setPersonalModelAuth("alice", false);
-  assert.equal(await first.getIndividualModelAuthDurable("alice"), false);
-  first.setIndividualModelAuth(true);
-  await first.flushScope("org:default-org");
-  assert.equal(await second.getIndividualModelAuthDurable("alice"), true);
+  assert.equal(await first.getModelAccountDurable("alice"), "company");
+  await individualModelAuth.put("org:default-org", { scopeId: "org:default-org", on: true });
+  assert.equal(await second.getModelAccountDurable("alice"), "company");
 });
 
 test("account API binds choice to the signed-in person, preserves connections, and fails closed after disconnect", async () => {
   const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "personal-account-")) }));
-  await built.config.setModelAccountModes({ anthropic: "personal", openai: "personal" });
+  await built.config.setModelAccountPolicy({ anthropic: "personal", openai: "personal" });
   built.config.setInternalMemberOverrides(["alice@default-org", "bob@default-org"]);
   await built.config.flushScope("org:default-org");
+  let orgServes = true;
   const server = createServer(built.app, {
     signingSecret: SECRET,
     requireSignedPortalIdentity: true,
@@ -50,6 +49,7 @@ test("account API binds choice to the signed-in person, preserves connections, a
     config: built.config,
     userModelCredentials: built.userModelCredentials,
     auditLog: built.auditLog,
+    orgServesModel: async () => orgServes,
   });
   server.listen(0);
   const base = `http://localhost:${(server.address() as AddressInfo).port}`;
@@ -77,21 +77,43 @@ test("account API binds choice to the signed-in person, preserves connections, a
     assert.equal(enabled.status, 200);
     assert.deepEqual(await enabled.json(), {
       individualModelAuth: true,
-      required: false,
       account: "personal",
+      allowed: true,
+      ready: true,
       connections: [{ provider: "anthropic", kind: "apikey" }],
       modes: { anthropic: "personal", openai: "personal" },
     });
-    assert.equal(await built.config.getIndividualModelAuthDurable("bob@default-org"), false);
+    assert.equal(await built.config.getModelAccountDurable("bob@default-org"), "company");
     assert.equal((await request("company")).status, 200);
     assert.equal((await built.userModelCredentials.connections("alice@default-org")).length, 1);
     assert.equal((await request("personal")).status, 200);
     await built.userModelCredentials.delete("alice@default-org", "anthropic");
-    assert.equal(await built.config.getIndividualModelAuthDurable("alice@default-org"), true);
+    assert.equal(await built.config.getModelAccountDurable("alice@default-org"), "personal");
+    const statusOf = async () => {
+      const path = "/v1/user-model-auth/status?principalId=alice%40default-org";
+      const ts = Math.floor(Date.now() / 1000);
+      const response = await fetch(base + path, {
+        headers: {
+          "x-timestamp": String(ts),
+          "x-signature": signRequest(SECRET, ts, `GET\n${path}\n`),
+          "x-portal-identity": await mintPortalIdentity(
+            { p: "alice@default-org", exp: Date.now() + 60_000 },
+            SECRET + "portal",
+          ),
+        },
+      });
+      return (await response.json()) as { ready: boolean };
+    };
+    assert.equal((await statusOf()).ready, false);
+    await built.config.setModelAccountPolicy({
+      anthropic: "personal",
+      openai: "personal",
+      fallbackWhenUnavailable: true,
+    });
+    assert.equal((await statusOf()).ready, true);
+    orgServes = false;
+    assert.equal((await statusOf()).ready, false, "the fallback only counts when the org can serve the turn");
     assert.equal((await request("company")).status, 200);
-    built.config.setIndividualModelAuth(true);
-    await built.config.flushScope("org:default-org");
-    assert.equal((await request("company")).status, 403);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
@@ -130,17 +152,18 @@ test("provider modes refuse sign-in for org-served providers and trim the status
       ...(method === "GET" ? {} : { body }),
     });
   }
-  const refused = async (path: string, fields: Record<string, unknown> = {}) => {
+  const refused = async (path: string, fields: Record<string, unknown> = {}, error = "personal_accounts_disabled") => {
     const response = await call("POST", path, fields);
     assert.equal(response.status, 403, path);
-    assert.equal(((await response.json()) as { error: string }).error, "personal_accounts_disabled");
+    assert.equal(((await response.json()) as { error: string }).error, error);
   };
   try {
     const status = async () => (await call("GET", "/v1/user-model-auth/status")).json();
     assert.deepEqual(await status(), {
       individualModelAuth: false,
-      required: false,
       account: "company",
+      allowed: true,
+      ready: true,
       connections: [],
       orgServedConnections: [
         { provider: "anthropic", kind: "apikey" },
@@ -155,30 +178,54 @@ test("provider modes refuse sign-in for org-served providers and trim the status
     await refused("/v1/user-model-auth/chatgpt/start");
     await refused("/v1/user-model-auth/chatgpt/poll", { deviceAuthId: "device" });
     await refused("/v1/user-model-auth/account", { account: "personal", provider: "anthropic" });
-    assert.equal((await call("POST", "/v1/user-model-auth/account", { account: "personal" })).status, 409);
+    await refused("/v1/user-model-auth/account", { account: "personal" });
 
-    await built.config.setModelAccountModes({ anthropic: "personal", openai: "org" });
+    await built.config.setModelAccountPolicy({ anthropic: "personal", openai: "org" });
     await refused("/v1/user-model-auth/chatgpt/start");
     await refused("/v1/user-model-auth/account", { account: "personal", provider: "openai" });
     const chosen = await call("POST", "/v1/user-model-auth/account", { account: "personal", provider: "anthropic" });
     assert.equal(chosen.status, 200);
     assert.deepEqual(await chosen.json(), {
       individualModelAuth: true,
-      required: false,
       account: "anthropic",
+      allowed: true,
+      ready: true,
       connections: [{ provider: "anthropic", kind: "apikey" }],
       orgServedConnections: [{ provider: "openai", kind: "apikey" }],
       modes: { anthropic: "personal", openai: "org" },
     });
 
-    built.config.setIndividualModelAuth(true);
-    await built.config.flushScope("org:default-org");
-    assert.equal((await call("POST", "/v1/user-model-auth/account", { account: "company" })).status, 403);
-    await built.config.setModelAccountModes({ anthropic: "org", openai: "org" });
-    assert.equal(((await status()) as { required: boolean }).required, false);
+    await built.config.setPersonalAccountAccess(["bob@default-org"]);
+    assert.deepEqual(await status(), {
+      individualModelAuth: false,
+      account: "company",
+      allowed: false,
+      ready: true,
+      connections: [],
+      orgServedConnections: [
+        { provider: "anthropic", kind: "apikey" },
+        { provider: "openai", kind: "apikey" },
+      ],
+      modes: { anthropic: "org", openai: "org" },
+    });
+    await refused("/v1/user-model-auth/claude/start", {}, "personal_account_not_allowed");
+    await refused(
+      "/v1/user-model-auth/api-key",
+      { provider: "claude", apiKey: "test-new-key" },
+      "personal_account_not_allowed",
+    );
+    await refused(
+      "/v1/user-model-auth/account",
+      { account: "personal", provider: "anthropic" },
+      "personal_account_not_allowed",
+    );
+    await built.config.setPersonalAccountAccess(["Alice@default-org"]);
+    assert.equal(((await status()) as { account: string }).account, "anthropic");
+    await built.config.setPersonalAccountAccess(null);
+
+    await built.config.setModelAccountPolicy({ anthropic: "org", openai: "org" });
+    assert.equal(((await status()) as { account: string }).account, "company");
     assert.equal((await call("POST", "/v1/user-model-auth/account", { account: "company" })).status, 200);
-    built.config.setIndividualModelAuth(false);
-    await built.config.flushScope("org:default-org");
     assert.equal(((await status()) as { account: string }).account, "company");
     assert.equal((await call("POST", "/v1/user-model-auth/disconnect", { provider: "claude" })).status, 200);
     assert.equal(await built.userModelCredentials.get("alice@default-org", "anthropic"), null);
@@ -197,7 +244,7 @@ test("personal provider choice is durable and controls the submitted run indepen
   const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "personal-routing-")) }));
   await built.userModelCredentials.setApiKey("U1", "anthropic", "test-anthropic-key");
   await built.userModelCredentials.setApiKey("U1", "openai", "test-openai-key");
-  await built.config.setModelAccountModes({ anthropic: "personal", openai: "personal" });
+  await built.config.setModelAccountPolicy({ anthropic: "personal", openai: "personal" });
   await built.config.setPersonalModelAuth("U1", true, "openai");
   const submitted = await built.app.turn({
     surface: "slack",
@@ -231,7 +278,7 @@ test("shared chat messages queue instead of borrowing another person's account",
     liveActor: true,
     async: true,
   });
-  await built.config.setModelAccountModes({ anthropic: "personal", openai: "personal" });
+  await built.config.setModelAccountPolicy({ anthropic: "personal", openai: "personal" });
   await built.config.setPersonalModelAuth("U1", true, "anthropic");
   const first = await built.app.turn(message("U1"));
   const other = await built.app.turn(message("U2"));
@@ -239,4 +286,54 @@ test("shared chat messages queue instead of borrowing another person's account",
   assert.notEqual(other.steered, true);
   assert.equal((await built.runs.get(other.runId!))?.request.modelAccount, "company");
   assert.equal((await built.signals.takePending(first.runId!)).length, 0);
+});
+
+test("ready stays false when the org's own Claude runtime only has a gateway URL and no credential", async () => {
+  const built = buildApp(
+    testConfig({
+      harness: "claude",
+      dataDir: mkdtempSync(join(tmpdir(), "personal-ready-")),
+      claudeProcessEnv: { ANTHROPIC_BASE_URL: "https://gateway.example.test" },
+    }),
+  );
+  await built.config.setModelAccountPolicy({
+    anthropic: "personal",
+    openai: "personal",
+    fallbackWhenUnavailable: true,
+  });
+  await built.config.setPersonalModelAuth("alice@default-org", true, "anthropic");
+  built.config.setInternalMemberOverrides(["alice@default-org"]);
+  await built.config.flushScope("org:default-org");
+  const server = createServer(built.app, {
+    signingSecret: SECRET,
+    requireSignedPortalIdentity: true,
+    capabilitySecret: SECRET + "capability",
+    portalIdentitySecret: SECRET + "portal",
+    config: built.config,
+    userModelCredentials: built.userModelCredentials,
+    auditLog: built.auditLog,
+    harnessId: "claude",
+    orgServesModel: built.orgServesModel,
+  });
+  server.listen(0);
+  const base = `http://localhost:${(server.address() as AddressInfo).port}`;
+  try {
+    const path = "/v1/user-model-auth/status?principalId=alice%40default-org";
+    const ts = Math.floor(Date.now() / 1000);
+    const response = await fetch(base + path, {
+      headers: {
+        "x-timestamp": String(ts),
+        "x-signature": signRequest(SECRET, ts, `GET\n${path}\n`),
+        "x-portal-identity": await mintPortalIdentity(
+          { p: "alice@default-org", exp: Date.now() + 60_000 },
+          SECRET + "portal",
+        ),
+      },
+    });
+    const status = (await response.json()) as { account: string; ready: boolean };
+    assert.equal(status.account, "anthropic");
+    assert.equal(status.ready, false);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });

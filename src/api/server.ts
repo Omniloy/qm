@@ -27,6 +27,7 @@ import { parseScopeId, scopeId } from "../types.ts";
 import {
   armBodyDeadline,
   canonicalPayload,
+  isCanonicalRequestPath,
   PayloadTooLargeError,
   readRawBody,
   sendJson,
@@ -365,6 +366,10 @@ async function gate(
   return { body, capability, actor };
 }
 
+function refuseNonCanonicalPath(res: ServerResponse): void {
+  sendJson(res, 400, { error: "bad_request", message: "request path must be canonical" });
+}
+
 function baseCtx(req: IncomingMessage, res: ServerResponse, wiring: Wiring): BaseCtx {
   const url = new URL(req.url ?? "/", "http://localhost");
   return { req, res, ...wiring, url, pathname: url.pathname, method: req.method ?? "GET", params: {} };
@@ -551,6 +556,10 @@ function buildServer(app: App, deps: ServerOptions, allowUnsignedSourceAuth: boo
 
   async function front(req: IncomingMessage, res: ServerResponse): Promise<void> {
     armBodyDeadline(req, 30_000);
+    if (!URL.canParse(req.url ?? "/", "http://localhost")) {
+      refuseNonCanonicalPath(res);
+      return;
+    }
     const base = baseCtx(req, res, wiring);
     if (await proxyDeploymentSubdomain(base)) {
       requestNames.set(req, "/deployment-proxy/*");
@@ -560,6 +569,10 @@ function buildServer(app: App, deps: ServerOptions, allowUnsignedSourceAuth: boo
     if (raw) {
       if ("path" in raw.route) requestNames.set(req, raw.route.path);
       await run(raw.route, raw.params, base);
+      return;
+    }
+    if (!isCanonicalRequestPath(req.url ?? "")) {
+      refuseNonCanonicalPath(res);
       return;
     }
     const matched = findRoute(apiRoutes, base.method, base.pathname);

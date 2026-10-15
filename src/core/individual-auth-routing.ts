@@ -31,6 +31,7 @@ export interface PersonalModelAccess {
   anthropic: UserModelCredential | null;
   openai: UserModelCredential | null;
   orgServed: ReadonlySet<PersonalModelProvider>;
+  strictOrgServed: ReadonlySet<PersonalModelProvider>;
 }
 
 function requestedProviderOf(model: string | undefined) {
@@ -39,23 +40,54 @@ function requestedProviderOf(model: string | undefined) {
 }
 
 export async function loadPersonalModelAccess(
-  config: Pick<ScopedConfigStore, "getModelAccountModesDurable"> | undefined,
+  config: Pick<ScopedConfigStore, "getModelAccountPolicyDurable" | "personalAccountAllowed"> | undefined,
   store: Pick<UserModelCredentialStore, "get">,
   actorId: string,
   account: Exclude<ModelAccount, "company">,
 ): Promise<PersonalModelAccess> {
-  const modes = (await config?.getModelAccountModesDurable()) ?? DEFAULT_MODEL_ACCOUNT_MODES;
+  const [policy, allowed] = await Promise.all([
+    config?.getModelAccountPolicyDurable(),
+    config ? config.personalAccountAllowed(actorId) : true,
+  ]);
+  const modes = policy ?? DEFAULT_MODEL_ACCOUNT_MODES;
   const own = account === "personal" ? PERSONAL_MODEL_PROVIDERS : [account];
-  const orgServed = new Set(PERSONAL_MODEL_PROVIDERS.filter((provider) => modes[provider] === "org"));
-  const usable = (provider: PersonalModelProvider) => own.includes(provider) && !orgServed.has(provider);
+  const configured = new Set(PERSONAL_MODEL_PROVIDERS.filter((provider) => !allowed || modes[provider] === "org"));
+  const ownProviders = own.filter((provider) => !configured.has(provider));
   const [anthropic, openai] = await Promise.all(
-    PERSONAL_MODEL_PROVIDERS.map(async (provider) => (usable(provider) ? await store.get(actorId, provider) : null)),
+    PERSONAL_MODEL_PROVIDERS.map(async (provider) =>
+      ownProviders.includes(provider) ? ((await store.get(actorId, provider)) ?? null) : null,
+    ),
   );
+  const credentials = { anthropic, openai };
+  const reachable = policy?.fallbackWhenUnavailable
+    ? ownProviders.filter((provider) => credentials[provider])
+    : ownProviders;
+  const served = (usable: PersonalModelProvider[]) =>
+    usable.length
+      ? new Set(
+          PERSONAL_MODEL_PROVIDERS.filter(
+            (provider) => configured.has(provider) || (!usable.includes(provider) && own.includes(provider)),
+          ),
+        )
+      : new Set(PERSONAL_MODEL_PROVIDERS);
   return {
     anthropic: anthropic ?? null,
     openai: openai ?? null,
-    orgServed: own.some(usable) ? orgServed : new Set(PERSONAL_MODEL_PROVIDERS),
+    orgServed: served(reachable),
+    strictOrgServed: served(ownProviders),
   };
+}
+
+export function servedByUnavailableFallback(
+  access: PersonalModelAccess,
+  requestedModel: string | undefined,
+  preferredHarness?: string,
+): boolean {
+  return (
+    routePersonalModelAccess(access, requestedModel, preferredHarness) === "org" &&
+    routePersonalModelAccess({ ...access, orgServed: access.strictOrgServed }, requestedModel, preferredHarness) !==
+      "org"
+  );
 }
 
 export function routePersonalModelAccess(

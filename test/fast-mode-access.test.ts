@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
-import { createMemoryConfigStore, type PersistedFastModeAccess } from "../src/resolution/config-store.ts";
+import { createMemoryConfigStore, type PersistedPeopleAccess } from "../src/resolution/config-store.ts";
 import { createDirectoryStore } from "../src/directory/directory-store.ts";
 import { fastModeAllowed } from "../src/core/turn-options.ts";
 import { createHarnessRouter } from "../src/harness/harness-router.ts";
@@ -36,7 +36,7 @@ async function directory() {
 }
 
 test("fast-mode access defaults to everyone and persists across instances", async () => {
-  const fastModeAccess = createMemoryMap<PersistedFastModeAccess>();
+  const fastModeAccess = createMemoryMap<PersistedPeopleAccess>();
   const first = createMemoryConfigStore("default-org", { fastModeAccess });
   assert.equal(await first.getFastModeAccess(), null);
   await first.setFastModeAccess(["Carol@Acme.com", "carol@acme.com", "U123", " "]);
@@ -223,7 +223,7 @@ test("the picker keeps fast mode for models billed to a restricted person's own 
   await built.config.flushScope(ORG);
   await built.config.setFastModeAccess(["carol@acme.com"]);
   await built.userModelCredentials.setApiKey("dave@acme.com", "openai", "synthetic-openai");
-  await built.config.setModelAccountModes({ anthropic: "org", openai: "personal" });
+  await built.config.setModelAccountPolicy({ anthropic: "org", openai: "personal" });
   await built.config.setPersonalModelAuth("dave@acme.com", true, "openai");
   const ctx = {
     deps: {

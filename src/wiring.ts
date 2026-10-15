@@ -89,7 +89,7 @@ import {
   type PersistedScopedFlag,
   type PersistedModelAccountModes,
   type PersistedSkillSharingPolicy,
-  type PersistedFastModeAccess,
+  type PersistedPeopleAccess,
   type PersistedBaseModel,
   type PersistedApprovedHarnesses,
   type PersistedInternalMemberOverrides,
@@ -433,7 +433,9 @@ import {
   canonicalModelId,
   defaultModelForHarness,
   modelProviderAvailabilityFor,
+  modelServiceable,
   resolveModel,
+  CODEX_SUBSCRIPTION_PROVIDER,
   type HarnessId,
   modelSupportedByHarness,
 } from "./model/pi-models.ts";
@@ -556,6 +558,7 @@ export interface BuiltApp {
   browserProviders: readonly BrowserProviderSpec[];
   browserRelay: RelayHub;
   userModelCredentials: UserModelCredentialStore;
+  orgServesModel: (harnessId: string, modelId: string) => Promise<boolean>;
   modelRegistry: ModelOverlayStore;
   modelVerifier: ModelVerifier;
   refreshModels: () => Promise<void>;
@@ -770,7 +773,9 @@ export function buildApp(
     individualModelAuth: artifactMap<PersistedScopedFlag>("individual_model_auth_flag"),
     modelAccountModes: artifactMap<PersistedModelAccountModes>("model_account_modes"),
     skillSharing: artifactMap<PersistedSkillSharingPolicy>("fork_skill_sharing_policy"),
-    fastModeAccess: artifactMap<PersistedFastModeAccess>("fork_fast_mode_access"),
+    fastModeAccess: artifactMap<PersistedPeopleAccess>("fork_fast_mode_access"),
+    personalAccountAccess: artifactMap<PersistedPeopleAccess>("personal_account_access"),
+    directory: () => directory,
     webuiModels: artifactMap<PersistedWebuiModels>("webui_model_configs"),
     modelClassifications: artifactMap<PersistedModelClassification>("model_classifications"),
     peopleDirectoryUrls: artifactMap<PersistedPeopleDirectoryUrl>("people_directory_urls"),
@@ -1500,6 +1505,39 @@ export function buildApp(
           ? { ...directProviderAvailability, modelIds: new Set(Object.keys(gatewayTransport.models)) }
           : undefined),
     );
+  const claudeAuthEnv = async () => {
+    const keychainEnv =
+      config.claudeAuthCredential && keychain
+        ? await keychainHarnessAuthEnv(keychain, config.claudeAuthCredential, [
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "ANTHROPIC_AUTH_TOKEN",
+          ])()
+        : {};
+    return claudeHarnessAuthEnv(harnessAuth, keychainEnv);
+  };
+  const orgCodexSignIn = Boolean(
+    config.codexAuthFile ||
+    config.codexAuthCredential ||
+    config.codexProcessEnv.CODEX_ACCESS_TOKEN ||
+    config.codexProxy,
+  );
+  const orgServesModel = async (harnessId: string, modelId: string) => {
+    if (resolveModel(modelId)?.provider === CODEX_SUBSCRIPTION_PROVIDER) return orgCodexSignIn;
+    if (harnessId === "claude") {
+      const env = { ...config.claudeProcessEnv, ...(await claudeAuthEnv()) };
+      return Boolean(
+        config.anthropicApiKey || env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN || env.CLAUDE_CODE_OAUTH_TOKEN,
+      );
+    }
+    return modelServiceable(
+      modelId,
+      modelProviderAvailabilityFor(
+        harnessId,
+        { ...providerKeysPresent(config), codexOAuth: orgCodexSignIn },
+        await modelCredentials.availability(),
+      ),
+    );
+  };
   const adapters = new Map<HarnessId, Harness>([
     [
       "pi",
@@ -1558,16 +1596,7 @@ export function buildApp(
       "claude",
       createClaudeHarness({
         ...claudeHarnessConfigOptions(config),
-        authEnv: async () => {
-          const keychainEnv =
-            config.claudeAuthCredential && keychain
-              ? await keychainHarnessAuthEnv(keychain, config.claudeAuthCredential, [
-                  "CLAUDE_CODE_OAUTH_TOKEN",
-                  "ANTHROPIC_AUTH_TOKEN",
-                ])()
-              : {};
-          return claudeHarnessAuthEnv(harnessAuth, keychainEnv);
-        },
+        authEnv: claudeAuthEnv,
         signals: runSignals,
         tasks,
         mcpTools,
@@ -2096,6 +2125,7 @@ export function buildApp(
     defaultTurnWallClockMs: config.turnWallClockMs,
     ...(config.codexProxy ? { codexProxy: config.codexProxy } : {}),
     userModelCredentials,
+    orgServesModel,
     ...(config.brandingDefault ? { brandingDefault: config.brandingDefault } : {}),
     sessionTapeMode: config.sessionTapeMode,
     sessions,
@@ -3016,6 +3046,7 @@ export function buildApp(
     browserProviders,
     browserRelay,
     userModelCredentials,
+    orgServesModel,
     modelRegistry,
     modelVerifier,
     refreshModels,
@@ -3137,6 +3168,7 @@ export function serverDeps(
     browserRelay: built.browserRelay,
     ...(config.relayPublicUrl ? { relayPublicUrl: config.relayPublicUrl } : {}),
     userModelCredentials: built.userModelCredentials,
+    orgServesModel: built.orgServesModel,
     modelRegistry: built.modelRegistry,
     modelVerifier: built.modelVerifier,
     refreshModels: built.refreshModels,

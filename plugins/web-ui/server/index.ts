@@ -1380,11 +1380,7 @@ const apiRoutes: readonly WebRoute[] = [
           message: "the assistant is briefly unavailable — retry shortly",
         });
       }
-      const parsed = JSON.parse(authStatus.text) as {
-        individualModelAuth?: boolean;
-        account?: string;
-        connections?: { provider: string }[];
-      };
+      const parsed = JSON.parse(authStatus.text) as { individualModelAuth?: boolean; ready?: boolean };
       const permissions = allPermissions.filter((permission) => permission !== "loops" && permission !== "inbox");
       if (await hasInboxLoopPreview(user)) {
         if (isLoopsUser(user)) permissions.push("loops");
@@ -1399,10 +1395,7 @@ const apiRoutes: readonly WebRoute[] = [
         mode: AUTH_MODE,
         slackWorkspaceUrl: workspaceUrl,
         individualModelAuth: parsed.individualModelAuth === true,
-        modelAuthConnected:
-          parsed.connections?.some(
-            (c) => !parsed.account || parsed.account === "personal" || parsed.account === c.provider,
-          ) ?? false,
+        modelAuthConnected: parsed.ready === true,
         impersonatedBy: resolveIdentity(req)?.impersonator ?? null,
         displayName: resolveIdentity(req)?.name ?? null,
         ...(welcomeCohort ? { welcomeCohort } : {}),

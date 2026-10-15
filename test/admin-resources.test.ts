@@ -903,9 +903,10 @@ test("model-account-modes is org-admin-only, validates both providers, and reads
         modelAccountModes: unknown;
       }
     ).modelAccountModes;
+  const off = { fallbackWhenUnavailable: false, fallbackWhenRejected: false };
   try {
-    assert.deepEqual(await read(), { anthropic: "org", openai: "org" });
-    const personal = { anthropic: "personal", openai: "org" };
+    assert.deepEqual(await read(), { anthropic: "org", openai: "org", ...off });
+    const personal = { anthropic: "personal", openai: "org", ...off };
     assert.equal(
       (await put(personal, { "content-type": "application/json", "x-admin-actor": "nobody@default-org" })).status,
       403,
@@ -914,13 +915,65 @@ test("model-account-modes is org-admin-only, validates both providers, and reads
       (await put(personal, ADMIN, `${srv.base}/v1/admin/scopes/personal:U1/model-account-modes`)).status,
       400,
     );
-    for (const bad of [{ anthropic: "personal" }, { anthropic: "personal", openai: "mine" }, {}]) {
+    for (const bad of [
+      { anthropic: "personal" },
+      { anthropic: "personal", openai: "mine" },
+      {},
+      { ...personal, fallbackWhenRejected: "yes" },
+    ]) {
       assert.equal((await put(bad)).status, 400);
     }
-    assert.deepEqual(await read(), { anthropic: "org", openai: "org" });
+    assert.deepEqual(await read(), { anthropic: "org", openai: "org", ...off });
     assert.equal((await put({ ...personal, openrouter: "personal" })).status, 200);
     assert.deepEqual(await read(), personal);
-    assert.deepEqual(await srv.built.config.getModelAccountModesDurable(), personal);
+    assert.deepEqual(await srv.built.config.getModelAccountPolicyDurable(), personal);
+    const fallbacks = {
+      anthropic: "personal",
+      openai: "personal",
+      fallbackWhenUnavailable: true,
+      fallbackWhenRejected: true,
+    };
+    assert.equal((await put(fallbacks)).status, 200);
+    assert.deepEqual(await read(), fallbacks);
+    assert.equal((await put({ anthropic: "org", openai: "personal", fallbackWhenRejected: false })).status, 200);
+    assert.deepEqual(await read(), {
+      anthropic: "org",
+      openai: "personal",
+      fallbackWhenUnavailable: true,
+      fallbackWhenRejected: false,
+    });
+  } finally {
+    await srv.close();
+  }
+});
+
+test("personal-account-access is org-only, validates the people list, and reads back with the directory", async () => {
+  const srv = start();
+  const url = `${srv.base}/v1/admin/scopes/org:default-org/personal-account-access`;
+  const put = (body: unknown, target = url) =>
+    fetch(target, { method: "PUT", headers: ADMIN, body: JSON.stringify(body) });
+  const read = async () =>
+    (
+      (await (await fetch(`${srv.base}/v1/admin/scopes/org:default-org?view=models`, { headers: ADMIN })).json()) as {
+        personalAccountAccess: { people: string[] | null; directory: unknown[] };
+      }
+    ).personalAccountAccess;
+  try {
+    assert.equal((await read()).people, null);
+    assert.ok(Array.isArray((await read()).directory));
+    assert.equal(
+      (await put({ people: ["alice@default-org"] }, `${srv.base}/v1/admin/scopes/personal:U1/personal-account-access`))
+        .status,
+      400,
+    );
+    for (const bad of [{ people: [] }, { people: ["has space"] }, { people: "alice" }, {}]) {
+      assert.equal((await put(bad)).status, 400, JSON.stringify(bad));
+    }
+    assert.equal((await put({ people: ["Alice@Default-Org", "U2"] })).status, 200);
+    assert.deepEqual((await read()).people, ["alice@default-org", "U2"]);
+    assert.deepEqual(await srv.built.config.getPersonalAccountAccess(), ["alice@default-org", "U2"]);
+    assert.equal((await put({ people: null })).status, 200);
+    assert.equal((await read()).people, null);
   } finally {
     await srv.close();
   }

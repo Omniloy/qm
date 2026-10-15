@@ -280,7 +280,7 @@ const SETTINGS_RESOURCES = {
     "webuiModels",
     "interactiveFastMode",
     "fastModeAccess",
-    "individualModelAuth",
+    "personalAccountAccess",
     "modelAccountModes",
     "browseModel",
     "browseMaxSteps",

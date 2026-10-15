@@ -1458,6 +1458,9 @@ test("Codex classifies deterministic provider failures as terminal and leaves tr
     "You've hit your usage limit for gpt-6.1-sol",
     "workspace_member_usage_limit_reached",
     "407 Proxy Authentication Required",
+    "Your access token has expired; refreshing",
+    "token_expired",
+    "permission_error: transient upstream",
   ];
   for (const message of transient) {
     assert.equal(codexNonRetryable(message), false, message);

@@ -7,7 +7,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import {
+  credentialRejected,
   NonRetryableTurnError,
+  providerStatusError,
   providerLimit,
   providerLimitMessage,
   settleProviderLimit,
@@ -251,4 +253,48 @@ test("an OpenAI billing quota 429 keeps its own message instead of a rate-limit 
   );
   assert.equal(providerLimit(err), null);
   assert.equal(turnFailureMessage(err), err.message);
+});
+
+test("credential rejections cover auth failures, billing, and provider limits but not other provider errors", () => {
+  for (const message of [
+    "Model provider API error (authentication_error): invalid x-api-key",
+    "Claude API error (401): Invalid API key · Please run /login",
+    "Claude API error (403): Your organization does not allow this OAuth token",
+    "OAuth token has expired",
+    'OpenAI API error (429): {"code":"usage_limit_reached"}',
+    "Codex reported insufficient_quota for this account",
+    "Model provider API error (rate_limit_error): Number of request tokens has exceeded your per-minute rate limit",
+    "You have hit your ChatGPT usage limit (plus plan). Try again in ~120 min.",
+    "Your authentication token has expired. Please try signing in again.",
+    "Codex: not logged in",
+    "stream error: missing bearer token",
+    "unexpected status 401 Unauthorized: token revoked",
+    "exceeded retry limit, last status: 429 Too Many Requests",
+  ])
+    assert.equal(credentialRejected(new NonRetryableTurnError(message)), true, message);
+  for (const message of [
+    "Model provider API error (invalid_request_error): prompt is too long",
+    "Model provider API error (overloaded_error): Overloaded",
+    "request id 4013a9 failed with 500",
+    "MCP tool github.get_repo failed: 403 rate limited by upstream",
+    "tool error: unauthorized to read /etc/shadow",
+  ])
+    assert.equal(credentialRejected(new Error(message)), false, message);
+  assert.equal(credentialRejected(providerStatusError(401, "anything")), true);
+  assert.equal(credentialRejected(providerStatusError(500, "invalid x-api-key")), false);
+});
+
+test("a per-minute OpenAI rate limit stays a transient, retryable rate limit", async () => {
+  const error = new Error(
+    "Model provider API error (429): Rate limit reached for gpt-6-astra in organization org-abc on tokens per min (TPM): Limit 30000, Used 29500, Requested 1200. Please try again in 1.4s.",
+  );
+  assert.equal(providerLimit(error)?.kind, "rate");
+  const settled = await settleProviderLimit(error, {});
+  assert.equal(settled, error);
+  assert.ok(!(settled instanceof NonRetryableTurnError));
+  assert.equal(
+    providerLimit(new Error("Claude API error (429): Claude AI usage limit reached|1700000000"))?.kind,
+    "usage",
+  );
+  assert.equal(providerLimit(new Error("Claude API error (429): You've hit your limit · resets 5pm"))?.kind, "usage");
 });

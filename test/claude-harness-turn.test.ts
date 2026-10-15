@@ -5,6 +5,7 @@ import { createMemoryRunSignalStore } from "../src/runs/run-signal-store.ts";
 import type { HarnessLlmRequestRecord, HarnessTurnInput } from "../src/harness/harness.ts";
 import type { NewEntry } from "../src/sessions/session-store.ts";
 import type { ScopeId, SessionEntry } from "../src/types.ts";
+import { credentialRejected, NonRetryableTurnError, turnFailureMessage } from "../src/core/turn-error.ts";
 
 type FakeSdkMessage = Record<string, unknown>;
 type Script = (prompts: AsyncIterable<{ message: { content: unknown } }>) => AsyncGenerator<FakeSdkMessage>;
@@ -447,6 +448,63 @@ test("a turn that dies before its first result still records exactly one request
   assert.equal((llmRequests[0]!.promptEnvelope as { system: string }).system, "be brief");
 });
 
+for (const status of [401, 403]) {
+  test(`a Claude API ${status} result fails the turn as a non-retryable credential rejection`, async () => {
+    let closed = false;
+    currentScript = async function* (prompts) {
+      try {
+        await prompts[Symbol.asyncIterator]().next();
+        yield resultMessage("Invalid API key · Please run /login", { is_error: true, api_error_status: status });
+        yield resultMessage("never reached");
+      } finally {
+        closed = true;
+      }
+    };
+    const harness = createClaudeHarness({});
+    const { turn, entries } = harnessTurn();
+    await assert.rejects(
+      () => harness.turns.runTurn(turn),
+      (error: unknown) =>
+        error instanceof NonRetryableTurnError &&
+        credentialRejected(error) &&
+        !/\/login/.test(error.message) &&
+        error.message.includes(`HTTP ${status}`),
+    );
+    assert.equal(entries.filter((entry) => entry.type === "assistant").length, 0);
+    assert.equal(closed, true, "the SDK query is shut down when the turn throws mid-stream");
+  });
+}
+
+test("a Claude API 429 result stays retryable and keeps the usage reset time", async () => {
+  currentScript = async function* (prompts) {
+    await prompts[Symbol.asyncIterator]().next();
+    yield resultMessage("You've hit your limit · resets 5pm (Europe/Madrid)", {
+      is_error: true,
+      api_error_status: 429,
+    });
+  };
+  const harness = createClaudeHarness({});
+  const { turn, entries } = harnessTurn();
+  const error = await harness.turns.runTurn(turn).then(
+    () => assert.fail("expected the turn to fail"),
+    (e: unknown) => e,
+  );
+  assert.ok(error instanceof Error && !(error instanceof NonRetryableTurnError));
+  assert.equal(credentialRejected(error), true);
+  assert.match(turnFailureMessage(error), /Anthropic usage limit.*It resets 5pm \(Europe\/Madrid\)/);
+  assert.equal(entries.filter((entry) => entry.type === "assistant").length, 0);
+});
+
+test("a Claude error result without a credential status still becomes the reply", async () => {
+  currentScript = async function* (prompts) {
+    await prompts[Symbol.asyncIterator]().next();
+    yield resultMessage("Prompt is too long", { is_error: true, api_error_status: 400 });
+  };
+  const harness = createClaudeHarness({});
+  const { turn } = harnessTurn();
+  assert.equal((await harness.turns.runTurn(turn)).reply, "Prompt is too long");
+});
+
 test("the claude harness offers compaction and detection so a utility role cannot silently disable them", async () => {
   const harness = createClaudeHarness({});
   assert.equal(typeof harness.models.compactHistory, "function");
@@ -734,3 +792,74 @@ test("Claude retains a queued message which the SDK never consumes", async () =>
   assert.equal(entries.filter((entry) => entry.type === "user").length, 1);
   assert.equal((await signals.pending("no-echo"))[0]?.signal.ts, "pending");
 });
+
+test("an org Claude 401 keeps a neutral message and the provider's own text as the cause", async () => {
+  currentScript = async function* (prompts) {
+    await prompts[Symbol.asyncIterator]().next();
+    yield resultMessage("Invalid API key · Please run /login", { is_error: true, api_error_status: 401 });
+  };
+  const harness = createClaudeHarness({});
+  const { turn } = harnessTurn();
+  const error = await harness.turns.runTurn(turn).then(
+    () => assert.fail("expected the turn to fail"),
+    (e: unknown) => e as Error,
+  );
+  assert.match(error.message, /organization's credentials \(HTTP 401\)/);
+  assert.doesNotMatch(error.message, /Reconnect/);
+  assert.equal((error.cause as Error).message, "Invalid API key · Please run /login");
+});
+
+test("a personal Claude error with sign-in wording and no status is a 401, while an org one stays the reply", async () => {
+  const script = async function* (prompts: AsyncIterable<{ message: { content: unknown } }>) {
+    await prompts[Symbol.asyncIterator]().next();
+    yield resultMessage("Invalid API key · Please run /login", { is_error: true });
+  };
+  currentScript = script;
+  const harness = createClaudeHarness({});
+  const personal = harnessTurn({ claudeOauthToken: "sk-ant-oat-personal" });
+  const error = await harness.turns.runTurn(personal.turn).then(
+    () => assert.fail("expected the turn to fail"),
+    (e: unknown) => e as Error,
+  );
+  assert.equal(credentialRejected(error), true);
+  assert.match(error.message, /Reconnect the account/);
+  assert.equal(personal.entries.filter((entry) => entry.type === "assistant").length, 0);
+  currentScript = script;
+  const org = harnessTurn();
+  assert.equal((await harness.turns.runTurn(org.turn)).reply, "Invalid API key · Please run /login");
+});
+
+test("personal Claude billing text without a status stays the reply instead of a synthetic sign-in failure", async () => {
+  currentScript = async function* (prompts) {
+    await prompts[Symbol.asyncIterator]().next();
+    yield resultMessage("Your credit balance is too low to access the Anthropic API.", { is_error: true });
+  };
+  const harness = createClaudeHarness({});
+  const { turn } = harnessTurn({ claudeOauthToken: "sk-ant-oat-personal" });
+  assert.equal(
+    (await harness.turns.runTurn(turn)).reply,
+    "Your credit balance is too low to access the Anthropic API.",
+  );
+});
+
+for (const text of ["You've hit your limit · resets 5pm", "Claude AI usage limit reached|1700000000"]) {
+  test(`a personal Claude subscription limit without a status goes through the limit path: ${text}`, async () => {
+    const script = async function* (prompts: AsyncIterable<{ message: { content: unknown } }>) {
+      await prompts[Symbol.asyncIterator]().next();
+      yield resultMessage(text, { is_error: true });
+    };
+    currentScript = script;
+    const harness = createClaudeHarness({});
+    const personal = harnessTurn({ claudeOauthToken: "sk-ant-oat-personal" });
+    const error = await harness.turns.runTurn(personal.turn).then(
+      () => assert.fail("expected the turn to fail"),
+      (e: unknown) => e as Error,
+    );
+    assert.ok(!(error instanceof NonRetryableTurnError));
+    assert.equal(credentialRejected(error), true);
+    assert.match(turnFailureMessage(error), /Anthropic usage limit/);
+    assert.equal(personal.entries.filter((entry) => entry.type === "assistant").length, 0);
+    currentScript = script;
+    assert.equal((await harness.turns.runTurn(harnessTurn().turn)).reply, text);
+  });
+}
