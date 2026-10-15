@@ -1261,3 +1261,34 @@ test("Slack-linked project turns use the inherited channel roster", async () => 
   await runNowSettled(built.scheduler, inactiveCron.id);
   assert.equal((await built.crons.get(inactiveCron.id))?.enabled, false);
 });
+
+test("a transient roster lookup failure fails the turn instead of reading as a roster change", async () => {
+  const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "project-roster-error-")) }));
+  await built.app.upsertDirectory([{ principalId: "owner", displayName: "Owner", type: "internal" }]);
+  const project = await built.app.createProject("owner", "Roster errors");
+  assert.ok(project);
+  const conversation = {
+    kind: "group" as const,
+    channelRef: projectGroupRef(project.id),
+    threadRef: "web:owner:roster-errors",
+    audience: [],
+  };
+  const version = built.projects.version.bind(built.projects);
+  let failures = 0;
+  built.projects.version = async (ref: string) => {
+    if (failures++ < 1_000) throw new Error("database briefly unavailable");
+    return version(ref);
+  };
+  let outcome: unknown;
+  try {
+    outcome = await built.app.turn({ surface: "web", actor: { externalId: "owner" }, conversation, text: "hello" });
+  } catch (error) {
+    outcome = error;
+  }
+  assert.doesNotMatch(
+    JSON.stringify(outcome instanceof Error ? { error: outcome.message } : outcome),
+    /project membership changed/,
+    "a lookup error must not become a permanent roster-changed refusal",
+  );
+  assert.ok(failures > 0, "the roster version was consulted");
+});

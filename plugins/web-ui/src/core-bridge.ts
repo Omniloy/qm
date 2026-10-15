@@ -1408,7 +1408,7 @@ function applyRun(
   }
   const approvals = res?.pendingApprovals ?? [];
   const paused = approvals.length > 0;
-  const approvalDenied = approvalDeniedMessage(res?.reason);
+  const approvalDenied = approvalDeniedMessage(res?.refusalKind);
   const quiet = res?.status === "silent" || res?.status === "react";
   if (work) {
     work.finishedAt = typeof run.finishedAt === "number" ? run.finishedAt : Date.now();
@@ -1675,11 +1675,8 @@ function deliveredFilesFromAttachments(
     }));
 }
 
-function approvalDeniedMessage(reason?: string): string | null {
-  const trimmed = reason?.trim();
-  if (!trimmed) return null;
-  if (trimmed === "approval denied") return "Denied.";
-  return trimmed.startsWith("approval denied for ") ? "Denied." : null;
+function approvalDeniedMessage(refusalKind?: string): string | null {
+  return refusalKind === "approval_denied" ? "Denied." : null;
 }
 
 function sleep(ms: number): Promise<void> {

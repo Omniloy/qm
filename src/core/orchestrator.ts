@@ -653,8 +653,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         if (!managedGroupRef) return true;
         const expected = new Set(input.sessionParticipantIds ?? []);
         const [current, version] = await Promise.all([
-          deps.managedGroups!.members(managedGroupRef).catch(() => undefined),
-          deps.managedGroups!.version(managedGroupRef).catch(() => undefined),
+          deps.managedGroups!.members(managedGroupRef),
+          deps.managedGroups!.version(managedGroupRef),
         ]);
         return (
           !!current &&

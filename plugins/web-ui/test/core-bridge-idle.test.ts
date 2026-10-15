@@ -340,7 +340,11 @@ test("approval denial is rendered as a normal status, not a stream error", async
 
   const streamFn = makeRunResumeStreamFn("run-denied", {
     status: "done",
-    result: { status: "refused", reason: "approval denied for git push --force origin main" },
+    result: {
+      status: "refused",
+      refusalKind: "approval_denied",
+      reason: "approval denied for git push --force origin main",
+    },
     partial: "",
     activity: [
       {
@@ -364,6 +368,22 @@ test("approval denial is rendered as a normal status, not a stream error", async
   assert.equal(block?.type === "text" ? block.text : "", "Denied.");
   assert.equal(work?.status, "complete");
   assert.equal(work?.activity.length, 1);
+});
+
+test("a denial is recognized by its refusal kind, not by matching the reason text", async () => {
+  globalThis.fetch = (async () => {
+    throw new Error("terminal snapshot should not poll");
+  }) as typeof fetch;
+  const streamFn = makeRunResumeStreamFn("run-prose", {
+    status: "done",
+    result: { status: "refused", reason: "approval denied for something the user typed" },
+    partial: "",
+    activity: [],
+    startedAt: 100,
+    finishedAt: 200,
+  });
+  const final = await drain(await streamFn(MODEL, { systemPrompt: "", messages: [], tools: [] } as never));
+  assert.notEqual((final as AssistantWork & { approvalDecision?: string }).approvalDecision, "denied");
 });
 
 test("a failed run renders friendly copy, never the internal failure reason", async () => {
