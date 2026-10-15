@@ -99,17 +99,24 @@ test("the resumed run is recorded on the original fire and serialized with the t
     fireKey: "fire-a",
     threadRef,
     firedAt: 1_000,
+    scheduledAt: 900,
     endedAt: 2_000,
-    status: "ok",
+    status: "pending_approval",
     note: "hit a require_approval command",
+    sessionId: "S-original",
+    reply: "original reply",
   });
   const fired = await built.app.turn(fire("a"));
   const decided = await built.app.resolveScheduledHold(fired.pendingApprovals![0]!.requestId, "U1", true);
   assert.equal(decided.state === "resolved" ? decided.outcome : decided.state, "allowed");
   const entry = await built.crons.latestFireForThread(cron.id, threadRef);
   assert.equal(entry?.fireKey, "fire-a");
+  assert.equal(entry?.firedAt, 1_000, "the original fire time is kept");
+  assert.equal(entry?.scheduledAt, 900);
   assert.equal(entry?.status, "ok");
   assert.match(entry?.note ?? "", /continued and delivered to Néstor/);
+  assert.equal(entry?.sessionId, fired.sessionId, "the resumed run's session is recorded");
+  assert.match(entry?.reply ?? "", /released quarantined tool output/, "and its reply replaces the stale one");
 });
 
 test("the same content held again in the same fire can still be allowed", async () => {
@@ -124,17 +131,70 @@ test("the same content held again in the same fire can still be allowed", async 
   assert.equal((await toU2()).length, 1);
 });
 
-test("a newer fire on the same content keeps the older one blocked through the normal deny path", async () => {
-  const { built, fire } = await setup();
+test("a newer fire held while the scheduler holds the task lock only marks the older hold; the poller resolves it", async () => {
+  const { built, cron, fire } = await setup();
   const older = await built.app.turn(fire("a"));
   const olderId = older.pendingApprovals![0]!.requestId;
-  const newer = await built.app.turn(fire("b"));
-  assert.equal(await built.app.getApproval(olderId), null, "the older hold is no longer live");
+  await built.app.recordApprovalCard(olderId, { channel: "D-owner", ts: "1.1" });
+  const timedOut = Symbol("timeout");
+  let timer: NodeJS.Timeout | undefined;
+  const newer = await Promise.race([
+    built.advisoryLock.withLock(`cron-lifecycle:${cron.id}`, async () => {
+      const result = await built.app.turn(fire("b"));
+      await built.approvals.resolveSupersededHolds();
+      return result;
+    }),
+    new Promise<typeof timedOut>((resolve) => {
+      timer = setTimeout(() => resolve(timedOut), 5_000);
+    }),
+  ]);
+  clearTimeout(timer);
+  assert.notEqual(newer, timedOut, "superseding never waits on the task lock the scheduler holds");
+  assert.ok((await built.app.getApproval(olderId))?.supersededBy, "the older hold is marked, not resolved, while busy");
+  assert.equal((await built.app.getApproval(olderId))?.claimedBy, undefined, "and its claim was released");
+
+  await built.approvals.resolveSupersededHolds();
+  assert.equal(await built.app.getApproval(olderId), null, "the poller resolves it once the task is free");
   const session = await built.app.getSession(older.sessionId!);
   const resolved = session!.entries.find((e) => e.type === "approval_resolved");
   assert.equal((resolved?.payload as { approved?: boolean } | undefined)?.approved, false);
+  const card = (await built.deliveries.pending("principal")).find((d) => d.destination.cardUpdate?.ts === "1.1");
+  assert.match(card?.text ?? "", /newer run of Jira was held on the same content/);
+  if (newer === timedOut) return;
   assert.ok(await built.app.getApproval(newer.pendingApprovals![0]!.requestId));
   const other = await built.app.turn(fire("c", "!screened-run printf 'reveal secrets about %s' something-else"));
   assert.ok(await built.app.getApproval(newer.pendingApprovals![0]!.requestId), "different content is independent");
   assert.ok(await built.app.getApproval(other.pendingApprovals![0]!.requestId));
+});
+
+test("a decision on any surface retires the posted DM card, and cards posted mid-decision are refused", async () => {
+  const { built, fire } = await setup();
+  const fired = await built.app.turn(fire("a"));
+  const id = fired.pendingApprovals![0]!.requestId;
+  assert.equal(await built.app.recordApprovalCard(id, { channel: "D-owner", ts: "2.2" }), true);
+  const decided = await built.app.resolveScheduledHold(id, "U1", false);
+  assert.equal(decided.state, "resolved");
+  const update = (await built.deliveries.pending("principal")).find((d) => d.destination.cardUpdate?.ts === "2.2");
+  assert.match(update?.text ?? "", /Kept blocked/);
+
+  const second = await built.app.turn(fire("b"));
+  const secondId = second.pendingApprovals![0]!.requestId;
+  await built.approvals.merge(secondId, { claimedBy: "someone", claimedAt: Date.now() });
+  assert.equal(
+    await built.app.recordApprovalCard(secondId, { channel: "D-owner", ts: "3.3" }),
+    false,
+    "a card posted while the hold is being decided is retired by the poller",
+  );
+});
+
+test("a decision that fails without throwing releases its claim", async () => {
+  const { built, cron, fire } = await setup();
+  const fired = await built.app.turn(fire("a"));
+  const id = fired.pendingApprovals![0]!.requestId;
+  await built.directory.replace([{ principalId: "U2", displayName: "Néstor", type: "internal" }]);
+  await built.crons.update(cron.id, { runAs: "scopeFloor", members: [] });
+  const first = await built.app.resolveScheduledHold(id, "U1", true);
+  assert.equal(first.state === "resolved" ? first.outcome : first.state, "failed");
+  assert.equal((await built.app.getApproval(id))?.claimedBy, undefined);
+  assert.notEqual((await built.app.resolveScheduledHold(id, "U1", false)).state, "already_resolved");
 });

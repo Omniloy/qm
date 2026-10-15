@@ -5,6 +5,7 @@ import {
   securityScreenChunks,
   securityScreenSystemPrompt,
   withVerifiedEvidence,
+  boundVerdictText,
   type SecurityScreenVerdict,
 } from "../../../security/security-posture.ts";
 import { defaultAutoFlaggerConfig, parseAutoFlaggerDraft, type AutoFlaggerDraft } from "../admin-resources.ts";
@@ -97,17 +98,19 @@ async function screenSample(
   const chunks = securityScreenChunks("tool_result:sample", payload).slice(0, MAX_SAMPLE_CHUNKS);
   let fallback: SecurityScreenVerdict | undefined;
   for (const chunk of chunks) {
-    const verdict = withVerifiedEvidence(
-      await probe({
-        payload: chunk,
-        harnessId: config.harnessId,
-        modelId: config.modelId,
-        systemPrompt,
-        actorId,
-        scopeLabel,
-        signal: AbortSignal.timeout(PER_SAMPLE_TIMEOUT_MS),
-      }).catch(() => undefined),
-      chunk,
+    const verdict = boundVerdictText(
+      withVerifiedEvidence(
+        await probe({
+          payload: chunk,
+          harnessId: config.harnessId,
+          modelId: config.modelId,
+          systemPrompt,
+          actorId,
+          scopeLabel,
+          signal: AbortSignal.timeout(PER_SAMPLE_TIMEOUT_MS),
+        }).catch(() => undefined),
+        chunk,
+      ),
     );
     if (verdict?.decision === "strict") return verdict;
     fallback ??= verdict;

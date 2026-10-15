@@ -337,3 +337,13 @@ test("the value masker catches JSON-escaped and encoded forms and leaves short v
     '{"api_key": "<redacted>", "token":"<redacted>", "password": "<redacted>", "name":"x"}',
   );
 });
+
+test("exported secret assignments are masked whatever their case, and JSON nested in a string is too", () => {
+  assert.equal(redactCommand("export gh_token='abc123secret' && make"), "export gh_token=<redacted> && make");
+  assert.equal(redactCommand('export Api_Key="xyz"; run'), "export Api_Key=<redacted>; run");
+  assert.equal(redactCommand("echo monkey=1"), "echo monkey=1");
+  assert.equal(
+    redactSecretText('{"text":"{\\"password\\":\\"hunter2\\",\\"n\\":1}"}'),
+    '{"text":"{\\"password\\":\\"<redacted>\\",\\"n\\":1}"}',
+  );
+});

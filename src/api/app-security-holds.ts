@@ -4,7 +4,14 @@ import { scopeId } from "../types.ts";
 import { securityHoldSourceKey } from "../security/security-hold.ts";
 import { redactSecretText } from "../security/secret-masking.ts";
 import { samePerson } from "../directory/person.ts";
-import { claimApproval, releaseApprovalClaim, scheduledHoldDecider } from "../core/approval-store.ts";
+import {
+  announceHoldDecision,
+  claimApproval,
+  claimIsLive,
+  releaseApprovalClaim,
+  scheduledHoldDecider,
+} from "../core/approval-store.ts";
+import { swallowAs } from "../util/errors.ts";
 import type { PendingApprovalRecord } from "../types.ts";
 import type { ScheduledHoldDecision } from "../triggers/security-hold-resume.ts";
 import { MAX_REPORT_NOTE_CHARS, type ScreeningReport } from "../security/screening-reports.ts";
@@ -84,7 +91,17 @@ export function createSecurityHoldMethods(
     },
 
     async recordApprovalCard(requestId, card) {
-      return Boolean(await deps.approvals?.merge(requestId, { card }));
+      const store = deps.approvals;
+      if (!store) return false;
+      const live = (record: PendingApprovalRecord) => !record.supersededBy && !claimIsLive(record);
+      if (store.update) {
+        const updated = await store.update(requestId, (record) => (live(record) ? { ...record, card } : record));
+        return updated?.card?.ts === card.ts && live(updated);
+      }
+      const current = await store.get(requestId);
+      if (!current || !live(current)) return false;
+      await store.merge(requestId, { card });
+      return true;
     },
 
     async resolveScheduledHold(requestId, actorId, approved) {
@@ -99,6 +116,11 @@ export function createSecurityHoldMethods(
         await releaseApprovalClaim(deps.approvals!, requestId);
         throw error;
       });
+      if (decision.outcome === "failed") await releaseApprovalClaim(deps.approvals!, requestId);
+      else
+        await announceHoldDecision(deps.deliveries, requestId, claimed, decision.message).catch(
+          swallowAs("security holds: announce decision", undefined),
+        );
       deps.auditLog.record({
         at: Date.now(),
         principalId: actorId,

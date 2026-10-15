@@ -36,7 +36,7 @@ function holdApproval(requestId: string): PendingApproval {
       facts: [
         { label: "Source", value: "Skill browse · v28 · built-in, managed by the org" },
         { label: "Step", value: "Reading the skill's instructions" },
-        { label: "Screener's reason", value: "Describes collecting browser cookies." },
+        { label: "Screening model's explanation (unverified)", value: "Describes collecting browser cookies." },
       ],
       evidence: "returns the site's cookies as JSON, HttpOnly included",
       allowEffect: "The assistant reads this content for this step only and carries on.",
@@ -74,7 +74,7 @@ test("a security hold renders the structured card without the raw release comman
   assert.match(text, /held back the browse skill's instructions/);
   assert.deepEqual(
     [...host.querySelectorAll(".hold-facts dt")].map((dt) => dt.textContent),
-    ["Source", "Step", "Screener's reason"],
+    ["Source", "Step", "Screening model's explanation (unverified)"],
   );
   assert.equal(
     host.querySelector(".hold-quote mark")?.textContent,

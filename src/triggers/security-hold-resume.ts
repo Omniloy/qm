@@ -1,14 +1,15 @@
 import { cronTriggerAuthority } from "../cron/authority.ts";
-import type { Cron, CronFireLogEntry, Destination, PendingApprovalRecord, TurnResult } from "../types.ts";
+import type { Cron, Destination, PendingApprovalRecord, TurnResult } from "../types.ts";
 import type { CronStore } from "../cron/cron-store.ts";
 import type { AdvisoryLock } from "../persistence/advisory-lock.ts";
 import { runTrigger, type TriggerDeps } from "./run-trigger.ts";
 import { samePerson } from "../directory/person.ts";
 import { securityHoldView } from "../security/security-hold.ts";
+import { cronFireLogReply } from "../cron/scheduler.ts";
 
 export interface ScheduledHoldDeps extends TriggerDeps {
-  crons: Pick<CronStore, "get" | "beginFire" | "recordFire" | "latestFireForThread">;
-  lock?: Pick<AdvisoryLock, "withLock">;
+  crons: Pick<CronStore, "get" | "recordFire" | "latestFireForThread">;
+  lock?: Pick<AdvisoryLock, "withLock" | "tryWithLock">;
 }
 
 export interface ScheduledHoldDecision {
@@ -42,7 +43,8 @@ export async function resumeScheduledHold(
   record: PendingApprovalRecord,
   approved: boolean,
   reason: ScheduledHoldReason = "owner",
-): Promise<ScheduledHoldDecision> {
+): Promise<ScheduledHoldDecision | null> {
+  const resumed: { sessionId?: string; reply?: string } = {};
   const task = record.securityHold!.scheduledTask!;
   const held = securityHoldView(record.securityHold!).held;
   const cron = await deps.crons.get(task.id);
@@ -80,6 +82,8 @@ export async function resumeScheduledHold(
       ...(live.recipientConsent ? { recipientConsent: live.recipientConsent } : {}),
       recipientConsentRequired: live.schedule.everyMs !== undefined || live.schedule.cron !== undefined,
     });
+    if (outcome.sessionId) resumed.sessionId = outcome.sessionId;
+    if (outcome.reply !== undefined) resumed.reply = cronFireLogReply(outcome.reply);
     if (!outcome.ran)
       return {
         outcome: "failed",
@@ -109,24 +113,20 @@ export async function resumeScheduledHold(
   if (!cron) return keep();
   const accounted = async (): Promise<ScheduledHoldDecision> => {
     const original = await deps.crons.latestFireForThread(cron.id, threadRef);
-    const entry: CronFireLogEntry = {
-      fireKey: original?.fireKey ?? fireKey,
-      threadRef,
-      firedAt: original?.firedAt ?? record.createdAt ?? Date.now(),
-      ...(original?.scheduledAt !== undefined ? { scheduledAt: original.scheduledAt } : {}),
-    };
-    await deps.crons.beginFire(cron.id, { ...entry, status: "running" });
-    const decision = await (allow ? allowOnce(cron) : keep()).catch(async (error: unknown) => {
-      await deps.crons.recordFire(cron.id, { ...entry, endedAt: Date.now(), status: "failed" });
-      throw error;
-    });
-    await deps.crons.recordFire(cron.id, {
-      ...entry,
-      endedAt: Date.now(),
-      status: decision.outcome === "allowed" ? "ok" : "refused",
-      note: decision.message,
-    });
+    const decision = await (allow ? allowOnce(cron) : keep());
+    if (original)
+      await deps.crons.recordFire(cron.id, {
+        ...original,
+        endedAt: Date.now(),
+        status: decision.outcome === "allowed" ? "ok" : "refused",
+        note: decision.message,
+        ...(resumed.sessionId ? { sessionId: resumed.sessionId } : {}),
+        ...(resumed.reply !== undefined ? { reply: resumed.reply } : {}),
+      });
     return decision;
   };
-  return deps.lock ? deps.lock.withLock(`cron-lifecycle:${cron.id}`, accounted) : accounted();
+  const key = `cron-lifecycle:${cron.id}`;
+  if (!deps.lock) return accounted();
+  if (reason === "superseded") return deps.lock.tryWithLock ? deps.lock.tryWithLock(key, accounted) : null;
+  return deps.lock.withLock(key, accounted);
 }

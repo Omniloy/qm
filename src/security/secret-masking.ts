@@ -68,13 +68,19 @@ function redactPipedIntoWithToken(command: string): string {
 }
 
 const NOT_REDACTED = "(?!['\"]?<redacted)";
+const SECRET_JSON_KEYS =
+  "api[_-]?key|apikey|access[_-]?token|auth[_-]?token|refresh[_-]?token|token|secret|client[_-]?secret|password|passwd";
 
 const SECRET_PATTERNS: ReadonlyArray<[RegExp, string]> = [
   [
     new RegExp(
-      `("(?:api[_-]?key|apikey|access[_-]?token|auth[_-]?token|refresh[_-]?token|token|secret|client[_-]?secret|password|passwd)"\\s*:\\s*)${NOT_REDACTED}("(?:[^"\\\\]|\\\\.)*"|[^\\s,}\\]]+)`,
+      `(\\\\"(?:${SECRET_JSON_KEYS})\\\\"\\s*:\\s*)${NOT_REDACTED}(\\\\"(?:(?!\\\\").)*\\\\"|[^\\s,}\\]\\\\]+)`,
       "gi",
     ),
+    '$1\\"<redacted>\\"',
+  ],
+  [
+    new RegExp(`("(?:${SECRET_JSON_KEYS})"\\s*:\\s*)${NOT_REDACTED}("(?:[^"\\\\]|\\\\.)*"|[^\\s,}\\]]+)`, "gi"),
     '$1"<redacted>"',
   ],
   [
@@ -103,6 +109,13 @@ const SECRET_PATTERNS: ReadonlyArray<[RegExp, string]> = [
     new RegExp(
       `(\\b[A-Z][A-Z0-9_]{0,60}(?:PASS|PASSWORD|PASSWD|SECRET|TOKEN|KEY|IDENTIFIER|CREDENTIAL|PROXY_USER)[A-Z0-9_]{0,60}=)${NOT_REDACTED}('[^']*'|"[^"]*"|[^\\s'";&|]+)`,
       "g",
+    ),
+    "$1<redacted>",
+  ],
+  [
+    new RegExp(
+      `(\\bexport\\s+\\w{0,60}(?:pass|password|passwd|secret|token|key|identifier|credential|proxy_user)\\w{0,60}=)${NOT_REDACTED}('[^']*'|"[^"]*"|[^\\s'";&|]+)`,
+      "gi",
     ),
     "$1<redacted>",
   ],

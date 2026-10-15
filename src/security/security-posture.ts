@@ -1,5 +1,5 @@
 import type { OverheardMessage, ScopeId } from "../types.ts";
-import { redactCommand } from "./secret-masking.ts";
+import { redactCommand, redactSecretText } from "./secret-masking.ts";
 import { headSlice } from "../util/text.ts";
 import { isObj } from "../util/objects.ts";
 
@@ -57,6 +57,19 @@ const SECURITY_SCREEN_CATEGORIES = [
 export type SecurityScreenCategory = (typeof SECURITY_SCREEN_CATEGORIES)[number];
 
 const MAX_EVIDENCE_CHARS = 200;
+const MAX_REASON_CHARS = 160;
+const MAX_RAW_VERDICT_TEXT = 2_000;
+
+export function boundVerdictText(
+  verdict: SecurityScreenVerdict | undefined,
+  mask: (text: string) => string = (text) => text,
+): SecurityScreenVerdict | undefined {
+  if (!verdict) return verdict;
+  const reason = verdict.reason ? redactSecretText(verdict.reason, mask).slice(0, MAX_REASON_CHARS) : "";
+  const evidence = verdict.evidence ? redactSecretText(verdict.evidence, mask).slice(0, MAX_EVIDENCE_CHARS) : "";
+  const { reason: _reason, evidence: _evidence, ...rest } = verdict;
+  return { ...rest, ...(reason ? { reason } : {}), ...(evidence ? { evidence } : {}) };
+}
 
 const SECURITY_SCREEN_OUTPUT_CONTRACT = `Return JSON only: {"decision":"auto"} or {"decision":"strict","reason":"one plain-English sentence a non-expert can read","category":"${SECURITY_SCREEN_CATEGORIES.join("|")}","evidence":"the exact text from payload that triggered the decision, copied verbatim, at most ${MAX_EVIDENCE_CHARS} characters"}. Never return dangerous.`;
 
@@ -140,7 +153,8 @@ export function toolResultContextOf(
   const command = nonEmpty(call?.command);
   if (command) {
     const redacted = redactCommand(mask(command));
-    const purpose = nonEmpty(call?.purpose);
+    const rawPurpose = nonEmpty(call?.purpose);
+    const purpose = rawPurpose ? redactSecretText(rawPurpose, mask) : undefined;
     return {
       kind: "command",
       command:
@@ -149,7 +163,7 @@ export function toolResultContextOf(
     };
   }
   const path = nonEmpty(call?.path) ?? nonEmpty(summary.path);
-  if (tool === "files" && action === "read" && path) return { kind: "file", path };
+  if (tool === "files" && action === "read" && path) return { kind: "file", path: redactSecretText(path, mask) };
   const args = isObj(call?.args) ? call.args : undefined;
   const url = nonEmpty(args?.url) ?? nonEmpty(args?.uri);
   if (url && URL.canParse(url)) return { kind: "web", host: new URL(url).host, tool };
@@ -233,8 +247,8 @@ export function parseSecurityScreenVerdict(output: string | undefined): Security
     return { decision: "auto", unscreened: true, reason: "invalid security screen verdict" };
   if (parsed.decision !== "strict")
     return { decision: "auto", unscreened: true, reason: "invalid security screen verdict" };
-  const reason = typeof parsed.reason === "string" ? oneLine(parsed.reason).slice(0, 160) : "";
-  const evidence = typeof parsed.evidence === "string" ? oneLine(parsed.evidence).slice(0, MAX_EVIDENCE_CHARS) : "";
+  const reason = typeof parsed.reason === "string" ? oneLine(parsed.reason).slice(0, MAX_RAW_VERDICT_TEXT) : "";
+  const evidence = typeof parsed.evidence === "string" ? oneLine(parsed.evidence).slice(0, MAX_RAW_VERDICT_TEXT) : "";
   return {
     decision: "strict",
     ...(reason ? { reason } : {}),

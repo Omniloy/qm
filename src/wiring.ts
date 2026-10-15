@@ -1,5 +1,5 @@
 import { availableRuntimeError } from "./api/runtime-config.ts";
-import { createApprovalStore, type HeldContentEntry } from "./core/approval-store.ts";
+import { announceHoldDecision, createApprovalStore, type HeldContentEntry } from "./core/approval-store.ts";
 import { createKeychainApprovals } from "./credentials/keychain-approval.ts";
 import { flushErrorReporting, startTiming } from "../plugins/chassis/src/error-reporting.ts";
 import type { TimingStatus } from "../plugins/chassis/src/timing.ts";
@@ -531,6 +531,7 @@ export interface BuiltApp {
   screeningReports: ScreeningReportStore;
   skillTrusts: SkillTrustStore;
   screeningHoldCounts: ScreeningHoldCountStore;
+  approvals: ReturnType<typeof createApprovalStore>;
   deploymentLayer: DeploymentLayerRuntime;
   credentialTools: readonly LayerCredentialTool[];
   brokeredTools: readonly BrokeredLayerTool[];
@@ -2018,7 +2019,10 @@ export function buildApp(
   const approvals = createApprovalStore(artifactMap<PendingApprovalRecord>("approvals"), deliveries, {
     heldContent: artifactMap<HeldContentEntry>("held_content_index"),
     supersede: async (id, record) => {
-      await resumeScheduledHold(scheduledHoldDeps(), id, record, false, "superseded");
+      const decision = await resumeScheduledHold(scheduledHoldDeps(), id, record, false, "superseded");
+      if (!decision || decision.outcome === "failed") return false;
+      await announceHoldDecision(deliveries, id, record, decision.message);
+      return true;
     },
   });
   const screeningReports: ScreeningReportStore = artifactMap<ScreeningReport>("screening_reports");
@@ -2318,8 +2322,11 @@ export function buildApp(
         })
     : undefined;
   const app = createApp({
-    resumeScheduledHold: (requestId, record, approved) =>
-      resumeScheduledHold(scheduledHoldDeps(), requestId, record, approved),
+    resumeScheduledHold: async (requestId, record, approved) =>
+      (await resumeScheduledHold(scheduledHoldDeps(), requestId, record, approved)) ?? {
+        outcome: "failed",
+        message: "The scheduled task is busy; try again in a moment.",
+      },
     externalSlackPolicies: config.externalSlackPolicies,
     admittedWork,
     ...(pgArtifactMap ? { resourceSearch: createPostgresResourceSearch(pgArtifactMap.pool) } : {}),
@@ -2508,7 +2515,10 @@ export function buildApp(
     }
   };
   const approvalDeliverySweeper = createSweeper(
-    () => advisoryLock.withLock("approval-deliveries", () => approvals.deliverPending()),
+    async () => {
+      await advisoryLock.withLock("approval-deliveries", () => approvals.deliverPending());
+      await approvals.resolveSupersededHolds();
+    },
     30_000,
     {
       label: "approval-deliveries",
@@ -3019,6 +3029,7 @@ export function buildApp(
     screeningReports,
     skillTrusts,
     screeningHoldCounts,
+    approvals,
     deploymentLayer,
     deploymentLayerStore,
     credentialTools,

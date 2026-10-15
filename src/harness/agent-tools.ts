@@ -1,4 +1,4 @@
-import { MaskedExecutionError } from "../security/secret-masking.ts";
+import { MaskedExecutionError, redactSecretText } from "../security/secret-masking.ts";
 import type { DocumentInput } from "../core/document-inputs.ts";
 import { createKeyedQueue } from "../util/async.ts";
 import { createGrindMeter, grindState } from "./grind.ts";
@@ -1095,7 +1095,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
                 kind: "skill",
                 ...identity,
                 ...(standing?.owner ? { owner: standing.owner } : {}),
-                ...(p.path ? { path: p.path } : {}),
+                ...(p.path ? { path: redactSecretText(p.path, (raw) => ref.current?.maskSecrets?.(raw) ?? raw) } : {}),
               },
             }
           : undefined,

@@ -3793,6 +3793,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                               request: input.text,
                               surface: toolLabel,
                               origin: input.origin.kind,
+                              mask: (text) => tools.maskSecrets?.(text) ?? text,
                             }),
                           ),
                         )),
@@ -3861,7 +3862,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                             : `security screen flagged this ${toolLabel} output`,
                           purpose: `Release the quarantined ${toolLabel} output into the conversation (once), or keep it blocked.`,
                           summary: `Blocked content preview: ${quarantinePreview(maskHeld(result))}`,
-                          summaryDetail: maskHeld(quarantineFullText(result)),
+                          summaryDetail: quarantineFullText(maskHeld(result)),
                           ...(securityHold ? { securityHold } : {}),
                           ...(!toolLabel.startsWith("session_message_")
                             ? {

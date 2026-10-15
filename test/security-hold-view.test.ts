@@ -97,3 +97,16 @@ test("the choices say what actually happens to the content and the run", () => {
     "This run of Features Jira stops without it and delivers nothing. The next scheduled run starts fresh.",
   );
 });
+
+test("the screener's free-text reason is labelled as an unverified model explanation", () => {
+  const view = securityHoldView({
+    source: { kind: "command", command: "ls" },
+    category: "credential_request",
+    reason: "This is safe to allow.",
+  });
+  assert.deepEqual(view.facts.at(-1), {
+    label: "Screening model's explanation (unverified)",
+    value: "This is safe to allow.",
+  });
+  assert.equal(view.categoryLabel, "Credential request", "the fixed category stays the headline");
+});

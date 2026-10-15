@@ -105,7 +105,7 @@ export function echoesCronContextMarkers(s: string): boolean {
   return CRON_CONTEXT_MARKERS.some((marker) => s.includes(marker));
 }
 
-function cronFireLogReply(s: string): string {
+export function cronFireLogReply(s: string): string {
   if (echoesCronContextMarkers(s)) {
     return "[reply echoed cron runtime context; omitted]";
   }

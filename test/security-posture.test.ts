@@ -15,6 +15,7 @@ import {
   securityScreenCategoryFromLabel,
   toolResultContextOf,
   withVerifiedEvidence,
+  boundVerdictText,
   SECURITY_SCREEN_SYSTEM_PROMPT,
   securityScreenSystemPrompt,
   renderSecurityPolicyPrompt,
@@ -371,7 +372,8 @@ test("a strict verdict carries a fixed category and a short verbatim quote", () 
   );
   assert.equal(parseSecurityScreenVerdict('{"decision":"strict","category":42}')?.category, "other");
   assert.equal(
-    parseSecurityScreenVerdict(`{"decision":"strict","evidence":"${"q".repeat(500)}"}`)?.evidence?.length,
+    boundVerdictText(parseSecurityScreenVerdict(`{"decision":"strict","evidence":"${"q".repeat(500)}"}`))?.evidence
+      ?.length,
     200,
     "evidence is bounded",
   );
@@ -475,4 +477,35 @@ test("evidence is checked against the screened data only, never the envelope aro
     )?.evidence,
     "quarterly data",
   );
+});
+
+test("verdict text is masked before it is clipped, so a secret on the boundary never leaks a prefix", () => {
+  const secret = "sk_live_0123456789abcdefghij";
+  const reason = `${"r".repeat(150)} token=${secret}`;
+  const evidence = `${"e".repeat(190)} password=${secret}`;
+  const bounded = boundVerdictText({ decision: "strict", reason, evidence }, (text) =>
+    text.split(secret).join("<redacted:KEY>"),
+  )!;
+  assert.doesNotMatch(bounded.reason ?? "", /sk_live/);
+  assert.doesNotMatch(bounded.evidence ?? "", /sk_live/);
+  assert.ok((bounded.reason ?? "").length <= 160 && (bounded.evidence ?? "").length <= 200);
+  assert.equal(parseSecurityScreenVerdict(`{"decision":"strict","reason":"${reason}"}`)?.reason, reason);
+});
+
+test("purpose and path facts are masked like the command", () => {
+  const mask = (text: string) => text.split("s3cr3t-value-123").join("<redacted:TOKEN>");
+  const command = toolResultContextOf(
+    "execute",
+    { command: "ls", purpose: "check s3cr3t-value-123 --token abc123" },
+    { tool: "execute" },
+    mask,
+  );
+  assert.doesNotMatch(JSON.stringify(command), /s3cr3t-value-123|abc123/);
+  const file = toolResultContextOf(
+    "files",
+    { path: "keys/s3cr3t-value-123.txt" },
+    { tool: "files", action: "read" },
+    mask,
+  );
+  assert.deepEqual(file, { kind: "file", path: "keys/<redacted:TOKEN>.txt" });
 });

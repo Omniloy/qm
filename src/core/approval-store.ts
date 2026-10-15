@@ -42,13 +42,19 @@ function heldContentKey(
   return `${record.securityHold!.scheduledTask!.id}:${hashId([content], 32)}`;
 }
 
+const CLAIM_TTL_MS = 30 * 60_000;
+
+export function claimIsLive(record: Pick<PendingApprovalRecord, "claimedBy" | "claimedAt">, now = Date.now()): boolean {
+  return record.claimedBy !== undefined && (record.claimedAt ?? 0) > now - CLAIM_TTL_MS;
+}
+
 export async function claimApproval(
   store: DurableMap<PendingApprovalRecord>,
   id: string,
 ): Promise<PendingApprovalRecord | null> {
   const token = randomUUID();
   const claim = (record: PendingApprovalRecord): PendingApprovalRecord =>
-    record.claimedBy ? record : { ...record, claimedBy: token };
+    claimIsLive(record) ? record : { ...record, claimedBy: token, claimedAt: Date.now() };
   let claimed: PendingApprovalRecord | null;
   if (store.update) claimed = await store.update(id, claim);
   else {
@@ -60,20 +66,34 @@ export async function claimApproval(
 }
 
 export async function releaseApprovalClaim(store: DurableMap<PendingApprovalRecord>, id: string): Promise<void> {
+  const release = ({ claimedBy: _claim, claimedAt: _at, ...rest }: PendingApprovalRecord): PendingApprovalRecord =>
+    rest;
   if (store.update) {
-    await store.update(id, ({ claimedBy: _claim, ...rest }) => rest);
+    await store.update(id, release);
     return;
   }
   const current = await store.get(id);
-  if (current) {
-    const { claimedBy: _claim, ...rest } = current;
-    await store.put(id, rest);
-  }
+  if (current) await store.put(id, release(current));
+}
+
+export async function announceHoldDecision(
+  deliveries: Pick<DeliveryStore, "enqueue">,
+  id: string,
+  record: PendingApprovalRecord,
+  message: string,
+): Promise<void> {
+  const recipient = approvalDeliveryRecipient(record);
+  if (!record.card || !recipient) return;
+  await deliveries.enqueue({
+    destination: { ...principalDestination(recipient, recipient), cardUpdate: record.card },
+    text: message,
+    idempotencyKey: `command-approval-decided:${id}:${record.createdAt ?? 0}`,
+  });
 }
 
 export interface ApprovalStoreOptions {
   heldContent?: HeldContentIndex;
-  supersede?: (id: string, record: PendingApprovalRecord) => Promise<void>;
+  supersede?: (id: string, record: PendingApprovalRecord) => Promise<boolean>;
 }
 
 export function createApprovalStore(
@@ -101,24 +121,8 @@ export function createApprovalStore(
     });
   }
 
-  async function supersede(id: string): Promise<void> {
-    const record = await claimApproval(backing, id);
-    if (!record) return;
-    try {
-      if (opts.supersede) await opts.supersede(id, record);
-      else await backing.delete(id);
-    } catch (error) {
-      await releaseApprovalClaim(backing, id);
-      throw error;
-    }
-    const recipient = approvalDeliveryRecipient(record);
-    if (!record.card || !recipient) return;
-    const task = record.securityHold!.scheduledTask!;
-    await deliveries.enqueue({
-      destination: { ...principalDestination(recipient, recipient), cardUpdate: record.card },
-      text: `Superseded: a newer run of ${task.title ?? task.id} was held on the same content, so this run was kept blocked. Answer the newest card instead.`,
-      idempotencyKey: `command-approval-superseded:${id}`,
-    });
+  async function markSuperseded(id: string, by: string): Promise<void> {
+    await backing.merge(id, { supersededBy: by });
   }
 
   async function indexHeldContent(id: string, record: PendingApprovalRecord): Promise<boolean> {
@@ -129,42 +133,49 @@ export function createApprovalStore(
     const replaces = !previous || previous.requestId === id || previous.sessionId === record.sessionId;
     if (replaces || previous.createdAt <= entry.createdAt) {
       await opts.heldContent.put(key, entry);
-      if (!replaces) await supersede(previous.requestId);
+      if (!replaces) await markSuperseded(previous.requestId, id);
       return false;
     }
-    await supersede(id);
+    await markSuperseded(id, previous.requestId);
     return true;
   }
 
-  async function stale(id: string, record: PendingApprovalRecord): Promise<boolean> {
-    const key = heldContentKey(record);
-    if (!key || !opts.heldContent) return false;
-    const latest = await opts.heldContent.get(key);
-    return latest !== null && latest.requestId !== id && latest.sessionId !== record.sessionId;
+  async function resolveSuperseded(id: string): Promise<void> {
+    const claimed = await claimApproval(backing, id);
+    if (!claimed) return;
+    let resolved = false;
+    try {
+      if (opts.supersede) resolved = await opts.supersede(id, claimed);
+      else {
+        await backing.delete(id);
+        resolved = true;
+      }
+    } finally {
+      if (!resolved) await releaseApprovalClaim(backing, id);
+    }
   }
 
   return {
     ...backing,
     async put(id: string, record: PendingApprovalRecord): Promise<void> {
       await backing.put(id, record);
-      const superseded = await indexHeldContent(id, record).catch(swallowAs("approvals: supersede holds", false));
+      const superseded = await indexHeldContent(id, record).catch(swallowAs("approvals: index held content", false));
       if (superseded) return;
       await deliver(id, record).catch(swallowAs("approvals: enqueue delivery", undefined));
     },
     async deliverPending(): Promise<void> {
       const entries = await backing.entries();
-      for (const [id, record] of entries) {
-        if (record.claimedBy) continue;
-        if (await stale(id, record)) {
-          await supersede(id).catch(swallowAs("approvals: supersede stale hold", undefined));
-          continue;
-        }
-        await deliver(id, record);
-      }
+      for (const [id, record] of entries) if (!record.supersededBy && !claimIsLive(record)) await deliver(id, record);
       if (!opts.heldContent) return;
       const live = new Set(entries.map(([id]) => id));
       for (const [key, entry] of await opts.heldContent.entries())
-        if (!live.has(entry.requestId)) await opts.heldContent.delete(key);
+        if (!live.has(entry.requestId) && !(await backing.get(entry.requestId)))
+          await opts.heldContent.deleteIf?.(key, (current) => current.requestId === entry.requestId);
+    },
+    async resolveSupersededHolds(): Promise<void> {
+      for (const [id, record] of await backing.entries())
+        if (record.supersededBy && !claimIsLive(record))
+          await resolveSuperseded(id).catch(swallowAs("approvals: resolve superseded hold", undefined));
     },
   };
 }

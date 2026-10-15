@@ -215,11 +215,12 @@ export function screening(
     const skill = report.source.kind === "skill" && report.source.skillId && report.source.version !== undefined;
     return html`<div class="screening-report" data-report=${report.id}>
       <div class="screening-verdict">
-        <div>
-          <span class="k">Screener said</span>${report.categoryLabel || report.category}${
-            report.reason ? html`: ${report.reason}` : nothing
-          }
-        </div>
+        <div><span class="k">Category</span>${report.categoryLabel || report.category}</div>
+        ${
+          report.reason
+            ? html`<div><span class="k">Screening model's explanation (unverified)</span>${report.reason}</div>`
+            : nothing
+        }
         <div>
           <span class="k">Reporter's note</span>${report.note ? html`"${report.note}"` : html`<em>No note</em>`}
           <span class="subline">${report.reporterId} · ${s.fmtTime(report.createdAt)}</span>

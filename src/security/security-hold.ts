@@ -177,7 +177,7 @@ export function securityHoldView(hold: SecurityHold): SecurityHoldView {
     facts: [
       { label: "Source", value: securityHoldSourceLabel(hold.source) },
       { label: "Step", value: securityHoldStep(hold) },
-      ...(hold.reason ? [{ label: "Screener's reason", value: hold.reason }] : []),
+      ...(hold.reason ? [{ label: "Screening model's explanation (unverified)", value: hold.reason }] : []),
     ],
     ...(hold.evidence ? { evidence: hold.evidence } : {}),
     allowEffect: task
