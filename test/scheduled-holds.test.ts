@@ -198,3 +198,25 @@ test("a decision that fails without throwing releases its claim", async () => {
   assert.equal((await built.app.getApproval(id))?.claimedBy, undefined);
   assert.notEqual((await built.app.resolveScheduledHold(id, "U1", false)).state, "already_resolved");
 });
+
+test("a superseded hold cannot be decided and is hidden while it waits for the sweep", async () => {
+  const { built, fire } = await setup();
+  const older = await built.app.turn(fire("a"));
+  const olderId = older.pendingApprovals![0]!.requestId;
+  await built.app.turn(fire("b"));
+  assert.ok((await built.app.getApproval(olderId))?.supersededBy);
+  assert.deepEqual(await built.app.resolveScheduledHold(olderId, "U1", true), { state: "already_resolved" });
+  assert.deepEqual(await built.app.listSessionApprovals(older.sessionId!, "U1"), []);
+});
+
+test("a resumed run is logged even when its original fire entry was trimmed", async () => {
+  const { built, cron, fire } = await setup();
+  const fired = await built.app.turn(fire("a"));
+  const threadRef = `cron:${cron.id}:fire:a`;
+  assert.equal(await built.crons.latestFireForThread(cron.id, threadRef), undefined);
+  await built.app.resolveScheduledHold(fired.pendingApprovals![0]!.requestId, "U1", true);
+  const entry = await built.crons.latestFireForThread(cron.id, threadRef);
+  assert.equal(entry?.status, "ok");
+  assert.match(entry?.fireKey ?? "", /^security-hold:/);
+  assert.match(entry?.note ?? "", /continued and delivered/);
+});

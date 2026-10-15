@@ -167,7 +167,8 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     if (!session) return [];
     const candidates: Array<{ key: string; record: PendingApprovalRecord }> = [];
     for (const [key, record] of entries) {
-      if (record.sessionId !== sessionId || (opts.blockingOnly && record.blocksInput === false)) continue;
+      if (record.sessionId !== sessionId || record.supersededBy || (opts.blockingOnly && record.blocksInput === false))
+        continue;
       if (await approvalRecordIsCurrent(record, session)) candidates.push({ key, record });
     }
     const visible = opts.viewer ? await approvalsVisibleToViewer(session, opts.viewer, candidates) : candidates;

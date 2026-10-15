@@ -7,8 +7,12 @@ import type { DurableMap } from "../persistence/durable-map.ts";
 import type { DeliveryStore } from "../delivery/delivery-store.ts";
 import { principalDestination } from "../reach/reach.ts";
 
-export function approvalDeliveryKey(id: string, record: Pick<PendingApprovalRecord, "createdAt">): string {
-  return `command-approval:${id}:${record.createdAt ?? 0}`;
+export function approvalDeliveryKey(
+  id: string,
+  record: Pick<PendingApprovalRecord, "createdAt" | "deliveryRound">,
+): string {
+  const round = record.deliveryRound ? `:${record.deliveryRound}` : "";
+  return `command-approval:${id}:${record.createdAt ?? 0}${round}`;
 }
 
 export function scheduledHoldDecider(
@@ -65,9 +69,18 @@ export async function claimApproval(
   return claimed?.claimedBy === token ? claimed : null;
 }
 
-export async function releaseApprovalClaim(store: DurableMap<PendingApprovalRecord>, id: string): Promise<void> {
-  const release = ({ claimedBy: _claim, claimedAt: _at, ...rest }: PendingApprovalRecord): PendingApprovalRecord =>
-    rest;
+export async function releaseApprovalClaim(
+  store: DurableMap<PendingApprovalRecord>,
+  id: string,
+  token: string | undefined,
+): Promise<void> {
+  const release = (record: PendingApprovalRecord): PendingApprovalRecord => {
+    if (!token || record.claimedBy !== token) return record;
+    const { claimedBy: _claim, claimedAt: _at, card, cardRetired, ...rest } = record;
+    return cardRetired
+      ? { ...rest, deliveryRound: (record.deliveryRound ?? 0) + 1 }
+      : { ...rest, ...(card ? { card } : {}) };
+  };
   if (store.update) {
     await store.update(id, release);
     return;
@@ -91,9 +104,11 @@ export async function announceHoldDecision(
   });
 }
 
+type SupersedeOutcome = "resolved" | "busy" | "unresolvable";
+
 export interface ApprovalStoreOptions {
   heldContent?: HeldContentIndex;
-  supersede?: (id: string, record: PendingApprovalRecord) => Promise<boolean>;
+  supersede?: (id: string, record: PendingApprovalRecord) => Promise<SupersedeOutcome>;
 }
 
 export function createApprovalStore(
@@ -143,15 +158,14 @@ export function createApprovalStore(
   async function resolveSuperseded(id: string): Promise<void> {
     const claimed = await claimApproval(backing, id);
     if (!claimed) return;
-    let resolved = false;
+    let outcome: SupersedeOutcome = "busy";
     try {
-      if (opts.supersede) resolved = await opts.supersede(id, claimed);
-      else {
-        await backing.delete(id);
-        resolved = true;
-      }
+      outcome = opts.supersede ? await opts.supersede(id, claimed) : "unresolvable";
     } finally {
-      if (!resolved) await releaseApprovalClaim(backing, id);
+      if (outcome === "unresolvable") {
+        if (backing.deleteIf) await backing.deleteIf(id, (record) => record.claimedBy === claimed.claimedBy);
+        else await backing.delete(id);
+      } else if (outcome === "busy") await releaseApprovalClaim(backing, id, claimed.claimedBy);
     }
   }
 

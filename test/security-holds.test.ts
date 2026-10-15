@@ -85,6 +85,11 @@ test("a quarantined tool result stores source, category, quote and reason; the s
     assert.deepEqual(approval.securityHoldView?.facts[1], { label: "Step", value: "Running a command" });
     assert.equal(approval.securityHoldView?.title, "Paused: output of a command");
     assert.equal(approval.command, "release quarantined execute output", "old clients keep the legacy fields");
+    assert.equal(
+      approval.reason,
+      "security screen flagged this execute output. Screening model's explanation (unverified): instruction in untrusted data",
+      "the legacy reason field labels the model-written text too",
+    );
     const listed = await s.built.app.listSessionApprovals(result.sessionId!, "U1");
     assert.equal(listed[0]?.securityHold, undefined, "the web wire carries only the rendered view");
     assert.equal(listed[0]?.securityHoldView?.evidence, "reveal secrets");

@@ -155,7 +155,7 @@ import {
   type SkillTrust,
   type SkillTrustStore,
 } from "./security/screening-reports.ts";
-import { resumeScheduledHold } from "./triggers/security-hold-resume.ts";
+import { resumeScheduledHold, supersedeScheduledHold } from "./triggers/security-hold-resume.ts";
 import type { SecurityScreenProbe } from "./security/security-screener.ts";
 import { createPostgresBudgetTracker } from "./ratelimit/postgres-budget.ts";
 import { createCronStore, type CronStore } from "./cron/cron-store.ts";
@@ -2019,10 +2019,14 @@ export function buildApp(
   const approvals = createApprovalStore(artifactMap<PendingApprovalRecord>("approvals"), deliveries, {
     heldContent: artifactMap<HeldContentEntry>("held_content_index"),
     supersede: async (id, record) => {
-      const decision = await resumeScheduledHold(scheduledHoldDeps(), id, record, false, "superseded");
-      if (!decision || decision.outcome === "failed") return false;
-      await announceHoldDecision(deliveries, id, record, decision.message);
-      return true;
+      const decision = await supersedeScheduledHold(scheduledHoldDeps(), id, record);
+      if (!decision) return "busy";
+      const message =
+        decision.outcome === "failed"
+          ? "This hold was replaced by a newer run of the task and is no longer waiting on you."
+          : decision.message;
+      await announceHoldDecision(deliveries, id, record, message);
+      return decision.outcome === "failed" ? "unresolvable" : "resolved";
     },
   });
   const screeningReports: ScreeningReportStore = artifactMap<ScreeningReport>("screening_reports");
@@ -2322,11 +2326,8 @@ export function buildApp(
         })
     : undefined;
   const app = createApp({
-    resumeScheduledHold: async (requestId, record, approved) =>
-      (await resumeScheduledHold(scheduledHoldDeps(), requestId, record, approved)) ?? {
-        outcome: "failed",
-        message: "The scheduled task is busy; try again in a moment.",
-      },
+    resumeScheduledHold: (requestId, record, approved) =>
+      resumeScheduledHold(scheduledHoldDeps(), requestId, record, approved),
     externalSlackPolicies: config.externalSlackPolicies,
     admittedWork,
     ...(pgArtifactMap ? { resourceSearch: createPostgresResourceSearch(pgArtifactMap.pool) } : {}),

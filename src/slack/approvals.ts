@@ -542,9 +542,18 @@ export function createApprovals(deps: {
         await ephemeral("This hold is already being resolved.");
         return;
       }
-      let text = "That hold expired or was replaced by a newer run of the task.";
-      if (outcome.state === "resolved") text = outcome.message;
-      else if (outcome.state === "unavailable") text = "I couldn't resume the scheduled task here.";
+      if (outcome.state === "resolved" && outcome.outcome === "failed") {
+        await ephemeral(`${outcome.message} The hold is still waiting; you can decide again.`);
+        return;
+      }
+      if (outcome.state === "unavailable") {
+        await ephemeral("I couldn't resume the scheduled task here. The hold is still waiting.");
+        return;
+      }
+      const text =
+        outcome.state === "resolved"
+          ? outcome.message
+          : "That hold expired or was replaced by a newer run of the task.";
       if (messageTs) await updateSlackMessage(client, channel, messageTs, `:shield: ${xmlEscape(text)}`);
     } catch (err) {
       console.error("%s", `[slack] scheduled hold ${stored.requestId} decision failed:`, errMessage(err));

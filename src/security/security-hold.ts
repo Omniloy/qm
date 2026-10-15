@@ -25,6 +25,12 @@ export interface SecurityHoldView {
   keepEffect: string;
 }
 
+const UNVERIFIED_EXPLANATION_LABEL = "Screening model's explanation (unverified)";
+
+export function unverifiedScreenReason(reason: string): string {
+  return `${UNVERIFIED_EXPLANATION_LABEL}: ${reason}`;
+}
+
 export const SECURITY_CATEGORY_LABELS: Record<SecurityScreenCategory, string> = {
   instruction_override: "Instruction override",
   credential_request: "Credential request",
@@ -177,7 +183,7 @@ export function securityHoldView(hold: SecurityHold): SecurityHoldView {
     facts: [
       { label: "Source", value: securityHoldSourceLabel(hold.source) },
       { label: "Step", value: securityHoldStep(hold) },
-      ...(hold.reason ? [{ label: "Screening model's explanation (unverified)", value: hold.reason }] : []),
+      ...(hold.reason ? [{ label: UNVERIFIED_EXPLANATION_LABEL, value: hold.reason }] : []),
     ],
     ...(hold.evidence ? { evidence: hold.evidence } : {}),
     allowEffect: task

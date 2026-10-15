@@ -94,14 +94,16 @@ export function createSecurityHoldMethods(
       const store = deps.approvals;
       if (!store) return false;
       const live = (record: PendingApprovalRecord) => !record.supersededBy && !claimIsLive(record);
+      const attach = (record: PendingApprovalRecord): PendingApprovalRecord =>
+        live(record) ? { ...record, card } : { ...record, cardRetired: true };
       if (store.update) {
-        const updated = await store.update(requestId, (record) => (live(record) ? { ...record, card } : record));
+        const updated = await store.update(requestId, attach);
         return updated?.card?.ts === card.ts && live(updated);
       }
       const current = await store.get(requestId);
-      if (!current || !live(current)) return false;
-      await store.merge(requestId, { card });
-      return true;
+      if (!current) return false;
+      await store.put(requestId, attach(current));
+      return live(current);
     },
 
     async resolveScheduledHold(requestId, actorId, approved) {
@@ -109,14 +111,18 @@ export function createSecurityHoldMethods(
       const decider = record ? scheduledHoldDecider(record) : undefined;
       if (!record || !decider || !(await h.approvalRecordIsCurrent(record))) return { state: "not_found" };
       if (!samePerson(decider, actorId)) return { state: "not_owner" };
+      if (record.supersededBy) return { state: "already_resolved" };
       if (!deps.resumeScheduledHold) return { state: "unavailable" };
       const claimed = await claimApproval(deps.approvals!, requestId);
-      if (!claimed) return { state: "already_resolved" };
+      if (!claimed || claimed.supersededBy) {
+        if (claimed) await releaseApprovalClaim(deps.approvals!, requestId, claimed.claimedBy);
+        return { state: "already_resolved" };
+      }
       const decision = await deps.resumeScheduledHold(requestId, claimed, approved).catch(async (error: unknown) => {
-        await releaseApprovalClaim(deps.approvals!, requestId);
+        await releaseApprovalClaim(deps.approvals!, requestId, claimed.claimedBy);
         throw error;
       });
-      if (decision.outcome === "failed") await releaseApprovalClaim(deps.approvals!, requestId);
+      if (decision.outcome === "failed") await releaseApprovalClaim(deps.approvals!, requestId, claimed.claimedBy);
       else
         await announceHoldDecision(deps.deliveries, requestId, claimed, decision.message).catch(
           swallowAs("security holds: announce decision", undefined),

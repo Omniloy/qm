@@ -17,7 +17,7 @@ export interface ScheduledHoldDecision {
   message: string;
 }
 
-export type ScheduledHoldReason = "owner" | "superseded";
+type ScheduledHoldReason = "owner" | "superseded";
 
 function scheduledHoldFireKey(requestId: string, record: Pick<PendingApprovalRecord, "createdAt">): string {
   return `security-hold:${requestId}:${record.createdAt ?? 0}`;
@@ -37,13 +37,38 @@ function deniedResult(result: TurnResult): boolean {
   return result.status === "refused" && (result.reason ?? "").startsWith("approval denied");
 }
 
+type LockRunner<Busy> = <T>(key: string, run: () => Promise<T>) => Promise<T | Busy>;
+
 export async function resumeScheduledHold(
   deps: ScheduledHoldDeps,
   requestId: string,
   record: PendingApprovalRecord,
   approved: boolean,
-  reason: ScheduledHoldReason = "owner",
+): Promise<ScheduledHoldDecision> {
+  return decideScheduledHold<never>(deps, requestId, record, approved, "owner", (key, run) =>
+    deps.lock ? deps.lock.withLock(key, run) : run(),
+  );
+}
+
+export function supersedeScheduledHold(
+  deps: ScheduledHoldDeps,
+  requestId: string,
+  record: PendingApprovalRecord,
 ): Promise<ScheduledHoldDecision | null> {
+  return decideScheduledHold<null>(deps, requestId, record, false, "superseded", (key, run) => {
+    if (!deps.lock) return run();
+    return deps.lock.tryWithLock ? deps.lock.tryWithLock(key, run) : Promise.resolve(null);
+  });
+}
+
+async function decideScheduledHold<Busy>(
+  deps: ScheduledHoldDeps,
+  requestId: string,
+  record: PendingApprovalRecord,
+  approved: boolean,
+  reason: ScheduledHoldReason,
+  withTaskLock: LockRunner<Busy>,
+): Promise<ScheduledHoldDecision | Busy> {
   const resumed: { sessionId?: string; reply?: string } = {};
   const task = record.securityHold!.scheduledTask!;
   const held = securityHoldView(record.securityHold!).held;
@@ -114,19 +139,15 @@ export async function resumeScheduledHold(
   const accounted = async (): Promise<ScheduledHoldDecision> => {
     const original = await deps.crons.latestFireForThread(cron.id, threadRef);
     const decision = await (allow ? allowOnce(cron) : keep());
-    if (original)
-      await deps.crons.recordFire(cron.id, {
-        ...original,
-        endedAt: Date.now(),
-        status: decision.outcome === "allowed" ? "ok" : "refused",
-        note: decision.message,
-        ...(resumed.sessionId ? { sessionId: resumed.sessionId } : {}),
-        ...(resumed.reply !== undefined ? { reply: resumed.reply } : {}),
-      });
+    await deps.crons.recordFire(cron.id, {
+      ...(original ?? { fireKey, threadRef, firedAt: record.createdAt ?? Date.now() }),
+      endedAt: Date.now(),
+      status: decision.outcome === "allowed" ? "ok" : "refused",
+      note: decision.message,
+      ...(resumed.sessionId ? { sessionId: resumed.sessionId } : {}),
+      ...(resumed.reply !== undefined ? { reply: resumed.reply } : {}),
+    });
     return decision;
   };
-  const key = `cron-lifecycle:${cron.id}`;
-  if (!deps.lock) return accounted();
-  if (reason === "superseded") return deps.lock.tryWithLock ? deps.lock.tryWithLock(key, accounted) : null;
-  return deps.lock.withLock(key, accounted);
+  return withTaskLock(`cron-lifecycle:${cron.id}`, accounted);
 }

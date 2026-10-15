@@ -4,6 +4,7 @@ import {
   approvalDeliveryRecipient,
   claimApproval,
   claimIsLive,
+  releaseApprovalClaim,
   createApprovalStore,
   type HeldContentEntry,
 } from "../src/core/approval-store.ts";
@@ -147,7 +148,7 @@ test("put only marks a hold from an older fire on the same content; the poller r
     supersede: async (id) => {
       superseded.push(id);
       await backing.delete(id);
-      return true;
+      return "resolved" as const;
     },
   });
   const held = (session: string, createdAt: number, text: string) =>
@@ -175,9 +176,9 @@ test("a superseded hold whose task is busy stays marked and is retried later", a
   const approvals = createApprovalStore(backing, createDeliveryStore(), {
     heldContent: createMemoryMap<HeldContentEntry>(),
     supersede: async (id) => {
-      if (busy) return false;
+      if (busy) return "busy" as const;
       await backing.delete(id);
-      return true;
+      return "resolved" as const;
     },
   });
   const same = { tool: "execute", text: "same output" };
@@ -225,4 +226,59 @@ test("index cleanup keeps entries for holds created during the pass", async () =
   await approvals.deliverPending();
   assert.equal(await heldContent.get("gone"), null);
   assert.ok(await heldContent.get("fresh"), "an entry whose hold appeared mid-pass survives");
+});
+
+test("a superseded hold that can no longer be denied is dropped instead of retried forever", async () => {
+  const backing = createMemoryMap<PendingApprovalRecord>();
+  let calls = 0;
+  const approvals = createApprovalStore(backing, createDeliveryStore(), {
+    heldContent: createMemoryMap<HeldContentEntry>(),
+    supersede: async () => {
+      calls++;
+      return "unresolvable" as const;
+    },
+  });
+  const same = { tool: "execute", text: "same output" };
+  await approvals.put("A", cronHold("cron:c1:fire:a", 1, { sessionId: "a", screenedOutput: same }));
+  await approvals.put("B", cronHold("cron:c1:fire:b", 2, { sessionId: "b", screenedOutput: same }));
+  for (let i = 0; i < 5; i++) await approvals.resolveSupersededHolds();
+  assert.equal(calls, 1);
+  assert.equal(await backing.get("A"), null, "the hold stays blocked because its record is gone");
+  assert.ok(await backing.get("B"));
+});
+
+test("releasing a claim only clears the claim it owns", async () => {
+  const backing = createMemoryMap<PendingApprovalRecord>();
+  await backing.put("A", cronHold("cron:c1:fire:a", 1));
+  const first = await claimApproval(backing, "A");
+  await backing.merge("A", { claimedAt: Date.now() - 31 * 60_000 });
+  const second = await claimApproval(backing, "A");
+  assert.ok(first && second && first.claimedBy !== second.claimedBy, "a stale claim was taken over");
+  await releaseApprovalClaim(backing, "A", first.claimedBy);
+  assert.equal(await claimApproval(backing, "A"), null, "the stale owner's release left the live claim alone");
+  await releaseApprovalClaim(backing, "A", second.claimedBy);
+  assert.ok(await claimApproval(backing, "A"));
+});
+
+test("a card retired while a decision was pending is reposted once the claim is released", async () => {
+  const backing = createMemoryMap<PendingApprovalRecord>();
+  const deliveries = createDeliveryStore();
+  const approvals = createApprovalStore(backing, deliveries);
+  await approvals.put("H1", cronHold("cron:c1:fire:a", 1, { card: { channel: "D1", ts: "1.1" } }));
+  const keys = async () =>
+    (await deliveries.pending("principal"))
+      .filter((d) => d.destination.commandApprovalId === "H1")
+      .map((d) => d.idempotencyKey);
+  assert.deepEqual(await keys(), ["command-approval:H1:1"]);
+  const claimed = await claimApproval(backing, "H1");
+  await backing.merge("H1", { cardRetired: true });
+  await releaseApprovalClaim(backing, "H1", claimed!.claimedBy);
+  const released = (await backing.get("H1"))!;
+  assert.equal(released.deliveryRound, 1);
+  assert.equal(released.card, undefined);
+  await approvals.deliverPending();
+  assert.deepEqual(await keys(), ["command-approval:H1:1", "command-approval:H1:1:1"], "a fresh card is queued");
+  const kept = await claimApproval(backing, "H1");
+  await releaseApprovalClaim(backing, "H1", kept!.claimedBy);
+  assert.equal((await backing.get("H1"))!.deliveryRound, 1, "a card that was never retired is not reposted");
 });

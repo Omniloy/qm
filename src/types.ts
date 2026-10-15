@@ -747,6 +747,8 @@ export interface PendingApprovalRecord {
   claimedBy?: string;
   claimedAt?: number;
   supersededBy?: string;
+  cardRetired?: boolean;
+  deliveryRound?: number;
 }
 
 type ApprovalScope = "once" | "session" | "always";

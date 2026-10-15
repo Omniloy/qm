@@ -93,7 +93,12 @@ import type {
   RuntimeChoice,
 } from "../harness/harness.ts";
 import { forModelContext, forSearchView } from "../harness/context-compaction.ts";
-import { securityHoldSourceKey, securityHoldView, type SecurityHold } from "../security/security-hold.ts";
+import {
+  securityHoldSourceKey,
+  securityHoldView,
+  unverifiedScreenReason,
+  type SecurityHold,
+} from "../security/security-hold.ts";
 import { redactSecretText } from "../security/secret-masking.ts";
 import { countHold, trustedSkillVersion } from "../security/screening-reports.ts";
 import {
@@ -269,6 +274,11 @@ const MIN_SESSION_LEASE_TTL_MS = 15_000;
 const AUTOMATED_TURN_LEASE_WAIT_MS = 1_000;
 
 const SESSION_GONE_REASON = "this conversation is no longer available — start a new one";
+const STRICT_VERDICT_REASON = "strict security screen verdict";
+
+function screenApprovalReason(reason: string): string {
+  return reason === STRICT_VERDICT_REASON ? reason : unverifiedScreenReason(reason);
+}
 
 const DEFAULT_APPROVAL_SUMMARY_TIMEOUT_MS = 6_000;
 
@@ -909,7 +919,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         if (verdict?.decision === "strict") {
           const sources = externalPromptData.map((item) => item.source);
           flaggedScreenedInput = {
-            reason: verdict.reason ?? "strict security screen verdict",
+            reason: verdict.reason ?? STRICT_VERDICT_REASON,
             sources,
           };
           deps.auditLog.record({
@@ -1039,7 +1049,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               resolution.approvalGrantModes.session && resolution.approvalGrantModes.always
                 ? {}
                 : { grantModes: resolution.approvalGrantModes };
-            const reason = `${flaggedScreenedInput.reason}; flagged sources: ${flaggedScreenedInput.sources.join(", ") || "message"}`;
+            const reason = `${screenApprovalReason(flaggedScreenedInput.reason)}; flagged sources: ${flaggedScreenedInput.sources.join(", ") || "message"}`;
             await pending.put(requestId, {
               sessionId: session.id,
               command,
@@ -1072,7 +1082,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             {
               requestId: inputApprovalId(session.id, replayableRequest(input)),
               command: "security-screen",
-              reason: `${flaggedScreenedInput.reason}; flagged sources: ${flaggedScreenedInput.sources.join(", ") || "message"}`,
+              reason: `${screenApprovalReason(flaggedScreenedInput.reason)}; flagged sources: ${flaggedScreenedInput.sources.join(", ") || "message"}`,
               blocksInput: true,
               kind: "input",
               approvalKey: `security-screen:${input.surface ?? "unknown"}`,
@@ -3858,7 +3868,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                         quarantineReleaseApprovals.push({
                           command: `release quarantined ${toolLabel} output`,
                           reason: heldReason
-                            ? `security screen flagged this ${toolLabel} output: ${heldReason}`
+                            ? `security screen flagged this ${toolLabel} output. ${unverifiedScreenReason(heldReason)}`
                             : `security screen flagged this ${toolLabel} output`,
                           purpose: `Release the quarantined ${toolLabel} output into the conversation (once), or keep it blocked.`,
                           summary: `Blocked content preview: ${quarantinePreview(maskHeld(result))}`,
