@@ -43,6 +43,10 @@ export interface RosterPerson {
   slackId?: string;
 }
 
+export interface PersonLookup {
+  get(principalId: string): Promise<RosterPerson | null>;
+}
+
 export function personKeys(member: RosterPerson | null | undefined, rawId: string): Set<string> {
   const keys = new Set<string>();
   for (const id of [rawId, member?.principalId, member?.slackId]) {
@@ -52,11 +56,7 @@ export function personKeys(member: RosterPerson | null | undefined, rawId: strin
   return keys;
 }
 
-export async function samePersonInDirectory(
-  directory: { get(principalId: string): Promise<RosterPerson | null> },
-  a: string,
-  b: string,
-): Promise<boolean> {
+export async function samePersonInDirectory(directory: PersonLookup, a: string, b: string): Promise<boolean> {
   if (samePerson(a, b)) return true;
   if (!personKey(a) || !personKey(b)) return false;
   const [ma, mb] = await Promise.all([directory.get(a).catch(() => null), directory.get(b).catch(() => null)]);
@@ -66,7 +66,7 @@ export async function samePersonInDirectory(
 }
 
 export async function samePersonMatcher(
-  directory: { get(principalId: string): Promise<RosterPerson | null> },
+  directory: PersonLookup,
   actorId: string,
 ): Promise<(id: string) => Promise<boolean>> {
   const row = await directory.get(actorId).catch(() => null);
@@ -80,4 +80,15 @@ export async function samePersonMatcher(
     for (const candidate of personKeys(member, id)) if (keys.has(candidate)) return true;
     return false;
   };
+}
+
+export async function peopleListAllows(
+  people: readonly string[] | null,
+  directory: PersonLookup | undefined,
+  actorId: string | undefined,
+): Promise<boolean> {
+  if (people === null) return true;
+  if (!actorId || !people.length) return false;
+  const matches = await samePersonMatcher(directory ?? { get: async () => null }, actorId);
+  return (await Promise.all(people.map(matches))).some(Boolean);
 }

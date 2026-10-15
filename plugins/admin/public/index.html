@@ -8227,6 +8227,7 @@
           governanceUI.settings.load(r.data, scope, "fast-mode-access");
           governanceUI.settings.load(r.data, scope, "webui-models");
           governanceUI.settings.load(r.data, scope, "model-account-modes");
+          governanceUI.settings.load(r.data, scope, "personal-account-access");
         }
         refreshModelChoices.push(() => governanceUI.settings.updateCatalog(r.data));
         if (requestedView === "customize") {
@@ -8740,6 +8741,7 @@
         "fast-mode-access": "st-fast-mode-access",
         "webui-models": "st-webui-models",
         "model-account-modes": "st-model-account-modes",
+        "personal-account-access": "st-personal-account-access",
         "ack-emoji": "st-ack-emoji",
         branding: "st-branding",
       };

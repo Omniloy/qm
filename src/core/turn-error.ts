@@ -36,15 +36,17 @@ export interface ProviderLimit {
   viaCodexProxy: boolean;
   subscription?: string;
   resetAt?: number;
+  resetText?: string;
 }
 
 const USAGE_LIMIT_CODE = /model_cooldown|usage_limit_reached/;
 const RATE_LIMIT_CODE = /rate_limit_error|API error \(429\)/;
 const BILLING_CODE = /insufficient_quota|billing_hard_limit/;
+const SUBSCRIPTION_LIMIT = /usage limit|hit your (?:\w+ )?limit/i;
 const TRANSIENT_RESET_MS = 60_000;
 
 function resetAtFrom(text: string, now: number): number | undefined {
-  const at = /resets_at\W{0,3}(\d+)/.exec(text)?.[1];
+  const at = /(?:resets_at\W{0,3}|limit reached\|)(\d{9,})/.exec(text)?.[1];
   if (at) return Number(at) * 1000;
   const inSeconds = /(?:resets_in_seconds|reset_seconds)\W{0,3}(\d+)/.exec(text)?.[1];
   return inSeconds ? now + Number(inSeconds) * 1000 : undefined;
@@ -64,8 +66,9 @@ export function providerLimit(err: unknown, fallbackModel?: string, now = Date.n
   const viaCodexProxy = /model_cooldown|via provider codex/.test(text);
   const provider = providerFrom(`${text} ${model ?? ""}`);
   const resetAt = resetAtFrom(text, now);
+  const resetText = resetAt ? undefined : /\bresets (?:at )?([^·∙|\n.]{1,40})/i.exec(text)?.[1]?.trim();
   return {
-    kind: usage ? "usage" : "rate",
+    kind: usage || SUBSCRIPTION_LIMIT.test(text) ? "usage" : "rate",
     viaCodexProxy,
     ...(provider ? { provider } : {}),
     ...(model ? { model } : {}),
@@ -73,6 +76,7 @@ export function providerLimit(err: unknown, fallbackModel?: string, now = Date.n
       ? { subscription: "the connected ChatGPT subscription" }
       : {}),
     ...(resetAt ? { resetAt } : {}),
+    ...(resetText ? { resetText } : {}),
   };
 }
 
@@ -98,6 +102,7 @@ export function providerLimitMessage(limit: ProviderLimit, now = Date.now()): st
     ".";
   if (limit.resetAt && limit.resetAt > now)
     return `${head} It resets ${resetsIn(limit.resetAt - now)} (${utcLabel(limit.resetAt)}). Pick another model to keep working now.`;
+  if (limit.resetText) return `${head} It resets ${limit.resetText}. Pick another model to keep working now.`;
   return `${head} Try again later or pick another model.`;
 }
 
@@ -114,6 +119,31 @@ export async function settleProviderLimit(
   const transient = settled.resetAt ? settled.resetAt - now <= TRANSIENT_RESET_MS : settled.kind === "rate";
   if (transient) return err;
   return new ProviderLimitError(providerLimitMessage(settled, now), { cause: err });
+}
+
+const CREDENTIAL_STATUSES = new Set([401, 403, 429]);
+const CREDENTIAL_REJECTION =
+  /authentication_error|permission_error|invalid[_ -]?(?:x-)?api[_ -]?key|incorrect api key|authentication (?:error|failed)|failed to authenticate|(?:oauth|authentication|access) token (?:has )?(?:expired|been revoked)|token_expired|missing bearer|missing (?:api key|credentials)|not logged in|codex login|insufficient[_ -]?quota|exceeded your current quota|credit(?: balance| limit)|out of credits|credits_depleted|api error\W{0,3}(?:401|403)\b|status(?: code)?\W{0,3}(?:401|403)\b|\b(?:401|403) (?:unauthorized|forbidden)\b/i;
+
+export function providerStatusError(status: number, message: string, options?: ErrorOptions): Error {
+  const error = status === 429 ? new Error(message, options) : new NonRetryableTurnError(message, options);
+  return Object.assign(error, { providerStatus: status });
+}
+
+export function subscriptionLimitMessage(message: string): boolean {
+  return SUBSCRIPTION_LIMIT.test(message);
+}
+
+export function credentialRejected(err: unknown): boolean {
+  const status = (err as { providerStatus?: unknown } | null)?.providerStatus;
+  if (typeof status === "number") return CREDENTIAL_STATUSES.has(status);
+  if (providerLimit(err)) return true;
+  const text = err instanceof Error ? err.message : String(err);
+  return (
+    CREDENTIAL_REJECTION.test(text) ||
+    BILLING_CODE.test(text) ||
+    /usage limit|last status: 429|429 too many requests/i.test(text)
+  );
 }
 
 export function turnFailureMessage(err: unknown): string {

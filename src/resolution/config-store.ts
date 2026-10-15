@@ -6,7 +6,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { DurableMap } from "../persistence/durable-map.ts";
 import { createMemoryMap } from "../persistence/durable-map.ts";
 import { createKeyedQueue } from "../util/async.ts";
-import { foldPrincipalId } from "../directory/person.ts";
+import { foldPrincipalId, peopleListAllows, type PersonLookup } from "../directory/person.ts";
 import { canonicalModelId, isHarnessId, modelSupportedByHarness } from "../model/pi-models.ts";
 import type { ModelStatus } from "../model/model-classification.ts";
 import { composeSecurityPosture, type SecurityPosture } from "../security/security-posture.ts";
@@ -66,8 +66,18 @@ export type PersonalModelProvider = "anthropic" | "openai";
 export type ModelAccountModes = Record<PersonalModelProvider, "org" | "personal">;
 export const PERSONAL_MODEL_PROVIDERS: readonly PersonalModelProvider[] = ["anthropic", "openai"];
 export const DEFAULT_MODEL_ACCOUNT_MODES: ModelAccountModes = { anthropic: "org", openai: "org" };
+interface ModelAccountFallbacks {
+  fallbackWhenUnavailable: boolean;
+  fallbackWhenRejected: boolean;
+}
+export type ModelAccountPolicy = ModelAccountModes & ModelAccountFallbacks;
+const DEFAULT_MODEL_ACCOUNT_POLICY: ModelAccountPolicy = {
+  ...DEFAULT_MODEL_ACCOUNT_MODES,
+  fallbackWhenUnavailable: false,
+  fallbackWhenRejected: false,
+};
 
-export interface PersistedModelAccountModes {
+export interface PersistedModelAccountModes extends Partial<ModelAccountFallbacks> {
   scopeId: ScopeId;
   modes: ModelAccountModes;
 }
@@ -84,7 +94,7 @@ export interface PersistedSkillSharingPolicy {
   policy: SkillSharingPolicy;
 }
 
-export interface PersistedFastModeAccess {
+export interface PersistedPeopleAccess {
   scopeId: ScopeId;
   people: string[];
 }
@@ -272,13 +282,13 @@ export interface ScopedConfigStore {
   getInteractiveFastMode(): boolean;
   setInteractiveFastMode(on: boolean): void;
   getInteractiveFastModeDurable(): Promise<boolean>;
-  getIndividualModelAuth(): boolean;
-  setIndividualModelAuth(on: boolean): void;
-  getIndividualModelAuthDurable(principalId?: string): Promise<boolean>;
   setPersonalModelAuth(principalId: string, on: boolean, provider?: "anthropic" | "openai"): Promise<void>;
   getModelAccountDurable(principalId: string): Promise<ModelAccount>;
-  getModelAccountModesDurable(): Promise<ModelAccountModes>;
-  setModelAccountModes(modes: ModelAccountModes): Promise<void>;
+  getModelAccountPolicyDurable(): Promise<ModelAccountPolicy>;
+  setModelAccountPolicy(policy: ModelAccountModes & Partial<ModelAccountFallbacks>): Promise<void>;
+  getPersonalAccountAccess(): Promise<string[] | null>;
+  setPersonalAccountAccess(people: string[] | null): Promise<void>;
+  personalAccountAllowed(principalId: string): Promise<boolean>;
   getSkillSharingPolicy(): Promise<SkillSharingPolicy>;
   setSkillSharingPolicy(policy: SkillSharingPolicy): Promise<void>;
   getFastModeAccess(): Promise<string[] | null>;
@@ -384,7 +394,9 @@ export function createMemoryConfigStore(
     individualModelAuth?: DurableMap<PersistedModelAccount>;
     modelAccountModes?: DurableMap<PersistedModelAccountModes>;
     skillSharing?: DurableMap<PersistedSkillSharingPolicy>;
-    fastModeAccess?: DurableMap<PersistedFastModeAccess>;
+    fastModeAccess?: DurableMap<PersistedPeopleAccess>;
+    personalAccountAccess?: DurableMap<PersistedPeopleAccess>;
+    directory?: () => PersonLookup | undefined;
     webuiModels?: DurableMap<PersistedWebuiModels>;
     modelClassifications?: DurableMap<PersistedModelClassification>;
     peopleDirectoryUrls?: DurableMap<PersistedPeopleDirectoryUrl>;
@@ -418,7 +430,6 @@ export function createMemoryConfigStore(
   let internalMemberOverrides: string[] = [];
   let orgAmbient = true;
   let interactiveFastMode = false;
-  let individualModelAuth = false;
   const webuiModels = new CanonicalMap<ScopeId, string[]>(canonicalModelIds);
   const modelClassifications = new Map<ScopeId, Record<string, ModelStatus>>();
   const peopleDirectoryUrls = new Map<ScopeId, string>();
@@ -447,24 +458,36 @@ export function createMemoryConfigStore(
   const interactiveFastModeStore = opts.interactiveFastMode ?? createMemoryMap<PersistedScopedFlag>();
   const individualModelAuthStore = opts.individualModelAuth ?? createMemoryMap<PersistedModelAccount>();
   const modelAccountModesStore = opts.modelAccountModes ?? createMemoryMap<PersistedModelAccountModes>();
-  const modelAccountModes = async () => (await modelAccountModesStore.get(org))?.modes ?? DEFAULT_MODEL_ACCOUNT_MODES;
-  const skillSharingStore = opts.skillSharing ?? createMemoryMap<PersistedSkillSharingPolicy>();
-  const fastModeAccessStore = opts.fastModeAccess ?? createMemoryMap<PersistedFastModeAccess>();
-  const personalModelProviders = async () => {
-    const modes = await modelAccountModes();
-    return PERSONAL_MODEL_PROVIDERS.filter((provider) => modes[provider] === "personal");
+  const modelAccountPolicy = async (): Promise<ModelAccountPolicy> => {
+    const row = await modelAccountModesStore.get(org);
+    return {
+      ...DEFAULT_MODEL_ACCOUNT_POLICY,
+      ...row?.modes,
+      fallbackWhenUnavailable: row?.fallbackWhenUnavailable === true,
+      fallbackWhenRejected: row?.fallbackWhenRejected === true,
+    };
   };
+  const skillSharingStore = opts.skillSharing ?? createMemoryMap<PersistedSkillSharingPolicy>();
+  const peopleAccess = (store: DurableMap<PersistedPeopleAccess>) => ({
+    get: async () => (await store.get(org))?.people ?? null,
+    async set(people: string[] | null) {
+      if (people === null) await store.delete(org);
+      else await store.put(org, { scopeId: org, people: [...new Set(people.map(foldPrincipalId).filter(Boolean))] });
+    },
+  });
+  const fastModeAccess = peopleAccess(opts.fastModeAccess ?? createMemoryMap<PersistedPeopleAccess>());
+  const personalAccountAccess = peopleAccess(opts.personalAccountAccess ?? createMemoryMap<PersistedPeopleAccess>());
+  const personalAccountAllowed = async (principalId: string) =>
+    peopleListAllows(await personalAccountAccess.get(), opts.directory?.(), principalId);
   const modelAccountOf = async (principalId: string): Promise<ModelAccount> => {
-    const [row, orgRow, allowed] = await Promise.all([
+    const [row, policy] = await Promise.all([
       individualModelAuthStore.get(scopeId("personal", principalId)),
-      individualModelAuthStore.get(org),
-      personalModelProviders(),
+      modelAccountPolicy(),
     ]);
-    const required: ModelAccount = orgRow?.on ? "personal" : "company";
-    const chosen: ModelAccount | undefined = row?.on ? (row.provider ?? "personal") : undefined;
-    const account = chosen ?? required;
-    if (account === "company" || !allowed.length) return "company";
-    return account === "personal" || allowed.includes(account) ? account : required;
+    const providers = PERSONAL_MODEL_PROVIDERS.filter((provider) => policy[provider] === "personal");
+    const chosen = row?.on ? (row.provider ?? "personal") : undefined;
+    if (!chosen || !(chosen === "personal" ? providers.length : providers.includes(chosen))) return "company";
+    return (await personalAccountAllowed(principalId)) ? chosen : "company";
   };
   const webuiModelStore = canonicalRows(opts.webuiModels ?? createMemoryMap<PersistedWebuiModels>(), (row) => ({
     ...row,
@@ -670,7 +693,6 @@ export function createMemoryConfigStore(
           internalMemberOverrides = (await internalMemberOverridesStore.get(org))?.members ?? [];
           orgAmbient = (await orgAmbientStore.get(org))?.on ?? true;
           interactiveFastMode = (await interactiveFastModeStore.get(org))?.on ?? false;
-          individualModelAuth = (await individualModelAuthStore.get(org))?.on ?? false;
           for (const r of await webuiModelStore.all()) webuiModels.set(r.scopeId, r.ids);
           for (const r of await modelClassificationStore.all()) modelClassifications.set(r.scopeId, r.statuses);
           for (const r of await peopleDirectoryUrlStore.all()) peopleDirectoryUrls.set(r.scopeId, r.url);
@@ -1110,25 +1132,20 @@ export function createMemoryConfigStore(
       );
     },
     getInteractiveFastModeDurable: async () => (await interactiveFastModeStore.get(org))?.on ?? false,
-    getIndividualModelAuth: () => individualModelAuth,
-    setIndividualModelAuth(on) {
-      individualModelAuth = on;
-      persist(`individualModelAuth:${org}`, "individual model auth switch", () =>
-        individualModelAuthStore.put(org, { scopeId: org, on }),
-      );
-    },
-    async getIndividualModelAuthDurable(principalId) {
-      if (principalId) return (await modelAccountOf(principalId)) !== "company";
-      return !!(await individualModelAuthStore.get(org))?.on && (await personalModelProviders()).length > 0;
-    },
     getModelAccountDurable: modelAccountOf,
-    getModelAccountModesDurable: modelAccountModes,
-    async setModelAccountModes(modes) {
+    getModelAccountPolicyDurable: modelAccountPolicy,
+    async setModelAccountPolicy(policy) {
+      const stored = await modelAccountPolicy();
       await modelAccountModesStore.put(org, {
         scopeId: org,
-        modes: { anthropic: modes.anthropic, openai: modes.openai },
+        modes: { anthropic: policy.anthropic, openai: policy.openai },
+        fallbackWhenUnavailable: policy.fallbackWhenUnavailable ?? stored.fallbackWhenUnavailable,
+        fallbackWhenRejected: policy.fallbackWhenRejected ?? stored.fallbackWhenRejected,
       });
     },
+    getPersonalAccountAccess: personalAccountAccess.get,
+    setPersonalAccountAccess: personalAccountAccess.set,
+    personalAccountAllowed,
     getSkillSharingPolicy: async () => ({
       ...DEFAULT_SKILL_SHARING_POLICY,
       ...(await skillSharingStore.get(org))?.policy,
@@ -1136,15 +1153,8 @@ export function createMemoryConfigStore(
     async setSkillSharingPolicy(policy) {
       await skillSharingStore.put(org, { scopeId: org, policy: { contexts: policy.contexts, org: policy.org } });
     },
-    getFastModeAccess: async () => (await fastModeAccessStore.get(org))?.people ?? null,
-    async setFastModeAccess(people) {
-      if (people === null) await fastModeAccessStore.delete(org);
-      else
-        await fastModeAccessStore.put(org, {
-          scopeId: org,
-          people: [...new Set(people.map(foldPrincipalId).filter(Boolean))],
-        });
-    },
+    getFastModeAccess: fastModeAccess.get,
+    setFastModeAccess: fastModeAccess.set,
     async setPersonalModelAuth(principalId, on, provider) {
       const id = scopeId("personal", principalId);
       await individualModelAuthStore.put(id, { scopeId: id, on, ...(on && provider ? { provider } : {}) });
@@ -1374,7 +1384,6 @@ export function createMemoryConfigStore(
         brandingRow,
         orgAmbientRow,
         interactiveFastModeRow,
-        individualModelAuthRow,
         channelHeaderPinRow,
         autoFlaggerRow,
         internalOverridesRow,
@@ -1394,7 +1403,6 @@ export function createMemoryConfigStore(
         brandingStore.get(id),
         id === org ? orgAmbientStore.get(org) : null,
         id === org ? interactiveFastModeStore.get(org) : null,
-        id === org ? individualModelAuthStore.get(org) : null,
         channelHeaderPinStore.get(id),
         id === org ? autoFlaggerStore.get(org) : null,
         id === org ? internalMemberOverridesStore.get(org) : null,
@@ -1441,7 +1449,6 @@ export function createMemoryConfigStore(
       if (id === org) internalMemberOverrides = internalOverridesRow?.members ?? [];
       if (id === org) orgAmbient = orgAmbientRow?.on ?? true;
       if (id === org) interactiveFastMode = interactiveFastModeRow?.on ?? false;
-      if (id === org) individualModelAuth = individualModelAuthRow?.on ?? false;
       if (id === org)
         autoFlaggerConfig = autoFlaggerRow
           ? { harnessId: autoFlaggerRow.harnessId, modelId: autoFlaggerRow.modelId, rubric: autoFlaggerRow.rubric }
@@ -1468,13 +1475,7 @@ export function createMemoryConfigStore(
         `turnWallClock:${id}`,
         `branding:${id}`,
         ...(id === org
-          ? [
-              `approvedHarnesses:${org}`,
-              `orgAmbient:${org}`,
-              `interactiveFastMode:${org}`,
-              `individualModelAuth:${org}`,
-              `autoFlagger:${org}`,
-            ]
+          ? [`approvedHarnesses:${org}`, `orgAmbient:${org}`, `interactiveFastMode:${org}`, `autoFlagger:${org}`]
           : []),
         `channelHeaderPin:${id}`,
         `ackEmoji:${id}`,

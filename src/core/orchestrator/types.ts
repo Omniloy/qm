@@ -125,6 +125,7 @@ export interface OrchestratorDeps {
   defaultTurnWallClockMs?: number;
   codexProxy?: CodexProxy;
   userModelCredentials?: UserModelCredentialStore;
+  orgServesModel?: (harnessId: string, modelId: string) => Promise<boolean>;
   brandingDefault?: OrgBranding;
   resolveBaseModelId?: () => string | undefined;
   sessionTapeMode?: "shadow" | "serve";
