@@ -220,3 +220,14 @@ test("a resumed run is logged even when its original fire entry was trimmed", as
   assert.match(entry?.fireKey ?? "", /^security-hold:/);
   assert.match(entry?.note ?? "", /continued and delivered/);
 });
+
+test("a newer card for the same hold retires the card it replaces", async () => {
+  const { built, fire } = await setup();
+  const fired = await built.app.turn(fire("a"));
+  const id = fired.pendingApprovals![0]!.requestId;
+  assert.equal(await built.app.recordApprovalCard(id, { channel: "D-owner", ts: "1.1" }), true);
+  assert.equal(await built.app.recordApprovalCard(id, { channel: "D-owner", ts: "2.2" }), true);
+  const retired = (await built.deliveries.pending("principal")).find((d) => d.destination.cardUpdate?.ts === "1.1");
+  assert.match(retired?.text ?? "", /replaced by a newer one/);
+  assert.equal((await built.app.getApproval(id))?.card?.ts, "2.2");
+});

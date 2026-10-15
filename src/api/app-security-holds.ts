@@ -12,6 +12,7 @@ import {
   scheduledHoldDecider,
 } from "../core/approval-store.ts";
 import { swallowAs } from "../util/errors.ts";
+import { requireAtomic } from "../persistence/durable-map.ts";
 import type { PendingApprovalRecord } from "../types.ts";
 import type { ScheduledHoldDecision } from "../triggers/security-hold-resume.ts";
 import { MAX_REPORT_NOTE_CHARS, type ScreeningReport } from "../security/screening-reports.ts";
@@ -73,9 +74,7 @@ export function createSecurityHoldMethods(
                 ),
                 status: "open",
               };
-        const updated = deps.screeningReports.update
-          ? await deps.screeningReports.update(report.id, append)
-          : await deps.screeningReports.merge(report.id, append(stored));
+        const updated = await requireAtomic(deps.screeningReports).update(report.id, append);
         return { state: "updated", report: updated ?? stored };
       }
       deps.auditLog.record({
@@ -91,19 +90,22 @@ export function createSecurityHoldMethods(
     },
 
     async recordApprovalCard(requestId, card) {
-      const store = deps.approvals;
-      if (!store) return false;
+      if (!deps.approvals) return false;
       const live = (record: PendingApprovalRecord) => !record.supersededBy && !claimIsLive(record);
-      const attach = (record: PendingApprovalRecord): PendingApprovalRecord =>
-        live(record) ? { ...record, card } : { ...record, cardRetired: true };
-      if (store.update) {
-        const updated = await store.update(requestId, attach);
-        return updated?.card?.ts === card.ts && live(updated);
-      }
-      const current = await store.get(requestId);
-      if (!current) return false;
-      await store.put(requestId, attach(current));
-      return live(current);
+      let replaced: PendingApprovalRecord | undefined;
+      const updated = await requireAtomic(deps.approvals).update(requestId, (record) => {
+        if (!live(record)) return { ...record, cardRetired: true };
+        replaced = record.card && record.card.ts !== card.ts ? record : undefined;
+        return { ...record, card };
+      });
+      if (replaced)
+        await announceHoldDecision(
+          deps.deliveries,
+          `${requestId}:${replaced.card!.ts}`,
+          replaced,
+          "This card was replaced by a newer one for the same hold.",
+        ).catch(swallowAs("security holds: retire replaced card", undefined));
+      return updated?.card?.ts === card.ts && live(updated);
     },
 
     async resolveScheduledHold(requestId, actorId, approved) {
@@ -113,16 +115,18 @@ export function createSecurityHoldMethods(
       if (!samePerson(decider, actorId)) return { state: "not_owner" };
       if (record.supersededBy) return { state: "already_resolved" };
       if (!deps.resumeScheduledHold) return { state: "unavailable" };
-      const claimed = await claimApproval(deps.approvals!, requestId);
+      const approvals = requireAtomic(deps.approvals!);
+      const claimed = await claimApproval(approvals, requestId);
       if (!claimed || claimed.supersededBy) {
-        if (claimed) await releaseApprovalClaim(deps.approvals!, requestId, claimed.claimedBy);
+        if (claimed) await releaseApprovalClaim(approvals, requestId, claimed.claimedBy);
         return { state: "already_resolved" };
       }
       const decision = await deps.resumeScheduledHold(requestId, claimed, approved).catch(async (error: unknown) => {
-        await releaseApprovalClaim(deps.approvals!, requestId, claimed.claimedBy);
+        await releaseApprovalClaim(approvals, requestId, claimed.claimedBy);
         throw error;
       });
-      if (decision.outcome === "failed") await releaseApprovalClaim(deps.approvals!, requestId, claimed.claimedBy);
+      if (decision.outcome === "failed" || decision.outcome === "gone")
+        await releaseApprovalClaim(approvals, requestId, claimed.claimedBy);
       else
         await announceHoldDecision(deps.deliveries, requestId, claimed, decision.message).catch(
           swallowAs("security holds: announce decision", undefined),

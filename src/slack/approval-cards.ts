@@ -93,8 +93,8 @@ export function approvalMessage(approvals: readonly PendingApproval[]): SlackApp
     ];
     if (p.summary) lines.push(escapedClip(p.summary, 400));
     if (p.purpose) lines.push(`*Why:* ${escapedClip(p.purpose, 400)}`);
-    if (p.kind !== "input") lines.push(`*Command:* ${inlineCode(p.command)}`);
-    lines.push(`*Flagged as:* ${escapedClip(p.reason, 200)}`);
+    if (p.kind !== "input") lines.push(`*Command:* ${inlineCode(p.command, 1400)}`);
+    lines.push(`*Flagged as:* ${escapedClip(p.reason, 600)}`);
     blocks.push({ type: "section", text: { type: "mrkdwn", text: lines.join("\n") } });
     blocks.push({
       type: "actions",

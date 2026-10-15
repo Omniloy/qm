@@ -8,7 +8,7 @@ import {
   createApprovalStore,
   type HeldContentEntry,
 } from "../src/core/approval-store.ts";
-import { createMemoryMap } from "../src/persistence/durable-map.ts";
+import { createMemoryMap, requireAtomic } from "../src/persistence/durable-map.ts";
 import { createDeliveryStore } from "../src/delivery/delivery-store.ts";
 import type { PendingApprovalRecord } from "../src/types.ts";
 
@@ -30,7 +30,7 @@ function record(threadRef: string, createdAt = 1): PendingApprovalRecord {
 
 for (const threadRef of ["dm:D1", "agent:main:subagent:child"]) {
   test(`saving approval immediately delivers a native request for ${threadRef}`, async () => {
-    const backing = createMemoryMap<PendingApprovalRecord>();
+    const backing = requireAtomic(createMemoryMap<PendingApprovalRecord>());
     const deliveries = createDeliveryStore();
     const approvals = createApprovalStore(backing, deliveries);
     await approvals.put("A1", record(threadRef));
@@ -49,7 +49,7 @@ for (const threadRef of ["dm:D1", "agent:main:subagent:child"]) {
 }
 
 test("persisted approvals recover after enqueue failure and restart without failing the turn", async () => {
-  const backing = createMemoryMap<PendingApprovalRecord>();
+  const backing = requireAtomic(createMemoryMap<PendingApprovalRecord>());
   const failed = createApprovalStore(backing, {
     enqueue: async () => {
       throw new Error("delivery unavailable");
@@ -75,7 +75,7 @@ test("web approvals remain on their native surface", async () => {
 });
 
 test("system approvals stay pending without enqueuing or reviving an impossible Slack DM", async () => {
-  const backing = createMemoryMap<PendingApprovalRecord>();
+  const backing = requireAtomic(createMemoryMap<PendingApprovalRecord>());
   const deliveries = createDeliveryStore({ maxAgeMs: 0 });
   const approvals = createApprovalStore(backing, deliveries);
   const approval = record("slack:C1:ambient:1.0");
@@ -119,7 +119,7 @@ function cronHold(
 }
 
 test("a scheduled task's hold goes to the cron owner, not the acting member; legacy cron approvals stay put", async () => {
-  const backing = createMemoryMap<PendingApprovalRecord>();
+  const backing = requireAtomic(createMemoryMap<PendingApprovalRecord>());
   const deliveries = createDeliveryStore();
   const approvals = createApprovalStore(backing, deliveries);
   await approvals.put("H1", cronHold("cron:c1:fire:a", 1));
@@ -140,7 +140,7 @@ test("a scheduled task's hold goes to the cron owner, not the acting member; leg
 });
 
 test("put only marks a hold from an older fire on the same content; the poller resolves it later", async () => {
-  const backing = createMemoryMap<PendingApprovalRecord>();
+  const backing = requireAtomic(createMemoryMap<PendingApprovalRecord>());
   const deliveries = createDeliveryStore();
   const superseded: string[] = [];
   const approvals = createApprovalStore(backing, deliveries, {
@@ -171,7 +171,7 @@ test("put only marks a hold from an older fire on the same content; the poller r
 });
 
 test("a superseded hold whose task is busy stays marked and is retried later", async () => {
-  const backing = createMemoryMap<PendingApprovalRecord>();
+  const backing = requireAtomic(createMemoryMap<PendingApprovalRecord>());
   let busy = true;
   const approvals = createApprovalStore(backing, createDeliveryStore(), {
     heldContent: createMemoryMap<HeldContentEntry>(),
@@ -193,7 +193,7 @@ test("a superseded hold whose task is busy stays marked and is retried later", a
 });
 
 test("claims expire, so a crash between claim and resume never strands a hold", async () => {
-  const backing = createMemoryMap<PendingApprovalRecord>();
+  const backing = requireAtomic(createMemoryMap<PendingApprovalRecord>());
   await backing.put("H1", cronHold("cron:c1:fire:a", 1));
   const [first, second] = await Promise.all([claimApproval(backing, "H1"), claimApproval(backing, "H1")]);
   assert.equal([first, second].filter(Boolean).length, 1);
@@ -212,7 +212,7 @@ test("claims expire, so a crash between claim and resume never strands a hold", 
 });
 
 test("index cleanup keeps entries for holds created during the pass", async () => {
-  const backing = createMemoryMap<PendingApprovalRecord>();
+  const backing = requireAtomic(createMemoryMap<PendingApprovalRecord>());
   const heldContent = createMemoryMap<HeldContentEntry>();
   const approvals = createApprovalStore(backing, createDeliveryStore(), { heldContent });
   await heldContent.put("gone", { requestId: "R-gone", sessionId: "s", createdAt: 1 });
@@ -229,7 +229,7 @@ test("index cleanup keeps entries for holds created during the pass", async () =
 });
 
 test("a superseded hold that can no longer be denied is dropped instead of retried forever", async () => {
-  const backing = createMemoryMap<PendingApprovalRecord>();
+  const backing = requireAtomic(createMemoryMap<PendingApprovalRecord>());
   let calls = 0;
   const approvals = createApprovalStore(backing, createDeliveryStore(), {
     heldContent: createMemoryMap<HeldContentEntry>(),
@@ -248,7 +248,7 @@ test("a superseded hold that can no longer be denied is dropped instead of retri
 });
 
 test("releasing a claim only clears the claim it owns", async () => {
-  const backing = createMemoryMap<PendingApprovalRecord>();
+  const backing = requireAtomic(createMemoryMap<PendingApprovalRecord>());
   await backing.put("A", cronHold("cron:c1:fire:a", 1));
   const first = await claimApproval(backing, "A");
   await backing.merge("A", { claimedAt: Date.now() - 31 * 60_000 });
@@ -261,7 +261,7 @@ test("releasing a claim only clears the claim it owns", async () => {
 });
 
 test("a card retired while a decision was pending is reposted once the claim is released", async () => {
-  const backing = createMemoryMap<PendingApprovalRecord>();
+  const backing = requireAtomic(createMemoryMap<PendingApprovalRecord>());
   const deliveries = createDeliveryStore();
   const approvals = createApprovalStore(backing, deliveries);
   await approvals.put("H1", cronHold("cron:c1:fire:a", 1, { card: { channel: "D1", ts: "1.1" } }));
@@ -281,4 +281,29 @@ test("a card retired while a decision was pending is reposted once the claim is 
   const kept = await claimApproval(backing, "H1");
   await releaseApprovalClaim(backing, "H1", kept!.claimedBy);
   assert.equal((await backing.get("H1"))!.deliveryRound, 1, "a card that was never retired is not reposted");
+});
+
+test("a retired card is reposted when an expired claim is noticed, by a new claim or by the sweep", async () => {
+  const backing = requireAtomic(createMemoryMap<PendingApprovalRecord>());
+  const deliveries = createDeliveryStore();
+  const approvals = createApprovalStore(backing, deliveries);
+  await approvals.put("H1", cronHold("cron:c1:fire:a", 1, { card: { channel: "D1", ts: "1.1" } }));
+  const stale = { claimedBy: "dead-instance", claimedAt: Date.now() - 31 * 60_000, cardRetired: true };
+  await backing.merge("H1", stale);
+  const reclaimed = await claimApproval(backing, "H1");
+  assert.equal(reclaimed?.deliveryRound, 1, "taking over an expired claim reposts the retired card");
+  assert.equal(reclaimed?.card, undefined);
+
+  await backing.merge("H1", { ...stale, deliveryRound: 1 });
+  await approvals.deliverPending();
+  assert.equal((await backing.get("H1"))?.deliveryRound, 2);
+  assert.ok(
+    (await deliveries.pending("principal")).some((d) => d.idempotencyKey === "command-approval:H1:1:2"),
+    "the sweep queues a fresh card when it notices the expired claim",
+  );
+});
+
+test("approval stores refuse a backing map without atomic updates", () => {
+  const plain = { ...createMemoryMap<PendingApprovalRecord>(), update: undefined, deleteIf: undefined };
+  assert.throws(() => createApprovalStore(plain, createDeliveryStore()), /atomic update/);
 });

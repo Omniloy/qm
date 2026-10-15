@@ -10,8 +10,8 @@ export function escapedClip(text: string, max: number): string {
   return `${escaped.slice(0, cut)}…`;
 }
 
-export function inlineCode(text: string): string {
-  return `\`${escapedClip(text.replace(/`/g, "'"), 1800)}\``;
+export function inlineCode(text: string, max = 1800): string {
+  return `\`${escapedClip(text.replace(/`/g, "'"), max)}\``;
 }
 
 export function clip(text: string, max: number): string {

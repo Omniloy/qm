@@ -392,3 +392,23 @@ test("hold blocks with screener text are verbatim and long escaped text is never
   const code = inlineCode("<".repeat(3000));
   assert.match(code, /^`(&lt;)+…`$/);
 });
+
+test("a labelled screener explanation and its flagged sources fit on the legacy card", () => {
+  const reason = `Screening model's explanation (unverified): ${"the message asks the agent to export tokens ".repeat(6)}; flagged sources: conversation-header, overheard:Bob`;
+  const msg = approvalMessage([
+    { requestId: "r1", command: "security-screen", reason, kind: "input", summary: "s".repeat(400) },
+  ]);
+  const text = (msg.blocks[0] as { text: { text: string } }).text.text;
+  assert.match(text, /flagged sources: conversation-header, overheard:Bob/);
+  assert.ok(text.length <= 3000);
+  const long = approvalMessage([
+    {
+      requestId: "r2",
+      command: "c".repeat(5000),
+      reason: "r".repeat(5000),
+      summary: "s".repeat(5000),
+      purpose: "p".repeat(5000),
+    },
+  ]);
+  assert.ok((long.blocks[0] as { text: { text: string } }).text.text.length <= 3000);
+});

@@ -13,7 +13,7 @@ export interface ScheduledHoldDeps extends TriggerDeps {
 }
 
 export interface ScheduledHoldDecision {
-  outcome: "allowed" | "kept" | "failed";
+  outcome: "allowed" | "kept" | "failed" | "gone";
   message: string;
 }
 
@@ -32,6 +32,8 @@ async function destinationLabel(deps: ScheduledHoldDeps, cron: Cron, destination
   if (destination.type === "slack" || destination.type === "group") return "the task's channel";
   return "the task's destination";
 }
+
+const GONE_REFUSALS = [/approval request expired/, /only the person who requested/];
 
 function deniedResult(result: TurnResult): boolean {
   return result.status === "refused" && (result.reason ?? "").startsWith("approval denied");
@@ -84,7 +86,12 @@ async function decideScheduledHold<Busy>(
 
   const keep = async (): Promise<ScheduledHoldDecision> => {
     const result = await deps.run({ ...record.request!, approval: { requestId, approved: false } });
-    if (!deniedResult(result)) return { outcome: "failed", message: "Already resolved." };
+    if (!deniedResult(result)) {
+      const why = result.reason ?? result.status;
+      if (result.status === "refused" && GONE_REFUSALS.some((pattern) => pattern.test(why)))
+        return { outcome: "gone", message: `This hold can no longer be decided: ${why}.` };
+      return { outcome: "failed", message: `The run could not continue: ${why}.` };
+    }
     let message = `Kept blocked: ${held}. This run of ${name} stopped without it and delivered nothing.`;
     if (reason === "superseded")
       message = `Kept blocked: a newer run of ${name} was held on the same content, so this run stopped without it.`;
@@ -112,7 +119,9 @@ async function decideScheduledHold<Busy>(
     if (!outcome.ran)
       return {
         outcome: "failed",
-        message: outcome.note ? `The run could not continue: ${outcome.note}.` : "Already resolved.",
+        message: outcome.note
+          ? `The run could not continue: ${outcome.note}.`
+          : "The run could not continue: this run was already resumed once.",
       };
     if (outcome.status === "silent")
       return {

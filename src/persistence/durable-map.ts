@@ -23,6 +23,13 @@ export interface DurableMap<T> {
   take(id: string): Promise<T | null>;
 }
 
+export type AtomicDurableMap<T> = DurableMap<T> & Required<Pick<DurableMap<T>, "update" | "deleteIf">>;
+
+export function requireAtomic<T>(map: DurableMap<T>): AtomicDurableMap<T> {
+  if (!map.update || !map.deleteIf) throw new Error("this store needs atomic update and deleteIf");
+  return map as AtomicDurableMap<T>;
+}
+
 /**
  * Serialize for a Postgres jsonb column. jsonb rejects two things a JS string
  * happily carries: NUL (\u0000) and unpaired surrogate halves — and qm's own

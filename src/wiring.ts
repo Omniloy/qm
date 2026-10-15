@@ -2020,13 +2020,13 @@ export function buildApp(
     heldContent: artifactMap<HeldContentEntry>("held_content_index"),
     supersede: async (id, record) => {
       const decision = await supersedeScheduledHold(scheduledHoldDeps(), id, record);
-      if (!decision) return "busy";
+      if (!decision || decision.outcome === "failed") return "busy";
       const message =
-        decision.outcome === "failed"
+        decision.outcome === "gone"
           ? "This hold was replaced by a newer run of the task and is no longer waiting on you."
           : decision.message;
       await announceHoldDecision(deliveries, id, record, message);
-      return decision.outcome === "failed" ? "unresolvable" : "resolved";
+      return decision.outcome === "gone" ? "unresolvable" : "resolved";
     },
   });
   const screeningReports: ScreeningReportStore = artifactMap<ScreeningReport>("screening_reports");

@@ -3,7 +3,7 @@ import { swallowAs } from "../util/errors.ts";
 import { hashId } from "../util/crypto.ts";
 import { isScheduledHoldRecord } from "../../plugins/chassis/src/scheduled-hold.ts";
 import type { PendingApprovalRecord } from "../types.ts";
-import type { DurableMap } from "../persistence/durable-map.ts";
+import { requireAtomic, type AtomicDurableMap, type DurableMap } from "../persistence/durable-map.ts";
 import type { DeliveryStore } from "../delivery/delivery-store.ts";
 import { principalDestination } from "../reach/reach.ts";
 
@@ -52,25 +52,25 @@ export function claimIsLive(record: Pick<PendingApprovalRecord, "claimedBy" | "c
   return record.claimedBy !== undefined && (record.claimedAt ?? 0) > now - CLAIM_TTL_MS;
 }
 
+function withFreshCard(record: PendingApprovalRecord): PendingApprovalRecord {
+  if (!record.cardRetired || claimIsLive(record)) return record;
+  const { card: _card, cardRetired: _retired, ...rest } = record;
+  return { ...rest, deliveryRound: (record.deliveryRound ?? 0) + 1 };
+}
+
 export async function claimApproval(
-  store: DurableMap<PendingApprovalRecord>,
+  store: AtomicDurableMap<PendingApprovalRecord>,
   id: string,
 ): Promise<PendingApprovalRecord | null> {
   const token = randomUUID();
-  const claim = (record: PendingApprovalRecord): PendingApprovalRecord =>
-    claimIsLive(record) ? record : { ...record, claimedBy: token, claimedAt: Date.now() };
-  let claimed: PendingApprovalRecord | null;
-  if (store.update) claimed = await store.update(id, claim);
-  else {
-    const current = await store.get(id);
-    claimed = current ? claim(current) : null;
-    if (claimed && claimed !== current) await store.put(id, claimed);
-  }
+  const claimed = await store.update(id, (record) =>
+    claimIsLive(record) ? record : { ...withFreshCard(record), claimedBy: token, claimedAt: Date.now() },
+  );
   return claimed?.claimedBy === token ? claimed : null;
 }
 
 export async function releaseApprovalClaim(
-  store: DurableMap<PendingApprovalRecord>,
+  store: AtomicDurableMap<PendingApprovalRecord>,
   id: string,
   token: string | undefined,
 ): Promise<void> {
@@ -81,12 +81,7 @@ export async function releaseApprovalClaim(
       ? { ...rest, deliveryRound: (record.deliveryRound ?? 0) + 1 }
       : { ...rest, ...(card ? { card } : {}) };
   };
-  if (store.update) {
-    await store.update(id, release);
-    return;
-  }
-  const current = await store.get(id);
-  if (current) await store.put(id, release(current));
+  await store.update(id, release);
 }
 
 export async function announceHoldDecision(
@@ -112,10 +107,12 @@ export interface ApprovalStoreOptions {
 }
 
 export function createApprovalStore(
-  backing: DurableMap<PendingApprovalRecord>,
+  store: DurableMap<PendingApprovalRecord>,
   deliveries: Pick<DeliveryStore, "enqueue">,
   opts: ApprovalStoreOptions = {},
 ) {
+  const backing = requireAtomic(store);
+  const heldContent = opts.heldContent ? requireAtomic(opts.heldContent) : undefined;
   async function deliver(id: string, record: PendingApprovalRecord): Promise<void> {
     const scheduledHold = scheduledHoldDecider(record) !== undefined;
     if (!record.request || (record.request.surface !== "slack" && !scheduledHold)) return;
@@ -142,12 +139,12 @@ export function createApprovalStore(
 
   async function indexHeldContent(id: string, record: PendingApprovalRecord): Promise<boolean> {
     const key = heldContentKey(record);
-    if (!key || !opts.heldContent) return false;
+    if (!key || !heldContent) return false;
     const entry = { requestId: id, sessionId: record.sessionId, createdAt: record.createdAt ?? 0 };
-    const previous = await opts.heldContent.get(key);
+    const previous = await heldContent.get(key);
     const replaces = !previous || previous.requestId === id || previous.sessionId === record.sessionId;
     if (replaces || previous.createdAt <= entry.createdAt) {
-      await opts.heldContent.put(key, entry);
+      await heldContent.put(key, entry);
       if (!replaces) await markSuperseded(previous.requestId, id);
       return false;
     }
@@ -163,8 +160,7 @@ export function createApprovalStore(
       outcome = opts.supersede ? await opts.supersede(id, claimed) : "unresolvable";
     } finally {
       if (outcome === "unresolvable") {
-        if (backing.deleteIf) await backing.deleteIf(id, (record) => record.claimedBy === claimed.claimedBy);
-        else await backing.delete(id);
+        await backing.deleteIf(id, (record) => record.claimedBy === claimed.claimedBy);
       } else if (outcome === "busy") await releaseApprovalClaim(backing, id, claimed.claimedBy);
     }
   }
@@ -179,12 +175,16 @@ export function createApprovalStore(
     },
     async deliverPending(): Promise<void> {
       const entries = await backing.entries();
-      for (const [id, record] of entries) if (!record.supersededBy && !claimIsLive(record)) await deliver(id, record);
-      if (!opts.heldContent) return;
+      for (const [id, stored] of entries) {
+        if (stored.supersededBy || claimIsLive(stored)) continue;
+        const record = stored.cardRetired ? ((await backing.update(id, withFreshCard)) ?? stored) : stored;
+        await deliver(id, record);
+      }
+      if (!heldContent) return;
       const live = new Set(entries.map(([id]) => id));
-      for (const [key, entry] of await opts.heldContent.entries())
+      for (const [key, entry] of await heldContent.entries())
         if (!live.has(entry.requestId) && !(await backing.get(entry.requestId)))
-          await opts.heldContent.deleteIf?.(key, (current) => current.requestId === entry.requestId);
+          await heldContent.deleteIf(key, (current) => current.requestId === entry.requestId);
     },
     async resolveSupersededHolds(): Promise<void> {
       for (const [id, record] of await backing.entries())

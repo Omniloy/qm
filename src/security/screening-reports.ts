@@ -1,4 +1,4 @@
-import type { DurableMap } from "../persistence/durable-map.ts";
+import { requireAtomic, type DurableMap } from "../persistence/durable-map.ts";
 import type { SecurityScreenCategory, SkillIdentity, ToolResultContext } from "./security-posture.ts";
 
 export const SCREENING_REPORT_STATUSES = ["open", "screen_correct", "fixed"] as const;
@@ -68,12 +68,7 @@ export async function countHold(store: ScreeningHoldCountStore | undefined, sour
   const at = Date.now();
   await store.putIfAbsent(sourceKey, { sourceKey, holds: 0, lastAt: at });
   const bump = (value: ScreeningHoldCount): ScreeningHoldCount => ({ ...value, holds: value.holds + 1, lastAt: at });
-  if (store.update) {
-    await store.update(sourceKey, bump);
-    return;
-  }
-  const current = await store.get(sourceKey);
-  if (current) await store.put(sourceKey, bump(current));
+  await requireAtomic(store).update(sourceKey, bump);
 }
 
 export async function sweepScreeningReports(
