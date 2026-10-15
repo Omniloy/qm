@@ -39,10 +39,23 @@ test("a busy session or other transient refusal is a retryable failure carrying 
   assert.deepEqual(busy, { outcome: "failed", message: "The run could not continue: the conversation is busy." });
 });
 
-test("only an expired or undecidable request is reported as gone", async () => {
+test("rate limits, budgets and failed runs are retryable too", async () => {
+  for (const result of [
+    { status: "refused", refusalKind: "rate_limited", reason: "rate limit exceeded" },
+    { status: "refused", refusalKind: "budget_exceeded", reason: "budget exceeded" },
+    { status: "failed", reason: "provider error" },
+  ] as TurnResult[]) {
+    const decision = await supersedeScheduledHold(deps(result), "H1", record);
+    assert.equal(decision?.outcome, "failed", result.reason);
+  }
+});
+
+test("every other refusal is permanent and reported as gone", async () => {
   for (const reason of [
     "that approval request expired — ask again if you still want it to run",
     "only the person who requested this command can approve or deny it",
+    "this conversation is no longer available — start a new one",
+    "internal-only: shared audience includes a non-internal participant",
   ]) {
     const gone = await resumeScheduledHold(deps({ status: "refused", reason }), "H1", record, false);
     assert.equal(gone.outcome, "gone");
@@ -52,7 +65,7 @@ test("only an expired or undecidable request is reported as gone", async () => {
 
 test("a recognized deny keeps the hold blocked", async () => {
   const kept = await resumeScheduledHold(
-    deps({ status: "refused", reason: "approval denied for release" }),
+    deps({ status: "refused", refusalKind: "approval_denied", reason: "approval denied for release" }),
     "H1",
     record,
     false,

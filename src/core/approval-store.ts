@@ -54,7 +54,7 @@ export function claimIsLive(record: Pick<PendingApprovalRecord, "claimedBy" | "c
 
 function withFreshCard(record: PendingApprovalRecord): PendingApprovalRecord {
   if (!record.cardRetired || claimIsLive(record)) return record;
-  const { card: _card, cardRetired: _retired, ...rest } = record;
+  const { cardRetired: _retired, ...rest } = record;
   return { ...rest, deliveryRound: (record.deliveryRound ?? 0) + 1 };
 }
 
@@ -76,10 +76,8 @@ export async function releaseApprovalClaim(
 ): Promise<void> {
   const release = (record: PendingApprovalRecord): PendingApprovalRecord => {
     if (!token || record.claimedBy !== token) return record;
-    const { claimedBy: _claim, claimedAt: _at, card, cardRetired, ...rest } = record;
-    return cardRetired
-      ? { ...rest, deliveryRound: (record.deliveryRound ?? 0) + 1 }
-      : { ...rest, ...(card ? { card } : {}) };
+    const { claimedBy: _claim, claimedAt: _at, ...rest } = record;
+    return withFreshCard(rest);
   };
   await store.update(id, release);
 }
@@ -177,8 +175,8 @@ export function createApprovalStore(
       const entries = await backing.entries();
       for (const [id, stored] of entries) {
         if (stored.supersededBy || claimIsLive(stored)) continue;
-        const record = stored.cardRetired ? ((await backing.update(id, withFreshCard)) ?? stored) : stored;
-        await deliver(id, record);
+        const record = stored.cardRetired ? await backing.update(id, withFreshCard) : stored;
+        if (record) await deliver(id, record);
       }
       if (!heldContent) return;
       const live = new Set(entries.map(([id]) => id));

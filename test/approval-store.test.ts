@@ -275,7 +275,11 @@ test("a card retired while a decision was pending is reposted once the claim is 
   await releaseApprovalClaim(backing, "H1", claimed!.claimedBy);
   const released = (await backing.get("H1"))!;
   assert.equal(released.deliveryRound, 1);
-  assert.equal(released.card, undefined);
+  assert.deepEqual(
+    released.card,
+    { channel: "D1", ts: "1.1" },
+    "the old card stays known so its replacement retires it",
+  );
   await approvals.deliverPending();
   assert.deepEqual(await keys(), ["command-approval:H1:1", "command-approval:H1:1:1"], "a fresh card is queued");
   const kept = await claimApproval(backing, "H1");
@@ -292,7 +296,7 @@ test("a retired card is reposted when an expired claim is noticed, by a new clai
   await backing.merge("H1", stale);
   const reclaimed = await claimApproval(backing, "H1");
   assert.equal(reclaimed?.deliveryRound, 1, "taking over an expired claim reposts the retired card");
-  assert.equal(reclaimed?.card, undefined);
+  assert.deepEqual(reclaimed?.card, { channel: "D1", ts: "1.1" });
 
   await backing.merge("H1", { ...stale, deliveryRound: 1 });
   await approvals.deliverPending();
@@ -306,4 +310,18 @@ test("a retired card is reposted when an expired claim is noticed, by a new clai
 test("approval stores refuse a backing map without atomic updates", () => {
   const plain = { ...createMemoryMap<PendingApprovalRecord>(), update: undefined, deleteIf: undefined };
   assert.throws(() => createApprovalStore(plain, createDeliveryStore()), /atomic update/);
+});
+
+test("the sweep skips a hold deleted while it refreshed the retired card", async () => {
+  const backing = requireAtomic(createMemoryMap<PendingApprovalRecord>());
+  const deliveries = createDeliveryStore();
+  const approvals = createApprovalStore(backing, deliveries);
+  await backing.put("H1", { ...cronHold("cron:c1:fire:a", 1), cardRetired: true });
+  const update = backing.update.bind(backing);
+  backing.update = async (id, fn) => {
+    await backing.delete(id);
+    return update(id, fn);
+  };
+  await approvals.deliverPending();
+  assert.deepEqual(await deliveries.pending("principal"), []);
 });

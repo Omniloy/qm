@@ -721,6 +721,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       if (!rl.allowed) {
         return {
           status: "refused",
+          refusalKind: "rate_limited",
           reason: `rate limit exceeded — try again in ${Math.ceil((rl.retryAfterMs ?? 0) / 1000)}s`,
         };
       }
@@ -730,6 +731,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         if (!b.allowed) {
           return {
             status: "refused",
+            refusalKind: "budget_exceeded",
             reason: `budget exceeded ($${b.spentUsd.toFixed(2)} of $${b.limitUsd}); try again later`,
           };
         }
@@ -2205,6 +2207,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             return {
               status: "refused",
               sessionId: session.id,
+              refusalKind: "approval_denied",
               reason: `approval denied for ${p.command}`,
             };
           } else {

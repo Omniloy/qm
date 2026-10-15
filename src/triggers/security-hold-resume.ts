@@ -33,10 +33,10 @@ async function destinationLabel(deps: ScheduledHoldDeps, cron: Cron, destination
   return "the task's destination";
 }
 
-const GONE_REFUSALS = [/approval request expired/, /only the person who requested/];
+const TRANSIENT_REFUSALS = new Set<TurnResult["refusalKind"]>(["session_busy", "rate_limited", "budget_exceeded"]);
 
-function deniedResult(result: TurnResult): boolean {
-  return result.status === "refused" && (result.reason ?? "").startsWith("approval denied");
+function transientResult(result: TurnResult): boolean {
+  return result.status === "failed" || (result.status === "refused" && TRANSIENT_REFUSALS.has(result.refusalKind));
 }
 
 type LockRunner<Busy> = <T>(key: string, run: () => Promise<T>) => Promise<T | Busy>;
@@ -86,11 +86,10 @@ async function decideScheduledHold<Busy>(
 
   const keep = async (): Promise<ScheduledHoldDecision> => {
     const result = await deps.run({ ...record.request!, approval: { requestId, approved: false } });
-    if (!deniedResult(result)) {
+    if (result.refusalKind !== "approval_denied") {
       const why = result.reason ?? result.status;
-      if (result.status === "refused" && GONE_REFUSALS.some((pattern) => pattern.test(why)))
-        return { outcome: "gone", message: `This hold can no longer be decided: ${why}.` };
-      return { outcome: "failed", message: `The run could not continue: ${why}.` };
+      if (transientResult(result)) return { outcome: "failed", message: `The run could not continue: ${why}.` };
+      return { outcome: "gone", message: `This hold can no longer be decided: ${why}.` };
     }
     let message = `Kept blocked: ${held}. This run of ${name} stopped without it and delivered nothing.`;
     if (reason === "superseded")

@@ -231,3 +231,14 @@ test("a newer card for the same hold retires the card it replaces", async () => 
   assert.match(retired?.text ?? "", /replaced by a newer one/);
   assert.equal((await built.app.getApproval(id))?.card?.ts, "2.2");
 });
+
+test("a superseded hold whose session was deleted is dropped once, not retried every sweep", async () => {
+  const { built, fire } = await setup();
+  const older = await built.app.turn(fire("a"));
+  const olderId = older.pendingApprovals![0]!.requestId;
+  await built.app.turn(fire("b"));
+  await built.sessions.deleteSession(older.sessionId!);
+  await built.approvals.resolveSupersededHolds();
+  assert.equal(await built.app.getApproval(olderId), null);
+  assert.equal(await built.approvals.get(olderId), null, "the record is gone, so no later sweep turns it again");
+});

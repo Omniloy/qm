@@ -773,7 +773,8 @@ export interface TurnResult {
   reply?: string;
   reactions?: string[];
   reason?: string;
-  refusalKind?: "security_quarantine" | "session_busy" | "provider_limit";
+  refusalKind?:
+    "security_quarantine" | "session_busy" | "provider_limit" | "rate_limited" | "budget_exceeded" | "approval_denied";
   adminUrl?: string;
   runId?: string;
   steered?: true;
