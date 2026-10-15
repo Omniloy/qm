@@ -106,6 +106,24 @@ test("temporary onboarding covers model credentials, Slack, and OAuth setup", ()
   assert.match(html, /data-onboarding-target="oauth"/);
 });
 
+test("the org subscription cards live on the Models page and onboarding points there", () => {
+  const onboarding = html.slice(html.indexOf('id="view-onboarding"'), html.indexOf('id="view-governance"'));
+  const governance = html.slice(html.indexOf('id="view-governance"'));
+  assert.doesNotMatch(onboarding, /card-(claude|chatgpt)-subscription/);
+  assert.match(onboarding, /data-viewlink="models"/);
+  assert.match(governance, /class="card sv-models" id="card-claude-subscription"/);
+  assert.match(governance, /class="card sv-models" id="card-chatgpt-subscription"/);
+  assert.match(
+    html,
+    /providers,\s+\$\("card-claude-subscription"\),\s+\$\("card-chatgpt-subscription"\),\s+\$\("card-webui-models"\)/,
+  );
+  assert.match(
+    html,
+    /if \(view === "models"\) \{\s+void loadCustomProviders\(\);\s+void governanceUI\.modelSubscriptions\.load\(\);/,
+  );
+  assert.ok(html.indexOf("governanceUI.mountCards();") < html.indexOf("prepareParityCards();"));
+});
+
 test("admin shell addresses views by path, not a ?view= query param", () => {
   assert.match(html, /const path = API_BASE \+ "\/" \+ encodeURIComponent\(st\.view \|\| DEFAULT_VIEW\);/);
   assert.doesNotMatch(html, /p\.set\("view", st\.view\)/);

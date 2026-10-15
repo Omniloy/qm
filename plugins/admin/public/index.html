@@ -6480,8 +6480,18 @@
             <template data-onboarding-ui="steps"></template>
             <template data-onboarding-ui="provider"></template>
             <template data-onboarding-ui="registry"></template>
-            <template data-settings-card="card-claude-subscription"></template>
-            <template data-settings-card="card-chatgpt-subscription"></template>
+            <section class="card" id="onboarding-subscriptions">
+              <div class="head">
+                <h2>Model subscriptions</h2>
+                <p>
+                  Connect a Claude or ChatGPT subscription for the organization, see which account is connected, and
+                  reconnect it on the Models page.
+                </p>
+              </div>
+              <div class="foot">
+                <button type="button" class="viewlink" data-viewlink="models">Open Models ›</button>
+              </div>
+            </section>
             <section class="card">
               <div class="head">
                 <h2>Custom providers</h2>
@@ -6585,6 +6595,8 @@
                 </div>
                 <template data-settings-card="card-base-model"></template>
                 <template data-settings-card="card-webui-models"></template>
+                <template data-settings-card="card-claude-subscription"></template>
+                <template data-settings-card="card-chatgpt-subscription"></template>
                 <template data-settings-card="card-model-account-modes"></template>
                 <template data-settings-card="card-branding"></template>
                 <template data-settings-card="card-feature-flags"></template>
@@ -6713,6 +6725,8 @@
           $("card-cron-runtime"),
           $("card-subagent-runtime"),
           providers,
+          $("card-claude-subscription"),
+          $("card-chatgpt-subscription"),
           $("card-webui-models"),
           $("card-soul"),
           $("card-branding"),
@@ -8234,7 +8248,10 @@
         }
         if (requestedView === "customize") void governanceUI.settings.loadFlags(r.data, scope);
         if (requestedView === "credentials") renderServiceCreds(r.data.serviceCredentials || []);
-        if (view === "models") void loadCustomProviders();
+        if (view === "models") {
+          void loadCustomProviders();
+          void governanceUI.modelSubscriptions.load();
+        }
         if (view === "credentials") {
           void loadServiceCredentialUsage(requestedScope, requestId);
         }
@@ -8540,7 +8557,6 @@
       governanceUI.modelCatalog.configure({ api, orgScope: () => orgScope() });
       governanceUI.modelSubscriptions.configure({ api });
       function loadOnboarding() {
-        void governanceUI.modelSubscriptions.load();
         void loadCustomProviders();
         return governanceUI.onboarding.load();
       }
