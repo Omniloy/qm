@@ -171,6 +171,24 @@ export async function readRawBody(req: IncomingMessage): Promise<string> {
   return chunks.length === 0 ? "" : Buffer.concat(chunks).toString("utf8");
 }
 
+const UNRESERVED = /^[A-Za-z0-9\-._~]$/;
+
+export function isCanonicalRequestPath(target: string): boolean {
+  const path = target.split(/[?#]/, 1)[0] ?? "";
+  if (!path.startsWith("/") || path.split("/").slice(1).includes("")) return false;
+  if (!URL.canParse(path, "http://localhost") || new URL(path, "http://localhost").pathname !== path) return false;
+  for (const escape of path.matchAll(/%(.{0,2})/g)) {
+    const hex = escape[1] ?? "";
+    if (!/^[0-9A-Fa-f]{2}$/.test(hex) || UNRESERVED.test(String.fromCharCode(parseInt(hex, 16)))) return false;
+  }
+  try {
+    decodeURIComponent(path);
+  } catch {
+    return false;
+  }
+  return true;
+}
+
 export function canonicalPayload(method: string, pathWithQuery: string, tail: string): string {
   return `${method}\n${pathWithQuery}\n${tail}`;
 }

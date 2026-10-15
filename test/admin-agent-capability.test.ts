@@ -6,6 +6,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
+import { request } from "node:http";
+import { signedHeaders, withSourceAuthNonce } from "../plugins/chassis/src/core-client.ts";
 import { createServer } from "../src/api/server.ts";
 import { buildApp } from "../src/wiring.ts";
 import { createKeychain } from "../src/credentials/keychain.ts";
@@ -798,6 +800,143 @@ test("shared-channel admin runtime mutations do not return a private cron prompt
       body: JSON.stringify({ runtime: null }),
     });
     assert.equal(denied.status, 403);
+  } finally {
+    await s.close();
+  }
+});
+
+const rawRequest = (
+  base: string,
+  method: string,
+  path: string,
+  headers: Record<string, string>,
+  body = "",
+): Promise<{ status: number; text: string }> =>
+  new Promise((resolve, reject) => {
+    const req = request(`${base}${path}`, { method, headers, path }, (res) => {
+      let text = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk: string) => (text += chunk));
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, text }));
+    });
+    req.on("error", reject);
+    req.end(body);
+  });
+
+const hex = (c: string) => `%${c.charCodeAt(0).toString(16)}`;
+
+const pathDodges = (resource: string): Array<[path: string, status: number]> => {
+  const head = resource.slice(0, 1);
+  const tail = resource.slice(1);
+  const nonCanonical = [
+    `/v1/admin/${hex(head)}${tail}`,
+    `/v1/admin/${hex(head).toUpperCase()}${tail}`,
+    `/v1/admin/${resource.slice(0, -1)}${hex(resource.slice(-1))}`,
+    `/v1/%61dmin/${resource}`,
+    `/v1/admin/./${resource}`,
+    `/v1/admin/x/../${resource}`,
+    `/v1/admin/%2e/${resource}`,
+    `/v1/admin/x/%2E%2E/${resource}`,
+    `/v1/admin/x/.%2e/${resource}`,
+    `/v1//admin/${resource}`,
+    `/v1/admin//${resource}`,
+    `/v1/admin/${resource}/`,
+    `/v1/admin\\${resource}`,
+    `/v1/admin/%zz${resource}`,
+    `/v1/admin/${resource}%`,
+    `/v1/admin/${resource}%C3`,
+  ];
+  const unrouted = [
+    `/v1/admin/%25${hex(head).slice(1)}${tail}`,
+    `/v1/admin%2F${resource}`,
+    `/v1/admin%2f${resource}`,
+    `/v1/admin/${resource.toUpperCase()}`,
+  ];
+  return [
+    ...nonCanonical.map((path): [string, number] => [path, 400]),
+    ...unrouted.map((path): [string, number] => [path, 403]),
+  ];
+};
+
+test("encoded, dot-segment and slash variants of portal-only admin paths never reach their handlers", async () => {
+  const s = start();
+  try {
+    const json = { "x-agent-capability": await capFor("admin-alice"), "content-type": "application/json" };
+    const promote = JSON.stringify({ principalId: "U9", role: "org_admin", scopeId: ORG });
+    for (const [path, status] of pathDodges("grants")) {
+      const res = await rawRequest(s.base, "POST", path, json, promote);
+      assert.equal(res.status, status, `${path} → ${res.status} ${res.text}`);
+    }
+    for (const [path, status] of pathDodges("grants/admin-bob")) {
+      const res = await rawRequest(s.base, "DELETE", `${path}?scope=${encodeURIComponent(ORG)}&role=org_admin`, json);
+      assert.equal(res.status, status, `${path} → ${res.status} ${res.text}`);
+    }
+    for (const [path, status] of pathDodges("impersonate")) {
+      const res = await rawRequest(s.base, "POST", path, json, JSON.stringify({ target: "U9" }));
+      assert.equal(res.status, status, `${path} → ${res.status} ${res.text}`);
+    }
+    for (const [path, status] of pathDodges("principal-links")) {
+      const link = await rawRequest(s.base, "POST", path, json, JSON.stringify({ principalId: "U9", linkedId: "U1" }));
+      assert.equal(link.status, status, `${path} → ${link.status} ${link.text}`);
+      const list = await rawRequest(s.base, "GET", path, json);
+      assert.equal(list.status, status, `GET ${path} → ${list.status} ${list.text}`);
+    }
+    const u9 = await fetch(`${s.base}/v1/admin/whoami`, { headers: { "x-agent-capability": await capFor("U9") } });
+    assert.equal(((await u9.json()) as any).isAdmin, false, "no dodged promote landed");
+    assert.equal((await rawRequest(s.base, "POST", "/v1/admin/%67rants", json, promote)).status, 400);
+    assert.equal((await rawRequest(s.base, "POST", "/v1/admin/%zzgrants", json, promote)).status, 400);
+    for (const path of ["/", "//", "/\\", "/v1/admin/users//onboarding"]) {
+      const res = await rawRequest(s.base, "POST", path, json, promote);
+      assert.equal(res.status, 400, `${path} → ${res.status} ${res.text}`);
+    }
+  } finally {
+    await s.close();
+  }
+});
+
+test("encoded and dot-segment variants of admin content reads keep the DM gate", async () => {
+  const s = start();
+  try {
+    const fromChannel = { "x-agent-capability": await capFor("admin-alice", { scope: scopeId("channel", "C1") }) };
+    const personal = `?scope=${encodeURIComponent(scopeId("personal", "U1"))}`;
+    for (const resource of ["memory", "keychain", "sessions", "users/U1", "slack-mirror", "ambient-judgments"]) {
+      for (const [path, status] of pathDodges(resource)) {
+        const res = await rawRequest(s.base, "GET", `${path}${personal}`, fromChannel);
+        assert.equal(res.status, status, `${path} → ${res.status} ${res.text.slice(0, 120)}`);
+      }
+    }
+    for (const [path, status] of pathDodges(`scopes/${encodeURIComponent(scopeId("personal", "U1"))}`)) {
+      const res = await rawRequest(s.base, "GET", path, fromChannel);
+      assert.equal(res.status, status, `${path} → ${res.status} ${res.text.slice(0, 120)}`);
+    }
+  } finally {
+    await s.close();
+  }
+});
+
+test("canonical portal and agent admin requests, including encoded parameters, still succeed", async () => {
+  const s = start();
+  try {
+    const fromDm = { "x-agent-capability": await capFor("admin-alice") };
+    assert.equal((await rawRequest(s.base, "GET", "/v1/admin/keychain", fromDm)).status, 200);
+    assert.equal((await rawRequest(s.base, "GET", "/v1/admin/users/U1", fromDm)).status, 200);
+    const orgScope = await rawRequest(s.base, "GET", `/v1/admin/scopes/${encodeURIComponent(ORG)}`, fromDm);
+    assert.equal(orgScope.status, 200, orgScope.text);
+    const fromChannel = { "x-agent-capability": await capFor("admin-alice", { scope: scopeId("channel", "C1") }) };
+    const channelOrg = await rawRequest(s.base, "GET", `/v1/admin/scopes/${encodeURIComponent(ORG)}`, fromChannel);
+    assert.equal(channelOrg.status, 200, channelOrg.text);
+
+    const portalGet = async (path: string) => {
+      const signed = withSourceAuthNonce(path, SECRET);
+      return await rawRequest(s.base, "GET", signed, {
+        ...signedHeaders(SECRET, "GET", signed),
+        "x-admin-actor": "admin-alice@default-org",
+      });
+    };
+    assert.equal((await portalGet("/v1/admin/users")).status, 200);
+    assert.equal((await portalGet(`/v1/admin/scopes/${encodeURIComponent(ORG)}`)).status, 200);
+    assert.equal((await portalGet("/v1/admin/keychain")).status, 200);
+    assert.equal((await portalGet("/v1/admin/%6Beychain")).status, 400);
   } finally {
     await s.close();
   }
