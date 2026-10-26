@@ -112,8 +112,15 @@ test("tool service exposes namespaced tools and calls through", async () => {
   const defs = service.toolDefs();
   assert.deepEqual(defs.map((d) => d.name).sort(), ["crm_query", "crm_update"]);
   assert.ok(defs.every((d) => d.readOnly));
+  assert.ok(defs.every((d) => d.credentialHost === undefined));
   const out = await service.call("crm_query", { q: "hello" }, "internal:U1");
   assert.equal(out, "ran query");
+  await store.put(server({ credentialScope: "per-user", credentialHost: "graph.microsoft.com" }));
+  await service.refresh();
+  assert.ok(
+    service.toolDefs().every((d) => d.credentialHost === "graph.microsoft.com"),
+    "per-user tools carry the host whose connector settings filter them",
+  );
   service.close();
 });
 

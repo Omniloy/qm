@@ -112,6 +112,7 @@ const USER_SCOPED: Rule[] = [
   pat("GET", "/v1/connectors/oauth/status", { in: "query", name: "principalId" }),
   pat("POST", "/v1/connectors/token", { in: "body", name: "principalId" }),
   pat("POST", "/v1/connectors/oauth/revoke", { in: "body", name: "principalId" }),
+  pat("POST", "/v1/connectors/apps", { in: "body", name: "principalId" }),
   pat("POST", "/v1/webhooks/:id/disable", { in: "query", name: "principalId" }),
   pat("POST", "/v1/deployments/:id/display-name"),
   pat("POST", "/v1/deployments/:id/name"),

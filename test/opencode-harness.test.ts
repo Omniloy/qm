@@ -89,7 +89,7 @@ function turnInput(entries: SessionEntry[], llmRows: HarnessLlmRequestRecord[]):
     runtime: { modelId: "openai/gpt-5" },
     systemPrompt: "be concise",
     history: [],
-    tools: {} as HarnessTurnInput["tools"],
+    tools: { mcpToolDefs: () => [] } as unknown as HarnessTurnInput["tools"],
     scopeLabel: scope,
     orgScopeId: scope,
     emit: async (entry) => {

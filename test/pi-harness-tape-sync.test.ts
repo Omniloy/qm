@@ -20,7 +20,7 @@ function turnInput(sessionId: string, sink: Sink, overrides: Partial<HarnessTurn
     input: "do the thing",
     systemPrompt: "BASE",
     history: [],
-    tools: {} as HarnessTurnInput["tools"],
+    tools: { mcpToolDefs: () => [] } as unknown as HarnessTurnInput["tools"],
     scopeLabel: "personal:tester" as HarnessTurnInput["scopeLabel"],
     orgScopeId: "org:test" as HarnessTurnInput["orgScopeId"],
     emit: async (entry: NewEntry) => {
@@ -304,6 +304,7 @@ test("completed Pi attach results retain openable files in viewer history", asyn
         {
           session,
           tools: {
+            mcpToolDefs: () => [],
             attach: async () => ({ ok: true, files, staged: files.length }),
           } as unknown as HarnessTurnInput["tools"],
           emit: (entry) => store.append(lease, entry),
@@ -453,6 +454,7 @@ for (const stopBeforeIntake of [false, true]) {
             session,
             runId: "tool-steer",
             tools: {
+              mcpToolDefs: () => [],
               memoryRead: async () => {
                 await signals.send("tool-steer", { kind: "steer", text: "use the other file", ts: "tool.1" });
                 await new Promise((resolve) => setTimeout(resolve, 30));
@@ -464,7 +466,7 @@ for (const stopBeforeIntake of [false, true]) {
                 }
                 return "saved facts";
               },
-            } as HarnessTurnInput["tools"],
+            } as unknown as HarnessTurnInput["tools"],
             emit: async (entry) => {
               const saved = await store.append(lease, entry);
               entries.push(saved);
@@ -539,12 +541,13 @@ for (const failure of ["acknowledge", "tape"] as const) {
       const turn = turnInput("steer-failure", sink, {
         runId: "steer-failure",
         tools: {
+          mcpToolDefs: () => [],
           memoryRead: async () => {
             await signals.send("steer-failure", { kind: "steer", text: "use the other file", ts: "fail.1" });
             await new Promise((resolve) => setTimeout(resolve, 30));
             return "saved facts";
           },
-        } as HarnessTurnInput["tools"],
+        } as unknown as HarnessTurnInput["tools"],
         tape: async (rec: NewTapeRecord) => {
           if (failure === "tape" && rec.kind === "message" && (rec.payload as { role?: string }).role === "toolResult")
             throw new Error("tape insert refused");
@@ -621,12 +624,13 @@ test("Stop ends a turn whose tool never settles and leaves a replayable transcri
           session,
           runId: "stop-hung",
           tools: {
+            mcpToolDefs: () => [],
             memoryRead: async () => {
               stoppedAt = Date.now();
               await signals.send("stop-hung", { kind: "abort" });
               return new Promise<string>(() => {});
             },
-          } as HarnessTurnInput["tools"],
+          } as unknown as HarnessTurnInput["tools"],
           emit,
           tape: (row) => store.appendTape(lease, row),
         },

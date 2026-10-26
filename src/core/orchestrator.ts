@@ -172,6 +172,7 @@ import {
   type OverheardEntryPayload,
 } from "../harness/replay.ts";
 import { errMessage, reportFailure, swallow, swallowAs } from "../util/errors.ts";
+import type { DisabledConnectorApps } from "../connectors/connector-apps.ts";
 import { isObj } from "../util/objects.ts";
 import { absoluteAppLinks, headSlice, jsonbSafeStringify } from "../util/text.ts";
 import {
@@ -1214,9 +1215,15 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               swallowAs("orchestrator: configured connector providers", []),
             )
           : [];
+      const disabledConnectorApps =
+        !external && deps.connectorAppPrefs
+          ? await deps.connectorAppPrefs
+              .disabled(actor.id)
+              .catch(swallowAs("orchestrator: connector app settings", {} as DisabledConnectorApps))
+          : {};
       const carriedSkillScreens = new Map<string, Promise<boolean>>();
       const visibleSkillsForTurn = async (): Promise<SkillResolution[]> => {
-        const resolved = filterConnectorSkills(await context.listSkills(), configuredProviders);
+        const resolved = filterConnectorSkills(await context.listSkills(), configuredProviders, disabledConnectorApps);
         const allowed: SkillResolution[] = [];
         for (const entry of resolved) {
           const skill = entry.skill;
@@ -2842,7 +2849,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           memory: deps.memory,
           memoryScopeId,
           ...(memoryAccess ? { memoryAccess } : {}),
-          ...(!external && deps.mcp ? { mcp: deps.mcp } : {}),
+          ...(!external && deps.mcp ? { mcp: deps.mcp, disabledConnectorApps } : {}),
           ...(input.surface === "slack" ? { actingSlackUserId: actor.id } : {}),
           ...(deps.deploymentLayer
             ? {

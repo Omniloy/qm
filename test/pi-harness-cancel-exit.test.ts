@@ -18,7 +18,7 @@ function cancelTurn(
     input: "do the thing",
     systemPrompt: "BASE",
     history: [],
-    tools: {} as HarnessTurnInput["tools"],
+    tools: { mcpToolDefs: () => [] } as unknown as HarnessTurnInput["tools"],
     scopeLabel: "personal:tester" as HarnessTurnInput["scopeLabel"],
     orgScopeId: "org:test" as HarnessTurnInput["orgScopeId"],
     emit: async (entry: NewEntry) => {

@@ -51,7 +51,14 @@ Do not put user-specific data into names, descriptions, or schemas.
 
 `credentialHost` explicitly authorizes sending that connector's user token to the
 registered server. Only register a trusted service permitted to receive those
-tokens. Per-user endpoints require HTTPS, except on loopback for local development.
+tokens. Per-user endpoints require HTTPS, except on loopback for local development
+and on the exact hostnames an operator lists in `MCP_PER_USER_HTTP_HOSTS`
+(comma-separated), for a sidecar reachable only on a private network.
+
+A per-user server whose `credentialHost` belongs to an OAuth connector that declares
+apps (Microsoft 365, in `src/connectors/connector-apps.ts`) is filtered per person: each
+tool is offered, and callable, only while one of the apps it belongs to is turned on in
+that person's connector settings, and tools outside every app are never offered.
 HTTP redirects are rejected for every MCP authentication mode. Updating an endpoint
 or credential host is an administrative trust decision. Tool call auditing records
 the initiating actor as before; authentication does not expand the audience allowed

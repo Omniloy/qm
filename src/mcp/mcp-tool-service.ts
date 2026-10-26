@@ -48,6 +48,7 @@ export interface McpToolDescriptor {
   description: string;
   inputSchema: Record<string, unknown>;
   readOnly: boolean;
+  credentialHost?: string;
 }
 
 export interface McpToolService {
@@ -147,6 +148,9 @@ export function createMcpToolService(opts: {
       description: tool.description || `${tool.name} on ${server.name}`,
       inputSchema: tool.inputSchema,
       readOnly: server.readOnly,
+      ...(server.credentialScope === "per-user" && server.credentialHost
+        ? { credentialHost: server.credentialHost }
+        : {}),
     }));
   }
 

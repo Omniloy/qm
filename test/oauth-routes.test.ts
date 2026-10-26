@@ -266,3 +266,58 @@ test("a built-in provider's returnTo that normalizes to another origin is droppe
     await srv.close();
   }
 });
+
+test("Microsoft 365 app settings round-trip through status and the signed apps route", async () => {
+  const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "oauth-routes-")) }));
+  const server = createServer(built.app, {
+    signingSecret: SECRET,
+    replayDedupe: built.replayDedupe,
+    connectorTokens: built.connectorTokens,
+    connectorAppPrefs: built.connectorAppPrefs,
+    auditLog: built.auditLog,
+    oauthEnv: { ...oauthEnv, MICROSOFT_OAUTH_CLIENT_ID: "msid", MICROSOFT_OAUTH_CLIENT_SECRET: "mssecret" },
+  });
+  server.listen(0);
+  const base = `http://localhost:${(server.address() as AddressInfo).port}`;
+  const status = async (principalId: string) => {
+    const path = `/v1/connectors/oauth/status?principalId=${principalId}`;
+    const res = await fetch(base + path, { headers: sign("GET", path) });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as {
+      providers: Record<string, { apps?: Array<{ id: string; enabled: boolean }> }>;
+    };
+    return body.providers;
+  };
+  const save = (body: unknown) => {
+    const raw = JSON.stringify(body);
+    return fetch(`${base}/v1/connectors/apps`, {
+      method: "POST",
+      headers: sign("POST", "/v1/connectors/apps", raw),
+      body: raw,
+    });
+  };
+  const off = (apps: Array<{ id: string; enabled: boolean }> | undefined) =>
+    (apps ?? []).filter((app) => !app.enabled).map((app) => app.id);
+  try {
+    const before = await status("U1");
+    assert.equal(before.google!.apps, undefined);
+    assert.equal(before.microsoft!.apps!.length, 7);
+    assert.deepEqual(off(before.microsoft!.apps), []);
+
+    const res = await save({ principalId: "U1", provider: "microsoft", apps: { mail: false, onedrive: false } });
+    assert.equal(res.status, 200);
+    assert.deepEqual(off(((await res.json()) as { apps: Array<{ id: string; enabled: boolean }> }).apps), [
+      "mail",
+      "onedrive",
+    ]);
+    assert.deepEqual(off((await status("U1")).microsoft!.apps), ["mail", "onedrive"]);
+    assert.deepEqual(off((await status("U2")).microsoft!.apps), []);
+
+    assert.equal((await save({ principalId: "U1", provider: "google", apps: { mail: false } })).status, 400);
+    assert.equal((await save({ principalId: "U1", provider: "microsoft", apps: { mail: "no" } })).status, 400);
+    assert.equal((await save({ principalId: "U1", provider: "microsoft", apps: { excel: false } })).status, 400);
+    assert.equal((await save({ provider: "microsoft", apps: { mail: false } })).status, 400);
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+  }
+});

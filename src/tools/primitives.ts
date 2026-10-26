@@ -68,6 +68,7 @@ import { fileArtifactId, type FileArtifactStore } from "../files/file-artifact-s
 import type { ScopedConfigStore } from "../resolution/config-store.ts";
 import { MEMORY_FILE, type MemoryService } from "../memory/memory-service.ts";
 import type { McpToolService, McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
+import { connectorAppToolVisible, type DisabledConnectorApps } from "../connectors/connector-apps.ts";
 import type { ReachResolution } from "../resolution/scope-reach.ts";
 import type {
   ControlService,
@@ -506,6 +507,7 @@ export interface ToolContextDeps {
   memoryScopeId?: ScopeId;
   memoryAccess?: { write?: ScopeId; read: ScopeId[] };
   mcp?: McpToolService;
+  disabledConnectorApps?: DisabledConnectorApps;
   sessionHistory?: {
     search(q: string, limit?: number): Promise<string[]>;
     open(seq: number): Promise<string | null>;
@@ -1256,11 +1258,16 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
     },
 
     mcpToolDefs(): McpToolDescriptor[] {
-      return deps.mcp?.toolDefs() ?? [];
+      return (deps.mcp?.toolDefs() ?? []).filter((def) =>
+        connectorAppToolVisible(def, deps.disabledConnectorApps ?? {}),
+      );
     },
 
     async callMcpTool(name: string, args: Record<string, unknown>): Promise<string> {
       if (!deps.mcp) throw new Error("no MCP connectors are configured");
+      const def = deps.mcp.toolDefs().find((candidate) => candidate.name === name);
+      if (def && !connectorAppToolVisible(def, deps.disabledConnectorApps ?? {}))
+        throw new Error(`${name} belongs to an app the user turned off in their connector settings`);
       return deps.mcp.call(name, args, deps.createdBy);
     },
 

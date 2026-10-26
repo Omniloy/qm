@@ -120,11 +120,12 @@ export function harnessToolContext(turn: HarnessTurnInput): ToolContextRef {
 }
 
 export function harnessToolOptions(opts: HarnessToolPlumbing, turn?: HarnessTurnInput): AgentToolsOptions {
+  const mcpTools = turn ? () => turn.tools.mcpToolDefs() : opts.mcpTools;
   return {
     scratchExec: opts.scratchExec,
     ownerAuthExec: opts.ownerAuthExec,
     reachExec: opts.reachExec,
-    ...(opts.mcpTools ? { mcpTools: opts.mcpTools } : {}),
+    ...(mcpTools ? { mcpTools } : {}),
     controlTools: opts.controlTools,
     sandboxResources: opts.sandboxResources,
     execTimeoutMs: opts.execTimeoutMs,
@@ -196,7 +197,7 @@ export function oneShotRunner(runPrompt: (turn: HarnessTurnInput) => Promise<Har
       input: prompt,
       systemPrompt,
       history: [],
-      tools: {} as HarnessTurnInput["tools"],
+      tools: { mcpToolDefs: () => [] } as unknown as HarnessTurnInput["tools"],
       scopeLabel: scope,
       orgScopeId: scope,
       ...(signal ? { cancel: signal } : {}),

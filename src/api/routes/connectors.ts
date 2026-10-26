@@ -14,6 +14,7 @@ import {
   type OAuthState,
 } from "../../connectors/oauth.ts";
 import { bestOAuthTokenStatus, CONNECTOR_STATUS_ACCOUNT_TYPES } from "../../credentials/connector-status.ts";
+import { CONNECTOR_APPS, connectorAppStates } from "../../connectors/connector-apps.ts";
 import type { DerivedOAuthAuth, OAuthTokenStatus } from "../../credentials/keychain.ts";
 import { createEnvSecretSource } from "../../credentials/secret-source.ts";
 import type { ServerDeps } from "../deps.ts";
@@ -95,6 +96,7 @@ function latestRefreshFailure(
 }
 
 async function connectorProviderStatus(deps: ServerDeps, principalId: string): Promise<Record<string, unknown>> {
+  const disabledApps = (await deps.connectorAppPrefs?.disabled(principalId)) ?? {};
   const entries = await Promise.all(
     Object.entries(PROVIDERS).map(async ([name, provider]) => {
       const [hosts, configured] = await Promise.all([
@@ -124,6 +126,7 @@ async function connectorProviderStatus(deps: ServerDeps, principalId: string): P
           configured,
           available: configured,
           consentMode: provider.consentMode,
+          ...(CONNECTOR_APPS[name] ? { apps: connectorAppStates(name, disabledApps) } : {}),
         },
       ] as const;
     }),
@@ -483,6 +486,29 @@ async function setToken(ctx: ApiCtx): Promise<void> {
   return sendJson(res, 200, { ok: true });
 }
 
+async function setConnectorApps(ctx: ApiCtx): Promise<void> {
+  const { res, deps, body } = ctx;
+  if (!deps.connectorAppPrefs)
+    return sendJson(res, 501, { error: "not_configured", message: "connector app settings are not wired" });
+  const b = body as Record<string, unknown>;
+  const principalId = typeof b.principalId === "string" ? b.principalId : "";
+  const provider = typeof b.provider === "string" ? b.provider : "";
+  const apps = b.apps && typeof b.apps === "object" && !Array.isArray(b.apps) ? b.apps : null;
+  if (!principalId || !CONNECTOR_APPS[provider] || !apps || Object.values(apps).some((v) => typeof v !== "boolean")) {
+    return sendJson(res, 400, {
+      error: "bad_request",
+      message: "principalId, a provider with app settings, and apps: { <app>: boolean } required",
+    });
+  }
+  try {
+    const states = await deps.connectorAppPrefs.set(principalId, provider, apps as Record<string, boolean>);
+    audit(deps, { principalId, action: "connector.apps.set", resource: provider, scopeLabel: principalId });
+    return sendJson(res, 200, { ok: true, provider, apps: states });
+  } catch (e) {
+    return sendJson(res, 400, { error: "bad_request", message: errMessage(e) });
+  }
+}
+
 async function catalog(ctx: ApiCtx): Promise<void> {
   const { res, deps } = ctx;
   const entries = await Promise.all(
@@ -493,6 +519,7 @@ async function catalog(ctx: ApiCtx): Promise<void> {
       consentMode: p.consentMode,
       redirectPath: p.redirectPath,
       setupGuide: p.setupGuide,
+      ...(p.tenant ? { tenantLabel: p.tenant.label } : {}),
       configured: await providerConfigured(deps, name),
     })),
   );
@@ -563,5 +590,6 @@ export const connectorRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/connectors/oauth/status", auth: "source", handle: oauthStatus },
   { method: "POST", path: "/v1/connectors/oauth/revoke", auth: "either", handle: oauthRevoke },
   { method: "POST", path: "/v1/connectors/token", auth: "source", handle: setToken },
+  { method: "POST", path: "/v1/connectors/apps", auth: "source", handle: setConnectorApps },
   { method: "GET", path: "/v1/connectors/catalog", auth: "source", handle: catalog },
 ];

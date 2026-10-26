@@ -177,11 +177,11 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
   if (
     credentialScope === "per-user" &&
     parsed.protocol !== "https:" &&
-    !["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname)
+    !["localhost", "127.0.0.1", "[::1]", ...(ctx.deps.mcpPerUserHttpHosts ?? [])].includes(parsed.hostname)
   ) {
     return sendJson(ctx.res, 400, {
       error: "bad_request",
-      message: "per-user credentials require HTTPS (except loopback)",
+      message: "per-user credentials require HTTPS (except loopback and MCP_PER_USER_HTTP_HOSTS)",
     });
   }
   const iconUrl = b.iconUrl === undefined ? existing?.iconUrl : parseMcpIconUrl(b.iconUrl);

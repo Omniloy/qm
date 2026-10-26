@@ -39,6 +39,7 @@ import type { FeatureFlagStore } from "../../feature-flags.ts";
 import type { CredentialUsageSink } from "../../admin/credential-usage-sink.ts";
 import type { LivenessCache } from "../../credentials/resident-auth.ts";
 import type { ConnectorStatusCache } from "../../credentials/connector-status.ts";
+import type { ConnectorAppPrefs } from "../../connectors/connector-apps.ts";
 import type { ModelGateway } from "../../model/model-gateway.ts";
 import type { AuditLog } from "../../audit/audit-log.ts";
 import type { SecurityScreener } from "../../security/security-screener.ts";
@@ -198,6 +199,7 @@ export interface OrchestratorDeps {
   livenessCache?: LivenessCache;
   connectorTokens?: ConnectorTokenStore;
   connectorStatusCache?: ConnectorStatusCache;
+  connectorAppPrefs?: ConnectorAppPrefs;
   resolveConnectorClient?: OAuthClientResolver;
   scratchExec?: boolean;
   deviceFlowCutover?: DeviceFlowCutoverStore;

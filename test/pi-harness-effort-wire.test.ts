@@ -138,7 +138,10 @@ for (const [modelId, upper, allowed] of [
           input: "hello",
           systemPrompt: "Reply ok.",
           history: [],
-          tools: { attach: async () => ({ ok: true, files: [], staged: 0 }) } as unknown as HarnessTurnInput["tools"],
+          tools: {
+            mcpToolDefs: () => [],
+            attach: async () => ({ ok: true, files: [], staged: 0 }),
+          } as unknown as HarnessTurnInput["tools"],
           scopeLabel: "personal:test",
           orgScopeId: "org:test",
           runtime: { effortLevel },

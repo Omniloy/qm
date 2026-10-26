@@ -105,6 +105,21 @@ test("MCP admin validates and preserves credential scope, without returning secr
   assert.equal((await store.get("crm"))?.credentialAccountType, undefined);
 });
 
+test("per-user MCP servers accept plain HTTP only on the hostnames the operator lists", async (t) => {
+  const store = createMcpServerStore(createMemoryMap<McpServer>());
+  const { put } = await serveAdmin(t, { mcpServers: store, mcpPerUserHttpHosts: ["ms365-mcp"] });
+  const perUser = (url: string) =>
+    put("microsoft-365", { url, validate: false, credentialScope: "per-user", credentialHost: "graph.microsoft.com" });
+  assert.equal((await perUser("http://ms365-mcp:3000")).status, 200);
+  assert.equal((await store.get("microsoft-365"))?.url, "http://ms365-mcp:3000");
+  assert.equal((await perUser("http://ms365-mcp.evil.example:3000")).status, 400);
+  assert.equal((await perUser("http://other-sidecar:3000")).status, 400);
+  assert.equal(
+    (await put("shared", { url: "http://other-sidecar:3000", validate: false, credentialScope: "shared" })).status,
+    200,
+    "shared-credential servers are unaffected",
+  );
+});
 test("MCP admin stores an optional https icon, otherwise resolves the site icon once, and keeps names on one line", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "mcp-admin-icon-"));
   const built = buildApp(testConfig({ dataDir: dir }));

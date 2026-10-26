@@ -1,3 +1,4 @@
+import type { ConnectorAppPrefs } from "../connectors/connector-apps.ts";
 import type { CodexProxy } from "../model/codex-proxy.ts";
 import type { HarnessAuthStore } from "../credentials/harness-auth-store.ts";
 import type { BrowserProviderSpec } from "../connectors/browser-providers.ts";
@@ -96,6 +97,7 @@ export interface ServerDeps {
   composioFetch?: typeof fetch;
   suggestedActivities?: ReturnType<typeof createSuggestedActivityService>;
   production?: boolean;
+  mcpPerUserHttpHosts?: readonly string[];
   allowUnauthenticatedCore?: boolean;
   signingSecret?: string;
   capabilitySecret?: string;
@@ -119,6 +121,7 @@ export interface ServerDeps {
   oauthEnv?: NodeJS.ProcessEnv;
   resolveClient?: OAuthClientResolver;
   consentLinks?: ConsentLinkStore;
+  connectorAppPrefs?: ConnectorAppPrefs;
   oauthFlows?: OAuthFlowStore;
   apiBaseUrl?: string;
   publicUrl?: string;
