@@ -115,9 +115,10 @@ export function filterConnectorSkills(
 ): SkillResolution[] {
   const available = new Set(availableProviders);
   return resolved.filter((entry) => {
-    const name = entry.skill?.manifest.name;
-    const provider = name ? CONNECTOR_SKILL_PROVIDERS[name] : undefined;
-    return !provider || (available.has(provider) && connectorAppSkillVisible(name!, disabledApps));
+    if (!entry.skill) return true;
+    const name = entry.skill.manifest.name;
+    const provider = CONNECTOR_SKILL_PROVIDERS[name];
+    return !provider || (available.has(provider) && connectorAppSkillVisible(name, disabledApps));
   });
 }
 

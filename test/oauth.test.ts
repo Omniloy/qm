@@ -696,3 +696,24 @@ test("the tenant placeholder is inert for providers without one even when a tena
   assert.equal(new URL(slackUrl).origin + new URL(slackUrl).pathname, PROVIDERS.slack!.authUrl);
   assert.doesNotMatch(slackUrl, /\{tenant\}/);
 });
+
+test("a Microsoft tenant must be the directory GUID, so a domain can't pass sign-in and then fail the tid check", async () => {
+  const r = createSecretClientResolver(
+    createEnvSecretSource({ ...env, MICROSOFT_TENANT_ID: "contoso.onmicrosoft.com" }),
+  );
+  const client = await r("microsoft", {});
+  assert.throws(
+    () => authorizeUrl("microsoft", { redirectUri: "https://app/cb", state: "s", client }),
+    /Directory \(tenant\) ID must be the directory's GUID/,
+  );
+  const fetchImpl: FetchLike = async () => ({ ok: true, status: 200, json: async () => ({ access_token: "at" }) });
+  await assert.rejects(
+    () =>
+      makeRefresh({ resolveClient: r, fetchImpl })("graph.microsoft.com", { accessToken: "old", refreshToken: "rt" }),
+    /must be the directory's GUID/,
+  );
+  const google = await createSecretClientResolver(
+    createEnvSecretSource({ ...env, GOOGLE_WORKSPACE_DOMAIN: "example.com" }),
+  )("google", {});
+  assert.doesNotThrow(() => authorizeUrl("google", { redirectUri: "https://app/cb", state: "s", client: google }));
+});

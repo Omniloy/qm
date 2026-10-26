@@ -28,6 +28,7 @@ interface OAuthTenant {
   label: string;
   authParam?: string;
   urlDefault?: string;
+  format?: { pattern: RegExp; description: string };
 }
 
 interface OAuthAdapterArgs {
@@ -75,8 +76,12 @@ export type FetchLike = (
 const realFetch: FetchLike = (url, init) => fetch(url, init);
 
 function endpoint(url: string, provider: OAuthProviderConfig, client: ResolvedClient): string {
-  const fallback = provider.tenant?.urlDefault;
-  return fallback ? url.replace("{tenant}", encodeURIComponent(client.hostedDomain || fallback)) : url;
+  const tenant = provider.tenant;
+  if (client.hostedDomain && tenant?.format && !tenant.format.pattern.test(client.hostedDomain))
+    throw new Error(`${tenant.label} must be ${tenant.format.description}`);
+  return tenant?.urlDefault
+    ? url.replace("{tenant}", encodeURIComponent(client.hostedDomain || tenant.urlDefault))
+    : url;
 }
 
 async function failureDetail(res: { status: number; json(): Promise<unknown> }): Promise<string> {
@@ -224,7 +229,7 @@ const slackExchange: OAuthExchangeAdapter = async ({ provider, client, code, red
       client_secret: client.secret,
     }).toString(),
   });
-  if (!res.ok) throw new Error(`slack token exchange failed (${res.status})`);
+  if (!res.ok) throw new Error(`slack token exchange failed (${await failureDetail(res)})`);
   const raw = (await res.json()) as Record<string, unknown>;
   if (raw.ok !== true) throw new Error(`slack oauth error: ${String(raw.error ?? "unknown")}`);
   const authedUser = (raw.authed_user ?? {}) as Record<string, unknown>;
@@ -241,7 +246,7 @@ const notionExchange: OAuthExchangeAdapter = async ({ provider, client, code, re
     headers: { "content-type": "application/json", authorization: `Basic ${basic}` },
     body: JSON.stringify({ grant_type: "authorization_code", code, redirect_uri: redirectUri }),
   });
-  if (!res.ok) throw new Error(`notion token exchange failed (${res.status})`);
+  if (!res.ok) throw new Error(`notion token exchange failed (${await failureDetail(res)})`);
   const raw = (await res.json()) as Record<string, unknown>;
   const access = String(raw.access_token ?? "");
   if (!access) throw new Error("notion token exchange returned no access_token");
@@ -329,17 +334,25 @@ export const PROVIDERS: Record<string, OAuthProviderConfig> = {
     consentMode: "admin",
     egressRule: ["graph.microsoft.com", "login.microsoftonline.com", "sharepoint.com"],
     pkce: true,
-    tenant: { env: "MICROSOFT_TENANT_ID", label: "Directory (tenant) ID", urlDefault: "organizations" },
+    tenant: {
+      env: "MICROSOFT_TENANT_ID",
+      label: "Directory (tenant) ID",
+      urlDefault: "organizations",
+      format: {
+        pattern: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+        description: "the directory's GUID (Entra admin center → Overview → Tenant ID), not a domain name",
+      },
+    },
     exchange: microsoftExchange,
     setupGuide: {
       console: "Microsoft Entra admin center → App registrations",
       url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade",
       steps: [
-        "New registration: supported account types 'Accounts in this organizational directory only' (or any organizational directory for several tenants).",
+        "New registration. For your own organization only, choose 'Accounts in this organizational directory only' and enter the Directory (tenant) ID below; to accept several organizations, choose 'Accounts in any organizational directory' and leave the tenant empty.",
         "Add a Web platform redirect URI with the callback URL shown below.",
         "Under Certificates & secrets, create a client secret and copy its Value.",
         "Under API permissions, add the Microsoft Graph delegated permissions listed below, then Grant admin consent for the tenant (ChannelMessage.Read.All and OnlineMeetingTranscript.Read.All need it).",
-        "Paste the Application (client) ID, the client secret, and the Directory (tenant) ID below. Leave the tenant empty to accept any work or school tenant.",
+        "Paste the Application (client) ID and the client secret below, plus the Directory (tenant) ID (a GUID) for a single-tenant app.",
       ],
       scopesRationale:
         "Delegated Graph permissions back the Microsoft 365 tools (Outlook mail and calendar, Teams chats, channels and meeting transcripts, OneDrive and SharePoint) as the connecting user; offline_access issues the refresh token and openid/profile/email identify the account.",

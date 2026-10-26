@@ -74,10 +74,11 @@ test("a turned-off app hides its tools; shared tools stay while any of their app
   assert.equal(connectorAppToolVisible(graphTool("download-bytes"), off("onedrive", "sharepoint")), false);
   assert.equal(connectorAppToolVisible(graphTool("get-current-user"), off(...MICROSOFT_APPS)), false);
   assert.equal(
-    connectorAppToolVisible(graphTool("graph-batch"), {}),
-    false,
-    "a tool outside every app is never offered, whatever the sidecar lists",
+    connectorAppToolVisible(graphTool("graph-batch"), off(...MICROSOFT_APPS)),
+    true,
+    "a tool no app claims is left to the server's own allowlist, never silently dropped",
   );
+  assert.deepEqual(connectorAppStates("__proto__", {}), []);
   assert.equal(
     connectorAppToolVisible({ remoteName: "send-mail", credentialHost: "api.example.com" }, off("mail")),
     true,
@@ -87,7 +88,7 @@ test("a turned-off app hides its tools; shared tools stay while any of their app
 });
 
 test("the turn's tool context offers and calls only the tools of the person's enabled apps", async () => {
-  const defs = [graphTool("send-mail"), graphTool("list-chats"), graphTool("graph-batch")];
+  const defs = [graphTool("send-mail"), graphTool("list-chats")];
   const calls: string[] = [];
   const mcp = {
     toolDefs: () => defs,

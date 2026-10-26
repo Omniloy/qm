@@ -14,12 +14,12 @@ import {
   type OAuthState,
 } from "../../connectors/oauth.ts";
 import { bestOAuthTokenStatus, CONNECTOR_STATUS_ACCOUNT_TYPES } from "../../credentials/connector-status.ts";
-import { CONNECTOR_APPS, connectorAppStates } from "../../connectors/connector-apps.ts";
+import { connectorApps, connectorAppStates, type DisabledConnectorApps } from "../../connectors/connector-apps.ts";
 import type { DerivedOAuthAuth, OAuthTokenStatus } from "../../credentials/keychain.ts";
 import { createEnvSecretSource } from "../../credentials/secret-source.ts";
 import type { ServerDeps } from "../deps.ts";
 import { personKey, samePerson } from "../../directory/person.ts";
-import { errMessage } from "../../util/errors.ts";
+import { errMessage, swallowAs } from "../../util/errors.ts";
 import { normalizeInboundExpiresAt } from "../expiry.ts";
 import { localPath, sendJson, sendRedirect } from "../http.ts";
 import { audit } from "./shared.ts";
@@ -96,7 +96,10 @@ function latestRefreshFailure(
 }
 
 async function connectorProviderStatus(deps: ServerDeps, principalId: string): Promise<Record<string, unknown>> {
-  const disabledApps = (await deps.connectorAppPrefs?.disabled(principalId)) ?? {};
+  const disabledApps =
+    (await deps.connectorAppPrefs
+      ?.disabled(principalId)
+      .catch(swallowAs("connectors: app settings for status", {} as DisabledConnectorApps))) ?? {};
   const entries = await Promise.all(
     Object.entries(PROVIDERS).map(async ([name, provider]) => {
       const [hosts, configured] = await Promise.all([
@@ -126,7 +129,7 @@ async function connectorProviderStatus(deps: ServerDeps, principalId: string): P
           configured,
           available: configured,
           consentMode: provider.consentMode,
-          ...(CONNECTOR_APPS[name] ? { apps: connectorAppStates(name, disabledApps) } : {}),
+          ...(connectorApps(name) ? { apps: connectorAppStates(name, disabledApps) } : {}),
         },
       ] as const;
     }),
@@ -494,7 +497,7 @@ async function setConnectorApps(ctx: ApiCtx): Promise<void> {
   const principalId = typeof b.principalId === "string" ? b.principalId : "";
   const provider = typeof b.provider === "string" ? b.provider : "";
   const apps = b.apps && typeof b.apps === "object" && !Array.isArray(b.apps) ? b.apps : null;
-  if (!principalId || !CONNECTOR_APPS[provider] || !apps || Object.values(apps).some((v) => typeof v !== "boolean")) {
+  if (!principalId || !connectorApps(provider) || !apps || Object.values(apps).some((v) => typeof v !== "boolean")) {
     return sendJson(res, 400, {
       error: "bad_request",
       message: "principalId, a provider with app settings, and apps: { <app>: boolean } required",

@@ -387,11 +387,12 @@ Setup, once:
    client secret, add the Microsoft Graph delegated permissions listed in the admin
    setup guide, and grant admin consent for the tenant.
 2. In the admin console → **Connectors** → **OAuth apps**, add **Microsoft 365** with
-   the application (client) ID and secret. Put the directory (tenant) ID in **Directory
-   (tenant) ID** to restrict sign-in to your tenant; leave it empty to accept any work or
-   school tenant.
+   the application (client) ID and secret. For an app registered for your organization
+   only, also enter the directory's GUID in **Directory (tenant) ID**; sign-in is then
+   limited to that tenant. Leave it empty only for an app registered for any
+   organizational directory, which then accepts any work or school tenant.
 3. In **Connectors** → **MCP servers**, add the server with ID `microsoft-365`, URL
-   `http://ms365-mcp:3000`, auth **None**, **Per person** with credential host
+   `http://ms365-mcp:3000/mcp`, auth **None**, **Per person** with credential host
    `graph.microsoft.com`, and **Read only** off.
 
 People then connect from **Keychain** and use the gear on the Microsoft 365 card to

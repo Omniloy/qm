@@ -137,6 +137,10 @@ export const CONNECTOR_APPS: Readonly<Record<string, readonly ConnectorApp[]>> =
   microsoft: MICROSOFT_365_APPS,
 };
 
+export function connectorApps(provider: string): readonly ConnectorApp[] | undefined {
+  return Object.hasOwn(CONNECTOR_APPS, provider) ? CONNECTOR_APPS[provider] : undefined;
+}
+
 export type DisabledConnectorApps = Readonly<Record<string, readonly string[]>>;
 
 export interface ConnectorAppState {
@@ -146,8 +150,9 @@ export interface ConnectorAppState {
 }
 
 export function connectorAppStates(provider: string, disabled: DisabledConnectorApps): ConnectorAppState[] {
-  const off = new Set(disabled[provider] ?? []);
-  return (CONNECTOR_APPS[provider] ?? []).map((app) => ({ id: app.id, label: app.label, enabled: !off.has(app.id) }));
+  const apps = connectorApps(provider) ?? [];
+  const off = new Set(apps.length ? (disabled[provider] ?? []) : []);
+  return apps.map((app) => ({ id: app.id, label: app.label, enabled: !off.has(app.id) }));
 }
 
 function visibleThroughApps(
@@ -164,9 +169,10 @@ export function connectorAppToolVisible(
   disabled: DisabledConnectorApps,
 ): boolean {
   const provider = tool.credentialHost ? providerForHost(tool.credentialHost)?.name : undefined;
-  const apps = provider ? CONNECTOR_APPS[provider] : undefined;
-  if (!provider || !apps) return true;
-  return visibleThroughApps(apps, disabled[provider], (app) => app.tools.includes(tool.remoteName));
+  const apps = provider ? connectorApps(provider) : undefined;
+  const member = (app: ConnectorApp) => app.tools.includes(tool.remoteName);
+  if (!provider || !apps?.some(member)) return true;
+  return visibleThroughApps(apps, disabled[provider], member);
 }
 
 export function connectorAppSkillProviders(): Record<string, string> {
@@ -204,7 +210,7 @@ export function createConnectorAppPrefs(
   return {
     disabled: async (principalId) => (await store.get(principalId))?.disabled ?? {},
     async set(principalId, provider, enabled) {
-      const apps = CONNECTOR_APPS[provider];
+      const apps = connectorApps(provider);
       if (!apps) throw new Error(`${provider} has no app settings`);
       const unknown = Object.keys(enabled).filter((id) => !apps.some((app) => app.id === id));
       if (unknown.length) throw new Error(`unknown ${provider} apps: ${unknown.join(", ")}`);

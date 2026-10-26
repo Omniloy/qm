@@ -314,6 +314,8 @@ test("Microsoft 365 app settings round-trip through status and the signed apps r
     assert.deepEqual(off((await status("U2")).microsoft!.apps), []);
 
     assert.equal((await save({ principalId: "U1", provider: "google", apps: { mail: false } })).status, 400);
+    assert.equal((await save({ principalId: "U1", provider: "__proto__", apps: {} })).status, 400);
+    assert.equal((await save({ principalId: "U1", provider: "constructor", apps: {} })).status, 400);
     assert.equal((await save({ principalId: "U1", provider: "microsoft", apps: { mail: "no" } })).status, 400);
     assert.equal((await save({ principalId: "U1", provider: "microsoft", apps: { excel: false } })).status, 400);
     assert.equal((await save({ provider: "microsoft", apps: { mail: false } })).status, 400);
