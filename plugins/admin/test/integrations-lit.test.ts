@@ -74,6 +74,58 @@ test("Connector editor renders guides and keeps fields and focus stable while ty
     dom.window.close();
   }
 });
+test("Connector editor lets the admin pick any catalog provider and set its tenant", async () => {
+  const dom = setup();
+  const bodies: unknown[] = [];
+  try {
+    dom.window.eval(
+      'ui.connectors.catalog=[{provider:"google",tenantLabel:"Workspace domain"},{provider:"microsoft",tenantLabel:"Directory (tenant) ID",redirectPath:"microsoft/callback"},{provider:"github"}];ui.connectors.render()',
+    );
+    configure({
+      orgScope: () => "org:test",
+      connectorName: (x) => x,
+      fmtTime: (x) => x,
+      api: async (method, _path, body) => {
+        if (method === "PUT") bodies.push(body);
+        return { ok: true, data: { catalog: [], connectors: [] } };
+      },
+    });
+    const doc = dom.window.document;
+    doc.getElementById("add-oauth-app")!.click();
+    const select = doc.getElementById("conn-provider") as HTMLSelectElement;
+    assert.deepEqual(
+      [...select.options].map((o) => o.value),
+      ["google", "microsoft", "github"],
+    );
+    select.value = "microsoft";
+    select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+    assert.equal(dom.window.eval("ui.connectors.draft.provider"), "microsoft");
+    const tenant = doc.getElementById("conn-tenant") as HTMLInputElement;
+    assert.match(tenant.closest("label")!.textContent!, /Directory \(tenant\) ID/);
+    select.value = "github";
+    select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+    assert.equal(doc.getElementById("conn-tenant"), null, "providers without a tenant hide the field");
+
+    const s = new ConnectorsState();
+    s.catalog = [{ provider: "microsoft", tenantLabel: "Directory (tenant) ID" }, { provider: "github" }];
+    s.edit({ provider: "microsoft", hostedDomain: "tenant-guid" });
+    assert.equal(s.draft.hostedDomain, "tenant-guid");
+    s.change("clientId", "msid");
+    s.change("clientSecret", "secret");
+    await s.save();
+    s.edit({ provider: "github" });
+    s.change("clientId", "ghid");
+    s.change("clientSecret", "secret");
+    s.change("hostedDomain", "ignored");
+    await s.save();
+    assert.deepEqual(bodies, [
+      { provider: "microsoft", clientId: "msid", clientSecret: "secret", enabled: true, hostedDomain: "tenant-guid" },
+      { provider: "github", clientId: "ghid", clientSecret: "secret", enabled: true },
+    ]);
+  } finally {
+    dom.window.close();
+  }
+});
 test("Connector saves use captured payloads and retain edits made during a request", async () => {
   let resolve!: (value: any) => void;
   const bodies: unknown[] = [];

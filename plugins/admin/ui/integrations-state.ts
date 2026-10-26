@@ -78,6 +78,8 @@ export type Connector = {
   redirectPath?: string;
   scopes?: string[];
   setupGuide?: { url: string; console: string; steps: string[] };
+  tenantLabel?: string;
+  hostedDomain?: string;
 };
 export type ServiceCredential = {
   slug: string;
@@ -94,7 +96,7 @@ export class ConnectorsState {
   serviceCredentials: ServiceCredential[] | undefined;
   editor = false;
   editing = "";
-  draft = { provider: "", clientId: "", clientSecret: "", enabled: true };
+  draft = { provider: "", clientId: "", clientSecret: "", hostedDomain: "", enabled: true };
   revision = 0;
   saving = false;
   message = "";
@@ -117,7 +119,13 @@ export class ConnectorsState {
   reset() {
     this.editor = false;
     this.editing = "";
-    this.draft = { provider: this.catalog[0]?.provider || "", clientId: "", clientSecret: "", enabled: true };
+    this.draft = {
+      provider: this.catalog[0]?.provider || "",
+      clientId: "",
+      clientSecret: "",
+      hostedDomain: "",
+      enabled: true,
+    };
     this.revision++;
     this.render();
   }
@@ -127,6 +135,7 @@ export class ConnectorsState {
       provider: connector?.provider || this.catalog[0]?.provider || "",
       clientId: connector?.clientId || "",
       clientSecret: "",
+      hostedDomain: connector?.hostedDomain || "",
       enabled: connector?.enabled !== false,
     };
     this.editor = true;
@@ -160,7 +169,13 @@ export class ConnectorsState {
   }
   async save() {
     if (this.saving) return;
-    const body = { ...this.draft, clientId: this.draft.clientId.trim() };
+    const { hostedDomain, ...draft } = this.draft;
+    const tenant = this.catalog.find((c) => c.provider === draft.provider)?.tenantLabel;
+    const body = {
+      ...draft,
+      clientId: draft.clientId.trim(),
+      ...(tenant ? { hostedDomain: hostedDomain.trim() } : {}),
+    };
     if (!body.provider) return this.setStatus("Choose a connector.", "err");
     if (!body.clientId) return this.setStatus("Client ID is required.", "err");
     if (!body.clientSecret) return this.setStatus("Client secret is required.", "err");
