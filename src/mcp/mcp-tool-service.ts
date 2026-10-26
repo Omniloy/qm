@@ -106,6 +106,7 @@ export function createMcpToolService(opts: {
   let closed = false;
   let retry: ReturnType<typeof setTimeout> | undefined;
   const lastCatalog = new Map<string, McpCatalogTool[]>();
+  let generation = 0;
   const listFailures = new Map<string, number>();
 
   function record(action: string, resource: string, status: string, principalId?: string): void {
@@ -214,16 +215,33 @@ export function createMcpToolService(opts: {
   }
 
   async function retryFailedListings(): Promise<void> {
+    const started = generation;
     const servers = await enabledServers();
+    const rebuilt = new Map<string, McpToolDescriptor[]>();
     for (const server of servers.filter((s) => listFailures.has(s.id))) {
       const raw = await listCatalog(server, false);
-      if (raw) byServer.set(server.id, describe(server, raw));
+      if (raw) rebuilt.set(server.id, describe(server, raw));
     }
+    if (started !== generation) return;
+    for (const [id, tools] of rebuilt) byServer.set(id, tools);
     publish(servers);
     scheduleListRetry();
   }
 
+  function describesCurrentConfig(def: McpToolDescriptor, server: McpServer): boolean {
+    const raw = lastCatalog.get(server.id)?.find((tool) => tool.name === def.remoteName);
+    const current = describe(server, [raw ?? { name: def.remoteName, description: "", inputSchema: {} }])[0]!;
+    return (
+      current.perUser === def.perUser &&
+      current.approvalRequired === def.approvalRequired &&
+      current.readOnly === def.readOnly &&
+      current.credentialHost === def.credentialHost &&
+      current.credentialAccountType === def.credentialAccountType
+    );
+  }
+
   async function refresh(): Promise<void> {
+    const started = ++generation;
     const servers = await enabledServers();
     const ids = new Set(servers.map((server) => server.id));
     for (const id of lastCatalog.keys()) if (!ids.has(id)) lastCatalog.delete(id);
@@ -233,6 +251,7 @@ export function createMcpToolService(opts: {
       const raw = await listCatalog(server, true);
       if (raw) next.set(server.id, describe(server, raw));
     }
+    if (started !== generation) return;
     byServer = next;
     publish(servers);
     scheduleListRetry();
@@ -346,6 +365,10 @@ export function createMcpToolService(opts: {
       if (!def) throw new Error(`unknown MCP tool: ${name}`);
       const server = await opts.servers.get(def.serverId);
       if (!server || !server.enabled) throw new Error(`MCP server ${def.serverId} is not available`);
+      if (!describesCurrentConfig(def, server)) {
+        void refresh().catch((e: unknown) => swallow("mcp refresh after config change", e));
+        throw new Error(`MCP server ${def.serverId} changed since its tools were listed; try again in a moment`);
+      }
       try {
         const result =
           server.auth === "oauth"

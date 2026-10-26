@@ -204,6 +204,64 @@ test("tools kept through an outage are rebuilt from the server's current config,
   service.close();
 });
 
+test("a retry that finishes after a config change never brings back the old flags", async () => {
+  const store = createMcpServerStore(createMemoryMap<McpServer>());
+  const { fetch: healthy } = fakeServerFetch();
+  let up = true;
+  let hold: Promise<void> | null = null;
+  let held = () => {};
+  let retryStarted = () => {};
+  const fetch: McpFetch = async (url, init) => {
+    if (hold) {
+      const gate = hold;
+      hold = null;
+      retryStarted();
+      await gate;
+      return healthy(url, init);
+    }
+    return up ? healthy(url, init) : jsonResponse({ error: "down" }, 503);
+  };
+  await store.put(server());
+  const service = createMcpToolService({
+    servers: store,
+    fetchImpl: fetch,
+    refreshIntervalMs: 3600_000,
+    listRetryMs: 40,
+  });
+  await service.refresh();
+  up = false;
+  await service.refresh();
+  const started = new Promise<void>((resolve) => (retryStarted = resolve));
+  hold = new Promise<void>((resolve) => (held = resolve));
+  await started;
+  await store.put(server({ credentialScope: "per-user", credentialHost: "graph.microsoft.com" }));
+  await service.refresh();
+  assert.ok(service.toolDefs().every((d) => d.perUser));
+  held();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.ok(
+    service.toolDefs().every((d) => d.perUser),
+    "the retry that read the old shared config is dropped once a newer refresh ran",
+  );
+  service.close();
+});
+
+test("a call through a descriptor that no longer matches its server's config is refused", async () => {
+  const backing = createMcpServerStore(createMemoryMap<McpServer>());
+  const servers = { ...backing, onChange: () => () => {} };
+  const { fetch } = fakeServerFetch();
+  await backing.put(server());
+  const service = createMcpToolService({ servers, fetchImpl: fetch, refreshIntervalMs: 3600_000 });
+  await service.refresh();
+  assert.equal(await service.call("crm_query", { q: "x" }, "internal:U1"), "ran query");
+  await backing.put(server({ credentialScope: "per-user", credentialHost: "graph.microsoft.com" }));
+  assert.equal(service.toolDefs()[0]!.perUser, false, "the snapshot is stale until the next refresh");
+  await assert.rejects(service.call("crm_query", { q: "x" }, "internal:U1"), /changed since its tools were listed/);
+  for (let i = 0; i < 100 && !service.toolDefs()[0]?.perUser; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(service.toolDefs()[0]!.perUser, true, "the refused call triggers a refresh");
+  service.close();
+});
+
 test("disabled server's tools disappear and calls fail", async () => {
   const store = createMcpServerStore(createMemoryMap<McpServer>());
   const { fetch } = fakeServerFetch();
