@@ -262,6 +262,36 @@ test("a call through a descriptor that no longer matches its server's config is 
   service.close();
 });
 
+test("many refused calls coalesce into at most one extra refresh", async () => {
+  const backing = createMcpServerStore(createMemoryMap<McpServer>());
+  const servers = { ...backing, onChange: () => () => {} };
+  const { fetch: healthy } = fakeServerFetch();
+  let lists = 0;
+  const fetch: McpFetch = async (url, init) => {
+    if ((JSON.parse(init.body) as { method: string }).method === "tools/list") {
+      lists++;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    return healthy(url, init);
+  };
+  await backing.put(server());
+  const service = createMcpToolService({ servers, fetchImpl: fetch, refreshIntervalMs: 3600_000 });
+  await service.refresh();
+  await backing.put(server({ credentialScope: "per-user", credentialHost: "graph.microsoft.com" }));
+  const before = lists;
+  const refused = await Promise.allSettled(
+    Array.from({ length: 10 }, () => service.call("crm_query", { q: "x" }, "internal:U1")),
+  );
+  assert.ok(refused.every((r) => r.status === "rejected"));
+  await service.refresh();
+  assert.ok(lists - before <= 2, `expected at most 2 listings, got ${lists - before}`);
+  assert.ok(
+    service.toolDefs().every((d) => d.perUser),
+    "the coalesced refresh still lands the new config",
+  );
+  service.close();
+});
+
 test("disabled server's tools disappear and calls fail", async () => {
   const store = createMcpServerStore(createMemoryMap<McpServer>());
   const { fetch } = fakeServerFetch();

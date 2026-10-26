@@ -110,6 +110,8 @@ export function createMcpToolService(opts: {
   let retry: ReturnType<typeof setTimeout> | undefined;
   const lastCatalog = new Map<string, McpCatalogTool[]>();
   let generation = 0;
+  let refreshing: Promise<void> | null = null;
+  let refreshAgain: Promise<void> | null = null;
   const listFailures = new Map<string, number>();
 
   function record(action: string, resource: string, status: string, principalId?: string): void {
@@ -251,7 +253,21 @@ export function createMcpToolService(opts: {
     );
   }
 
-  async function refresh(): Promise<void> {
+  function refresh(): Promise<void> {
+    if (!refreshing) {
+      refreshing = refreshOnce().finally(() => {
+        refreshing = null;
+      });
+      return refreshing;
+    }
+    refreshAgain ??= refreshing.then(() => {
+      refreshAgain = null;
+      return refresh();
+    });
+    return refreshAgain;
+  }
+
+  async function refreshOnce(): Promise<void> {
     const started = ++generation;
     const servers = await enabledServers();
     const ids = new Set(servers.map((server) => server.id));
@@ -269,10 +285,14 @@ export function createMcpToolService(opts: {
   }
 
   async function syncCatalogs(): Promise<void> {
+    const started = generation;
     const servers = await enabledServers();
+    const rebuilt = new Map<string, McpToolDescriptor[]>();
     for (const server of servers.filter((s) => s.auth === "oauth")) {
-      byServer.set(server.id, describe(server, await catalogTools(server)));
+      rebuilt.set(server.id, describe(server, await catalogTools(server)));
     }
+    if (started !== generation) return;
+    for (const [id, tools] of rebuilt) byServer.set(id, tools);
     publish(servers);
   }
 
@@ -300,8 +320,14 @@ export function createMcpToolService(opts: {
     const fetchedAt = now();
     await opts.oauth!.catalogs.put({ serverId: server.id, tools, fetchedAt, fetchedBy: principalId });
     catalogFetchedAt.set(server.id, fetchedAt);
-    byServer.set(server.id, describe(server, tools));
-    publish(await enabledServers());
+    lastCatalog.set(server.id, tools);
+    const started = generation;
+    const servers = await enabledServers();
+    const current = servers.find((candidate) => candidate.id === server.id);
+    if (started === generation && current) {
+      byServer.set(server.id, describe(current, tools));
+      publish(servers);
+    }
     record("list", server.id, `ok tools=${tools.length}`, principalId);
     return tools.length;
   }

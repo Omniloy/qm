@@ -97,4 +97,11 @@ test("per-person MCP tools reach only the connected person's own conversations, 
   assert.equal((await built.app.turn(turn("dm", `!run test -z "$${key}" && echo absent`))).reply, "absent");
   const selected = `!execute ${JSON.stringify({ command: "true", credentials: ["connector_graph_microsoft_com_default"] })}`;
   await assert.rejects(built.app.turn(turn("dm", selected)), /not available/);
+
+  await built.connectorAppPrefs.set("U1", "microsoft", { "teams-chats": true });
+  assert.equal(await tools("dm"), "mcp: microsoft-365_send-draft-message,microsoft-365_list-chats");
+  built.connectorAppPrefs.disabled = async () => {
+    throw new Error("database unavailable");
+  };
+  assert.equal(await tools("dm"), "mcp: none", "unreadable app settings turn every app off for the turn");
 });

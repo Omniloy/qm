@@ -172,7 +172,7 @@ import {
   type OverheardEntryPayload,
 } from "../harness/replay.ts";
 import { errMessage, reportFailure, swallow, swallowAs } from "../util/errors.ts";
-import { DEFAULT_DISABLED_CONNECTOR_APPS } from "../connectors/connector-apps.ts";
+import { ALL_CONNECTOR_APPS_OFF, DEFAULT_DISABLED_CONNECTOR_APPS } from "../connectors/connector-apps.ts";
 import { personalMcpKey } from "../mcp/mcp-tool-service.ts";
 import { isObj } from "../util/objects.ts";
 import { absoluteAppLinks, headSlice, jsonbSafeStringify } from "../util/text.ts";
@@ -1287,7 +1287,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         !external && deps.connectorAppPrefs
           ? deps.connectorAppPrefs
               .disabled(actor.id)
-              .catch(swallowAs("orchestrator: connector app settings", DEFAULT_DISABLED_CONNECTOR_APPS))
+              .catch(swallowAs("orchestrator: connector app settings", ALL_CONNECTOR_APPS_OFF))
           : DEFAULT_DISABLED_CONNECTOR_APPS,
       ]);
       const carriedSkillScreens = new Map<string, Promise<boolean>>();

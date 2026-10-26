@@ -143,6 +143,10 @@ function disabledFrom(choices: ConnectorAppChoices): DisabledConnectorApps {
 
 export const DEFAULT_DISABLED_CONNECTOR_APPS: DisabledConnectorApps = disabledFrom({});
 
+export const ALL_CONNECTOR_APPS_OFF: DisabledConnectorApps = Object.fromEntries(
+  Object.entries(CONNECTOR_APPS).map(([provider, apps]) => [provider, apps.map((app) => app.id)]),
+);
+
 export interface ConnectorAppState {
   id: string;
   label: string;
