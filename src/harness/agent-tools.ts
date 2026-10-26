@@ -1,6 +1,6 @@
 import { MaskedExecutionError, redactSecretText } from "../security/secret-masking.ts";
 import type { DocumentInput } from "../core/document-inputs.ts";
-import { createKeyedQueue } from "../util/async.ts";
+import { createKeyedQueue, sleep, withAbort } from "../util/async.ts";
 import { createGrindMeter, grindState } from "./grind.ts";
 import type { HarnessHandoff, RuntimeRequest } from "./runtime-types.ts";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -14,7 +14,7 @@ import { NeedsApproval, CommandDenied } from "../tools/primitives.ts";
 import { classifyScopeLabel } from "../classify/scope-classifier.ts";
 import type { McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
 import { splitToScope } from "../api/artifact-share.ts";
-import { errMessage } from "../util/errors.ts";
+import { errMessage, swallow } from "../util/errors.ts";
 import { computerVerdict } from "../sandbox/sandbox.ts";
 import { isObj } from "../util/objects.ts";
 import { BOT_MODES } from "../surface-cache/channel-policy-store.ts";
@@ -376,6 +376,10 @@ export function coreToolOptions(config: Config): CoreToolOptions {
 const CLIENT_TOOL_DEFAULT_TIMEOUT_MS = 10_000;
 const CLIENT_TOOL_TIMEOUT_TEXT = "The page didn't respond in time. It may have been closed or navigated away.";
 
+const ABANDON_GRACE_MS = 500;
+const ABANDONED_TOOL_RESULT =
+  "[cancelled] The run was stopped while this tool call was running, so its result was not awaited. Work it had already started (a deploy, a command) may still finish in the background; check its state before redoing anything with side effects.";
+
 const READ_ONLY_TOOL_NAMES = new Set(["memory", "history", "finish_silently", "runtime", "sessions"]);
 
 export function pauseStampAfterToolCall(
@@ -426,7 +430,9 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
   const bgTtlMin = Math.round(bgTtlSec / 60);
   const bgTtlMaxMin = Math.round(bgTtlMaxSec / 60);
   const capabilityTtlHours = Math.round(SANDBOX_CAPABILITY_TTL_MS / 3_600_000);
-  const log = async (type: EntryType, payload: unknown, sourceScopeId?: ScopeId | null): Promise<void> => {
+  const openCalls = new Set<string>();
+  const abandonedCalls = new Set<string>();
+  const writeEntry = async (type: EntryType, payload: unknown, sourceScopeId?: ScopeId | null): Promise<void> => {
     if (!ref.emit || !ref.scopeLabel) return;
     const scopeLabel = classifyScopeLabel({
       type,
@@ -439,6 +445,15 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       if (typeof callId === "string" && callId) (ref.tapeResultScopes ??= new Map()).set(callId, scopeLabel);
     }
     await ref.emit({ type, payload, scopeLabel });
+  };
+  const log = async (type: EntryType, payload: unknown, sourceScopeId?: ScopeId | null): Promise<void> => {
+    const callId = (payload as { callId?: unknown } | null)?.callId;
+    if (typeof callId === "string" && (type === "tool_call" || type === "tool_result")) {
+      if (type === "tool_result" ? abandonedCalls.delete(callId) : abandonedCalls.has(callId)) return;
+      if (type === "tool_call") openCalls.add(callId);
+      else openCalls.delete(callId);
+    }
+    await writeEntry(type, payload, sourceScopeId);
   };
 
   const callPayloads = new Map<string, Record<string, unknown>>();
@@ -460,6 +475,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     screenAs?: { provenance?: ToolResultProvenance; source?: string; context?: ToolResultContext },
   ): Promise<T> =>
     resultQueue("result", async () => {
+      if (abandonedCalls.delete(callId)) return ret;
       const originalTool = String(summary.tool ?? "");
       const call = callPayloads.get(callId);
       callPayloads.delete(callId);
@@ -652,20 +668,27 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     ),
   };
 
-  const blockOnApproval = (callId: string, e: NeedsApproval, purpose?: string, tool = "execute") => {
-    ref.pendingApprovals?.push({
-      command: e.command,
-      reason: e.approvalReason,
-      kind: e.kind,
-      matched: e.matched,
-      ...(purpose ? { purpose } : {}),
-      ...(e.approvalKey ? { approvalKey: e.approvalKey } : {}),
-      ...(e.grantModes ? { grantModes: e.grantModes } : {}),
-    });
-    ref.pausedOnApproval = true;
+  const blockOnApproval = (
+    callId: string,
+    e: NeedsApproval,
+    purpose?: string,
+    summary: Record<string, unknown> = { tool: "execute" },
+  ) => {
+    if (!abandonedCalls.has(callId)) {
+      ref.pendingApprovals?.push({
+        command: e.command,
+        reason: e.approvalReason,
+        kind: e.kind,
+        matched: e.matched,
+        ...(purpose ? { purpose } : {}),
+        ...(e.approvalKey ? { approvalKey: e.approvalKey } : {}),
+        ...(e.grantModes ? { grantModes: e.grantModes } : {}),
+      });
+      ref.pausedOnApproval = true;
+    }
     return recordResult(
       callId,
-      { tool, blocked: "needs_approval", reason: e.approvalReason },
+      { ...summary, blocked: "needs_approval", reason: e.approvalReason },
       { ...text(`[blocked: needs human approval] ${e.approvalReason}`), terminate: true },
       true,
     );
@@ -1021,7 +1044,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           ),
         );
       } catch (e) {
-        if (e instanceof NeedsApproval) return blockOnApproval(callId, e, params.purpose, "sandbox");
+        if (e instanceof NeedsApproval) return blockOnApproval(callId, e, params.purpose, { tool: "sandbox" });
         return recordResult(
           callId,
           { tool: "sandbox", action: params.action, failed: true },
@@ -1269,7 +1292,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         name: params.name,
       });
       try {
-        const r = await tc.publish({ ...params, share: params.audience } as PublishInput);
+        const r = await tc.publish({ ...params, share: params.audience } as PublishInput, ref.abortSignal);
         const reach = describePublishAudience(r.audience);
         const alwaysOnNote = r.alwaysOn ? "\nAlways-on: the app is kept warm — no idle cold starts." : "";
         const embedNote = r.embedAncestors?.length ? `\nEmbeddable by: ${r.embedAncestors.join(", ")}` : "";
@@ -2068,24 +2091,8 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           }
         }
       } catch (e) {
-        if (e instanceof NeedsApproval) {
-          ref.pendingApprovals?.push({
-            command: e.command,
-            reason: e.approvalReason,
-            kind: e.kind,
-            matched: e.matched,
-            ...(params.purpose ? { purpose: params.purpose } : {}),
-            ...(e.approvalKey ? { approvalKey: e.approvalKey } : {}),
-            ...(e.grantModes ? { grantModes: e.grantModes } : {}),
-          });
-          ref.pausedOnApproval = true;
-          return recordResult(
-            callId,
-            { tool: "background", action: params.action, blocked: "needs_approval", reason: e.approvalReason },
-            { ...text(`[blocked: needs human approval] ${e.approvalReason}`), terminate: true },
-            true,
-          );
-        }
+        if (e instanceof NeedsApproval)
+          return blockOnApproval(callId, e, params.purpose, { tool: "background", action: params.action });
         if (e instanceof CommandDenied) {
           return recordResult(
             callId,
@@ -4275,8 +4282,50 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
   ];
   const mcpNames = new Set(mcpTools.map((t) => t.name));
   const active = opts?.readOnly ? tools.filter((t) => READ_ONLY_TOOL_NAMES.has(t.name) || mcpNames.has(t.name)) : tools;
+  const abandonCall = async (callId: string, toolName: string): Promise<void> => {
+    const call = callPayloads.get(callId);
+    callPayloads.delete(callId);
+    abandonedCalls.add(callId);
+    if (!openCalls.delete(callId)) return;
+    await writeEntry("tool_result", {
+      ...sandboxLog({ tool: call?.tool ?? toolName, ...(call?.action !== undefined ? { action: call.action } : {}) }),
+      callId,
+      isError: true,
+      cancelled: true,
+      result: ABANDONED_TOOL_RESULT,
+    }).catch((e: unknown) => swallow("agent-tools: cancelled tool result", e));
+  };
+  const abandonOnAbort = (tool: ToolDefinition): ToolDefinition => ({
+    ...tool,
+    async execute(...args) {
+      const [callId, , toolSignal] = args;
+      const signals = [ref.abortSignal, toolSignal].filter((signal): signal is AbortSignal => !!signal);
+      if (!signals.length) return tool.execute(...args);
+      const signal = AbortSignal.any(signals);
+      const work = Promise.resolve().then(() => tool.execute(...args));
+      try {
+        return await withAbort(() => work, signal);
+      } catch (e) {
+        if (!signal.aborted) throw e;
+        const settled = await Promise.race([
+          work.then(
+            (value) => ({ value }),
+            (reason: unknown) => ({ reason }),
+          ),
+          sleep(ABANDON_GRACE_MS, { unref: true }),
+        ]);
+        if (settled && "value" in settled) return settled.value;
+        if (settled) throw settled.reason;
+        await abandonCall(callId, tool.name);
+        throw new Error(ABANDONED_TOOL_RESULT, { cause: e });
+      }
+    },
+  });
   return active.map((t) =>
-    withRuntimeBarrier(withToolBodyTiming(withToolApprovalGate(t, ref, { recordCall, recordResult }), ref), ref),
+    withRuntimeBarrier(
+      withToolBodyTiming(abandonOnAbort(withToolApprovalGate(t, ref, { recordCall, recordResult })), ref),
+      ref,
+    ),
   );
 }
 
@@ -4354,13 +4403,12 @@ function withToolApprovalGate(
 }
 
 function withToolBodyTiming(tool: ToolDefinition, ref: ToolContextRef): ToolDefinition {
-  const inner = tool.execute.bind(tool);
   return {
     ...tool,
-    async execute(callId: string, params: unknown) {
+    async execute(...args) {
       const start = Date.now();
       try {
-        return await (inner as (callId: string, params: unknown) => unknown)(callId, params);
+        return await tool.execute(...args);
       } finally {
         try {
           ref.onGapWork?.({ phase: "tool_body", tool: tool.name, start, end: Date.now() });

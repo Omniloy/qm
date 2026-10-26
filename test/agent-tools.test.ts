@@ -4009,3 +4009,116 @@ test("skills read opens with the skill's id, home, and whether the turn may edit
     /^\[skill id sk-4\]\n# Videos/,
   );
 });
+
+test("Stop settles a tool call that ignores the abort and closes its ledger entry exactly once", async () => {
+  const controller = new AbortController();
+  const late = Promise.withResolvers<{ stdout: string; stderr: string; code: number; timedOut: boolean }>();
+  const started = Promise.withResolvers<void>();
+  const emitted: Emitted[] = [];
+  const ref: ToolContextRef = {
+    current: {
+      ...fakeToolContext(),
+      execute: async () => {
+        started.resolve();
+        return late.promise;
+      },
+    },
+    abortSignal: controller.signal,
+    scopeLabel: "personal:U1",
+    emit: (e) => {
+      emitted.push(e as Emitted);
+    },
+  };
+  const tool = createAgentTools(ref).find((t) => t.name === "execute");
+  const pending = callWith(tool, "hang-1", { command: "sleep 9999" });
+  await started.promise;
+  const stoppedAt = Date.now();
+  controller.abort();
+  await assert.rejects(pending, /\[cancelled\].*may still finish in the background/);
+  assert.ok(Date.now() - stoppedAt < 2_000);
+  const ledger = () => emitted.filter((e) => e.type === "tool_call" || e.type === "tool_result");
+  assert.deepEqual(
+    ledger().map((e) => [e.type, e.payload.callId]),
+    [
+      ["tool_call", "hang-1"],
+      ["tool_result", "hang-1"],
+    ],
+  );
+  assert.equal(ledger()[1]!.payload.cancelled, true);
+  assert.equal(ledger()[1]!.payload.isError, true);
+  late.resolve({ stdout: "finished later", stderr: "", code: 0, timedOut: false });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(ledger().length, 2, "the abandoned call's late result is not recorded");
+});
+
+test("an abandoned tool call cannot raise an approval hold after Stop", async () => {
+  const controller = new AbortController();
+  const late = Promise.withResolvers<void>();
+  const started = Promise.withResolvers<void>();
+  const ref: ToolContextRef = {
+    current: {
+      ...fakeToolContext(),
+      execute: async (command) => {
+        started.resolve();
+        await late.promise;
+        throw new NeedsApproval(command, "late approval", "approval");
+      },
+    },
+    abortSignal: controller.signal,
+    pendingApprovals: [],
+  };
+  const tool = createAgentTools(ref).find((t) => t.name === "execute");
+  const pending = callWith(tool, "hang-2", { command: "deploy" });
+  await started.promise;
+  controller.abort();
+  await assert.rejects(pending, /\[cancelled\]/);
+  late.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(ref.pendingApprovals, []);
+  assert.equal(ref.pausedOnApproval, undefined);
+});
+
+test("a tool that finishes promptly after Stop keeps its own result", async () => {
+  const controller = new AbortController();
+  const started = Promise.withResolvers<void>();
+  const ref: ToolContextRef = {
+    current: {
+      ...fakeToolContext(),
+      execute: async (_command, opts) => {
+        started.resolve();
+        await new Promise((resolve) => opts?.signal?.addEventListener("abort", resolve, { once: true }));
+        return { stdout: "killed", stderr: "", code: 143, timedOut: false };
+      },
+    },
+    abortSignal: controller.signal,
+  };
+  const tool = createAgentTools(ref).find((t) => t.name === "execute");
+  const pending = callWith(tool, "kill-1", { command: "sleep 9999" });
+  await started.promise;
+  controller.abort();
+  const result = (await pending) as { content: Array<{ text: string }> };
+  assert.match(result.content[0]!.text, /killed\n\[exit 143\]/);
+});
+
+test("Stop while publishing reports that the deploy carries on in the background", async () => {
+  const controller = new AbortController();
+  const started = Promise.withResolvers<void>();
+  let received: AbortSignal | undefined;
+  const ref: ToolContextRef = {
+    current: {
+      ...fakeToolContext(),
+      publish: async (_input, signal) => {
+        received = signal;
+        started.resolve();
+        return new Promise(() => {});
+      },
+    },
+    abortSignal: controller.signal,
+  };
+  const apps = createAgentTools(ref).find((t) => t.name === "apps");
+  const pending = call(apps, { action: "publish", dir: "app", entrypoint: "node server.js", name: "slow" });
+  await started.promise;
+  assert.equal(received, controller.signal);
+  controller.abort();
+  await assert.rejects(pending, /\[cancelled\].*a deploy.*may still finish in the background/);
+});
