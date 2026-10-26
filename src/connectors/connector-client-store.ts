@@ -2,7 +2,7 @@ import { orgId as configOrgId } from "../config.ts";
 import { randomBytes, createCipheriv, createDecipheriv, createHash, hkdfSync } from "node:crypto";
 import type { ConsentMode, OAuthClientResolver, ResolvedClient } from "./oauth.ts";
 import { PROVIDERS, createSecretClientResolver } from "./oauth.ts";
-import type { SecretSource } from "../credentials/secret-source.ts";
+import { createEnvSecretSource, type SecretSource } from "../credentials/secret-source.ts";
 
 export interface StoredConnectorClient {
   scopeId: string;
@@ -126,20 +126,23 @@ export function createConnectorClientResolver(opts: {
   orgScopeId: (orgId: string) => string;
   secrets?: SecretSource;
 }): OAuthClientResolver {
-  const envResolver = createSecretClientResolver(opts.secrets);
+  const secrets = opts.secrets ?? createEnvSecretSource();
+  const envResolver = createSecretClientResolver(secrets);
   return async (providerName, ctx): Promise<ResolvedClient> => {
-    if (!PROVIDERS[providerName]) throw new Error(`unknown OAuth provider: ${providerName}`);
+    const provider = Object.hasOwn(PROVIDERS, providerName) ? PROVIDERS[providerName] : undefined;
+    if (!provider) throw new Error(`unknown OAuth provider: ${providerName}`);
     const orgId = configOrgId();
     const rec = await opts.reader.getConnectorClientSecret(opts.orgScopeId(orgId), providerName);
     if (rec) {
       if (!rec.enabled) throw new Error(`connector '${providerName}' is disabled for this org`);
+      const hostedDomain = rec.hostedDomain || (provider.tenant ? await secrets.get(provider.tenant.env) : undefined);
       return {
         id: rec.clientId,
         secret: rec.clientSecret,
         clientRef: `org:${orgId}:${providerName}`,
         ...(rec.scopes ? { scopes: rec.scopes } : {}),
         ...(rec.redirectAllowlist ? { redirectAllowlist: rec.redirectAllowlist } : {}),
-        ...(rec.hostedDomain ? { hostedDomain: rec.hostedDomain } : {}),
+        ...(hostedDomain ? { hostedDomain } : {}),
       };
     }
     return envResolver(providerName, ctx);

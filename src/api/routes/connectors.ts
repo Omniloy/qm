@@ -14,7 +14,12 @@ import {
   type OAuthState,
 } from "../../connectors/oauth.ts";
 import { bestOAuthTokenStatus, CONNECTOR_STATUS_ACCOUNT_TYPES } from "../../credentials/connector-status.ts";
-import { connectorApps, connectorAppStates, type DisabledConnectorApps } from "../../connectors/connector-apps.ts";
+import {
+  connectorApps,
+  connectorAppStates,
+  DEFAULT_DISABLED_CONNECTOR_APPS,
+  type DisabledConnectorApps,
+} from "../../connectors/connector-apps.ts";
 import type { DerivedOAuthAuth, OAuthTokenStatus } from "../../credentials/keychain.ts";
 import { createEnvSecretSource } from "../../credentials/secret-source.ts";
 import type { ServerDeps } from "../deps.ts";
@@ -46,7 +51,7 @@ async function resumeOAuthFlow(deps: ServerDeps, secret: string | undefined, par
   return openOAuthState(param, { secret: oauthStateSecret(deps, secret), maxAgeMs: OAUTH_STATE_MAX_AGE_MS });
 }
 
-export function resolverFor(deps: ServerDeps): OAuthClientResolver {
+function resolverFor(deps: ServerDeps): OAuthClientResolver {
   return (
     deps.resolveClient ?? createSecretClientResolver(deps.oauthEnv ? createEnvSecretSource(deps.oauthEnv) : undefined)
   );
@@ -96,10 +101,13 @@ function latestRefreshFailure(
 }
 
 async function connectorProviderStatus(deps: ServerDeps, principalId: string): Promise<Record<string, unknown>> {
-  const disabledApps =
-    (await deps.connectorAppPrefs
-      ?.disabled(principalId)
-      .catch(swallowAs("connectors: app settings for status", {} as DisabledConnectorApps))) ?? {};
+  const disabledApps: DisabledConnectorApps | null = deps.connectorAppPrefs
+    ? await deps.connectorAppPrefs.disabled(principalId).catch(swallowAs("connectors: app settings for status", null))
+    : DEFAULT_DISABLED_CONNECTOR_APPS;
+  const appSettings = (name: string) => {
+    if (!connectorApps(name)) return {};
+    return disabledApps ? { apps: connectorAppStates(name, disabledApps) } : { appsUnavailable: true };
+  };
   const entries = await Promise.all(
     Object.entries(PROVIDERS).map(async ([name, provider]) => {
       const [hosts, configured] = await Promise.all([
@@ -129,7 +137,8 @@ async function connectorProviderStatus(deps: ServerDeps, principalId: string): P
           configured,
           available: configured,
           consentMode: provider.consentMode,
-          ...(connectorApps(name) ? { apps: connectorAppStates(name, disabledApps) } : {}),
+          ...(provider.sandboxCredential === false ? { grantable: false } : {}),
+          ...appSettings(name),
         },
       ] as const;
     }),
@@ -522,7 +531,7 @@ async function catalog(ctx: ApiCtx): Promise<void> {
       consentMode: p.consentMode,
       redirectPath: p.redirectPath,
       setupGuide: p.setupGuide,
-      ...(p.tenant ? { tenantLabel: p.tenant.label } : {}),
+      ...(p.tenant ? { tenantLabel: p.tenant.label, tenantPlaceholder: p.tenant.placeholder } : {}),
       configured: await providerConfigured(deps, name),
     })),
   );

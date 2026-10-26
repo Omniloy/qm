@@ -302,16 +302,19 @@ test("Microsoft 365 app settings round-trip through status and the signed apps r
     const before = await status("U1");
     assert.equal(before.google!.apps, undefined);
     assert.equal(before.microsoft!.apps!.length, 7);
-    assert.deepEqual(off(before.microsoft!.apps), []);
+    const defaults = ["teams-channels", "meeting-transcripts", "sharepoint"];
+    assert.deepEqual(off(before.microsoft!.apps), defaults);
 
-    const res = await save({ principalId: "U1", provider: "microsoft", apps: { mail: false, onedrive: false } });
+    const res = await save({
+      principalId: "U1",
+      provider: "microsoft",
+      apps: { mail: false, onedrive: false, sharepoint: true },
+    });
     assert.equal(res.status, 200);
-    assert.deepEqual(off(((await res.json()) as { apps: Array<{ id: string; enabled: boolean }> }).apps), [
-      "mail",
-      "onedrive",
-    ]);
-    assert.deepEqual(off((await status("U1")).microsoft!.apps), ["mail", "onedrive"]);
-    assert.deepEqual(off((await status("U2")).microsoft!.apps), []);
+    const saved = ["mail", "teams-channels", "meeting-transcripts", "onedrive"];
+    assert.deepEqual(off(((await res.json()) as { apps: Array<{ id: string; enabled: boolean }> }).apps), saved);
+    assert.deepEqual(off((await status("U1")).microsoft!.apps), saved);
+    assert.deepEqual(off((await status("U2")).microsoft!.apps), defaults);
 
     assert.equal((await save({ principalId: "U1", provider: "google", apps: { mail: false } })).status, 400);
     assert.equal((await save({ principalId: "U1", provider: "__proto__", apps: {} })).status, 400);
@@ -319,6 +322,39 @@ test("Microsoft 365 app settings round-trip through status and the signed apps r
     assert.equal((await save({ principalId: "U1", provider: "microsoft", apps: { mail: "no" } })).status, 400);
     assert.equal((await save({ principalId: "U1", provider: "microsoft", apps: { excel: false } })).status, 400);
     assert.equal((await save({ provider: "microsoft", apps: { mail: false } })).status, 400);
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+  }
+});
+
+test("status flags unreadable app settings instead of showing defaults the UI could save over", async () => {
+  const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "oauth-routes-")) }));
+  const server = createServer(built.app, {
+    signingSecret: SECRET,
+    replayDedupe: built.replayDedupe,
+    connectorTokens: built.connectorTokens,
+    connectorAppPrefs: {
+      disabled: async () => {
+        throw new Error("database unavailable");
+      },
+      set: async () => [],
+    },
+    auditLog: built.auditLog,
+    oauthEnv: { ...oauthEnv, MICROSOFT_OAUTH_CLIENT_ID: "msid", MICROSOFT_OAUTH_CLIENT_SECRET: "mssecret" },
+  });
+  server.listen(0);
+  const base = `http://localhost:${(server.address() as AddressInfo).port}`;
+  try {
+    const path = "/v1/connectors/oauth/status?principalId=U1";
+    const res = await fetch(base + path, { headers: sign("GET", path) });
+    assert.equal(res.status, 200);
+    const { providers } = (await res.json()) as {
+      providers: Record<string, { apps?: unknown; appsUnavailable?: boolean; grantable?: boolean }>;
+    };
+    assert.equal(providers.microsoft!.appsUnavailable, true);
+    assert.equal(providers.microsoft!.apps, undefined);
+    assert.equal(providers.microsoft!.grantable, false, "a core-only connector can't be granted to a context");
+    assert.equal(providers.google!.grantable, undefined);
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
   }

@@ -252,3 +252,23 @@ test("managed deployments accept validated own apps and preserve credentials on 
     await srv.close();
   }
 });
+
+test("a connector client with an invalid tenant is refused before anything is saved", async () => {
+  const srv = start();
+  const tenant = "0f3c1a52-6c1e-4f6b-9d7e-2b8a4c7d9e10";
+  const save = (hostedDomain: string) =>
+    putConnector(srv.base, { provider: "microsoft", clientId: "ms-cid", clientSecret: "ms-secret", hostedDomain });
+  try {
+    const bad = await save("contoso.onmicrosoft.com");
+    assert.equal(bad.status, 400);
+    assert.match(JSON.stringify(await bad.json()), /GUID/);
+    assert.equal(await srv.built.config.getConnectorClientSecret("org:default-org", "microsoft"), null);
+    assert.equal((await save(tenant)).status, 200);
+    assert.equal(
+      (await srv.built.config.getConnectorClientSecret("org:default-org", "microsoft"))?.hostedDomain,
+      tenant,
+    );
+  } finally {
+    await srv.close();
+  }
+});

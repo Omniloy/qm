@@ -98,6 +98,27 @@ test("a provider with no org record falls back to env", async () => {
   await assert.rejects(resolve("google", {}), /GOOGLE_OAUTH_CLIENT_ID/);
 });
 
+test("an org client without its own tenant inherits the provider's tenant env; its own value wins", async () => {
+  const store = createMemoryConfigStore("default-org", { connectorSecretKey: "k" });
+  const tenant = "0f3c1a52-6c1e-4f6b-9d7e-2b8a4c7d9e10";
+  const resolve = createConnectorClientResolver({
+    reader: store,
+    orgScopeId: orgScope,
+    secrets: createEnvSecretSource({ MICROSOFT_TENANT_ID: tenant, GOOGLE_WORKSPACE_DOMAIN: "example.com" }),
+  });
+  await store.setConnectorClient(orgScope("default-org"), "microsoft", { clientId: "m", clientSecret: "s" });
+  await store.setConnectorClient(orgScope("default-org"), "google", {
+    clientId: "g",
+    clientSecret: "s",
+    hostedDomain: "own.example",
+  });
+  await store.setConnectorClient(orgScope("default-org"), "slack", { clientId: "sl", clientSecret: "s" });
+  assert.equal((await resolve("microsoft", {})).hostedDomain, tenant);
+  assert.equal((await resolve("google", {})).hostedDomain, "own.example");
+  assert.equal((await resolve("slack", {})).hostedDomain, undefined, "providers without a tenant get none");
+  await assert.rejects(resolve("__proto__", {}), /unknown OAuth provider/);
+});
+
 test("a disabled org connector is refused (grays out the app grid)", async () => {
   const store = createMemoryConfigStore("default-org", { connectorSecretKey: "k" });
   await store.setConnectorClient(orgScope("default-org"), "google", {
