@@ -7,6 +7,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { DurableMap } from "../persistence/durable-map.ts";
 import type { DurableByteStore } from "../files/durable-byte-store.ts";
 import { collectBytes } from "../util/bytes.ts";
+import { shq } from "../util/shell.ts";
 import { swallow, swallowAs } from "../util/errors.ts";
 import { normalizeRelPath } from "./deploy-fs.ts";
 
@@ -66,7 +67,6 @@ const DEFAULT_REPO_ROOT = join(tmpdir(), "qm-deploy-git");
 const GIT_AUTHOR = ["-c", "user.name=QM", "-c", "user.email=deployments@qm.local"];
 const ARCHIVE_ETAG_FILE = "qm-archive-etag";
 const NO_AUTO_GC = ["-c", "gc.auto=0"];
-const RECEIVE_PACK_NO_AUTO_GC = "--receive-pack=git -c gc.auto=0 receive-pack";
 
 interface GitOptions {
   cwd?: string;
@@ -82,6 +82,7 @@ interface GitResult {
 export function createDeployGitStore(opts: DeployGitStoreOptions = {}): DeployGitStore {
   const repoRoot = opts.repoRoot ?? DEFAULT_REPO_ROOT;
   const gitBin = opts.gitBin ?? "git";
+  const receivePack = `--receive-pack=${shq(gitBin)} ${NO_AUTO_GC.join(" ")} receive-pack`;
   const archiveStore = opts.archiveStore;
   const archiveBytes = opts.archiveBytes;
   const repoPath = (deploymentId: string): string => join(repoRoot, `${safeRepoName(deploymentId)}.git`);
@@ -284,7 +285,7 @@ export function createDeployGitStore(opts: DeployGitStoreOptions = {}): DeployGi
           },
         );
         const sha = (await git(["rev-parse", "HEAD"], { cwd: workdir })).toString("utf8").trim();
-        await git(["push", "--quiet", RECEIVE_PACK_NO_AUTO_GC, repo, `HEAD:refs/deploy-commits/${sha}`], {
+        await git(["push", "--quiet", receivePack, repo, `HEAD:refs/deploy-commits/${sha}`], {
           cwd: workdir,
         });
         await persistArchive(input.deploymentId, repo);

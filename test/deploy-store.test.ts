@@ -650,3 +650,22 @@ test("a commit past git's auto-gc threshold commits and reads back every file", 
   const byPath = new Map(read.map((f) => [f.path, Buffer.from(f.data).toString("utf8")]));
   for (const f of files) assert.equal(byPath.get(f.path), f.data, f.path);
 });
+
+test("the push into the bare repo runs receive-pack through the configured binary with auto-gc off", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "deploy-git receive pack "));
+  const spawnLog = join(dir, "spawns");
+  const gitBin = join(dir, "it's git");
+  writeFileSync(gitBin, `#!/bin/sh\necho "$*" >> "${spawnLog}"\nexec git "$@"\n`, { mode: 0o755 });
+  const store = createDeployGitStore({ repoRoot: join(dir, "repos"), gitBin });
+  const sha = await store.commit({ deploymentId: "rp", version: 1, files: [{ path: "a.txt", data: "a\n" }] });
+  assert.deepEqual(
+    (await store.filesOf("rp", sha)).map((f) => f.path),
+    ["a.txt"],
+  );
+  const spawns = readFileSync(spawnLog, "utf8").trim().split("\n");
+  assert.ok(
+    spawns.some((s) => s.startsWith("-c gc.auto=0 receive-pack ")),
+    `receive-pack did not run through the configured binary: ${spawns.join(" | ")}`,
+  );
+  assert.ok(spawns.every((s) => s.startsWith("-c gc.auto=0 ")));
+});
