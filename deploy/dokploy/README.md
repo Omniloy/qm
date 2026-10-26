@@ -367,6 +367,37 @@ it, so every surface serves it as `/favicon.svg`. `ORG_BRAND_MARK_URL` points th
 and admin badge at that same public `/favicon.svg`; it must be an absolute `https://` URL,
 so it names the public host.
 
+## Microsoft 365
+
+Microsoft 365 (Outlook mail and calendar, Teams chats, channels and meeting transcripts,
+OneDrive, SharePoint) is a per-person OAuth connector whose tools come from the
+`ms365-mcp` service, a pinned image of
+[Softeria/ms-365-mcp-server](https://github.com/Softeria/ms-365-mcp-server) (MIT). It runs
+on the private `qm` network only, holds no credentials, and forwards the `Bearer` token
+core sends on each call straight to Microsoft Graph. `ENABLED_TOOLS` in the compose file
+limits it to exactly the tools of those seven apps
+(`src/connectors/connector-apps.ts`; a test keeps the two in sync). Core sets
+`MCP_PER_USER_HTTP_HOSTS: ms365-mcp`, which lets a per-person MCP server use plain HTTP
+on that one hostname; every other per-person server still needs HTTPS.
+
+Setup, once:
+
+1. In the Microsoft Entra admin center → **App registrations**, register a web app.
+   Use the redirect URI `https://<host>/v1/connectors/oauth/microsoft/callback`, create a
+   client secret, add the Microsoft Graph delegated permissions listed in the admin
+   setup guide, and grant admin consent for the tenant.
+2. In the admin console → **Connectors** → **OAuth apps**, add **Microsoft 365** with
+   the application (client) ID and secret. Put the directory (tenant) ID in **Directory
+   (tenant) ID** to restrict sign-in to your tenant; leave it empty to accept any work or
+   school tenant.
+3. In **Connectors** → **MCP servers**, add the server with ID `microsoft-365`, URL
+   `http://ms365-mcp:3000`, auth **None**, **Per person** with credential host
+   `graph.microsoft.com`, and **Read only** off.
+
+People then connect from **Keychain** and use the gear on the Microsoft 365 card to
+choose which apps the agent sees. A turned-off app's tools and skill are left out of the
+agent's turn entirely.
+
 ## MCP servers, Composio and skill sharing
 
 None of these need a Dokploy env var or a redeploy. An org admin sets each one in the
