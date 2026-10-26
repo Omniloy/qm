@@ -303,12 +303,14 @@ export function createDeployStore(backing?: DurableMap<Deployment> | DeployStore
 
   async function updateVersionRef(deploymentId: string, version: DeploymentVersion): Promise<void> {
     if (!version.commit) return;
-    await git.setRef(deploymentId, versionRef(version.version), version.commit);
-    await git.setRef(deploymentId, `refs/deploy-commits/${version.commit}`, version.commit);
+    await git.setRefs(deploymentId, {
+      [versionRef(version.version)]: version.commit,
+      [`refs/deploy-commits/${version.commit}`]: version.commit,
+    });
   }
 
   async function updateAppliedRef(deploymentId: string, version: DeploymentVersion): Promise<void> {
-    if (version.commit) await git.setRef(deploymentId, CURRENT_REF, version.commit);
+    if (version.commit) await git.setRefs(deploymentId, { [CURRENT_REF]: version.commit });
     else await git.deleteRef(deploymentId, CURRENT_REF);
   }
 
