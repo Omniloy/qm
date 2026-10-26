@@ -305,13 +305,9 @@ import {
   type DeviceFlowCutoverStore,
 } from "./credentials/device-flow-cutover.ts";
 import { createFeatureFlagStore, type FeatureFlagRecord, type FeatureFlagStore } from "./feature-flags.ts";
+import { makeRefresh, type OAuthClientResolver, type OAuthState } from "./connectors/oauth.ts";
 import {
-  createSecretClientResolver,
-  makeRefresh,
-  type OAuthClientResolver,
-  type OAuthState,
-} from "./connectors/oauth.ts";
-import {
+  createConnectorClientConfigured,
   createConnectorClientResolver,
   deriveConnectorKey,
   type SecretKey,
@@ -952,20 +948,22 @@ export function buildApp(
       return memorySessions.store.getEntries(sessionId, { limit: MEMORY_CAPTURE_ENTRY_WINDOW });
     },
   });
+  const secretSource =
+    config.secretsBackend === "aws"
+      ? createLayeredSecretSource(
+          createEnvSecretSource(),
+          createAwsSecretsManagerSource({ prefix: config.secretsPrefix }),
+        )
+      : createEnvSecretSource();
   const mcpServers = createMcpServerStore(
     artifactMap<McpServer>("mcp_servers"),
     managedMcpServers({
       ms365McpUrl: config.ms365McpUrl,
-      providerConfigured: async (provider) => {
-        const stored = (await configStore.listConnectorClients(orgScope)).find(
-          (client) => client.provider === provider,
-        );
-        if (stored) return stored.enabled;
-        return createSecretClientResolver(secretSource)(provider, {}).then(
-          () => true,
-          () => false,
-        );
-      },
+      providerConfigured: createConnectorClientConfigured({
+        list: (scope) => configStore.listConnectorClients(scope),
+        orgScopeId: (o) => scopeId("org", o),
+        secrets: secretSource,
+      }),
     }),
   );
   const errors = withErrorReporting(config.databaseUrl ? createPostgresErrorLog(config.databaseUrl) : createErrorLog());
@@ -1315,13 +1313,6 @@ export function buildApp(
     withLegacyMutation: (scope, action) => sandboxResources.withLegacyMutation(scope, action),
     hasLiveWork: async (scope) => !!processes && (await processes.liveByScope(scope)).length > 0,
   });
-  const secretSource =
-    config.secretsBackend === "aws"
-      ? createLayeredSecretSource(
-          createEnvSecretSource(),
-          createAwsSecretsManagerSource({ prefix: config.secretsPrefix }),
-        )
-      : createEnvSecretSource();
   const resolveClient: OAuthClientResolver = createConnectorClientResolver({
     reader: configStore,
     orgScopeId: (o) => scopeId("org", o),

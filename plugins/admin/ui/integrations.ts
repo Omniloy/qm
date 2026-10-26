@@ -277,7 +277,7 @@ cards["card-connectors"] = () => {
         class=${classMap({ primary: true, hidden: !s.editor })}
         id="conn-save"
         ?disabled=${s.saving}
-        @click=${() => s.save()}
+        @click=${() => s.save().then(() => mcp.load())}
       >
         ${s.editing ? "Save changes" : "Save connector"}</button
       ><button class=${s.editor ? "" : "hidden"} id="conn-reset" @click=${() => s.reset()}>Cancel</button
@@ -480,7 +480,7 @@ function connectorRows() {
           </div>
         </div>
         <div class="credential-actions">
-          ${c.inherited ? html`<button type="button" @click=${() => openConnector(c)}>Override here</button>` : html`<button type="button" @click=${() => openConnector(c)}>Edit</button><button type="button" class="rowbtn danger" title="Delete connector" aria-label=${"Delete " + context.connectorName(c.provider)} @click=${() => connectors.remove(c.provider)}>Delete</button>`}
+          ${c.inherited ? html`<button type="button" @click=${() => openConnector(c)}>Override here</button>` : html`<button type="button" @click=${() => openConnector(c)}>Edit</button><button type="button" class="rowbtn danger" title="Delete connector" aria-label=${"Delete " + context.connectorName(c.provider)} @click=${() => connectors.remove(c.provider).then(() => mcp.load())}>Delete</button>`}
         </div>
       </div>`,
   );

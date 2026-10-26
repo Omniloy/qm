@@ -200,7 +200,7 @@ test("MCP servers and Composio are managed from the Connectors view", async () =
     dom.window.eval(
       `ui.configure({orgScope:()=>"org:test",connectorName:x=>x,fmtTime:x=>x,api:async(method,path,body)=>{window.calls.push({method,path,body});
         if(path==="/api/mcp-servers")return{ok:true,data:{servers:[{id:"linear",name:"Linear",url:"https://mcp.linear.app/mcp",icon:"https://linear.app/favicon.ico",auth:"bearer",hasBearerToken:true,credentialScope:"shared",readOnly:false,enabled:true},{id:"microsoft-365",name:"Microsoft 365",url:"http://ms365-mcp:3000/mcp",auth:"none",credentialScope:"per-user",credentialHost:"graph.microsoft.com",toolMode:"discovery",readOnly:false,enabled:true,managed:true,updatedBy:"deployment"}],tools:[{name:"linear_list",serverId:"linear"}]}};
-        if(path==="/api/connector-catalog")return{ok:true,data:{catalog:[]}};
+        if(path==="/api/connector-catalog")return{ok:true,data:{catalog:[{provider:"microsoft"}]}};
         if(path.includes("?view=connectors"))return{ok:true,data:{connectors:[],serviceCredentials:[]}};
         return{ok:true,data:{tools:["a","b"]}};}})`,
     );
@@ -238,6 +238,32 @@ test("MCP servers and Composio are managed from the Connectors view", async () =
     icon.dispatchEvent(new dom.window.Event("error"));
     assert.equal(icon.hidden, true);
     assert.match(doc.getElementById("composio-state")!.textContent!, /Not configured/);
+
+    doc.getElementById("add-oauth-app")!.click();
+    for (const [id, value] of [
+      ["conn-client-id", "ms-cid"],
+      ["conn-client-secret", "ms-secret"],
+    ] as const) {
+      const field = doc.getElementById(id) as HTMLInputElement;
+      field.value = value;
+      field.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+    }
+    calls.length = 0;
+    doc.getElementById("conn-save")!.click();
+    for (let i = 0; i < 100 && !calls.some((c) => c.path === "/api/mcp-servers"); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 2));
+    }
+    assert.deepEqual(
+      calls.map((c) => c.method + " " + c.path.split("?")[0]),
+      [
+        "PUT /api/scopes/org%3Atest/connectors",
+        "GET /api/connector-catalog",
+        "GET /api/scopes/org%3Atest",
+        "GET /api/mcp-servers",
+      ],
+      "saving an OAuth app reloads the MCP servers, which may include one it manages",
+    );
+    calls.length = 0;
 
     doc.getElementById("mcp-add")!.click();
     const type = (id: string, value: string) => {

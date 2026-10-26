@@ -148,3 +148,19 @@ export function createConnectorClientResolver(opts: {
     return envResolver(providerName, ctx);
   };
 }
+
+export function createConnectorClientConfigured(opts: {
+  list: (orgScopeId: string) => Promise<PublicConnectorClient[]>;
+  orgScopeId: (orgId: string) => string;
+  secrets?: SecretSource;
+}): (provider: string) => Promise<boolean> {
+  const envResolver = createSecretClientResolver(opts.secrets ?? createEnvSecretSource());
+  return async (provider) => {
+    const stored = (await opts.list(opts.orgScopeId(configOrgId()))).find((client) => client.provider === provider);
+    if (stored) return stored.enabled;
+    return envResolver(provider, {}).then(
+      () => true,
+      () => false,
+    );
+  };
+}
