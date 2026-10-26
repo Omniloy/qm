@@ -1078,10 +1078,9 @@ function drawConnectors(): void {
       credentials.map((credential) => [credential.credentialId, { id: credential.credentialId, kind: "connector" }]),
     );
     const grants = keychainGrants.filter((grant) => isActiveGrant(grant, credentialsById.get(grant.credentialId)));
-    const first =
-      meta.grantable && p.grantable !== false
-        ? credentials.find((credential) => credential.connected && !credential.needsReconnect)
-        : undefined;
+    const first = meta.grantable
+      ? credentials.find((credential) => credential.connected && !credential.needsReconnect)
+      : undefined;
     const grantable: KeychainCredential | null = first
       ? { id: first.credentialId, service: meta.name, kind: "connector" }
       : null;

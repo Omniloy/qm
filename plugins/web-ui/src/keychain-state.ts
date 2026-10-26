@@ -14,6 +14,7 @@ export interface ConnectorCardSource {
   name?: string;
   kind?: string;
   hosts?: Array<{ host?: string } | string>;
+  grantable?: boolean;
 }
 
 export function connectorCardMeta(
@@ -21,7 +22,7 @@ export function connectorCardMeta(
   provider: ConnectorCardSource,
   known?: { name: string; hosts: string },
 ): { name: string; hosts: string; grantable: boolean } {
-  const grantable = provider.kind !== "mcp";
+  const grantable = provider.kind !== "mcp" && provider.grantable !== false;
   if (known) return { ...known, grantable };
   const host = (provider.hosts ?? []).map((entry) => (typeof entry === "string" ? entry : entry.host)).find(Boolean);
   const name = provider.name || id;
