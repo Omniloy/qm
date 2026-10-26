@@ -509,35 +509,38 @@ test("oauth flow store — a short opaque state resolves once, then expires", as
   assert.equal(await stale.finish(staleId), null, "expired");
 });
 
-test("Microsoft is registered with the Graph host, 16 delegated scopes, PKCE, and default token adapters", () => {
+test("Microsoft is registered with the Graph host, the work-account delegated scopes, PKCE, and admin consent", () => {
   const p = PROVIDERS.microsoft!;
   assert.deepEqual(p.hosts, ["graph.microsoft.com"]);
   assert.deepEqual(p.scopes, [
     "offline_access",
     "openid",
-    "email",
     "profile",
+    "email",
     "User.Read",
     "Mail.ReadWrite",
     "Mail.Send",
     "Calendars.ReadWrite",
-    "Files.ReadWrite.All",
-    "Sites.Read.All",
+    "Chat.ReadWrite",
+    "ChatMessage.Send",
     "Team.ReadBasic.All",
     "Channel.ReadBasic.All",
     "ChannelMessage.Read.All",
     "ChannelMessage.Send",
-    "Chat.ReadWrite",
-    "ChatMessage.Send",
+    "OnlineMeetings.Read",
+    "OnlineMeetingTranscript.Read.All",
+    "Files.ReadWrite.All",
+    "Sites.ReadWrite.All",
   ]);
   assert.equal(p.pkce, true);
+  assert.equal(p.consentMode, "admin");
   assert.equal(p.redirectPath, "microsoft/callback");
-  assert.equal(p.authParams?.prompt, "consent");
+  assert.equal(p.clientIdEnv, "MICROSOFT_OAUTH_CLIENT_ID");
+  assert.equal(p.clientSecretEnv, "MICROSOFT_OAUTH_CLIENT_SECRET");
+  assert.equal(p.tenant?.env, "MICROSOFT_TENANT_ID");
   assert.ok(p.egressRule.includes("graph.microsoft.com"));
   assert.ok(p.egressRule.includes("login.microsoftonline.com"));
-  assert.ok(p.egressRule.includes("sharepoint.com"), "download redirects to <tenant>.sharepoint.com");
-  assert.ok(p.egressRule.includes("1drv.com"), "personal OneDrive download redirects to *.dm.files.1drv.com");
-  assert.equal(p.exchange, undefined, "microsoft uses the default authorization_code adapter");
+  assert.ok(p.egressRule.includes("sharepoint.com"), "download URLs point at <tenant>.sharepoint.com");
   assert.equal(p.refresh, undefined, "microsoft uses the default refresh_token adapter");
 });
 
@@ -548,6 +551,7 @@ test("Microsoft authorize URL defaults the tenant authority to 'organizations' (
       state: "st-ms",
       client: await resolve("microsoft", {}),
       codeChallenge: "MS-CHAL",
+      accountType: "company",
     }),
   );
   assert.equal(u.origin + u.pathname, "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize");
@@ -555,48 +559,132 @@ test("Microsoft authorize URL defaults the tenant authority to 'organizations' (
   assert.equal(u.searchParams.get("client_id"), "msid");
   assert.equal(u.searchParams.get("response_type"), "code");
   assert.equal(u.searchParams.get("state"), "st-ms");
-  assert.equal(u.searchParams.get("prompt"), "consent");
   assert.equal(u.searchParams.get("code_challenge"), "MS-CHAL");
   assert.equal(u.searchParams.get("code_challenge_method"), "S256");
   assert.equal(u.searchParams.get("scope"), PROVIDERS.microsoft!.scopes.join(" "));
+  assert.equal(u.searchParams.get("hd"), null);
 });
 
 test("Microsoft pins the authority to MICROSOFT_TENANT_ID on authorize and token exchange", async () => {
-  const r = createSecretClientResolver(createEnvSecretSource({ ...env, MICROSOFT_TENANT_ID: "TENANT-GUID" }));
+  const r = createSecretClientResolver(createEnvSecretSource({ ...env, MICROSOFT_TENANT_ID: TENANT }));
   const client = await r("microsoft", {});
-  const u = new URL(authorizeUrl("microsoft", { redirectUri: "https://app/cb", state: "s", client }));
-  assert.equal(u.origin + u.pathname, "https://login.microsoftonline.com/TENANT-GUID/oauth2/v2.0/authorize");
+  assert.equal(client.hostedDomain, TENANT);
+  const u = new URL(
+    authorizeUrl("microsoft", { redirectUri: "https://app/cb", state: "s", client, accountType: "company" }),
+  );
+  assert.equal(u.origin + u.pathname, `https://login.microsoftonline.com/${TENANT}/oauth2/v2.0/authorize`);
+  assert.equal(u.searchParams.get("hd"), null, "the Google hd hint never leaks onto Microsoft");
 
   let seen: { url: string; body: string } | null = null;
   const fetchImpl: FetchLike = async (url, init) => {
     seen = { url, body: init.body };
-    return { ok: true, status: 200, json: async () => ({ access_token: "ms-at", refresh_token: "ms-rt" }) };
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ access_token: "ms-at", refresh_token: "ms-rt", id_token: msIdToken(TENANT) }),
+    };
   };
   await exchangeCode("microsoft", "code-ms", "https://app/cb", { client, fetchImpl, codeVerifier: "ms-verif" });
-  assert.equal(seen!.url, "https://login.microsoftonline.com/TENANT-GUID/oauth2/v2.0/token");
+  assert.equal(seen!.url, `https://login.microsoftonline.com/${TENANT}/oauth2/v2.0/token`);
   assert.match(seen!.body, /grant_type=authorization_code/);
   assert.match(seen!.body, /client_secret=mssecret/);
   assert.match(seen!.body, /code_verifier=ms-verif/);
 });
 
-test("Microsoft refresh routes graph.microsoft.com to the tenant-substituted token endpoint", async () => {
-  const r = createSecretClientResolver(createEnvSecretSource({ ...env, MICROSOFT_TENANT_ID: "TENANT-GUID" }));
+const TENANT = "0f3c1a52-6c1e-4f6b-9d7e-2b8a4c7d9e10";
+
+function msIdToken(tid?: string): string {
+  const claims = { sub: "1", ...(tid ? { tid } : {}) };
+  return ["h", Buffer.from(JSON.stringify(claims), "utf8").toString("base64url"), "s"].join(".");
+}
+
+test("Microsoft exchange rejects an account from another tenant when a tenant is configured", async () => {
+  const respondWith =
+    (body: Record<string, unknown>): FetchLike =>
+    async () => ({ ok: true, status: 200, json: async () => body });
+  const pinned = await createSecretClientResolver(createEnvSecretSource({ ...env, MICROSOFT_TENANT_ID: TENANT }))(
+    "microsoft",
+    {},
+  );
+  const ok = await exchangeCode("microsoft", "c", "https://app/cb", {
+    client: pinned,
+    fetchImpl: respondWith({ access_token: "at", id_token: msIdToken(TENANT.toUpperCase()) }),
+  });
+  assert.equal(ok.token.accessToken, "at");
+  for (const body of [
+    { access_token: "at", id_token: msIdToken("9188040d-6c67-4c5b-b112-36a304b66dad") },
+    { access_token: "at", id_token: msIdToken() },
+    { access_token: "at" },
+  ]) {
+    await assert.rejects(
+      () => exchangeCode("microsoft", "c", "https://app/cb", { client: pinned, fetchImpl: respondWith(body) }),
+      new RegExp(`not in the ${TENANT} Microsoft 365 tenant`),
+    );
+  }
+
+  const open = await exchangeCode("microsoft", "c", "https://app/cb", {
+    client: await resolve("microsoft", {}),
+    fetchImpl: respondWith({ access_token: "at", id_token: msIdToken("any-tenant") }),
+  });
+  assert.equal(open.token.accessToken, "at", "without a configured tenant any work or school tenant is accepted");
+});
+
+test("Microsoft refresh uses the tenant token endpoint and stores the rotated refresh token", async () => {
+  const r = createSecretClientResolver(createEnvSecretSource({ ...env, MICROSOFT_TENANT_ID: TENANT }));
   let seen: { url: string; body: string } | null = null;
   const fetchImpl: FetchLike = async (url, init) => {
     seen = { url, body: init.body };
-    return { ok: true, status: 200, json: async () => ({ access_token: "ms-at2", expires_in: 3600 }) };
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ access_token: "ms-at2", refresh_token: "ms-rt2", expires_in: 3600 }),
+    };
   };
   const fresh = await makeRefresh({ resolveClient: r, fetchImpl, now: () => 9_000 })("graph.microsoft.com", {
     accessToken: "old",
     refreshToken: "ms-rt",
   });
-  assert.equal(seen!.url, "https://login.microsoftonline.com/TENANT-GUID/oauth2/v2.0/token");
+  assert.equal(seen!.url, `https://login.microsoftonline.com/${TENANT}/oauth2/v2.0/token`);
   assert.match(seen!.body, /grant_type=refresh_token/);
+  assert.match(seen!.body, /refresh_token=ms-rt/);
   assert.equal(fresh.accessToken, "ms-at2");
+  assert.equal(fresh.refreshToken, "ms-rt2");
+  assert.equal(fresh.expiresAt, 9_000 + 3600_000);
 });
 
-test("applyTenant is inert for providers without the {tenant} placeholder even when a tenant is resolved", async () => {
-  const r = createSecretClientResolver(createEnvSecretSource({ ...env, MICROSOFT_TENANT_ID: "TENANT-GUID" }));
+test("a rejected refresh names the OAuth error so the keychain records why it needs a reconnect", async () => {
+  const fetchImpl: FetchLike = async () => ({
+    ok: false,
+    status: 400,
+    json: async () => ({ error: "invalid_grant", error_description: "AADSTS70043: expired" }),
+  });
+  await assert.rejects(
+    () =>
+      makeRefresh({ resolveClient: resolve, fetchImpl })("graph.microsoft.com", {
+        accessToken: "old",
+        refreshToken: "ms-rt",
+      }),
+    /token refresh failed \(400 invalid_grant\)/,
+  );
+  const opaque: FetchLike = async () => ({
+    ok: false,
+    status: 502,
+    json: async () => {
+      throw new Error("not json");
+    },
+  });
+  await assert.rejects(
+    () =>
+      makeRefresh({ resolveClient: resolve, fetchImpl: opaque })("graph.microsoft.com", {
+        accessToken: "old",
+        refreshToken: "ms-rt",
+      }),
+    /token refresh failed \(502\)/,
+  );
+});
+
+test("the tenant placeholder is inert for providers without one even when a tenant is resolved", async () => {
+  const r = createSecretClientResolver(createEnvSecretSource({ ...env, MICROSOFT_TENANT_ID: TENANT }));
   const googleUrl = authorizeUrl("google", {
     redirectUri: "https://app/cb",
     state: "s",

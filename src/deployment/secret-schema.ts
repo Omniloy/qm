@@ -19,8 +19,8 @@ type SecretGate =
   | "google-oauth"
   | "dropbox-oauth"
   | "linear-oauth"
-  | "email-auth"
   | "microsoft-oauth"
+  | "email-auth"
   | "model-anthropic"
   | "model-openai"
   | "model-openrouter";
@@ -86,8 +86,8 @@ const GATE_PREDICATES: Readonly<Record<SecretGate, (env: NodeJS.ProcessEnv) => b
   "google-oauth": (env) => Boolean(env.GOOGLE_OAUTH_CLIENT_ID),
   "dropbox-oauth": (env) => Boolean(env.DROPBOX_OAUTH_CLIENT_ID),
   "linear-oauth": (env) => Boolean(env.LINEAR_OAUTH_CLIENT_ID),
-  "email-auth": (env) => env.AUTH_ALLOWED_EMAILS !== undefined,
   "microsoft-oauth": (env) => Boolean(env.MICROSOFT_OAUTH_CLIENT_ID),
+  "email-auth": (env) => env.AUTH_ALLOWED_EMAILS !== undefined,
   "model-anthropic": (env) => env.MODEL_PROVIDER?.trim() === "anthropic",
   "model-openai": (env) =>
     env.MODEL_PROVIDER?.trim() === "openai" &&

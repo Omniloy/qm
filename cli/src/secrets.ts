@@ -275,7 +275,7 @@ export const FIRST_PARTY_SECRET_SPECS: readonly SecretSpec[] = [
     name: "MICROSOFT_OAUTH_CLIENT_SECRET",
     service: "core",
     required: { when: { kind: "env-present", service: "core", name: "MICROSOFT_OAUTH_CLIENT_ID" } },
-    description: "Microsoft OAuth client secret.",
+    description: "Microsoft 365 (Entra ID) OAuth client secret.",
   },
   {
     name: "SLACK_BOT_TOKEN",

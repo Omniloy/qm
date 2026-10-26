@@ -23,6 +23,13 @@ interface OAuthSetupGuide {
   scopesRationale?: string;
 }
 
+interface OAuthTenant {
+  env: string;
+  label: string;
+  authParam?: string;
+  urlDefault?: string;
+}
+
 interface OAuthAdapterArgs {
   provider: OAuthProviderConfig;
   client: ResolvedClient;
@@ -48,6 +55,7 @@ export interface OAuthProviderConfig {
   consentMode: ConsentMode;
   egressRule: string[];
   setupGuide: OAuthSetupGuide;
+  tenant?: OAuthTenant;
   scopeParam?: string;
   authParams?: Record<string, string>;
   exchange?: OAuthExchangeAdapter;
@@ -66,8 +74,14 @@ export type FetchLike = (
 
 const realFetch: FetchLike = (url, init) => fetch(url, init);
 
-function applyTenant(url: string, client: ResolvedClient): string {
-  return url.replace("{tenant}", client.tenant ?? "organizations");
+function endpoint(url: string, provider: OAuthProviderConfig, client: ResolvedClient): string {
+  const fallback = provider.tenant?.urlDefault;
+  return fallback ? url.replace("{tenant}", encodeURIComponent(client.hostedDomain || fallback)) : url;
+}
+
+async function failureDetail(res: { status: number; json(): Promise<unknown> }): Promise<string> {
+  const raw = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+  return typeof raw?.error === "string" ? `${res.status} ${raw.error}` : String(res.status);
 }
 
 function parseScopes(raw: unknown): string[] | undefined {
@@ -120,7 +134,7 @@ function makeTokenAdapters(opts: {
   };
   return {
     async exchange({ provider, client, code, redirectUri, fetchImpl, now, codeVerifier }) {
-      const res = await fetchImpl(applyTenant(provider.tokenUrl, client), {
+      const res = await fetchImpl(endpoint(provider.tokenUrl, provider, client), {
         method: "POST",
         headers: headers(client),
         body: new URLSearchParams({
@@ -131,13 +145,13 @@ function makeTokenAdapters(opts: {
           ...(codeVerifier ? { code_verifier: codeVerifier } : {}),
         }).toString(),
       });
-      if (!res.ok) throw new Error(`${prefix}token exchange failed (${res.status})`);
+      if (!res.ok) throw new Error(`${prefix}token exchange failed (${await failureDetail(res)})`);
       const raw = (await res.json()) as Record<string, unknown>;
       checkErrorBody(raw);
       return { hosts: provider.hosts, token: toToken(raw, undefined, now), raw };
     },
     async refresh({ provider, client, token, fetchImpl, now }) {
-      const res = await fetchImpl(applyTenant(provider.tokenUrl, client), {
+      const res = await fetchImpl(endpoint(provider.tokenUrl, provider, client), {
         method: "POST",
         headers: headers(client),
         body: new URLSearchParams({
@@ -146,7 +160,7 @@ function makeTokenAdapters(opts: {
           ...clientBody(client),
         }).toString(),
       });
-      if (!res.ok) throw new Error(`${prefix}token refresh failed (${res.status})`);
+      if (!res.ok) throw new Error(`${prefix}token refresh failed (${await failureDetail(res)})`);
       const raw = (await res.json()) as Record<string, unknown>;
       checkErrorBody(raw);
       return toToken(raw, token.refreshToken, now, token.grantedScopes);
@@ -156,23 +170,41 @@ function makeTokenAdapters(opts: {
 
 const { exchange: defaultExchange, refresh: defaultRefresh } = makeTokenAdapters({});
 
+function idTokenClaims(raw: Record<string, unknown>, label: string): Record<string, unknown> | undefined {
+  const idToken = typeof raw.id_token === "string" ? raw.id_token : "";
+  try {
+    return idToken ? decodeJwt(idToken) : undefined;
+  } catch (e) {
+    swallow(`${label} id_token decode`, e);
+    return undefined;
+  }
+}
+
+function claim(claims: Record<string, unknown> | undefined, name: string): string {
+  const value = claims?.[name];
+  return typeof value === "string" ? value.toLowerCase() : "";
+}
+
 const googleExchange: OAuthExchangeAdapter = async (args) => {
   const { client, accountType } = args;
   const { hosts, token, raw } = await defaultExchange(args);
   if (accountType === "company" && client.hostedDomain) {
-    const idToken = typeof raw?.id_token === "string" ? raw.id_token : "";
-    let claims: Record<string, unknown> | undefined;
-    try {
-      if (idToken) claims = decodeJwt(idToken);
-    } catch (e) {
-      swallow("google id_token decode", e);
-    }
-    const hd = typeof claims?.hd === "string" ? claims.hd : "";
-    if (hd.toLowerCase() !== client.hostedDomain.toLowerCase()) {
+    if (claim(idTokenClaims(raw, "google"), "hd") !== client.hostedDomain.toLowerCase()) {
       throw new Error(
         `connected account is not in the ${client.hostedDomain} workspace — pick your company Google account`,
       );
     }
+  }
+  return { hosts, token };
+};
+
+const microsoftExchange: OAuthExchangeAdapter = async (args) => {
+  const { client } = args;
+  const { hosts, token, raw } = await defaultExchange(args);
+  if (client.hostedDomain && claim(idTokenClaims(raw, "microsoft"), "tid") !== client.hostedDomain.toLowerCase()) {
+    throw new Error(
+      `connected account is not in the ${client.hostedDomain} Microsoft 365 tenant — sign in with your work account`,
+    );
   }
   return { hosts, token };
 };
@@ -250,6 +282,7 @@ export const PROVIDERS: Record<string, OAuthProviderConfig> = {
       "accounts.google.com",
     ],
     authParams: { access_type: "offline", prompt: "consent" },
+    tenant: { env: "GOOGLE_WORKSPACE_DOMAIN", label: "Workspace domain", authParam: "hd" },
     exchange: googleExchange,
     setupGuide: {
       console: "Google Cloud Console → APIs & Services → Credentials",
@@ -263,6 +296,53 @@ export const PROVIDERS: Record<string, OAuthProviderConfig> = {
       ],
       scopesRationale:
         "gmail.modify/calendar/drive/spreadsheets/tasks back the Google Workspace skills; openid+email identify the account.",
+    },
+  },
+
+  microsoft: {
+    hosts: ["graph.microsoft.com"],
+    authUrl: "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize",
+    tokenUrl: "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token",
+    scopes: [
+      "offline_access",
+      "openid",
+      "profile",
+      "email",
+      "User.Read",
+      "Mail.ReadWrite",
+      "Mail.Send",
+      "Calendars.ReadWrite",
+      "Chat.ReadWrite",
+      "ChatMessage.Send",
+      "Team.ReadBasic.All",
+      "Channel.ReadBasic.All",
+      "ChannelMessage.Read.All",
+      "ChannelMessage.Send",
+      "OnlineMeetings.Read",
+      "OnlineMeetingTranscript.Read.All",
+      "Files.ReadWrite.All",
+      "Sites.ReadWrite.All",
+    ],
+    clientIdEnv: "MICROSOFT_OAUTH_CLIENT_ID",
+    clientSecretEnv: "MICROSOFT_OAUTH_CLIENT_SECRET",
+    redirectPath: "microsoft/callback",
+    consentMode: "admin",
+    egressRule: ["graph.microsoft.com", "login.microsoftonline.com", "sharepoint.com"],
+    pkce: true,
+    tenant: { env: "MICROSOFT_TENANT_ID", label: "Directory (tenant) ID", urlDefault: "organizations" },
+    exchange: microsoftExchange,
+    setupGuide: {
+      console: "Microsoft Entra admin center → App registrations",
+      url: "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade",
+      steps: [
+        "New registration: supported account types 'Accounts in this organizational directory only' (or any organizational directory for several tenants).",
+        "Add a Web platform redirect URI with the callback URL shown below.",
+        "Under Certificates & secrets, create a client secret and copy its Value.",
+        "Under API permissions, add the Microsoft Graph delegated permissions listed below, then Grant admin consent for the tenant (ChannelMessage.Read.All and OnlineMeetingTranscript.Read.All need it).",
+        "Paste the Application (client) ID, the client secret, and the Directory (tenant) ID below. Leave the tenant empty to accept any work or school tenant.",
+      ],
+      scopesRationale:
+        "Delegated Graph permissions back the Microsoft 365 tools (Outlook mail and calendar, Teams chats, channels and meeting transcripts, OneDrive and SharePoint) as the connecting user; offline_access issues the refresh token and openid/profile/email identify the account.",
     },
   },
 
@@ -445,50 +525,6 @@ export const PROVIDERS: Record<string, OAuthProviderConfig> = {
         "tweet.read/users.read back reads; tweet.write lets the connecting user post as themselves; offline.access issues a refresh token so the 2-hour access token renews.",
     },
   },
-
-  microsoft: {
-    hosts: ["graph.microsoft.com"],
-    authUrl: "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize",
-    tokenUrl: "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token",
-    scopes: [
-      "offline_access",
-      "openid",
-      "email",
-      "profile",
-      "User.Read",
-      "Mail.ReadWrite",
-      "Mail.Send",
-      "Calendars.ReadWrite",
-      "Files.ReadWrite.All",
-      "Sites.Read.All",
-      "Team.ReadBasic.All",
-      "Channel.ReadBasic.All",
-      "ChannelMessage.Read.All",
-      "ChannelMessage.Send",
-      "Chat.ReadWrite",
-      "ChatMessage.Send",
-    ],
-    clientIdEnv: "MICROSOFT_OAUTH_CLIENT_ID",
-    clientSecretEnv: "MICROSOFT_OAUTH_CLIENT_SECRET",
-    redirectPath: "microsoft/callback",
-    consentMode: "standard",
-    egressRule: ["graph.microsoft.com", "login.microsoftonline.com", "sharepoint.com", "1drv.com"],
-    authParams: { prompt: "consent" },
-    pkce: true,
-    setupGuide: {
-      console: "Azure Portal → Microsoft Entra ID → App registrations",
-      url: "https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade",
-      steps: [
-        "Register an application (single tenant: 'Accounts in this organizational directory only').",
-        "Under Authentication, add a Web platform and set the Redirect URI to the one shown below.",
-        "Under Certificates & secrets, create a new client secret and copy its value.",
-        "Under API permissions, add the Microsoft Graph DELEGATED permissions matching the scopes below, then click 'Grant admin consent' once for the tenant.",
-        "Set MICROSOFT_TENANT_ID to your directory (tenant) ID, and paste the Application (client) ID + client secret below.",
-      ],
-      scopesRationale:
-        "Mail.ReadWrite/Mail.Send back Outlook mail; Calendars.ReadWrite backs Calendar; Files.ReadWrite.All + Sites.Read.All back OneDrive/SharePoint document read/search/download and upload (new content and new versions) without site-wide write; Team/Channel/ChannelMessage/Chat scopes back Teams read and send; offline_access issues the refresh token; openid/email/profile/User.Read identify the account.",
-    },
-  },
 };
 
 export interface ResolvedClient {
@@ -497,7 +533,6 @@ export interface ResolvedClient {
   scopes?: string[];
   redirectAllowlist?: string[];
   hostedDomain?: string;
-  tenant?: string;
   clientRef: string;
 }
 
@@ -510,17 +545,10 @@ export function createSecretClientResolver(secrets: SecretSource = createEnvSecr
     const [id, secret, hostedDomain] = await Promise.all([
       secrets.get(p.clientIdEnv),
       secrets.get(p.clientSecretEnv),
-      providerName === "google" ? secrets.get("GOOGLE_WORKSPACE_DOMAIN") : undefined,
+      p.tenant ? secrets.get(p.tenant.env) : undefined,
     ]);
     if (!id || !secret) throw new Error(`provider not configured — set ${p.clientIdEnv} and ${p.clientSecretEnv}`);
-    const tenant = await secrets.get("MICROSOFT_TENANT_ID");
-    return {
-      id,
-      secret,
-      clientRef: `env:${providerName}`,
-      ...(hostedDomain ? { hostedDomain } : {}),
-      ...(tenant ? { tenant } : {}),
-    };
+    return { id, secret, clientRef: `env:${providerName}`, ...(hostedDomain ? { hostedDomain } : {}) };
   };
 }
 
@@ -618,8 +646,9 @@ export function authorizeUrl(
   }
   q.set(p.scopeParam ?? "scope", scopes.join(" "));
   for (const [k, v] of Object.entries(p.authParams ?? {})) q.set(k, v);
-  if (accountType === "company" && opts.client.hostedDomain) q.set("hd", opts.client.hostedDomain);
-  return `${applyTenant(p.authUrl, opts.client)}?${q.toString()}`;
+  if (accountType === "company" && opts.client.hostedDomain && p.tenant?.authParam)
+    q.set(p.tenant.authParam, opts.client.hostedDomain);
+  return `${endpoint(p.authUrl, p, opts.client)}?${q.toString()}`;
 }
 
 export async function exchangeCode(
@@ -649,7 +678,7 @@ export async function exchangeCode(
   });
 }
 
-function providerForHost(host: string): { name: string; config: OAuthProviderConfig } | null {
+export function providerForHost(host: string): { name: string; config: OAuthProviderConfig } | null {
   for (const [name, config] of Object.entries(PROVIDERS)) {
     if (config.hosts.some((h) => host === h || host.endsWith(`.${h}`))) return { name, config };
   }
