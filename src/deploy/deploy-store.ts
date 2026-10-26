@@ -3,6 +3,7 @@ import type { ScopeId } from "../types.ts";
 import { createMemoryMap, type DurableMap } from "../persistence/durable-map.ts";
 import type { PgPool } from "../persistence/pg-pool.ts";
 import { swallow } from "../util/errors.ts";
+import { HOSTNAME_LABEL } from "../config.ts";
 import {
   createDeployGitStore,
   type DeployGitDiff,
@@ -22,6 +23,14 @@ export interface DeploymentVersion {
   commit?: string;
   parentCommit?: string;
   env?: Record<string, string>;
+  source?: DeploymentSource;
+}
+
+export interface DeploymentSource {
+  dir: string;
+  repo?: string;
+  branch?: string;
+  commit?: string;
 }
 
 export interface DeployEndpoint {
@@ -45,6 +54,33 @@ export function publicUrlOf(endpoint: DeployEndpoint | null | undefined): string
   } catch {
     return raw;
   }
+}
+
+export function isAppHostLabel(label: string): boolean {
+  return new RegExp(`^${HOSTNAME_LABEL}$`).test(label);
+}
+
+export function appSubdomainOrigin(
+  d: Pick<Deployment, "id" | "name">,
+  appsDomain: string | undefined,
+): string | undefined {
+  const ref = d.name ?? d.id;
+  return appsDomain && isAppHostLabel(ref) ? `https://${ref}.${appsDomain}` : undefined;
+}
+
+export interface AppLinkConfig {
+  deployAppsDomain?: string;
+  publicWebUrl?: string;
+}
+
+export function absoluteAppUrl(url: string): string | undefined {
+  return /^https?:\/\//i.test(url) ? url : undefined;
+}
+
+export function appUrlOf(d: Pick<Deployment, "id" | "name" | "endpoint">, links: AppLinkConfig): string {
+  const subdomain = appSubdomainOrigin(d, links.deployAppsDomain);
+  if (subdomain) return `${subdomain}/`;
+  return publicUrlOf(d.endpoint) ?? `${(links.publicWebUrl ?? "").replace(/\/+$/, "")}/d/${d.name ?? d.id}/`;
 }
 
 type DeploymentStatus = "running" | "stopped" | "archived";
@@ -85,6 +121,7 @@ interface VersionInput {
   homeDir?: string;
   env?: Record<string, string>;
   files?: DeployGitInputFile[];
+  source?: DeploymentSource;
 }
 
 export interface DeployStore {
@@ -298,6 +335,7 @@ export function createDeployStore(backing?: DurableMap<Deployment> | DeployStore
       ...(input.env ? { env: input.env } : {}),
       ...(commit ? { commit } : {}),
       ...(parentCommit ? { parentCommit } : {}),
+      ...(input.source ? { source: input.source } : {}),
     };
   }
 

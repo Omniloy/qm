@@ -13,7 +13,7 @@ import type { SandboxAccessPlan, SandboxResources } from "../sandbox/sandbox-res
 import { join } from "node:path";
 import { interpolateSplitEnv } from "../deployment/deployment-layer.ts";
 import type { CredentialPathSpec } from "../credentials/resident-paths.ts";
-import type { ComputerStatus, ExecResult, Sandbox, SandboxHandle } from "../sandbox/sandbox.ts";
+import type { ComputerStatus, ExecOptions, ExecResult, Sandbox, SandboxHandle } from "../sandbox/sandbox.ts";
 import { ROUTE_CACHE_TTL_MS, type SandboxBackendName } from "../sandbox/sandbox-routing.ts";
 import type { SandboxMigrationRunner } from "../sandbox/sandbox-migration-runner.ts";
 import { CapabilityUnsupportedError, hasParentPathSegment, supportsAgentComputerExport } from "../sandbox/sandbox.ts";
@@ -57,8 +57,9 @@ import type {
 } from "../connectors/background-exec-broker.ts";
 import type { MonitorBroker, BackgroundWatchResult, BackgroundUnwatchResult } from "../monitors/monitor-broker.ts";
 import { deploymentEntrypoint, type DeployService, type DeployFile } from "../deploy/deploy-service.ts";
-import { publicUrlOf } from "../deploy/deploy-store.ts";
-import { carriesGitMetadata } from "../deploy/deploy-fs.ts";
+import type { DeploymentSource } from "../deploy/deploy-store.ts";
+import { readPublishSource } from "../deploy/publish-source.ts";
+import { carriesGitMetadata, trimRelDir } from "../deploy/deploy-fs.ts";
 import type { AclStore } from "../acl/acl-store.ts";
 import { encodeRef, fileRef } from "../acl/resource-ref.ts";
 import type { AuditLog } from "../audit/audit-log.ts";
@@ -117,6 +118,8 @@ interface PublishResult {
   name?: string;
   version: number;
   url: string;
+  entrypoint?: string;
+  source?: DeploymentSource;
   audience?: PublishAudienceDescriptor;
   dataDir?: string;
   alwaysOn?: boolean;
@@ -494,7 +497,6 @@ export interface ToolContextDeps {
   files?: FileArtifactStore;
   auditLog?: AuditLog;
   createdBy: string;
-  publicWebUrl?: string;
   publishContext?: {
     conversationKind: ConversationKind;
     channelRef?: string;
@@ -1113,9 +1115,20 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
         throw new Error("publish directory must stay inside the workspace — no .. path segments");
       }
       const handle = await withAbort(() => deps.provision(), signal);
-      const files: DeployFile[] = effectiveEntrypoint
-        ? filesUnder(await withAbort(() => collectTree(deps.sandbox, handle, input.dir), signal), input.dir)
-        : [];
+      const runProbe = (command: string, opts: ExecOptions): Promise<ExecResult> => {
+        authorizeExecution(command);
+        return deps.sandbox.run(handle, deps.scopedCommand?.(command, handle.env) ?? command, {
+          ...opts,
+          ...(signal ? { signal } : {}),
+        });
+      };
+      const [tree, source] = effectiveEntrypoint
+        ? await Promise.all([
+            withAbort(() => collectTree(deps.sandbox, handle, input.dir), signal),
+            readPublishSource(runProbe, input.dir),
+          ])
+        : [[], undefined];
+      const files: DeployFile[] = filesUnder(tree, input.dir);
       if (effectiveEntrypoint && files.length === 0) {
         throw new Error(`publish: no files found under ${input.dir ?? "."} - nothing to deploy`);
       }
@@ -1179,8 +1192,8 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
               }
             : {}),
           ...(resolvedShare?.length ? { share: resolvedShare } : {}),
+          ...(source ? { source } : {}),
         });
-        const ref = d.name ?? d.id;
         const grantees = await deps.deploy.deploymentGrantees(d.id);
         const base = audienceFromGrantees(
           grantees.map((g) => g.scope),
@@ -1190,14 +1203,16 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
           aud.incomplete && effectiveEntrypoint !== undefined && input.share === undefined && aud.reason
             ? { ...base, note: aud.reason }
             : base;
-        const urlBase = deps.publicWebUrl?.replace(/\/$/, "") ?? "";
-        const url = publicUrlOf(d.endpoint) ?? `${urlBase}/d/${ref}/`;
+        const version = d.appliedVersion ?? d.currentVersion;
+        const applied = d.versions.find((v) => v.version === version);
         const dataDir = effectiveEntrypoint ? deps.deploy.providerProfile?.dataDir : undefined;
         return {
           id: d.id,
           ...(d.name ? { name: d.name } : {}),
-          version: d.appliedVersion ?? d.currentVersion,
-          url,
+          version,
+          url: deps.deploy.appUrl(d),
+          ...(applied?.entrypoint ? { entrypoint: applied.entrypoint } : {}),
+          ...(applied?.source ? { source: applied.source } : {}),
           audience,
           ...(dataDir ? { dataDir } : {}),
           ...(d.alwaysOn ? { alwaysOn: true } : {}),
@@ -1512,7 +1527,7 @@ async function collectTree(
   handle: SandboxHandle,
   dir?: string,
 ): Promise<Array<{ path: string; data: Uint8Array }>> {
-  const base = (dir ?? "").replace(/^\.?\/+/, "").replace(/\/+$/, "");
+  const base = trimRelDir(dir);
   if (supportsAgentComputerExport(sandbox)) {
     try {
       const entries = await sandbox.exportFiles(handle, {
@@ -1538,15 +1553,15 @@ async function collectTree(
 }
 
 function isUnderAnyDir(path: string, dirs: readonly string[]): boolean {
-  const p = path.replace(/^\.?\/+/, "").replace(/\/+$/, "");
+  const p = trimRelDir(path);
   return dirs.some((raw) => {
-    const dir = raw.replace(/^\.?\/+/, "").replace(/\/+$/, "");
+    const dir = trimRelDir(raw);
     return dir !== "" && (p === dir || p.startsWith(`${dir}/`));
   });
 }
 
 function filesUnder(snapshot: Array<{ path: string; data: Uint8Array }>, dir?: string): DeployFile[] {
-  const d = (dir ?? "").replace(/^\.?\/+/, "").replace(/\/+$/, "");
+  const d = trimRelDir(dir);
   if (!d || d === ".") return snapshot.map((f) => ({ path: f.path, data: f.data }));
   const prefix = `${d}/`;
   return snapshot

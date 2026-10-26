@@ -4,6 +4,8 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createServer } from "../src/api/server.ts";
 import type { App, RedeployInput } from "../src/api/app.ts";
+import { deploymentView } from "../src/api/app-types.ts";
+import type { Deployment } from "../src/deploy/deploy-store.ts";
 import { signRequest } from "../src/auth/source-auth.ts";
 import { scopeId } from "../src/types.ts";
 
@@ -41,6 +43,7 @@ describe("deployment redeploy route", () => {
     };
     const app = {
       listDeployments: async () => [deployment],
+      deploymentView: (d: Deployment) => deploymentView(d, "https://envy.apps.test/", true),
       canManageDeployment: async () => true,
       redeploy: async (_id: string, input: RedeployInput) => {
         received = input;
@@ -67,8 +70,11 @@ describe("deployment redeploy route", () => {
     const response = await post("/v1/deployments/envy/redeploy", body);
     assert.equal(response.status, 200);
     assert.deepEqual(received, body);
-    const { deployment } = (await response.json()) as { deployment: { versions: Record<string, unknown>[] } };
+    const { deployment } = (await response.json()) as {
+      deployment: { url: string; versions: Record<string, unknown>[] };
+    };
     assert.deepEqual(Object.keys(deployment.versions[0]!), ["version", "createdAt"], "no snapshot paths or env");
+    assert.equal(deployment.url, "https://envy.apps.test/");
   });
 
   it("still requires an entrypoint and files", async () => {

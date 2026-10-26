@@ -2844,7 +2844,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               add(credential, "");
             return [...refreshed.values()];
           },
-          ...(deps.publicWebUrl ? { publicWebUrl: deps.publicWebUrl } : {}),
           publishContext: {
             conversationKind: conversation.kind,
             ...(conversation.channelRef ? { channelRef: conversation.channelRef } : {}),

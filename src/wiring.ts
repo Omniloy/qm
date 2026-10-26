@@ -2386,7 +2386,6 @@ export function buildApp(
     projects,
     environments,
     deploy: deployService,
-    deployAppsDomain: config.awsDeploy.appsDomain,
     deploymentLayer,
     ...(processes ? { processes } : {}),
     monitors,

@@ -18,6 +18,8 @@ export function createDeploymentMethods(
   | "deploy"
   | "redeploy"
   | "listDeployments"
+  | "deploymentView"
+  | "deploymentUrl"
   | "getDeployment"
   | "shareDeployment"
   | "inviteToDeployment"
@@ -60,6 +62,12 @@ export function createDeploymentMethods(
     listDeployments() {
       return deps.deploy.listDeployments();
     },
+    deploymentView(d) {
+      return deploymentView(d, deps.deploy.appUrl(d), true);
+    },
+    deploymentUrl(d) {
+      return deps.deploy.appUrl(d);
+    },
     getDeployment(idOrName) {
       return deps.deploy.getDeployment(idOrName);
     },
@@ -80,9 +88,7 @@ export function createDeploymentMethods(
         const grantees = previous.some((g) => g.scope === grantee && g.permission === "read")
           ? previous
           : await deps.deploy.shareDeployment(deployment.id, grantee, "read", { createdBy: actorId });
-        const appUrl = deps.deployAppsDomain
-          ? `https://${deployment.name ?? deployment.id}.${deps.deployAppsDomain}/`
-          : undefined;
+        const appUrl = deps.deploy.appsDomain ? deps.deploy.appUrl(deployment) : undefined;
         if (alreadyShared)
           return { grantees, invitation: { emailSent: false, alreadyShared: true, ...(appUrl ? { appUrl } : {}) } };
         let emailSent = false;
@@ -122,7 +128,9 @@ export function createDeploymentMethods(
       const enriched = await Promise.all(
         deployments.map(async (d): Promise<ViewerDeployment | null> => {
           const permission = await principalGitPermission(d, principalId);
-          return permission ? { ...deploymentView(d), permission } : null;
+          return permission
+            ? { ...deploymentView(d, deps.deploy.appUrl(d), permission === "write"), permission }
+            : null;
         }),
       );
       return enriched.filter((d): d is ViewerDeployment => d != null);

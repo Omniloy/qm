@@ -183,7 +183,6 @@ function provider(
     region: REGION,
     imageIdentifier: "qm-microvm-sandbox",
     appPort: 8081,
-    appsDomain: "apps.example.com",
     api,
     fetchImpl,
     store,
@@ -281,7 +280,7 @@ test("reconcile (git bundle): checks the commit out via git, writes home, no fil
   );
   assert.ok(!written(writes, "/app/server.js"), "app files are not written one-by-one when a bundle is present");
   assert.ok(written(writes, "/root/.ssh/id"), "resident-auth home written into /root");
-  assert.equal(endpoint.publicUrl, "https://mysite.apps.example.com/", "the URL carries no capability token");
+  assert.equal(endpoint.publicUrl, undefined, "core derives the app link; the endpoint carries none");
 });
 
 test("reconcile (relaunch): a missing ephemeral snapshot/home dir is tolerated — app restored from the git bundle, no ENOENT", async () => {
@@ -1063,12 +1062,12 @@ test("app data: $DATA_DIR is only advertised to the app when persistence is actu
   );
 });
 
-test("public subdomain: the URL is bare — reach is decided by core's ingress ACL, never a token", async () => {
+test("the endpoint carries no public URL — core links the app from its own apps domain", async () => {
   const { api } = fakeApi();
   const { fetchImpl } = fakeDaemon();
   const d = deployment(ID, "mysite");
   const e = await provider(api, fetchImpl).apply(d, version(localSnapshot("a", "1")));
-  assert.equal(e.publicUrl, "https://mysite.apps.example.com/");
+  assert.equal(e.publicUrl, undefined);
 });
 
 test("profile: advertises the durable dataDir only when persistence is wired", () => {

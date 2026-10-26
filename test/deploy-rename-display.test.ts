@@ -19,18 +19,26 @@ function svc() {
     deployStore,
     provider: {
       profile: { managedScaleToZero: false },
-      apply: async () => ({ host: "127.0.0.1", port: 20000 }),
+      apply: async () => ({ host: "127.0.0.1", port: 20000, proxyHeaders: { authorization: "endpoint-secret" } }),
       destroy: async () => {},
     },
     auditLog: { record() {}, events: async () => [], tail: async () => [] },
     acl,
     deployDir: mkdtempSync(join(tmpdir(), "rn-")),
+    deployAppsDomain: "apps.example.com",
   });
   return { deploy, deployStore };
 }
 
 const make = (deploy: ReturnType<typeof svc>["deploy"], name: string) =>
-  deploy.deploy({ ownerScopeId: scopeId("personal", "U1"), createdBy: "U1", entrypoint: "x", files: [], name });
+  deploy.deploy({
+    ownerScopeId: scopeId("personal", "U1"),
+    createdBy: "U1",
+    entrypoint: "x",
+    files: [],
+    env: { API_KEY: "env-secret" },
+    name,
+  });
 
 test("renameDeployment moves the URL slug by id, keeping the immutable id", async () => {
   const s = svc();
@@ -91,6 +99,11 @@ test("HTTP: the /name (slug) route does not shadow /display-name", async () => {
     const rnBody = (await rn.json()) as { deployment: { name?: string; displayName?: string } };
     assert.equal(rnBody.deployment.name, "new-slug");
     assert.equal(rnBody.deployment.displayName, "Pretty");
+    assert.equal((rnBody.deployment as { url?: string }).url, "https://new-slug.apps.example.com/");
+    for (const body of [dnBody, rnBody]) {
+      const raw = JSON.stringify(body);
+      assert.doesNotMatch(raw, /env-secret|endpoint-secret|snapshotDir|proxyHeaders/, "only the safe view leaves");
+    }
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
   }

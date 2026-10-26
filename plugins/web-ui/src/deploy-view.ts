@@ -13,6 +13,7 @@ export interface DeploymentView {
   createdInScope?: string;
   currentVersion?: number;
   appliedVersion?: number;
+  url?: string;
   webUrl?: string;
   gitUrl?: string;
   name?: string;
@@ -79,6 +80,22 @@ export function deploymentTitle(d: DeploymentView): string {
 
 export function deploymentSlug(d: DeploymentView): string {
   return d.name?.trim() || d.id;
+}
+
+export function deploymentLinkLabel(d: DeploymentView): string {
+  return d.url?.replace(/^https?:\/\//i, "") ?? `/d/${deploymentSlug(d)}/`;
+}
+
+export function deploymentSlugAffixes(d: DeploymentView): { prefix: string; suffix: string } {
+  const slug = deploymentSlug(d);
+  const host = d.url?.match(/^https?:\/\/([^/]+)\/$/i)?.[1];
+  return host?.startsWith(`${slug}.`)
+    ? { prefix: "", suffix: `${host.slice(slug.length)}/` }
+    : { prefix: "/d/", suffix: "/" };
+}
+
+export function deploymentHref(webUrl: string, withBase: (path: string) => string): string {
+  return /^https?:\/\//i.test(webUrl) ? webUrl : withBase(webUrl);
 }
 
 export function deploymentLatestAt(d: DeploymentView): number {
