@@ -9,8 +9,11 @@ import {
   deploymentInScope,
   deploymentListAfterRestoreRefresh,
   deploymentListRefreshCanRedraw,
+  deploymentHref,
   deploymentLatestAt,
+  deploymentLinkLabel,
   deploymentSlug,
+  deploymentSlugAffixes,
   deploymentTab,
   deploymentTabEmptyMessage,
   deploymentTitle,
@@ -40,6 +43,22 @@ test("deployment labels prefer friendly metadata and retain durable fallbacks", 
   assert.equal(deploymentTitle(deployment({ displayName: "", name: "launch", id: "id" })), "launch");
   assert.equal(deploymentSlug(deployment({ name: undefined, id: "stable-id" })), "stable-id");
   assert.equal(friendlyPrincipal("blair.reeves@example.com"), "Blair Reeves");
+});
+
+test("deployment links show and open core's canonical URL", () => {
+  const onSubdomain = deployment({ name: "maria-demo", url: "https://maria-demo.apps.example.com/" });
+  assert.equal(deploymentLinkLabel(onSubdomain), "maria-demo.apps.example.com/");
+  assert.deepEqual(deploymentSlugAffixes(onSubdomain), { prefix: "", suffix: ".apps.example.com/" });
+  const onPath = deployment({ name: "maria-demo", url: "https://qm.example.com/d/maria-demo/" });
+  assert.equal(deploymentLinkLabel(onPath), "qm.example.com/d/maria-demo/");
+  assert.deepEqual(deploymentSlugAffixes(onPath), { prefix: "/d/", suffix: "/" });
+  assert.equal(deploymentLinkLabel(deployment({ name: "legacy" })), "/d/legacy/");
+  const withBase = (path: string) => `/ui${path}`;
+  assert.equal(
+    deploymentHref("https://maria-demo.apps.example.com/", withBase),
+    "https://maria-demo.apps.example.com/",
+  );
+  assert.equal(deploymentHref("/deployments/d1/", withBase), "/ui/deployments/d1/");
 });
 
 test("deployment context prefers its creation scope and filtering accepts either creation or ownership", () => {

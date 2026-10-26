@@ -32,7 +32,7 @@ test("app index rows launch live apps by default and use Manage for app details"
   assert.match(row, /deploymentTitle\(d\)/);
   assert.match(row, /statusLabel\(d\)/);
   assert.match(row, /running && d\.webUrl/);
-  assert.match(row, /href=\$\{withBase\(d\.webUrl\)\}/);
+  assert.match(row, /href=\$\{deploymentHref\(d\.webUrl, withBase\)\}/);
   assert.match(row, /target="_blank"/);
   assert.match(row, /class="deploy-row-actions"[\s\S]*class="deploy-status/);
   assert.doesNotMatch(title, /deploy-status/);
@@ -308,7 +308,8 @@ test("detail redraws reuse the scroll container and retain focus", () => {
       deploymentTitle: () => "App",
       statusClass: () => "",
       statusLabel: () => "",
-      deploymentSlug: () => "app",
+      deploymentLinkLabel: () => "/d/app/",
+      deploymentHref: (webUrl: string) => webUrl,
       deploymentLatestAt: () => null,
       ownerLabel: () => "",
       permissionBadge: () => "",
