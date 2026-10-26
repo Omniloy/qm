@@ -14,11 +14,17 @@ import {
   type OAuthState,
 } from "../../connectors/oauth.ts";
 import { bestOAuthTokenStatus, CONNECTOR_STATUS_ACCOUNT_TYPES } from "../../credentials/connector-status.ts";
+import {
+  connectorApps,
+  connectorAppStates,
+  DEFAULT_DISABLED_CONNECTOR_APPS,
+  type DisabledConnectorApps,
+} from "../../connectors/connector-apps.ts";
 import type { DerivedOAuthAuth, OAuthTokenStatus } from "../../credentials/keychain.ts";
 import { createEnvSecretSource } from "../../credentials/secret-source.ts";
 import type { ServerDeps } from "../deps.ts";
 import { personKey, samePerson } from "../../directory/person.ts";
-import { errMessage } from "../../util/errors.ts";
+import { errMessage, swallowAs } from "../../util/errors.ts";
 import { normalizeInboundExpiresAt } from "../expiry.ts";
 import { localPath, sendJson, sendRedirect } from "../http.ts";
 import { audit } from "./shared.ts";
@@ -45,7 +51,7 @@ async function resumeOAuthFlow(deps: ServerDeps, secret: string | undefined, par
   return openOAuthState(param, { secret: oauthStateSecret(deps, secret), maxAgeMs: OAUTH_STATE_MAX_AGE_MS });
 }
 
-export function resolverFor(deps: ServerDeps): OAuthClientResolver {
+function resolverFor(deps: ServerDeps): OAuthClientResolver {
   return (
     deps.resolveClient ?? createSecretClientResolver(deps.oauthEnv ? createEnvSecretSource(deps.oauthEnv) : undefined)
   );
@@ -95,6 +101,13 @@ function latestRefreshFailure(
 }
 
 async function connectorProviderStatus(deps: ServerDeps, principalId: string): Promise<Record<string, unknown>> {
+  const disabledApps: DisabledConnectorApps | null = deps.connectorAppPrefs
+    ? await deps.connectorAppPrefs.disabled(principalId).catch(swallowAs("connectors: app settings for status", null))
+    : DEFAULT_DISABLED_CONNECTOR_APPS;
+  const appSettings = (name: string) => {
+    if (!connectorApps(name)) return {};
+    return disabledApps ? { apps: connectorAppStates(name, disabledApps) } : { appsUnavailable: true };
+  };
   const entries = await Promise.all(
     Object.entries(PROVIDERS).map(async ([name, provider]) => {
       const [hosts, configured] = await Promise.all([
@@ -124,6 +137,8 @@ async function connectorProviderStatus(deps: ServerDeps, principalId: string): P
           configured,
           available: configured,
           consentMode: provider.consentMode,
+          ...(provider.sandboxCredential === false ? { grantable: false } : {}),
+          ...appSettings(name),
         },
       ] as const;
     }),
@@ -483,6 +498,29 @@ async function setToken(ctx: ApiCtx): Promise<void> {
   return sendJson(res, 200, { ok: true });
 }
 
+async function setConnectorApps(ctx: ApiCtx): Promise<void> {
+  const { res, deps, body } = ctx;
+  if (!deps.connectorAppPrefs)
+    return sendJson(res, 501, { error: "not_configured", message: "connector app settings are not wired" });
+  const b = body as Record<string, unknown>;
+  const principalId = typeof b.principalId === "string" ? b.principalId : "";
+  const provider = typeof b.provider === "string" ? b.provider : "";
+  const apps = b.apps && typeof b.apps === "object" && !Array.isArray(b.apps) ? b.apps : null;
+  if (!principalId || !connectorApps(provider) || !apps || Object.values(apps).some((v) => typeof v !== "boolean")) {
+    return sendJson(res, 400, {
+      error: "bad_request",
+      message: "principalId, a provider with app settings, and apps: { <app>: boolean } required",
+    });
+  }
+  try {
+    const states = await deps.connectorAppPrefs.set(principalId, provider, apps as Record<string, boolean>);
+    audit(deps, { principalId, action: "connector.apps.set", resource: provider, scopeLabel: principalId });
+    return sendJson(res, 200, { ok: true, provider, apps: states });
+  } catch (e) {
+    return sendJson(res, 400, { error: "bad_request", message: errMessage(e) });
+  }
+}
+
 async function catalog(ctx: ApiCtx): Promise<void> {
   const { res, deps } = ctx;
   const entries = await Promise.all(
@@ -493,6 +531,7 @@ async function catalog(ctx: ApiCtx): Promise<void> {
       consentMode: p.consentMode,
       redirectPath: p.redirectPath,
       setupGuide: p.setupGuide,
+      ...(p.tenant ? { tenantLabel: p.tenant.label, tenantPlaceholder: p.tenant.placeholder } : {}),
       configured: await providerConfigured(deps, name),
     })),
   );
@@ -563,5 +602,6 @@ export const connectorRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/connectors/oauth/status", auth: "source", handle: oauthStatus },
   { method: "POST", path: "/v1/connectors/oauth/revoke", auth: "either", handle: oauthRevoke },
   { method: "POST", path: "/v1/connectors/token", auth: "source", handle: setToken },
+  { method: "POST", path: "/v1/connectors/apps", auth: "source", handle: setConnectorApps },
   { method: "GET", path: "/v1/connectors/catalog", auth: "source", handle: catalog },
 ];

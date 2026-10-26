@@ -51,11 +51,58 @@ Do not put user-specific data into names, descriptions, or schemas.
 
 `credentialHost` explicitly authorizes sending that connector's user token to the
 registered server. Only register a trusted service permitted to receive those
-tokens. Per-user endpoints require HTTPS, except on loopback for local development.
+tokens. Per-user endpoints require HTTPS, except on loopback for local development
+and on the exact hostnames an operator lists in `MCP_PER_USER_HTTP_HOSTS`
+(comma-separated), for a sidecar reachable only on a private network.
+
+Tools of a `per-user` server act as one person, so they follow the same rule as that
+person's connector credentials: they are offered and callable only in the person's own DM
+with the agent, when the person is the live speaker in an Open shared conversation, or in
+an owner-authorized automation, and never on external, guest, or strict read-only turns.
+Open membership and sharing posture are checked again on every call. A server with a
+`credentialHost` is also offered only to people who have a usable token for that host,
+so people who never connected the account don't pay for its tool definitions. A call to
+a per-user tool that changes data (a server not marked `readOnly`, and a tool without the
+MCP `readOnlyHint` annotation) waits for the person's approval through the existing tool
+approval flow, in every posture; the approval shows the call's arguments so the person
+sees exactly what would be sent. `auth: "oauth"` servers (below) keep their own behaviour.
+
+A per-user server whose `credentialHost` belongs to an OAuth connector that declares
+apps (Microsoft 365, in `src/connectors/connector-apps.ts`) is also filtered by each
+person's app settings: a tool is offered, and callable, only while one of the apps that
+claims it is on. Tools no app claims are left to the server's own allowlist. These
+settings manage the agent's context and speed; they are not access control, because the
+connected account's permissions and the shared tools (file and attachment downloads take
+any Graph path) still reach other apps' data. Settings apply from the person's next turn.
+If they can't be read, the turn uses each app's default and the Keychain card says the
+settings couldn't load rather than offering to overwrite them. In an Open shared
+conversation the tool list follows the current speaker, so speakers with different
+settings alternating in one thread lose some prompt caching.
+
 HTTP redirects are rejected for every MCP authentication mode. Updating an endpoint
 or credential host is an administrative trust decision. Tool call auditing records
 the initiating actor as before; authentication does not expand the audience allowed
 to receive the result.
+
+## Discovery mode
+
+A server registered with `"toolMode": "discovery"` (the admin form's **Discovery**
+checkbox) is not offered as one agent tool per server tool. Instead the agent gets three
+fixed tools, `<id>_search_tools` (by keyword or app), `<id>_describe_tool` (one tool's
+description and input schema) and `<id>_call_tool` (run a tool by name with arguments),
+about 900 characters in total whatever the server's size. They stay identical across
+turns and speakers, which keeps the prompt cache warm. Use it for servers with many large
+tools, such as the Microsoft 365 sidecar. The default, `"full"`, lists every tool as
+before.
+
+The three tools see exactly the tools a direct listing would offer this turn: per-person
+access, connected account, connector app settings, and read-only turns all apply, and
+search, describe and call are checked again at each use. A tool they don't offer can't be
+described or called. `call_tool` runs the real tool through the same path as a direct call:
+the same refusals and Open-membership check, the write approval keyed on the real tool name
+with the real arguments shown, the same audit records, result handling and stop
+behaviour. The lookups themselves are not held for approval. When no tool of the server is
+available (no access, no account, every app off), the three tools are not offered.
 
 ## Each person signs in (MCP Authorization)
 

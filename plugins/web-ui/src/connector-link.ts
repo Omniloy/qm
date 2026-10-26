@@ -7,6 +7,7 @@ export const CONNECTOR_NAMES: Record<string, string> = {
   linear: "Linear",
   github: "GitHub",
   dropbox: "Dropbox",
+  microsoft: "Microsoft 365",
   x: "X",
 };
 

@@ -1,3 +1,8 @@
+import {
+  createConnectorAppPrefs,
+  type ConnectorAppPrefs,
+  type ConnectorAppPrefsRecord,
+} from "./connectors/connector-apps.ts";
 import { availableRuntimeError } from "./api/runtime-config.ts";
 import { announceHoldDecision, createApprovalStore, type HeldContentEntry } from "./core/approval-store.ts";
 import { createKeychainApprovals } from "./credentials/keychain-approval.ts";
@@ -551,6 +556,7 @@ export interface BuiltApp {
   slackInstallation: SlackInstallationStore;
   resolveClient: OAuthClientResolver;
   consentLinks: ConsentLinkStore;
+  connectorAppPrefs: ConnectorAppPrefs;
   oauthFlows: OAuthFlowStore;
   secretDrops: SecretDropStore;
   modelGateway: ModelGateway;
@@ -806,6 +812,7 @@ export function buildApp(
   });
   const featureFlags = createFeatureFlagStore(artifactMap<FeatureFlagRecord>("feature_flags"));
   const connectorStatusCache = createConnectorStatusCache(artifactMap<ConnectorStatusRecord>("connector_status"));
+  const connectorAppPrefs = createConnectorAppPrefs(artifactMap<ConnectorAppPrefsRecord>("connector_app_prefs"));
   const slackInstallation = createSlackInstallationStore(
     config.orgId,
     artifactMap("slack_installation"),
@@ -1548,7 +1555,6 @@ export function buildApp(
         resolveBaseModelId: () => orgBaseModelId() ?? defaultForHarness("pi"),
         resolveProviderKeys: resolveModelProviderKeys,
         signals: runSignals,
-        mcpTools,
       }),
     ],
     [
@@ -1590,7 +1596,6 @@ export function buildApp(
           : {}),
         signals: runSignals,
         tasks,
-        mcpTools,
       }),
     ],
     [
@@ -1600,7 +1605,6 @@ export function buildApp(
         authEnv: claudeAuthEnv,
         signals: runSignals,
         tasks,
-        mcpTools,
       }),
     ],
     ["mock", createMockHarness()],
@@ -2194,6 +2198,7 @@ export function buildApp(
     featureFlags,
     credentialUsage,
     connectorStatusCache,
+    connectorAppPrefs,
     resolveConnectorClient: resolveClient,
     ...(keychain ? { keychain } : {}),
     serviceCreds: credentialStore,
@@ -3049,6 +3054,7 @@ export function buildApp(
     slackInstallation,
     resolveClient,
     consentLinks,
+    connectorAppPrefs,
     oauthFlows,
     secretDrops,
     modelGateway,
@@ -3147,6 +3153,7 @@ export function serverDeps(
   return {
     externalSlackPolicies: config.externalSlackPolicies,
     production: config.production,
+    ...(config.mcpPerUserHttpHosts ? { mcpPerUserHttpHosts: config.mcpPerUserHttpHosts } : {}),
     checkReadiness: built.checkReadiness,
     ...(built.backgroundOwnership
       ? {
@@ -3198,6 +3205,7 @@ export function serverDeps(
     ...(slackEnvBotToken ? { slackEnvBotToken } : {}),
     resolveClient: built.resolveClient,
     consentLinks: built.consentLinks,
+    connectorAppPrefs: built.connectorAppPrefs,
     oauthFlows: built.oauthFlows,
     secretDrops: built.secretDrops,
     ...(built.fireDropResolution ? { fireDropResolution: built.fireDropResolution } : {}),

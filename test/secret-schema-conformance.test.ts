@@ -36,6 +36,7 @@ test("runtime schema conditions reference env vars the CLI schema also condition
     "GOOGLE_OAUTH_CLIENT_ID",
     "DROPBOX_OAUTH_CLIENT_ID",
     "LINEAR_OAUTH_CLIENT_ID",
+    "MICROSOFT_OAUTH_CLIENT_ID",
   ];
   const cliConditionEnv = new Set<string>();
   interface CliCondition {

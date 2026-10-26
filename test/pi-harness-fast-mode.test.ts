@@ -345,7 +345,7 @@ async function runTurn(
       input: "price this turn",
       systemPrompt: "BASE",
       history: [],
-      tools: {} as HarnessTurnInput["tools"],
+      tools: { mcpToolDefs: () => [] } as unknown as HarnessTurnInput["tools"],
       scopeLabel: "personal:tester" as HarnessTurnInput["scopeLabel"],
       orgScopeId: "org:test" as HarnessTurnInput["orgScopeId"],
       runtime: { modelId, fastMode },

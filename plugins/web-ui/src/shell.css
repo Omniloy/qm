@@ -13279,6 +13279,62 @@ body.app-edit-embed .custom-chat-shell.app-edit-chat > .chat-bottom-dock {
   width: min(460px, 100%);
   border-color: var(--border);
 }
+.kc-app-switches {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+}
+.kc-app-switch {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--background);
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 550;
+  text-align: left;
+  cursor: pointer;
+}
+.kc-app-switch:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.kc-app-switch-track {
+  width: 34px;
+  height: 20px;
+  flex: 0 0 auto;
+  padding: 2px;
+  border-radius: 999px;
+  box-sizing: border-box;
+  background: color-mix(in srgb, var(--muted-foreground) 45%, transparent);
+  transition: background 120ms ease;
+}
+.kc-app-switch-track span {
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--background);
+  transition: transform 120ms ease;
+}
+.kc-app-switch.on .kc-app-switch-track {
+  background: var(--primary);
+}
+.kc-app-switch.on .kc-app-switch-track span {
+  transform: translateX(14px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .kc-app-switch-track,
+  .kc-app-switch-track span {
+    transition: none;
+  }
+}
 .kc-grant .kc-eyebrow {
   color: var(--muted-foreground);
 }

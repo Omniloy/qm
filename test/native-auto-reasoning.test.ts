@@ -135,7 +135,10 @@ test("real Pi AgentSession and Anthropic serializer send Auto without a fixed ef
             input: "Reply OK",
             systemPrompt: "Reply OK",
             history: [],
-            tools: { attach: async () => ({ ok: true, files: [], staged: 0 }) } as unknown as HarnessTurnInput["tools"],
+            tools: {
+              mcpToolDefs: () => [],
+              attach: async () => ({ ok: true, files: [], staged: 0 }),
+            } as unknown as HarnessTurnInput["tools"],
             scopeLabel: "personal:test",
             orgScopeId: "org:test",
             runtime: { effortLevel },

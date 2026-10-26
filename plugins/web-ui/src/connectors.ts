@@ -1,5 +1,5 @@
 import { html, render, type TemplateResult } from "lit";
-import { Globe, KeyRound, Link } from "lucide";
+import { Globe, KeyRound, Link, Settings } from "lucide";
 import { api, type CoreContext, withBase } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
 import { brandName, fieldSelect, icon } from "./ui";
@@ -43,6 +43,15 @@ interface ConnectorProvider {
   available?: boolean;
   hosts?: Array<{ host?: string } | string>;
   icon?: string;
+  apps?: ConnectorAppSetting[];
+  appsUnavailable?: boolean;
+  grantable?: boolean;
+}
+
+interface ConnectorAppSetting {
+  id: string;
+  label: string;
+  enabled: boolean;
 }
 
 const CONNECTOR_LABELS: Record<string, { name: string; hosts: string }> = {
@@ -69,6 +78,10 @@ const CONNECTOR_LABELS: Record<string, { name: string; hosts: string }> = {
   dropbox: {
     name: "Dropbox",
     hosts: "Files & folders",
+  },
+  microsoft: {
+    name: "Microsoft 365",
+    hosts: "Outlook, Calendar, Teams, OneDrive, SharePoint",
   },
   x: {
     name: "X (Twitter)",
@@ -148,6 +161,10 @@ let granting: {
 let grantBusy = false;
 let grantError = "";
 let grantOpener: HTMLElement | null = null;
+let appSettings: { provider: string; apps: ConnectorAppSetting[] } | null = null;
+let appSettingsBusy = false;
+let appSettingsError = "";
+let appSettingsOpener: HTMLElement | null = null;
 const keychainOperations = new KeychainOperations();
 
 let connectorsLoading = false;
@@ -184,6 +201,10 @@ export function resetKeychainState(): void {
   grantBusy = false;
   grantError = "";
   grantOpener = null;
+  appSettings = null;
+  appSettingsBusy = false;
+  appSettingsError = "";
+  appSettingsOpener = null;
 }
 
 function fmtDate(ms?: number): string {
@@ -879,6 +900,119 @@ async function performGrant(): Promise<void> {
   }
 }
 
+function openAppSettings(provider: string, opener: HTMLElement): void {
+  const apps = connectorProviders[provider]?.apps;
+  if (appSettings || !apps?.length) return;
+  appSettingsOpener = opener;
+  appSettings = { provider, apps: apps.map((app) => ({ ...app })) };
+  appSettingsError = "";
+  appSettingsBusy = false;
+  drawConnectors();
+  queueMicrotask(() => {
+    const host = document.querySelector<HTMLElement>(".keychain-page");
+    if (host && appSettings) focusDialogCancel(host);
+  });
+}
+
+function closeAppSettings(): void {
+  if (appSettingsBusy) return;
+  const opener = appSettingsOpener;
+  const key = opener?.dataset.confirmKey;
+  appSettings = null;
+  appSettingsError = "";
+  appSettingsOpener = null;
+  drawConnectors();
+  restoreDialogFocus(opener, () =>
+    key
+      ? [...document.querySelectorAll<HTMLElement>("[data-confirm-key]")].find((el) => el.dataset.confirmKey === key)
+      : null,
+  );
+}
+
+async function saveAppSettings(): Promise<void> {
+  const pending = appSettings;
+  if (!pending || appSettingsBusy) return;
+  appSettingsBusy = true;
+  appSettingsError = "";
+  drawConnectors();
+  try {
+    const saved = await api<{ apps?: ConnectorAppSetting[] }>(
+      `/api/connectors/${encodeURIComponent(pending.provider)}/apps`,
+      {
+        method: "POST",
+        body: JSON.stringify({ apps: Object.fromEntries(pending.apps.map((app) => [app.id, app.enabled])) }),
+      },
+    );
+    const provider = connectorProviders[pending.provider];
+    if (provider) provider.apps = saved.apps ?? pending.apps;
+    appSettingsBusy = false;
+    connectorNotice = `Saved ${connectorName(pending.provider)} settings.`;
+    closeAppSettings();
+  } catch (e) {
+    if (!appSettings) return;
+    appSettingsError = errMessage(e, "Failed to save settings.");
+    appSettingsBusy = false;
+    drawConnectors();
+  }
+}
+
+function appSettingsCard(): TemplateResult {
+  const pending = appSettings!;
+  return html`<div
+    class="kc-dialog-scrim"
+    @click=${(event: MouseEvent) => event.target === event.currentTarget && closeAppSettings()}
+  >
+    <article
+      class="kc-confirm kc-grant kc-app-settings"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="kc-app-settings-title"
+      aria-describedby="kc-app-settings-body"
+      @keydown=${(event: KeyboardEvent) => trapDialogFocus(event, closeAppSettings)}
+    >
+      <span class="kc-eyebrow">Settings</span>
+      <h2 id="kc-app-settings-title">${connectorName(pending.provider)} apps</h2>
+      <p id="kc-app-settings-body">
+        Choose which apps the agent is offered. Fewer apps keep its context small and its replies fast. This doesn't
+        limit what your connection can reach. Changes apply from your next message.
+      </p>
+      <div class="kc-app-switches">
+        ${pending.apps.map(
+          (app) =>
+            html`<button
+              class=${app.enabled ? "kc-app-switch on" : "kc-app-switch"}
+              type="button"
+              role="switch"
+              aria-checked=${app.enabled ? "true" : "false"}
+              data-app=${app.id}
+              ?disabled=${appSettingsBusy}
+              @click=${() => {
+                app.enabled = !app.enabled;
+                drawConnectors();
+              }}
+            >
+              <span>${app.label}</span>
+              <span class="kc-app-switch-track" aria-hidden="true"><span></span></span>
+            </button>`,
+        )}
+      </div>
+      ${appSettingsError ? html`<p class="kc-form-error" role="alert">${appSettingsError}</p>` : ""}
+      <div class="kc-form-actions">
+        <button class="btn" type="button" data-dialog-cancel ?disabled=${appSettingsBusy} @click=${closeAppSettings}>
+          Cancel</button
+        ><button
+          class="btn primary kc-app-settings-save"
+          type="button"
+          ?disabled=${appSettingsBusy}
+          @click=${() => void saveAppSettings()}
+        >
+          ${appSettingsBusy ? "Saving…" : "Save"}
+        </button>
+      </div>
+    </article>
+  </div>`;
+}
+
 function closeConfirmation(): void {
   const opener = confirmationOpener;
   const key = opener?.dataset.confirmKey;
@@ -986,6 +1120,21 @@ function drawConnectors(): void {
                   </button>`
                 : ""
             }
+            ${
+              p.apps?.length || p.appsUnavailable
+                ? html`<button
+                    class="icon-btn subtle compact"
+                    type="button"
+                    aria-label=${`${meta.name} settings`}
+                    title=${p.appsUnavailable ? `${meta.name} settings couldn't load. Try again later.` : `${meta.name} settings`}
+                    data-confirm-key=${`apps:${id}`}
+                    ?disabled=${keychainOperations.mutationInFlight || !p.apps?.length}
+                    @click=${(event: Event) => openAppSettings(id, event.currentTarget as HTMLElement)}
+                  >
+                    ${icon(Settings, 16)}
+                  </button>`
+                : ""
+            }
             ${connected || needsReconnect ? html`<button class="kc-text-action danger" type="button" data-confirm-key=${`disconnect:${id}`} ?disabled=${keychainOperations.mutationInFlight} @click=${() => void revokeConnector(id)}>Disconnect</button>` : ""}
           </div>
         </div>
@@ -1089,7 +1238,7 @@ function drawConnectors(): void {
   render(
     html`
       ${scopedViewTopbar("keychain", () => drawConnectors())}
-      <div class="kc-page-content" ?inert=${Boolean(confirmation)}>
+      <div class="kc-page-content" ?inert=${Boolean(confirmation || appSettings)}>
         ${listPageTpl({
           title: "Keychain",
           action: {
@@ -1104,7 +1253,7 @@ function drawConnectors(): void {
           empty: "Nothing in your keychain yet.",
         })}
       </div>
-      ${confirmation ? confirmationCard() : ""}${granting ? grantCard() : ""}
+      ${confirmation ? confirmationCard() : ""}${granting ? grantCard() : ""}${appSettings ? appSettingsCard() : ""}
     `,
     host,
   );

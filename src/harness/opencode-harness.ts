@@ -4,6 +4,7 @@ import {
   fitDocumentText,
   nativeDocumentIsReadable,
 } from "../core/document-inputs.ts";
+import type { McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -64,6 +65,7 @@ function customProviderNpm(protocol: CustomProviderProtocol): string {
 }
 
 export interface OpenCodeHarnessOptions extends HarnessToolPlumbing {
+  mcpTools?: () => McpToolDescriptor[];
   modelId?: string | ((scope?: ScopeId) => string | undefined);
   defaultModelId?: string;
   judgeModelId?: string;
@@ -470,9 +472,10 @@ async function terminateProcess(proc: ChildProcess): Promise<void> {
 export function createOpenCodeHarness(opts: OpenCodeHarnessOptions = {}): Harness {
   const active = new Map<string, ActiveTurn>();
   const definitionRef: ToolContextRef = { current: null };
+  const definitionOptions = { ...harnessToolOptions(opts), ...(opts.mcpTools ? { mcpTools: opts.mcpTools } : {}) };
   const definitionTools = [
-    ...bridgedTools(definitionRef, harnessToolOptions(opts)),
-    ...bridgedTools(definitionRef, { ...harnessToolOptions(opts), surfaceTools: false }),
+    ...bridgedTools(definitionRef, definitionOptions),
+    ...bridgedTools(definitionRef, { ...definitionOptions, surfaceTools: false }),
   ];
   const definitions = [
     ...new Map(

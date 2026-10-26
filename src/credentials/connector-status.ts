@@ -100,6 +100,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   linear: "Linear",
   github: "GitHub",
   dropbox: "Dropbox",
+  microsoft: "Microsoft 365",
 };
 
 export function connectorLabel(name: string): string {

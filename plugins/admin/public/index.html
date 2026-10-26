@@ -8612,7 +8612,8 @@
         );
       }
 
-      const connectorName = (id) => (id === "x" ? "X" : id.charAt(0).toUpperCase() + id.slice(1));
+      const connectorName = (id) =>
+        ({ x: "X", microsoft: "Microsoft 365" })[id] ?? id.charAt(0).toUpperCase() + id.slice(1);
       const orgScope = () => "org:" + orgId;
       let twoWayToggleId = 0;
       function twoWayToggle({ label, options, value, onChange, disabled = false }) {

@@ -33,7 +33,6 @@ import {
 } from "../../credentials/keychain.ts";
 import { parseBotLedger } from "../../surface-cache/channel-policy-store.ts";
 import { authorizeUrl, PROVIDERS, type ConsentMode } from "../../connectors/oauth.ts";
-import { resolverFor } from "./connectors.ts";
 import { encodeRef, serviceCredRef } from "../../acl/resource-ref.ts";
 import { audit } from "./shared.ts";
 import { errMessage, reportFailure } from "../../util/errors.ts";
@@ -1048,26 +1047,32 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
       if (typeof b.clientId !== "string" || typeof b.clientSecret !== "string") {
         return { error: "connectors requires { provider, clientId, clientSecret }" };
       }
-      await deps.config!.setConnectorClient(scope, provider, {
+      const input = {
         clientId: b.clientId,
         clientSecret: b.clientSecret,
         ...(Array.isArray(b.scopes) ? { scopes: b.scopes.map(String) } : {}),
         ...(Array.isArray(b.redirectAllowlist) ? { redirectAllowlist: b.redirectAllowlist.map(String) } : {}),
         ...(typeof b.consentMode === "string" ? { consentMode: b.consentMode as ConsentMode } : {}),
-        ...(typeof b.hostedDomain === "string" ? { hostedDomain: b.hostedDomain } : {}),
+        ...(typeof b.hostedDomain === "string" && b.hostedDomain ? { hostedDomain: b.hostedDomain } : {}),
         ...(typeof b.enabled === "boolean" ? { enabled: b.enabled } : {}),
         updatedBy: actor.id,
-      });
+      };
       try {
-        const client = await resolverFor(deps)(provider, {});
         authorizeUrl(provider, {
-          redirectUri: client.redirectAllowlist?.[0] ?? "https://example.invalid/cb",
+          redirectUri: input.redirectAllowlist?.[0] ?? "https://example.invalid/cb",
           state: "dry-run",
-          client,
+          client: {
+            id: input.clientId,
+            secret: input.clientSecret,
+            clientRef: "dry-run",
+            ...(input.scopes ? { scopes: input.scopes } : {}),
+            ...(input.hostedDomain ? { hostedDomain: input.hostedDomain } : {}),
+          },
         });
       } catch (e) {
         return { error: errMessage(e), code: "connector_invalid" };
       }
+      await deps.config!.setConnectorClient(scope, provider, input);
       return { ok: true };
     },
   },

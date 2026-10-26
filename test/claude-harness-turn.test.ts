@@ -91,7 +91,7 @@ function harnessTurn(overrides: Partial<HarnessTurnInput> = {}): {
     input: "what is the capital of france?",
     systemPrompt: "be brief",
     history: [],
-    tools: {} as unknown as HarnessTurnInput["tools"],
+    tools: { mcpToolDefs: () => [] } as unknown as HarnessTurnInput["tools"],
     scopeLabel: scope,
     orgScopeId: scope,
     readOnly: true,
@@ -547,6 +547,7 @@ test("Claude preserves a committed runtime handoff when SDK interruption returns
   const { turn, entries } = harnessTurn({
     readOnly: false,
     tools: {
+      mcpToolDefs: () => [],
       runtime: async () => ({ ok: true, handoff: { choice, lifetime: "task" } }),
     } as unknown as HarnessTurnInput["tools"],
   });
@@ -875,6 +876,7 @@ test("Claude's internal terminate leaves a parallel slow tool call to finish ins
   const { turn } = harnessTurn({
     pollFire: true,
     tools: {
+      mcpToolDefs: () => [],
       memoryRead: async () => {
         await new Promise((resolve) => setTimeout(resolve, 700));
         return "remembered facts";

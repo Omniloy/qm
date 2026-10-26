@@ -2373,6 +2373,17 @@ const apiRoutes: readonly WebRoute[] = [
   },
   {
     method: "POST",
+    path: "/api/connectors/:provider/apps",
+    handle: async (c) => {
+      const { req, res, user } = c;
+      const body = await readJson<{ apps?: unknown }>(req, res, false);
+      if (!body) return;
+      const rawBody = JSON.stringify({ principalId: user, provider: c.params.provider!, apps: body.apps });
+      return relayCore(res, "POST", "/v1/connectors/apps", rawBody);
+    },
+  },
+  {
+    method: "POST",
     path: "/api/connectors/revoke",
     handle: async (c) => {
       const { req, res, user } = c;

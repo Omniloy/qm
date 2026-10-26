@@ -22,6 +22,7 @@ export type McpServer = {
   hasCatalog?: boolean;
   readOnly: boolean;
   enabled: boolean;
+  toolMode?: "full" | "discovery";
   updatedBy?: string;
 };
 type McpTool = { name: string; serverId: string };
@@ -40,6 +41,7 @@ const blank = () => ({
   oauthScopes: "",
   readOnly: true,
   enabled: true,
+  discovery: false,
 });
 export type McpDraft = ReturnType<typeof blank>;
 
@@ -80,6 +82,7 @@ export class McpServersState {
           oauthScopes: (server.oauthScopes ?? []).join(" "),
           readOnly: server.readOnly,
           enabled: server.enabled,
+          discovery: server.toolMode === "discovery",
         }
       : blank();
     this.editor = true;
@@ -117,6 +120,7 @@ export class McpServersState {
         oauthScopes: d.oauthScopes.trim(),
         readOnly: d.readOnly,
         enabled: d.enabled,
+        toolMode: d.discovery ? "discovery" : "full",
       };
     return {
       name: d.name.trim() || d.id,
@@ -133,6 +137,7 @@ export class McpServersState {
         : {}),
       readOnly: d.readOnly,
       enabled: d.enabled,
+      toolMode: d.discovery ? "discovery" : "full",
     };
   }
   async save() {
@@ -350,7 +355,7 @@ function select<K extends "auth" | "credentialScope" | "credentialAccountType">(
   </select>`;
 }
 
-function checkbox(key: "readOnly" | "enabled", label: string) {
+function checkbox(key: "readOnly" | "enabled" | "discovery", label: string) {
   return html`<label style="display: flex; align-items: center; gap: 10px; cursor: pointer; margin-bottom: 8px"
     ><input
       type="checkbox"
@@ -413,6 +418,7 @@ function editor() {
         : nothing
     }
     ${checkbox("readOnly", "Read-only: its tools only read data, so they stay available in read-only turns. Uncheck only for a server whose tools change data.")}
+    ${checkbox("discovery", "Discovery: offer agents three small tools to search, describe and call this server's tools instead of listing every tool. Use it for servers with many large tools.")}
     ${checkbox("enabled", "Enabled")}
   </div>`;
 }

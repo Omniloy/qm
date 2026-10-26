@@ -21,7 +21,7 @@ function recordingTurn(
     input: "hi",
     systemPrompt,
     history: [],
-    tools: {} as HarnessTurnInput["tools"],
+    tools: { mcpToolDefs: () => [] } as unknown as HarnessTurnInput["tools"],
     scopeLabel: "scope" as HarnessTurnInput["scopeLabel"],
     orgScopeId: "org:test" as HarnessTurnInput["orgScopeId"],
     emit: async (entry) => ({ ...entry, seq: 1 }) as Awaited<ReturnType<HarnessTurnInput["emit"]>>,

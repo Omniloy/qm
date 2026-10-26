@@ -24,6 +24,16 @@ test("approvalMessage builds Block Kit buttons for all approval choices", () => 
   );
 });
 
+test("approvalMessage shows a held connector write's recipient and text", () => {
+  const command =
+    'microsoft-365_create-draft-email {"body":{"subject":"Q3 numbers","toRecipients":[{"emailAddress":{"address":"ana@contoso.com"}}],"body":{"content":"Revenue is up 12%"}}}';
+  const msg = approvalMessage([{ requestId: "req-9", command, reason: "this tool call requires human approval" }]);
+  const section = msg.blocks.find((b) => b.type === "section") as any;
+  assert.match(section.text.text, /ana@contoso\.com/);
+  assert.match(section.text.text, /Q3 numbers/);
+  assert.match(section.text.text, /Revenue is up 12%/);
+});
+
 test("approvalMessage hides standing-grant buttons an admin has removed", () => {
   const msg = approvalMessage([
     { requestId: "req-1", command: "rm -rf build", reason: "cleanup", grantModes: { session: true, always: false } },

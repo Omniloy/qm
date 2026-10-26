@@ -950,6 +950,41 @@ test("a real tool result on the same session is still screened", async () => {
   );
 });
 
+test("a held MCP write shows the person exactly what it would send", async () => {
+  const pending: Array<{ command: string; reason: string; approvalKey?: string }> = [];
+  const ref: ToolContextRef = {
+    current: fakeToolContext(),
+    emit: () => {},
+    scopeLabel: "personal:U1",
+    pendingApprovals: pending,
+    toolApprovalGate: (tool) => tool !== "microsoft-365_send-chat-message",
+  };
+  const tools = createAgentTools(ref, {
+    mcpTools: () => [
+      {
+        name: "microsoft-365_send-chat-message",
+        serverId: "microsoft-365",
+        remoteName: "send-chat-message",
+        description: "Send a chat message",
+        inputSchema: { type: "object", properties: {} },
+        readOnly: false,
+        perUser: true,
+        approvalRequired: true,
+        toolMode: "full",
+      },
+    ],
+  });
+  const send = tools.find((tool) => tool.name === "microsoft-365_send-chat-message")!;
+  const text = `Ship it on Friday ${"x".repeat(2000)}`;
+  await call(send, { chatId: "19:abc@thread.v2", body: { content: text } });
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0]!.approvalKey, "tool:microsoft-365_send-chat-message", "the grant stays keyed on the tool");
+  assert.match(pending[0]!.command, /^microsoft-365_send-chat-message \{"chatId":"19:abc@thread\.v2"/);
+  assert.match(pending[0]!.command, /Ship it on Friday/);
+  assert.ok(pending[0]!.command.length < 1300, "long arguments are clipped");
+  assert.ok(pending[0]!.command.endsWith("…"));
+});
+
 test("the screen never rewrites a strict-posture per-tool gate", async () => {
   const emitted: Emitted[] = [];
   const pending: Array<{ command: string; reason: string }> = [];
@@ -965,7 +1000,10 @@ test("the screen never rewrites a strict-posture per-tool gate", async () => {
   };
   const [execute] = createAgentTools(ref);
   const result = (await call(execute, { command: "echo hi" })) as { content: Array<{ text?: string }> };
-  assert.match(result.content[0]?.text ?? "", /\[blocked: needs human approval\] strict posture/);
+  assert.match(
+    result.content[0]?.text ?? "",
+    /\[blocked: needs human approval\] this tool call requires human approval/,
+  );
   const persisted = emitted.find((entry) => entry.type === "tool_result")!.payload;
   assert.equal(persisted.blocked, "needs_approval");
   assert.equal(persisted.quarantined, undefined);
@@ -3501,6 +3539,9 @@ test("resource catalog exposes one home per operation and leaves MCP tools intac
           description: "Search",
           inputSchema: { type: "object", properties: {} },
           readOnly: true,
+          perUser: false,
+          approvalRequired: false,
+          toolMode: "full",
         },
       ],
     },

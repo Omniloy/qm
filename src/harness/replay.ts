@@ -186,9 +186,16 @@ export function reconstructMessagesFromHistory(history: readonly SessionEntry[])
       const cid = typeof p.callId === "string" ? p.callId : "";
       if (!cid) continue;
       const re = resultByCallId.get(cid);
-      const name = typeof p.tool === "string" ? p.tool : "tool";
+      const via = typeof p.via === "string" ? p.via : undefined;
+      const realName = typeof p.tool === "string" ? p.tool : "tool";
+      const name = via ?? realName;
       const { tool: _t, callId: _c, ...recorded } = p;
       const args = (() => {
+        if (via)
+          return {
+            name: typeof recorded.remoteName === "string" ? recorded.remoteName : realName,
+            arguments: recorded.args ?? {},
+          };
         if (typeof recorded.bytes !== "number" || typeof recorded.text === "string") return recorded;
         if (recorded.action !== "post" && recorded.action !== "reach" && recorded.action !== "edit") return recorded;
         const { bytes: _b, files: recordedFiles, ...rest } = recorded;

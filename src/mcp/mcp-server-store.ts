@@ -15,6 +15,7 @@ export interface McpServer {
   url: string;
   auth: McpServerAuthMode;
   credentialScope?: "shared" | "per-user";
+  toolMode?: "full" | "discovery";
   credentialHost?: string;
   credentialAccountType?: "default" | "personal" | "company";
   bearerToken?: string;

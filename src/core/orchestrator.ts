@@ -172,6 +172,8 @@ import {
   type OverheardEntryPayload,
 } from "../harness/replay.ts";
 import { errMessage, reportFailure, swallow, swallowAs } from "../util/errors.ts";
+import { ALL_CONNECTOR_APPS_OFF, DEFAULT_DISABLED_CONNECTOR_APPS } from "../connectors/connector-apps.ts";
+import { personalMcpKey } from "../mcp/mcp-tool-service.ts";
 import { isObj } from "../util/objects.ts";
 import { absoluteAppLinks, headSlice, jsonbSafeStringify } from "../util/text.ts";
 import {
@@ -282,7 +284,9 @@ function screenApprovalReason(reason: string): string {
 
 const DEFAULT_APPROVAL_SUMMARY_TIMEOUT_MS = 6_000;
 
-const CONNECTOR_HOSTS = Object.values(PROVIDERS).flatMap((p) => p.hosts);
+const CONNECTOR_HOSTS = Object.values(PROVIDERS)
+  .filter((p) => p.sandboxCredential !== false)
+  .flatMap((p) => p.hosts);
 const INSTANCE_CACHE_MAX_ENTRIES = 5_000;
 const DIRECTORY_INDEX_CACHE_MAX_ENTRIES = 100;
 
@@ -1207,16 +1211,94 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           ? `\n\n${deliveryMenu(delivery.candidates, delivery.defaultKey)}`
           : "";
 
-      await deps.skillsReady;
-      const configuredProviders =
-        !external && deps.resolveConnectorClient
-          ? await configuredConnectorProviders(deps.resolveConnectorClient).catch(
-              swallowAs("orchestrator: configured connector providers", []),
+      const openSpeakerKeychain =
+        liveAuthorTurn && conversation.kind !== "dm" && sharingSources.includes(personalScope(actor.id));
+      const openAutomationKeychain =
+        !external &&
+        input.origin.kind === "automation" &&
+        input.origin.useOwnerKeychain === true &&
+        conversation.kind !== "dm" &&
+        !!deps.config &&
+        !!deps.isCurrentSharedScopeMember &&
+        (await isOpenScopeMember({
+          actorId: actor.id,
+          scope: scopeId,
+          config: deps.config,
+          isCurrentSharedScopeMember: deps.isCurrentSharedScopeMember,
+        }));
+      const personalConnectorAccess =
+        !external &&
+        !strictReadOnly &&
+        (scopeId === personalScope(actor.id) || openSpeakerKeychain || openAutomationKeychain);
+      const connectorInventory =
+        personalConnectorAccess && deps.connectorTokens?.listConnectorsByOwners
+          ? deps.connectorTokens
+              .listConnectorsByOwners([actor.id])
+              .then((byOwner) => byOwner.get(actor.id) ?? [])
+              .catch(swallowAs("orchestrator: connector inventory", undefined))
+          : undefined;
+      const connectorHealthy = async (host: string, accountType: string | undefined): Promise<boolean> => {
+        if (!personalConnectorAccess || !deps.connectorTokens) return false;
+        const inventory = await connectorInventory;
+        const status = inventory
+          ? inventory.find(
+              (credential) =>
+                credential.host === host && (credential.accountType ?? "default") === (accountType ?? "default"),
             )
-          : [];
+          : await deps.connectorTokens
+              .connectorTokenStatus(host, actor.id, accountType)
+              .catch(swallowAs("orchestrator: connector token status", undefined));
+        return Boolean(status?.connected && !status.needsReconnect);
+      };
+      const personalMcpHosts = new Map<string, { host: string; accountType: string | undefined }>();
+      for (const def of deps.mcp?.toolDefs() ?? []) {
+        if (def.credentialHost)
+          personalMcpHosts.set(personalMcpKey(def.credentialHost, def.credentialAccountType), {
+            host: def.credentialHost,
+            accountType: def.credentialAccountType,
+          });
+      }
+      const personalMcpAccess = personalConnectorAccess
+        ? new Set(
+            (
+              await Promise.all(
+                [...personalMcpHosts].map(async ([key, { host, accountType }]) =>
+                  (await connectorHealthy(host, accountType)) ? key : null,
+                ),
+              )
+            ).filter((key): key is string => key !== null),
+          )
+        : undefined;
+      if (
+        input.origin.kind === "automation" &&
+        input.origin.useOwnerKeychain === true &&
+        (input.origin.ownerResourcesRequireOpen === true ||
+          (conversation.kind === "channel" && conversation.isPrivate !== true)) &&
+        !openAutomationKeychain
+      )
+        return { status: "refused", reason: "owner-authorized automation requires current Open membership" };
+      await deps.skillsReady;
+      const [configuredProviders, disabledConnectorApps] = await Promise.all([
+        !external && deps.resolveConnectorClient
+          ? configuredConnectorProviders(deps.resolveConnectorClient).catch(
+              swallowAs("orchestrator: configured connector providers", [] as string[]),
+            )
+          : [],
+        !external && deps.connectorAppPrefs
+          ? deps.connectorAppPrefs
+              .disabled(actor.id)
+              .catch(swallowAs("orchestrator: connector app settings", ALL_CONNECTOR_APPS_OFF))
+          : DEFAULT_DISABLED_CONNECTOR_APPS,
+      ]);
       const carriedSkillScreens = new Map<string, Promise<boolean>>();
       const visibleSkillsForTurn = async (): Promise<SkillResolution[]> => {
-        const resolved = filterConnectorSkills(await context.listSkills(), configuredProviders);
+        const resolved = filterConnectorSkills(
+          await context.listSkills(),
+          personalConnectorAccess
+            ? configuredProviders
+            : configuredProviders.filter((provider) => PROVIDERS[provider]?.sandboxCredential !== false),
+          disabledConnectorApps,
+        );
         const allowed: SkillResolution[] = [];
         for (const entry of resolved) {
           const skill = entry.skill;
@@ -1421,6 +1503,13 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         return true;
       };
       const authorizeToolCall = (tool: string): boolean => consumeApproval(`tool:${tool}`);
+      const approvalMcpTools = new Set(
+        (external ? [] : (deps.mcp?.toolDefs() ?? [])).filter((def) => def.approvalRequired).map((def) => def.name),
+      );
+      const gateApprovalMcpTools = (tool: string): boolean => !approvalMcpTools.has(tool) || authorizeToolCall(tool);
+      let toolApprovalGate: ((tool: string) => boolean) | undefined;
+      if (securityPolicy.toolApprovals === "all") toolApprovalGate = authorizeToolCall;
+      else if (approvalMcpTools.size) toolApprovalGate = gateApprovalMcpTools;
       const authorizeCommand = (command: string, approvalKey?: string, exactApprovalKey = false): boolean => {
         let key = approvalKey ?? command;
         if (approvalKey !== undefined && commandUses.has(approvalKey)) key = approvalKey;
@@ -1490,29 +1579,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       const cutoverModeOf = (service: string): DeviceFlowCutoverMode => cutoverModes.get(service) ?? "legacy";
       const quarantinedServices = credentialServices.filter((service) => cutoverModeOf(service) === "ephemeral_only");
       const credentialCutoverServices = credentialServices.filter((service) => cutoverModeOf(service) !== "legacy");
-      const openSpeakerKeychain =
-        liveAuthorTurn && conversation.kind !== "dm" && sharingSources.includes(personalScope(actor.id));
-      const openAutomationKeychain =
-        !external &&
-        input.origin.kind === "automation" &&
-        input.origin.useOwnerKeychain === true &&
-        conversation.kind !== "dm" &&
-        !!deps.config &&
-        !!deps.isCurrentSharedScopeMember &&
-        (await isOpenScopeMember({
-          actorId: actor.id,
-          scope: scopeId,
-          config: deps.config,
-          isCurrentSharedScopeMember: deps.isCurrentSharedScopeMember,
-        }));
-      if (
-        input.origin.kind === "automation" &&
-        input.origin.useOwnerKeychain === true &&
-        (input.origin.ownerResourcesRequireOpen === true ||
-          (conversation.kind === "channel" && conversation.isPrivate !== true)) &&
-        !openAutomationKeychain
-      )
-        return { status: "refused", reason: "owner-authorized automation requires current Open membership" };
       const isolateOwnerKeychain =
         !external &&
         (openSpeakerKeychain ||
@@ -1603,25 +1669,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       };
       await registerKeychainCredentials(addCredentialToCatalog);
       const registerConnectorCredentials = async (addCredential: typeof addCredentialToCatalog): Promise<void> => {
-        if (
-          !external &&
-          !strictReadOnly &&
-          deps.connectorTokens &&
-          (scopeId === personalScope(actor.id) || openSpeakerKeychain || openAutomationKeychain)
-        ) {
+        if (personalConnectorAccess && deps.connectorTokens) {
           const tokens = deps.connectorTokens;
-          const inventory = tokens.listConnectorsByOwners
-            ? ((await tokens.listConnectorsByOwners([actor.id])).get(actor.id) ?? [])
-            : undefined;
           for (const host of CONNECTOR_HOSTS) {
             for (const accountType of ["personal", undefined, "company"]) {
-              const status = inventory
-                ? inventory.find(
-                    (credential) =>
-                      credential.host === host && (credential.accountType ?? "default") === (accountType ?? "default"),
-                  )
-                : await tokens.connectorTokenStatus(host, actor.id, accountType);
-              const healthy = status?.connected && !status.needsReconnect;
+              const healthy = await connectorHealthy(host, accountType);
               const operatorFallback =
                 accountType === undefined &&
                 tokens.operatorFallbackHosts?.some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
@@ -2841,7 +2893,13 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           memory: deps.memory,
           memoryScopeId,
           ...(memoryAccess ? { memoryAccess } : {}),
-          ...(!external && deps.mcp ? { mcp: deps.mcp } : {}),
+          ...(!external && deps.mcp
+            ? {
+                mcp: deps.mcp,
+                disabledConnectorApps,
+                ...(personalMcpAccess ? { personalMcpAccess, authorizePersonalMcp: authorizeOwnerCredentials } : {}),
+              }
+            : {}),
           ...(input.surface === "slack" ? { actingSlackUserId: actor.id } : {}),
           ...(deps.deploymentLayer
             ? {
@@ -3908,7 +3966,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                   },
                 }
               : {}),
-            ...(securityPolicy.toolApprovals === "all" ? { toolApprovalGate: authorizeToolCall } : {}),
+            ...(toolApprovalGate ? { toolApprovalGate } : {}),
             systemPrompt,
             history: continuation?.history ?? history,
             tools,

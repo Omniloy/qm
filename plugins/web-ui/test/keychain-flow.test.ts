@@ -234,6 +234,11 @@ test("MCP sign-in accounts render by server name and host and never offer Give a
     hosts: "Gmail",
     grantable: true,
   });
+  assert.equal(
+    connectorCardMeta("microsoft", { grantable: false }, { name: "Microsoft 365", hosts: "Outlook" }).grantable,
+    false,
+    "a connector whose token stays in core never offers Give access",
+  );
   assert.match(connectorsSource, /const first = meta\.grantable/);
   assert.match(shellSource, /focusConnector\(connect\)/);
 });

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createMcpClient, McpHttpError, mcpResultText, type McpFetch } from "../src/mcp/mcp-client.ts";
 import { createMcpServerStore, isValidMcpServerId, type McpServer } from "../src/mcp/mcp-server-store.ts";
 import { createMcpToolService } from "../src/mcp/mcp-tool-service.ts";
+import type { AuditLog } from "../src/audit/audit-log.ts";
 import { createKeychain, type KeychainCredential } from "../src/credentials/keychain.ts";
 import { deriveConnectorKey } from "../src/connectors/connector-client-store.ts";
 import { createServer } from "node:http";
@@ -112,8 +113,221 @@ test("tool service exposes namespaced tools and calls through", async () => {
   const defs = service.toolDefs();
   assert.deepEqual(defs.map((d) => d.name).sort(), ["crm_query", "crm_update"]);
   assert.ok(defs.every((d) => d.readOnly));
+  assert.ok(defs.every((d) => d.credentialHost === undefined));
   const out = await service.call("crm_query", { q: "hello" }, "internal:U1");
   assert.equal(out, "ran query");
+  await store.put(server({ credentialScope: "per-user", credentialHost: "graph.microsoft.com" }));
+  await service.refresh();
+  assert.ok(
+    service.toolDefs().every((d) => d.credentialHost === "graph.microsoft.com"),
+    "per-user tools carry the host whose connector settings filter them",
+  );
+  service.close();
+});
+
+test("a server that is down at boot is listed again soon, and a failed refresh keeps its last tools", async () => {
+  const store = createMcpServerStore(createMemoryMap<McpServer>());
+  const { fetch: healthy } = fakeServerFetch();
+  let up = false;
+  const fetch: McpFetch = async (url, init) => (up ? healthy(url, init) : jsonResponse({ error: "starting" }, 503));
+  await store.put(server());
+  const service = createMcpToolService({
+    servers: store,
+    fetchImpl: fetch,
+    refreshIntervalMs: 3600_000,
+    listRetryMs: 5,
+  });
+  await service.refresh();
+  assert.equal(service.toolDefs().length, 0);
+  up = true;
+  for (let i = 0; i < 100 && service.toolDefs().length === 0; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(service.toolDefs().length, 2, "the failed listing is retried without waiting for the slow refresh");
+  up = false;
+  await service.refresh();
+  assert.equal(service.toolDefs().length, 2, "a sidecar restart doesn't wipe the tools in the meantime");
+  service.close();
+});
+
+test("tools kept through an outage are rebuilt from the server's current config, and retries stay out of the audit", async () => {
+  const store = createMcpServerStore(createMemoryMap<McpServer>());
+  const { fetch: healthy } = fakeServerFetch();
+  let up = true;
+  const fetch: McpFetch = async (url, init) => (up ? healthy(url, init) : jsonResponse({ error: "down" }, 503));
+  const lists: string[] = [];
+  const audit = {
+    record: (entry: { action: string; status?: string }) => {
+      if (entry.action === "mcp.list") lists.push(entry.status ?? "");
+    },
+  } as unknown as AuditLog;
+  await store.put(server());
+  const service = createMcpToolService({
+    servers: store,
+    fetchImpl: fetch,
+    refreshIntervalMs: 3600_000,
+    listRetryMs: 2,
+    audit,
+  });
+  await service.refresh();
+  const flags = () => service.toolDefs().map((d) => [d.remoteName, d.perUser, d.approvalRequired, d.readOnly]);
+  assert.deepEqual(flags(), [
+    ["query", false, false, true],
+    ["update", false, false, true],
+  ]);
+
+  up = false;
+  await store.put(server({ credentialScope: "per-user", credentialHost: "graph.microsoft.com" }));
+  await service.refresh();
+  assert.deepEqual(
+    flags(),
+    [
+      ["query", true, false, true],
+      ["update", true, false, true],
+    ],
+    "a shared server switched to per-user during an outage is per-user at once",
+  );
+  await store.put(server({ credentialScope: "per-user", credentialHost: "graph.microsoft.com", readOnly: false }));
+  await service.refresh();
+  assert.deepEqual(
+    flags(),
+    [
+      ["query", true, true, false],
+      ["update", true, true, false],
+    ],
+    "turning read-only off during an outage requires approval at once",
+  );
+  const before = lists.length;
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(lists.length, before, "background retries of a down server write no audit rows");
+  up = true;
+  for (let i = 0; i < 200 && lists.length === before; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(lists.slice(before), ["ok tools=2"], "recovery is audited once");
+  service.close();
+});
+
+test("a retry that finishes after a config change never brings back the old flags", async () => {
+  const store = createMcpServerStore(createMemoryMap<McpServer>());
+  const { fetch: healthy } = fakeServerFetch();
+  let up = true;
+  let hold: Promise<void> | null = null;
+  let held = () => {};
+  let retryStarted = () => {};
+  const fetch: McpFetch = async (url, init) => {
+    if (hold) {
+      const gate = hold;
+      hold = null;
+      retryStarted();
+      await gate;
+      return healthy(url, init);
+    }
+    return up ? healthy(url, init) : jsonResponse({ error: "down" }, 503);
+  };
+  await store.put(server());
+  const service = createMcpToolService({
+    servers: store,
+    fetchImpl: fetch,
+    refreshIntervalMs: 3600_000,
+    listRetryMs: 40,
+  });
+  await service.refresh();
+  up = false;
+  await service.refresh();
+  const started = new Promise<void>((resolve) => (retryStarted = resolve));
+  hold = new Promise<void>((resolve) => (held = resolve));
+  await started;
+  await store.put(server({ credentialScope: "per-user", credentialHost: "graph.microsoft.com" }));
+  await service.refresh();
+  assert.ok(service.toolDefs().every((d) => d.perUser));
+  held();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.ok(
+    service.toolDefs().every((d) => d.perUser),
+    "the retry that read the old shared config is dropped once a newer refresh ran",
+  );
+  service.close();
+});
+
+test("a call through a descriptor that no longer matches its server's config is refused", async () => {
+  const backing = createMcpServerStore(createMemoryMap<McpServer>());
+  const servers = { ...backing, onChange: () => () => {} };
+  const { fetch } = fakeServerFetch();
+  await backing.put(server());
+  const service = createMcpToolService({ servers, fetchImpl: fetch, refreshIntervalMs: 3600_000 });
+  await service.refresh();
+  assert.equal(await service.call("crm_query", { q: "x" }, "internal:U1"), "ran query");
+  await backing.put(server({ credentialScope: "per-user", credentialHost: "graph.microsoft.com" }));
+  assert.equal(service.toolDefs()[0]!.perUser, false, "the snapshot is stale until the next refresh");
+  await assert.rejects(service.call("crm_query", { q: "x" }, "internal:U1"), /changed since its tools were listed/);
+  for (let i = 0; i < 100 && !service.toolDefs()[0]?.perUser; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(service.toolDefs()[0]!.perUser, true, "the refused call triggers a refresh");
+  service.close();
+});
+
+test("many refused calls coalesce into at most one extra refresh", async () => {
+  const backing = createMcpServerStore(createMemoryMap<McpServer>());
+  const servers = { ...backing, onChange: () => () => {} };
+  const { fetch: healthy } = fakeServerFetch();
+  let lists = 0;
+  const fetch: McpFetch = async (url, init) => {
+    if ((JSON.parse(init.body) as { method: string }).method === "tools/list") {
+      lists++;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    return healthy(url, init);
+  };
+  await backing.put(server());
+  const service = createMcpToolService({ servers, fetchImpl: fetch, refreshIntervalMs: 3600_000 });
+  await service.refresh();
+  await backing.put(server({ credentialScope: "per-user", credentialHost: "graph.microsoft.com" }));
+  const before = lists;
+  const refused = await Promise.allSettled(
+    Array.from({ length: 10 }, () => service.call("crm_query", { q: "x" }, "internal:U1")),
+  );
+  assert.ok(refused.every((r) => r.status === "rejected"));
+  await service.refresh();
+  assert.ok(lists - before <= 2, `expected at most 2 listings, got ${lists - before}`);
+  assert.ok(
+    service.toolDefs().every((d) => d.perUser),
+    "the coalesced refresh still lands the new config",
+  );
+  service.close();
+});
+
+test("a refresh that fails reading the registry doesn't stop later coalesced refreshes", async () => {
+  const backing = createMcpServerStore(createMemoryMap<McpServer>());
+  let failList = false;
+  const servers = {
+    ...backing,
+    list: async () => {
+      if (failList) {
+        failList = false;
+        throw new Error("database unavailable");
+      }
+      return backing.list();
+    },
+    onChange: () => () => {},
+  };
+  const { fetch: healthy } = fakeServerFetch();
+  let lists = 0;
+  const fetch: McpFetch = async (url, init) => {
+    if ((JSON.parse(init.body) as { method: string }).method === "tools/list") lists++;
+    return healthy(url, init);
+  };
+  await backing.put(server());
+  const service = createMcpToolService({ servers, fetchImpl: fetch, refreshIntervalMs: 3600_000 });
+  await service.refresh();
+  failList = true;
+  const failed = service.refresh();
+  const queued = service.refresh();
+  await assert.rejects(failed, /database unavailable/);
+  await queued;
+  await backing.put(server({ credentialScope: "per-user", credentialHost: "graph.microsoft.com" }));
+  const before = lists;
+  await Promise.all([service.refresh(), service.refresh()]);
+  assert.equal(lists - before, 2, "both the run and its coalesced follow-up list the server");
+  assert.ok(
+    service.toolDefs().every((d) => d.perUser),
+    "the follow-up applies the new config",
+  );
   service.close();
 });
 
@@ -460,6 +674,10 @@ test("OAuth servers expose the durable catalog without contacting the server", a
       .map((d) => d.name)
       .sort(),
     ["granola_query", "granola_update"],
+  );
+  assert.ok(
+    h.service.toolDefs().every((d) => !d.perUser && !d.approvalRequired && d.credentialHost === undefined),
+    "OAuth MCP servers keep their existing visibility and approval behaviour",
   );
   assert.equal(h.srv.log.length, 0);
   await assert.rejects(h.service.probe((await h.store.get("granola"))!), /signed-in user/);

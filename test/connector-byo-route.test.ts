@@ -210,7 +210,7 @@ test("the catalog endpoint exposes per-provider setup guidance (no secrets)", as
       catalog: Array<{ provider: string; setupGuide: { url: string; steps: string[] }; consentMode: string }>;
     };
     const names = catalog.map((c) => c.provider).sort();
-    assert.deepEqual(names, ["dropbox", "github", "google", "linear", "notion", "slack", "x"]);
+    assert.deepEqual(names, ["dropbox", "github", "google", "linear", "microsoft", "notion", "slack", "x"]);
     const google = catalog.find((c) => c.provider === "google")!;
     assert.ok(google.setupGuide.steps.length >= 3);
     assert.match(google.setupGuide.url, /^https:\/\//);
@@ -248,6 +248,26 @@ test("managed deployments accept validated own apps and preserve credentials on 
     assert.equal(status.installAvailable, true);
     assert.equal(new URL(status.createUrl).searchParams.get("new_app"), "1");
     assert.equal((await srv.built.slackInstallation.get())?.botToken, "xoxb-own");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("a connector client with an invalid tenant is refused before anything is saved", async () => {
+  const srv = start();
+  const tenant = "0f3c1a52-6c1e-4f6b-9d7e-2b8a4c7d9e10";
+  const save = (hostedDomain: string) =>
+    putConnector(srv.base, { provider: "microsoft", clientId: "ms-cid", clientSecret: "ms-secret", hostedDomain });
+  try {
+    const bad = await save("contoso.onmicrosoft.com");
+    assert.equal(bad.status, 400);
+    assert.match(JSON.stringify(await bad.json()), /GUID/);
+    assert.equal(await srv.built.config.getConnectorClientSecret("org:default-org", "microsoft"), null);
+    assert.equal((await save(tenant)).status, 200);
+    assert.equal(
+      (await srv.built.config.getConnectorClientSecret("org:default-org", "microsoft"))?.hostedDomain,
+      tenant,
+    );
   } finally {
     await srv.close();
   }

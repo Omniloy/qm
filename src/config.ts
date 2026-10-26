@@ -75,6 +75,7 @@ export interface Config {
     "aws" | "local" | "sprites" | "smolmachines" | "e2b" | "modal" | "porter" | "agent37" | "superserve";
   deployProvider: "docker" | "aws" | "fly" | "porter";
   egressServiceHosts?: string[];
+  mcpPerUserHttpHosts?: string[];
   brandingDefault?: OrgBranding;
   modelId?: string;
   opencodeModel?: string;
@@ -1477,6 +1478,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       ? {
           egressServiceHosts: env.EGRESS_SERVICE_HOSTS.split(",")
             .map((s) => s.trim())
+            .filter(Boolean),
+        }
+      : {}),
+    ...(env.MCP_PER_USER_HTTP_HOSTS
+      ? {
+          mcpPerUserHttpHosts: env.MCP_PER_USER_HTTP_HOSTS.split(",")
+            .map((s) => s.trim().toLowerCase())
             .filter(Boolean),
         }
       : {}),

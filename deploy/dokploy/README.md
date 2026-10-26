@@ -370,6 +370,54 @@ it, so every surface serves it as `/favicon.svg`. `ORG_BRAND_MARK_URL` points th
 and admin badge at that same public `/favicon.svg`; it must be an absolute `https://` URL,
 so it names the public host.
 
+## Microsoft 365
+
+Microsoft 365 (Outlook mail and calendar, Teams chats, channels and meeting transcripts,
+OneDrive, SharePoint) is a per-person OAuth connector whose tools come from the
+`ms365-mcp` service, a pinned image of
+[Softeria/ms-365-mcp-server](https://github.com/Softeria/ms-365-mcp-server) (MIT). It runs
+on the private `qm` network only, holds no credentials, and forwards the `Bearer` token
+core sends on each call straight to Microsoft Graph; the token never enters a sandbox.
+`ENABLED_TOOLS` in the compose file limits it to exactly the tools of those seven apps
+(`src/connectors/connector-apps.ts`; a test keeps the two in sync). The container is
+read-only with its logs on a size-limited tmpfs at `LOG_LEVEL=warn` (the server logs
+tool parameters at info), drops all capabilities, and sets
+`MS365_MCP_REQUIRE_CONFIRM=true` so calls that change or delete data need an explicit
+`confirm: true`. Core sets `MCP_PER_USER_HTTP_HOSTS: ms365-mcp`, which lets a per-person
+MCP server use plain HTTP on that one hostname; every other per-person server still needs
+HTTPS. If the sidecar starts after core, core lists its tools again within 30 seconds.
+
+Setup, once (no Dokploy env var is needed):
+
+1. In the Microsoft Entra admin center → **App registrations**, register a web app.
+   Use the redirect URI `https://<host>/v1/connectors/oauth/microsoft/callback`, create a
+   client secret, add the Microsoft Graph delegated permissions listed in the admin
+   setup guide, and grant admin consent for the tenant.
+2. In the admin console → **Connectors** → **OAuth apps**, add **Microsoft 365** with
+   the application (client) ID and secret. For an app registered for any organizational
+   directory (multitenant), leave **Directory (tenant) ID** empty: any work or school
+   account can sign in. For an app registered for your organization only, enter the
+   directory's GUID there; sign-in is then limited to that tenant. When the field is
+   empty, core falls back to `MICROSOFT_TENANT_ID` if a deployment sets it. The same
+   rule applies to Google: an admin-card Google client with an empty **Workspace domain**
+   uses `GOOGLE_WORKSPACE_DOMAIN` when it is set.
+3. In **Connectors** → **MCP servers**, add the server with ID exactly `microsoft-365`
+   (the skills refer to its `microsoft-365_*` tools), URL `http://ms365-mcp:3000/mcp`,
+   auth **None**, **Per person** with credential host `graph.microsoft.com`,
+   **Read only** off, and **Discovery** on. Discovery offers the agent three small
+   tools (search, describe, call) instead of the 53 Graph tools, whose schemas would
+   otherwise cost tens of thousands of tokens on every turn.
+4. If outbound traffic is allowlisted, allow `graph.microsoft.com`,
+   `login.microsoftonline.com`, and the tenant's `<tenant>.sharepoint.com` and
+   `<tenant>-my.sharepoint.com` hosts.
+
+People then connect from **Keychain**. The gear on the Microsoft 365 card chooses which
+apps the agent is offered (all start on); a turned-off app's tools never appear in
+search, can't be described or called, and its skill is left out of the agent's context. The tools
+are only offered in the person's DM with the agent or when they are the live speaker in
+an Open shared conversation, and sending mail, posting messages, changing events, or
+uploading files waits for the person's approval.
+
 ## MCP servers, Composio and skill sharing
 
 None of these need a Dokploy env var or a redeploy. An org admin sets each one in the

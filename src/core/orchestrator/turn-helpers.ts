@@ -22,6 +22,11 @@ import { hostMatches } from "../../resolution/egress-policy.ts";
 import { isVisionAttachment, MAX_VISION_IMAGE_BYTES } from "../attachments.ts";
 import { swallow } from "../../util/errors.ts";
 import { hashId } from "../../util/crypto.ts";
+import {
+  connectorAppSkillProviders,
+  connectorAppSkillVisible,
+  type DisabledConnectorApps,
+} from "../../connectors/connector-apps.ts";
 import type { OrchestratorInput } from "./types.ts";
 
 export const MAX_AUTO_ATTACHMENT_SCREEN_BYTES = 12_000;
@@ -100,16 +105,20 @@ const CONNECTOR_SKILL_PROVIDERS: Readonly<Record<string, string>> = {
   "morning-digest": "x",
   "slack-drafts": "slack",
   x: "x",
+  ...connectorAppSkillProviders(),
 };
 
 export function filterConnectorSkills(
   resolved: SkillResolution[],
   availableProviders: readonly string[],
+  disabledApps: DisabledConnectorApps = {},
 ): SkillResolution[] {
   const available = new Set(availableProviders);
   return resolved.filter((entry) => {
-    const provider = entry.skill ? CONNECTOR_SKILL_PROVIDERS[entry.skill.manifest.name] : undefined;
-    return !provider || available.has(provider);
+    if (!entry.skill) return true;
+    const name = entry.skill.manifest.name;
+    const provider = CONNECTOR_SKILL_PROVIDERS[name];
+    return !provider || (available.has(provider) && connectorAppSkillVisible(name, disabledApps));
   });
 }
 

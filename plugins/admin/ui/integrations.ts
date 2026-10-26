@@ -218,8 +218,20 @@ cards["card-connectors"] = () => {
       </div>
       <label style="display: block; margin-bottom: 8px"
         >Connector
-        <select id="conn-provider" style="width: 100%"></select
-      ></label>
+        <select
+          id="conn-provider"
+          style="width: 100%"
+          ?disabled=${!!s.editing}
+          @change=${(e: Event) => s.change("provider", (e.target as HTMLSelectElement).value)}
+        >
+          ${s.catalog.map(
+            (c) =>
+              html`<option value=${c.provider} ?selected=${c.provider === s.draft.provider}>
+                ${context.connectorName(c.provider)}
+              </option>`,
+          )}
+        </select></label
+      >
       <div id="conn-guide" class="hint" style="margin: 0 0 12px">${connectorGuide()}</div>
       <label style="display: block; margin-bottom: 8px"
         >Client ID
@@ -246,6 +258,7 @@ cards["card-connectors"] = () => {
       <p class="field-hint" id="conn-secret-hint">
         ${s.editing ? "Saving requires the client secret. Re-enter it to keep this connector working." : "Secret values are write-only and will not be displayed after saving."}
       </p>
+      ${tenantField()}
       <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; margin-bottom: 10px"
         ><input
           type="checkbox"
@@ -471,6 +484,22 @@ function connectorRows() {
         </div>
       </div>`,
   );
+}
+function tenantField() {
+  const entry = connectors.catalog.find((c) => c.provider === connectors.draft.provider);
+  const label = entry?.tenantLabel;
+  if (!label) return nothing;
+  return html`<label style="display: block; margin-bottom: 8px"
+    >${label + " (optional)"}
+    <input
+      type="text"
+      id="conn-tenant"
+      .value=${connectors.draft.hostedDomain}
+      @input=${(e: Event) => connectors.change("hostedDomain", (e.target as HTMLInputElement).value)}
+      autocomplete="off"
+      placeholder=${entry.tenantPlaceholder ?? ""}
+      style="width: 100%"
+  /></label>`;
 }
 function connectorGuide() {
   const c = connectors.catalog.find((c) => c.provider === connectors.draft.provider);

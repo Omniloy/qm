@@ -22,8 +22,10 @@ import {
 } from "./mcp-client.ts";
 import type { McpCatalogStore, McpCatalogTool, McpUserTokenStore } from "./mcp-oauth-store.ts";
 import type { McpServer, McpServerStore } from "./mcp-server-store.ts";
+import { connectorAppIdsForTool } from "../connectors/connector-apps.ts";
 
 const REFRESH_INTERVAL_MS = 5 * 60_000;
+const LIST_RETRY_MS = 30_000;
 const CATALOG_SYNC_INTERVAL_MS = 60_000;
 const CATALOG_MAX_AGE_MS = 24 * 60 * 60_000;
 const CATALOG_CAPTURE_TIMEOUT_MS = 10_000;
@@ -48,6 +50,16 @@ export interface McpToolDescriptor {
   description: string;
   inputSchema: Record<string, unknown>;
   readOnly: boolean;
+  perUser: boolean;
+  approvalRequired: boolean;
+  toolMode: "full" | "discovery";
+  apps?: string[];
+  credentialHost?: string;
+  credentialAccountType?: string;
+}
+
+export function personalMcpKey(host: string, accountType: string | undefined): string {
+  return `${host}|${accountType ?? "default"}`;
 }
 
 export interface McpToolService {
@@ -84,6 +96,7 @@ export function createMcpToolService(opts: {
   fetchImpl?: McpFetch;
   now?: () => number;
   refreshIntervalMs?: number;
+  listRetryMs?: number;
   catalogSyncIntervalMs?: number;
 }): McpToolService {
   const now = opts.now ?? (() => Date.now());
@@ -94,6 +107,12 @@ export function createMcpToolService(opts: {
   let byServer = new Map<string, McpToolDescriptor[]>();
   let snapshot: McpToolDescriptor[] = [];
   let closed = false;
+  let retry: ReturnType<typeof setTimeout> | undefined;
+  const lastCatalog = new Map<string, McpCatalogTool[]>();
+  let generation = 0;
+  let refreshing: Promise<void> | null = null;
+  let refreshAgain: Promise<void> | null = null;
+  const listFailures = new Map<string, number>();
 
   function record(action: string, resource: string, status: string, principalId?: string): void {
     opts.audit?.record({
@@ -139,7 +158,13 @@ export function createMcpToolService(opts: {
     });
   }
 
+  function appsOf(remoteName: string, credentialHost: string | undefined): { apps?: string[] } {
+    const apps = connectorAppIdsForTool(remoteName, credentialHost);
+    return apps.length ? { apps } : {};
+  }
+
   function describe(server: McpServer, tools: McpCatalogTool[]): McpToolDescriptor[] {
+    const personal = server.auth !== "oauth" && server.credentialScope === "per-user";
     return tools.slice(0, MAX_TOOLS_PER_SERVER).map((tool) => ({
       name: `${server.id}_${tool.name}`.replace(/[^a-zA-Z0-9_-]/g, "_"),
       serverId: server.id,
@@ -147,6 +172,13 @@ export function createMcpToolService(opts: {
       description: tool.description || `${tool.name} on ${server.name}`,
       inputSchema: tool.inputSchema,
       readOnly: server.readOnly,
+      perUser: personal,
+      approvalRequired: personal && !server.readOnly && tool.readOnlyHint !== true,
+      toolMode: server.toolMode ?? "full",
+      ...appsOf(tool.name, personal ? server.credentialHost : undefined),
+      ...(personal && server.credentialHost
+        ? { credentialHost: server.credentialHost, credentialAccountType: server.credentialAccountType ?? "default" }
+        : {}),
     }));
   }
 
@@ -168,30 +200,101 @@ export function createMcpToolService(opts: {
     return (await opts.servers.list()).filter((s) => s.enabled);
   }
 
-  async function refresh(): Promise<void> {
+  async function listCatalog(server: McpServer, audited: boolean): Promise<McpCatalogTool[] | undefined> {
+    try {
+      const raw = server.auth === "oauth" ? await catalogTools(server) : await clientFor(server).listTools();
+      lastCatalog.set(server.id, raw);
+      const recovered = listFailures.delete(server.id);
+      if (audited || recovered) record("list", server.id, `ok tools=${raw.length}`);
+      return raw;
+    } catch (e) {
+      const failures = (listFailures.get(server.id) ?? 0) + 1;
+      listFailures.set(server.id, failures);
+      if (audited || failures === 1) record("list", server.id, `error: ${errMessage(e)}`);
+      return lastCatalog.get(server.id);
+    }
+  }
+
+  function scheduleListRetry(): void {
+    if (closed || retry || !listFailures.size) return;
+    const attempts = Math.max(...listFailures.values());
+    const delay = Math.min((opts.listRetryMs ?? LIST_RETRY_MS) * 2 ** (attempts - 1), REFRESH_INTERVAL_MS);
+    retry = setTimeout(() => {
+      retry = undefined;
+      if (!closed) void retryFailedListings().catch((e: unknown) => swallow("mcp list retry", e));
+    }, delay);
+    retry.unref?.();
+  }
+
+  async function retryFailedListings(): Promise<void> {
+    const started = generation;
     const servers = await enabledServers();
+    const rebuilt = new Map<string, McpToolDescriptor[]>();
+    for (const server of servers.filter((s) => listFailures.has(s.id))) {
+      const raw = await listCatalog(server, false);
+      if (raw) rebuilt.set(server.id, describe(server, raw));
+    }
+    if (started !== generation) return;
+    for (const [id, tools] of rebuilt) byServer.set(id, tools);
+    publish(servers);
+    scheduleListRetry();
+  }
+
+  function describesCurrentConfig(def: McpToolDescriptor, server: McpServer): boolean {
+    const raw = lastCatalog.get(server.id)?.find((tool) => tool.name === def.remoteName);
+    const current = describe(server, [raw ?? { name: def.remoteName, description: "", inputSchema: {} }])[0]!;
+    return (
+      current.perUser === def.perUser &&
+      current.approvalRequired === def.approvalRequired &&
+      current.readOnly === def.readOnly &&
+      current.toolMode === def.toolMode &&
+      current.credentialHost === def.credentialHost &&
+      current.credentialAccountType === def.credentialAccountType
+    );
+  }
+
+  function refresh(): Promise<void> {
+    if (!refreshing) {
+      refreshing = refreshOnce().finally(() => {
+        refreshing = null;
+      });
+      return refreshing;
+    }
+    refreshAgain ??= refreshing
+      .catch(() => undefined)
+      .then(() => {
+        refreshAgain = null;
+        return refresh();
+      });
+    return refreshAgain;
+  }
+
+  async function refreshOnce(): Promise<void> {
+    const started = ++generation;
+    const servers = await enabledServers();
+    const ids = new Set(servers.map((server) => server.id));
+    for (const id of lastCatalog.keys()) if (!ids.has(id)) lastCatalog.delete(id);
+    for (const id of listFailures.keys()) if (!ids.has(id)) listFailures.delete(id);
     const next = new Map<string, McpToolDescriptor[]>();
     for (const server of servers) {
-      try {
-        const tools = describe(
-          server,
-          server.auth === "oauth" ? await catalogTools(server) : await clientFor(server).listTools(),
-        );
-        next.set(server.id, tools);
-        record("list", server.id, `ok tools=${tools.length}`);
-      } catch (e) {
-        record("list", server.id, `error: ${errMessage(e)}`);
-      }
+      const raw = await listCatalog(server, true);
+      if (raw) next.set(server.id, describe(server, raw));
     }
+    if (started !== generation) return;
     byServer = next;
     publish(servers);
+    scheduleListRetry();
   }
 
   async function syncCatalogs(): Promise<void> {
+    const started = generation;
     const servers = await enabledServers();
+    const rebuilt = new Map<string, McpToolDescriptor[]>();
     for (const server of servers.filter((s) => s.auth === "oauth")) {
-      byServer.set(server.id, describe(server, await catalogTools(server)));
+      rebuilt.set(server.id, describe(server, await catalogTools(server)));
     }
+    if (started !== generation) return;
+    for (const [id, tools] of rebuilt) byServer.set(id, tools);
     publish(servers);
   }
 
@@ -219,8 +322,14 @@ export function createMcpToolService(opts: {
     const fetchedAt = now();
     await opts.oauth!.catalogs.put({ serverId: server.id, tools, fetchedAt, fetchedBy: principalId });
     catalogFetchedAt.set(server.id, fetchedAt);
-    byServer.set(server.id, describe(server, tools));
-    publish(await enabledServers());
+    lastCatalog.set(server.id, tools);
+    const started = generation;
+    const servers = await enabledServers();
+    const current = servers.find((candidate) => candidate.id === server.id);
+    if (started === generation && current) {
+      byServer.set(server.id, describe(current, tools));
+      publish(servers);
+    }
     record("list", server.id, `ok tools=${tools.length}`, principalId);
     return tools.length;
   }
@@ -274,10 +383,10 @@ export function createMcpToolService(opts: {
   }
 
   const unsubscribe = opts.servers.onChange(() => {
-    void refresh();
+    void refresh().catch((e: unknown) => swallow("mcp refresh after server change", e));
   });
   const timer = setInterval(() => {
-    if (!closed) void refresh();
+    if (!closed) void refresh().catch((e: unknown) => swallow("mcp scheduled refresh", e));
   }, opts.refreshIntervalMs ?? REFRESH_INTERVAL_MS);
   timer.unref?.();
   const catalogTimer = opts.oauth
@@ -286,7 +395,7 @@ export function createMcpToolService(opts: {
       }, opts.catalogSyncIntervalMs ?? CATALOG_SYNC_INTERVAL_MS)
     : undefined;
   catalogTimer?.unref?.();
-  void refresh();
+  void refresh().catch((e: unknown) => swallow("mcp initial refresh", e));
 
   return {
     toolDefs: () => snapshot,
@@ -295,6 +404,10 @@ export function createMcpToolService(opts: {
       if (!def) throw new Error(`unknown MCP tool: ${name}`);
       const server = await opts.servers.get(def.serverId);
       if (!server || !server.enabled) throw new Error(`MCP server ${def.serverId} is not available`);
+      if (!describesCurrentConfig(def, server)) {
+        void refresh().catch((e: unknown) => swallow("mcp refresh after config change", e));
+        throw new Error(`MCP server ${def.serverId} changed since its tools were listed; try again in a moment`);
+      }
       try {
         const result =
           server.auth === "oauth"
@@ -355,6 +468,7 @@ export function createMcpToolService(opts: {
     },
     close() {
       closed = true;
+      clearTimeout(retry);
       clearInterval(timer);
       clearInterval(catalogTimer);
       unsubscribe();
