@@ -4,6 +4,8 @@ import { createAgentTools, type ToolContextRef } from "../src/harness/agent-tool
 import { createToolContext, type ToolContextDeps } from "../src/tools/primitives.ts";
 import { personalMcpKey, type McpToolDescriptor, type McpToolService } from "../src/mcp/mcp-tool-service.ts";
 import type { Sandbox } from "../src/sandbox/sandbox.ts";
+import { reconstructMessagesFromHistory } from "../src/harness/replay.ts";
+import type { SessionEntry } from "../src/types.ts";
 
 const graph = (remoteName: string, apps: string[], write = false): McpToolDescriptor => ({
   name: `microsoft-365_${remoteName}`,
@@ -170,6 +172,40 @@ test("a write through call_tool waits for approval keyed on the real tool, with 
   assert.equal(pending.length, 1);
   assert.equal(pending[0]!.approvalKey, "tool:microsoft-365_send-draft-message");
   assert.equal(pending[0]!.command, 'microsoft-365_send-draft-message {"id":"AAMk-draft-42"}');
+});
+
+test("a write held for approval through call_tool replays as call_tool", async () => {
+  const { run, emitted } = setup();
+  await run("microsoft-365_call_tool", { name: "send-draft-message", arguments: { id: "AAMk-draft-42" } });
+  const history: SessionEntry[] = [
+    {
+      sessionId: "s",
+      seq: 1,
+      parentSeq: null,
+      type: "user",
+      payload: { text: "send it" },
+      scopeLabel: "personal:U1",
+      createdAt: 1,
+    },
+    ...emitted.map((e, i) => ({
+      sessionId: "s",
+      seq: i + 2,
+      parentSeq: null,
+      type: e.type as SessionEntry["type"],
+      payload: e.payload,
+      scopeLabel: "personal:U1",
+      createdAt: i + 2,
+    })),
+  ];
+  const call = reconstructMessagesFromHistory(history).find(
+    (m) => m.role === "assistant" && m.content.some((c) => c.type === "toolCall"),
+  );
+  assert.deepEqual(call && call.role === "assistant" ? call.content[0] : undefined, {
+    type: "toolCall",
+    id: "c1",
+    name: "microsoft-365_call_tool",
+    arguments: { name: "send-draft-message", arguments: { id: "AAMk-draft-42" } },
+  });
 });
 
 test("call_tool keeps the per-call personal-access re-check", async () => {

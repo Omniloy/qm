@@ -4148,7 +4148,12 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       async execute(callId, params) {
         const tc = ref.current;
         if (!tc) return text("[error] no active tool context");
-        await recordCall(callId, { tool: d.name, mcpServer: d.serverId, args: params, ...(via ? { via } : {}) });
+        await recordCall(callId, {
+          tool: d.name,
+          mcpServer: d.serverId,
+          args: params,
+          ...(via ? { via, remoteName: d.remoteName } : {}),
+        });
         try {
           const out = await tc.callMcpTool(d.name, (params ?? {}) as Record<string, unknown>);
           return recordExternalResult(
@@ -4176,7 +4181,11 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         (d) =>
           [
             d.name,
-            withToolApprovalGate(mcpTool(d, `${d.serverId}_call_tool`), ref, { recordCall, recordResult }, true),
+            withToolApprovalGate(mcpTool(d, `${d.serverId}_call_tool`), ref, { recordCall, recordResult }, true, {
+              mcpServer: d.serverId,
+              via: `${d.serverId}_call_tool`,
+              remoteName: d.remoteName,
+            }),
           ] as const,
       ),
   );
@@ -4562,6 +4571,7 @@ function withToolApprovalGate(
     ) => Promise<T>;
   },
   showArguments = false,
+  routedVia?: { mcpServer: string; via: string; remoteName: string },
 ): ToolDefinition {
   if (TOOL_APPROVAL_EXEMPT.has(tool.name)) return tool;
   const inner = tool.execute.bind(tool);
@@ -4593,6 +4603,7 @@ function withToolApprovalGate(
         ref.pausedOnApproval = true;
         await rec.recordCall(callId, {
           tool: tool.name,
+          ...(routedVia ? { ...routedVia, args: params } : {}),
           ...(resourceAction ? { action: resourceAction } : {}),
           ...(isObj(params) && typeof params.purpose === "string" ? { purpose: params.purpose } : {}),
           blocked: "needs_approval",

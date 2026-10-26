@@ -18,6 +18,7 @@ test("a tool run through a discovery call_tool replays as that call_tool, never 
         mcpServer: "microsoft-365",
         args: { top: 5 },
         via: "microsoft-365_call_tool",
+        remoteName: "list-chats",
         callId: "c1",
       },
       2,
@@ -50,4 +51,30 @@ test("a direct MCP tool call still replays under its own name", () => {
     call && call.role === "assistant" && call.content[0]?.type === "toolCall" ? call.content[0].name : "",
     "crm_query",
   );
+});
+
+test("the replayed call_tool name comes from the server's own tool name, not the sanitized one", () => {
+  const messages = reconstructMessagesFromHistory([
+    ent("user", { text: "read the file" }, 1),
+    ent(
+      "tool_call",
+      {
+        tool: "files_drive_items_get",
+        mcpServer: "files",
+        args: { id: "1" },
+        via: "files_call_tool",
+        remoteName: "drive.items.get",
+        callId: "c3",
+      },
+      2,
+    ),
+    ent("tool_result", { callId: "c3", result: "ok" }, 3),
+  ]);
+  const call = messages.find((m) => m.role === "assistant");
+  assert.deepEqual(call && call.role === "assistant" ? call.content[0] : undefined, {
+    type: "toolCall",
+    id: "c3",
+    name: "files_call_tool",
+    arguments: { name: "drive.items.get", arguments: { id: "1" } },
+  });
 });

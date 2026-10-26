@@ -191,13 +191,11 @@ export function reconstructMessagesFromHistory(history: readonly SessionEntry[])
       const name = via ?? realName;
       const { tool: _t, callId: _c, ...recorded } = p;
       const args = (() => {
-        if (via) {
-          const prefix = typeof recorded.mcpServer === "string" ? `${recorded.mcpServer}_` : "";
+        if (via)
           return {
-            name: prefix && realName.startsWith(prefix) ? realName.slice(prefix.length) : realName,
+            name: typeof recorded.remoteName === "string" ? recorded.remoteName : realName,
             arguments: recorded.args ?? {},
           };
-        }
         if (typeof recorded.bytes !== "number" || typeof recorded.text === "string") return recorded;
         if (recorded.action !== "post" && recorded.action !== "reach" && recorded.action !== "edit") return recorded;
         const { bytes: _b, files: recordedFiles, ...rest } = recorded;

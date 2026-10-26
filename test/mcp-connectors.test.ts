@@ -292,6 +292,45 @@ test("many refused calls coalesce into at most one extra refresh", async () => {
   service.close();
 });
 
+test("a refresh that fails reading the registry doesn't stop later coalesced refreshes", async () => {
+  const backing = createMcpServerStore(createMemoryMap<McpServer>());
+  let failList = false;
+  const servers = {
+    ...backing,
+    list: async () => {
+      if (failList) {
+        failList = false;
+        throw new Error("database unavailable");
+      }
+      return backing.list();
+    },
+    onChange: () => () => {},
+  };
+  const { fetch: healthy } = fakeServerFetch();
+  let lists = 0;
+  const fetch: McpFetch = async (url, init) => {
+    if ((JSON.parse(init.body) as { method: string }).method === "tools/list") lists++;
+    return healthy(url, init);
+  };
+  await backing.put(server());
+  const service = createMcpToolService({ servers, fetchImpl: fetch, refreshIntervalMs: 3600_000 });
+  await service.refresh();
+  failList = true;
+  const failed = service.refresh();
+  const queued = service.refresh();
+  await assert.rejects(failed, /database unavailable/);
+  await queued;
+  await backing.put(server({ credentialScope: "per-user", credentialHost: "graph.microsoft.com" }));
+  const before = lists;
+  await Promise.all([service.refresh(), service.refresh()]);
+  assert.equal(lists - before, 2, "both the run and its coalesced follow-up list the server");
+  assert.ok(
+    service.toolDefs().every((d) => d.perUser),
+    "the follow-up applies the new config",
+  );
+  service.close();
+});
+
 test("disabled server's tools disappear and calls fail", async () => {
   const store = createMcpServerStore(createMemoryMap<McpServer>());
   const { fetch } = fakeServerFetch();

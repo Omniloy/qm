@@ -260,10 +260,12 @@ export function createMcpToolService(opts: {
       });
       return refreshing;
     }
-    refreshAgain ??= refreshing.then(() => {
-      refreshAgain = null;
-      return refresh();
-    });
+    refreshAgain ??= refreshing
+      .catch(() => undefined)
+      .then(() => {
+        refreshAgain = null;
+        return refresh();
+      });
     return refreshAgain;
   }
 
