@@ -4482,3 +4482,80 @@ test("Stop waits on the result write but not on acknowledging delivered mail", a
   assert.match(ret.content.map((c) => c.text).join("\n"), /child finished/);
   assert.deepEqual(acked, ["m1"]);
 });
+
+test("mail acknowledged in the background is still delivered once across parallel tools", async () => {
+  const tc = fakeToolContext();
+  const message = {
+    id: "mail",
+    senderId: "child",
+    recipientId: "parent",
+    actor: { id: "U1", type: "internal" as const },
+    audience: [],
+    text: "child finding",
+    createdAt: 1,
+  };
+  let pending = true;
+  const screened: string[] = [];
+  tc.sessionSyscalls = {
+    open: async () => ({ ok: false, message: "unused" }),
+    write: async () => ({ ok: false, message: "unused" }),
+    read: async () => ({ ok: false, message: "unused" }),
+    receive: async () => (pending ? [message] : []),
+    acknowledge: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      pending = false;
+    },
+  } as unknown as ToolContext["sessionSyscalls"];
+  tc.read = async () => ({ content: "workspace data", sourceScopeId: "org:default-org" });
+  const ref: ToolContextRef = {
+    current: tc,
+    scopeLabel: "personal:U1",
+    orgScopeId: "org:default-org",
+    emit: () => {},
+    screenToolResult: async ({ tool }) => {
+      screened.push(tool);
+      return { outcome: "allow" };
+    },
+  };
+  const read = createAgentTools(ref).find((tool) => tool.name === "files");
+  const results = await Promise.all([
+    call(read, { action: "read", path: "a.txt" }),
+    call(read, { action: "read", path: "b.txt" }),
+  ]);
+  assert.equal(results.filter((r) => JSON.stringify(r).includes("child finding")).length, 1);
+  assert.equal(screened.filter((tool) => tool === "session_message_mail").length, 1);
+});
+
+test("a reused call id keeps its own call payload when an earlier abandoned call is cancelled", async () => {
+  const stuck = Promise.withResolvers<{ stdout: string; stderr: string; code: number; timedOut: boolean }>();
+  const { controller, ref, results } = stoppableRef();
+  let calls = 0;
+  ref.current = {
+    ...fakeToolContext(),
+    execute: async (command: string) => {
+      if (++calls === 1) return stuck.promise;
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      return { stdout: `ran ${command}`, stderr: "", code: 0, timedOut: false };
+    },
+  } as unknown as ToolContext;
+  const contexts: unknown[] = [];
+  ref.screenToolResult = async ({ context }) => {
+    contexts.push(context);
+    return { outcome: "allow" };
+  };
+  const tool = createAgentTools(ref).find((t) => t.name === "execute");
+  const first = callWith(tool, "call_0", { command: "sleep", purpose: "first" });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  ref.abortSignal = new AbortController().signal;
+  const second = callWith(tool, "call_0", { command: "echo second", purpose: "second" });
+  controller.abort();
+  await assert.rejects(first, /\[cancelled\]/);
+  const ret = (await second) as { content: Array<{ text: string }> };
+  assert.match(ret.content[0]!.text, /ran echo second/);
+  assert.match(JSON.stringify(contexts), /echo second/);
+  assert.deepEqual(
+    results().map((r) => r.cancelled ?? false),
+    [true, false],
+  );
+  stuck.resolve({ stdout: "late", stderr: "", code: 0, timedOut: false });
+});

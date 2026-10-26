@@ -398,6 +398,11 @@ export function pauseStampAfterToolCall(
   };
 }
 
+interface ToolInvocation {
+  state?: "open" | "committed" | "abandoned";
+  payload?: Record<string, unknown>;
+}
+
 export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions): ToolDefinition[] {
   const processActions = {
     start_process: "start",
@@ -432,7 +437,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
   const bgTtlMin = Math.round(bgTtlSec / 60);
   const bgTtlMaxMin = Math.round(bgTtlMaxSec / 60);
   const capabilityTtlHours = Math.round(SANDBOX_CAPABILITY_TTL_MS / 3_600_000);
-  const invocation = new AsyncLocalStorage<{ state?: "open" | "committed" | "abandoned" }>();
+  const invocation = new AsyncLocalStorage<ToolInvocation>();
   const abandoned = (): boolean => invocation.getStore()?.state === "abandoned";
   const afterCommit = async <T>(recorded: Promise<T>, apply: () => void): Promise<T> => {
     const ret = await recorded;
@@ -463,14 +468,15 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     return true;
   };
 
-  const callPayloads = new Map<string, Record<string, unknown>>();
   const recordCall = async (callId: string, payload: Record<string, unknown>): Promise<void> => {
-    callPayloads.set(callId, payload);
+    const invoked = invocation.getStore();
+    if (invoked) invoked.payload = payload;
     await log("tool_call", { ...sandboxLog(payload), callId });
   };
 
   const resultQueue = createKeyedQueue();
   const quarantinedMessages = new Set<string>();
+  const deliveredMessages = new Set<string>();
   const recordResult = async <T extends { content: Array<{ type: string; text?: string }>; details?: unknown }>(
     callId: string,
     summary: Record<string, unknown>,
@@ -484,8 +490,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     resultQueue("result", async () => {
       if (abandoned()) return ret;
       const originalTool = String(summary.tool ?? "");
-      const call = callPayloads.get(callId);
-      callPayloads.delete(callId);
+      const call = invocation.getStore()?.payload;
       summary = sandboxLog(summary);
       const t = ret.content
         .filter((c) => c.type === "text")
@@ -580,7 +585,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       const delivered: string[] = [];
       const mailbox = await ref.current?.sessionSyscalls?.receive?.().catch(() => []);
       for (const message of mailbox ?? []) {
-        if (quarantinedMessages.has(message.id)) continue;
+        if (quarantinedMessages.has(message.id) || deliveredMessages.has(message.id)) continue;
         const messageTool = `session_message_${message.id}`;
         const screen = await ref
           .screenToolResult?.({
@@ -623,6 +628,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       );
       if (!committed) return ret;
       for (const apply of onCommit) await apply();
+      for (const id of delivered) deliveredMessages.add(id);
       if (delivered.length)
         void ref.current?.sessionSyscalls
           ?.acknowledge?.(delivered)
@@ -4336,16 +4342,11 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
   ];
   const mcpNames = new Set(mcpTools.map((t) => t.name));
   const active = opts?.readOnly ? tools.filter((t) => READ_ONLY_TOOL_NAMES.has(t.name) || mcpNames.has(t.name)) : tools;
-  const abandonCall = async (
-    invoked: { state?: "open" | "committed" | "abandoned" },
-    callId: string,
-    toolName: string,
-  ): Promise<boolean> => {
+  const abandonCall = async (invoked: ToolInvocation, callId: string, toolName: string): Promise<boolean> => {
     const state = invoked.state;
     if (state === "committed") return false;
     invoked.state = "abandoned";
-    const call = callPayloads.get(callId);
-    callPayloads.delete(callId);
+    const call = invoked.payload;
     if (state === "open")
       await writeEntry("tool_result", {
         ...sandboxLog({ tool: call?.tool ?? toolName, ...(call?.action !== undefined ? { action: call.action } : {}) }),
@@ -4360,7 +4361,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     ...tool,
     async execute(...args) {
       const [callId, , toolSignal] = args;
-      const invoked: { state?: "open" | "committed" | "abandoned" } = {};
+      const invoked: ToolInvocation = {};
       const work = invocation.run(invoked, () => Promise.resolve().then(() => tool.execute(...args)));
       const signals = [ref.stopSignal ?? ref.abortSignal, toolSignal].filter((s): s is AbortSignal => !!s);
       if (!signals.length) return work;
