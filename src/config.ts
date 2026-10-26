@@ -786,7 +786,7 @@ function sharedPlatformSuffixOf(domain: string): string | undefined {
   return SHARED_PLATFORM_SUFFIXES.find((suffix) => host === suffix || host.endsWith(`.${suffix}`));
 }
 
-const HOSTNAME_LABEL = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?";
+export const HOSTNAME_LABEL = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?";
 const HOSTNAME_RE = new RegExp(`^${HOSTNAME_LABEL}(?:\\.${HOSTNAME_LABEL})+$`);
 
 function deployAppsDomainEnv(env: NodeJS.ProcessEnv, deployProvider: string): string | undefined {

@@ -30,6 +30,13 @@ const deployment = {
   permission: "write",
   versions: [{ version: 2, createdAt: 123, commit: "abc123" }],
 };
+const subdomainDeployment = {
+  ...deployment,
+  id: "d2",
+  name: "maria-demo",
+  status: "running",
+  url: "https://maria-demo.apps.example.com/",
+};
 const core = createServer((req: IncomingMessage, res) => {
   let raw = "";
   req.on("data", (chunk) => (raw += chunk));
@@ -49,7 +56,7 @@ const core = createServer((req: IncomingMessage, res) => {
     } else if (req.url?.startsWith("/v1/deployments/d1/share")) {
       res.end(JSON.stringify({ grantees: [] }));
     } else if (req.method === "GET" && req.url?.startsWith("/v1/deployments?")) {
-      res.end(JSON.stringify({ deployments: [deployment] }));
+      res.end(JSON.stringify({ deployments: [deployment, subdomainDeployment] }));
     } else if (req.method === "GET") {
       res.end(JSON.stringify({ deployment }));
     } else {
@@ -100,6 +107,20 @@ test("deployment detail and restore bridge bind the signed-in principal", async 
     .slice(before)
     .find((call) => call.method === "POST" && isNoncedCoreCall(call.url, "/v1/deployments/status-page/restore"));
   assert.deepEqual(slugRestoreCall?.body, { principalId: "alice" });
+});
+
+test("app links open core's canonical URL and fall back to the same-origin proxy only when it is not absolute", async () => {
+  const list = await fetch(`${base}/api/deployments`, { headers });
+  assert.equal(list.status, 200);
+  const { deployments } = (await list.json()) as { deployments: Array<{ id: string; url?: string; webUrl: string }> };
+  assert.deepEqual(
+    deployments.map((d) => [d.id, d.webUrl]),
+    [
+      ["d1", "/deployments/d1/"],
+      ["d2", "https://maria-demo.apps.example.com/"],
+    ],
+  );
+  assert.equal(deployments[1]!.url, "https://maria-demo.apps.example.com/");
 });
 
 test("deployment sharing uses the signed-in capability and drops caller identity fields", async () => {

@@ -10,7 +10,7 @@ import {
 } from "node:http2";
 import { spawn } from "node:child_process";
 import { basename, dirname } from "node:path";
-import { deploymentView, type App, type DeployInput, type RedeployInput } from "../app.ts";
+import { type App, type DeployInput, type RedeployInput } from "../app.ts";
 import { errMessage } from "../../util/errors.ts";
 import { canonicalPayload, escapeHtml, sendJson, verifyOrReject } from "../http.ts";
 import { mintPortalIdentity, verifyPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../auth/portal-identity.ts";
@@ -25,6 +25,7 @@ import { principalDestination } from "../../reach/reach.ts";
 import { FRAME_SESSION_COOKIE, portalSession, portalSessionFrom } from "../../deploy/viewer-session.ts";
 import { EMBED_ANCESTORS_HINT, parseEmbedAncestors } from "../../deploy/embed-ancestors.ts";
 import { proxyHeaders } from "../../util/http-proxy.ts";
+import { appSubdomainOrigin, isAppHostLabel } from "../../deploy/deploy-store.ts";
 
 function deploymentProxyAgent(port?: number): { agent?: SocksProxyAgent } {
   if (port === undefined) return {};
@@ -92,10 +93,10 @@ async function proxyDeployment(ctx: BaseCtx): Promise<void> {
     String(req.headers["sec-fetch-dest"] ?? "") === "document"
   ) {
     const d = await app.getDeployment(id).catch(() => null);
-    const slug = d?.name ?? d?.id;
-    if (d && slug && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(slug)) {
+    const origin = d ? appSubdomainOrigin(d, deps.deployAppsDomain) : undefined;
+    if (origin) {
       res.writeHead(302, {
-        location: `https://${slug}.${deps.deployAppsDomain}${subPath}${url.search}`,
+        location: `${origin}${subPath}${url.search}`,
         "cache-control": "no-store",
       });
       res.end();
@@ -812,7 +813,7 @@ export async function proxyDeploymentSubdomain(ctx: BaseCtx): Promise<boolean> {
     return true;
   }
   const slug = rawHost.slice(0, -suffix.length);
-  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(slug)) {
+  if (!isAppHostLabel(slug)) {
     sendJson(res, 404, { error: "not_found" });
     return true;
   }
@@ -1269,7 +1270,7 @@ async function createDeployment(ctx: ApiCtx): Promise<void> {
   const principalId = ctx.capability?.actorId ?? ctx.actor?.p;
   if (principalId && body.createdBy !== principalId) return sendJson(res, 403, { error: "forbidden" });
   try {
-    return sendJson(res, 200, { deployment: deploymentView(await app.deploy(body)) });
+    return sendJson(res, 200, { deployment: app.deploymentView(await app.deploy(body)) });
   } catch (e) {
     return sendJson(res, 400, { error: "deploy_failed", message: errMessage(e) });
   }
@@ -1278,7 +1279,8 @@ async function createDeployment(ctx: ApiCtx): Promise<void> {
 async function listDeployments(ctx: ApiCtx): Promise<void> {
   const { res, app, url, secret, capability, actor } = ctx;
   const principalId = capability?.actorId ?? actor?.p ?? url.searchParams.get("principalId");
-  if (!principalId) return sendJson(res, 200, { deployments: (await app.listDeployments()).map(deploymentView) });
+  if (!principalId)
+    return sendJson(res, 200, { deployments: (await app.listDeployments()).map((d) => app.deploymentView(d)) });
   const visible = await app.listDeploymentsForViewer(principalId);
   const baseUrl = gitUrlBase(ctx);
   const deployments = await Promise.all(
@@ -1369,7 +1371,7 @@ export async function getDeployment(ctx: ApiCtx): Promise<void> {
     deployment = (await app.listDeploymentsForViewer(principalId)).find((d) => d.id === id || d.name === id);
   } else {
     const stored = (await app.listDeployments()).find((d) => d.id === id || d.name === id);
-    deployment = stored ? deploymentView(stored) : undefined;
+    deployment = stored ? app.deploymentView(stored) : undefined;
   }
   if (!deployment) return sendJson(res, 404, { error: "not_found" });
   if (!principalId || !secret) return sendJson(res, 200, { deployment });
@@ -1406,7 +1408,7 @@ async function redeployDeployment(ctx: ApiCtx): Promise<void> {
     });
   }
   try {
-    return sendJson(res, 200, { deployment: deploymentView(await app.redeploy(id, body)) });
+    return sendJson(res, 200, { deployment: app.deploymentView(await app.redeploy(id, body)) });
   } catch (e) {
     return sendJson(res, 400, { error: "deploy_failed", message: errMessage(e) });
   }
@@ -1443,7 +1445,7 @@ export async function restoreDeployment(ctx: ApiCtx): Promise<void> {
       ctx.actor?.p ??
       (isObj(body) && typeof body.principalId === "string" ? body.principalId : undefined);
     return sendJson(res, 200, {
-      deployment: { ...deploymentView(await app.restoreDeployment(id, principalId)), permission: "write" },
+      deployment: { ...app.deploymentView(await app.restoreDeployment(id, principalId)), permission: "write" },
     });
   } catch (e) {
     return sendJson(res, 400, { error: "restore_failed", message: errMessage(e) });
@@ -1460,7 +1462,7 @@ export async function renameDeployment(ctx: ApiCtx): Promise<void> {
   if (typeof b.name !== "string")
     return sendJson(res, 400, { error: "bad_request", message: "name (string) required" });
   try {
-    return sendJson(res, 200, { deployment: await app.renameDeployment(id, b.name) });
+    return sendJson(res, 200, { deployment: app.deploymentView(await app.renameDeployment(id, b.name)) });
   } catch (e) {
     return sendJson(res, 400, { error: "rename_failed", message: errMessage(e) });
   }
@@ -1476,7 +1478,9 @@ export async function setDeploymentDisplayName(ctx: ApiCtx): Promise<void> {
   if (typeof b.displayName !== "string")
     return sendJson(res, 400, { error: "bad_request", message: "displayName (string) required" });
   try {
-    return sendJson(res, 200, { deployment: await app.setDeploymentDisplayName(id, b.displayName) });
+    return sendJson(res, 200, {
+      deployment: app.deploymentView(await app.setDeploymentDisplayName(id, b.displayName)),
+    });
   } catch (e) {
     return sendJson(res, 400, { error: "display_name_failed", message: errMessage(e) });
   }
@@ -1492,7 +1496,7 @@ async function setDeploymentEmbedAncestors(ctx: ApiCtx): Promise<void> {
   if (!ancestors)
     return sendJson(res, 400, { error: "bad_request", message: `embedAncestors (${EMBED_ANCESTORS_HINT}) required` });
   try {
-    return sendJson(res, 200, { deployment: deploymentView(await app.setDeploymentEmbedAncestors(id, ancestors)) });
+    return sendJson(res, 200, { deployment: app.deploymentView(await app.setDeploymentEmbedAncestors(id, ancestors)) });
   } catch (e) {
     return sendJson(res, 400, { error: "embed_ancestors_failed", message: errMessage(e) });
   }
@@ -1508,7 +1512,7 @@ async function setDeploymentAlwaysOn(ctx: ApiCtx): Promise<void> {
   if (typeof b.alwaysOn !== "boolean")
     return sendJson(res, 400, { error: "bad_request", message: "alwaysOn (boolean) required" });
   try {
-    return sendJson(res, 200, { deployment: deploymentView(await app.setDeploymentAlwaysOn(id, b.alwaysOn)) });
+    return sendJson(res, 200, { deployment: app.deploymentView(await app.setDeploymentAlwaysOn(id, b.alwaysOn)) });
   } catch (e) {
     return sendJson(res, 400, { error: "always_on_failed", message: errMessage(e) });
   }

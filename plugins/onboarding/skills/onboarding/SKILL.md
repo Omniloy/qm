@@ -151,7 +151,7 @@ menu. Use:
 
 Confirm exact behavior and timing before creating anything. List existing crons first and
 patch a match instead of creating a duplicate. Build and exercise an app locally before
-publishing it. Persist every created cron ID and published `/d/` link.
+publishing it. Persist every created cron ID and published app link.
 
 Finish with a short confirmation of what connected, what you learned, and what is now
 running. Tell them they can change any of it later.

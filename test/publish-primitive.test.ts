@@ -4,6 +4,7 @@ import { mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createToolContext } from "../src/tools/primitives.ts";
+import { trimRelDir } from "../src/deploy/deploy-fs.ts";
 import { createDeployStore, type DeployStore, type Deployment } from "../src/deploy/deploy-store.ts";
 import { createDeployService, type DeployService, type DeployOrUpdateInput } from "../src/deploy/deploy-service.ts";
 import { createAclStore, type AclStore } from "../src/acl/acl-store.ts";
@@ -11,9 +12,9 @@ import { createMemoryConfigStore } from "../src/resolution/config-store.ts";
 import type { ToolLedger } from "../src/runs/tool-ledger.ts";
 import { CapabilityUnsupportedError } from "../src/sandbox/sandbox.ts";
 import type { AgentComputerExportEntry, Sandbox, SandboxHandle } from "../src/sandbox/sandbox.ts";
-import { scopeId } from "../src/types.ts";
+import { scopeId, type CommandPolicy } from "../src/types.ts";
 
-function svc() {
+function svc(links: { deployAppsDomain?: string; publicWebUrl?: string } = {}) {
   const deployStore: DeployStore = createDeployStore();
   const acl: AclStore = createAclStore();
   let starts = 0;
@@ -30,6 +31,7 @@ function svc() {
     auditLog: { record() {}, events: async () => [], tail: async () => [] },
     acl,
     deployDir: mkdtempSync(join(tmpdir(), "pub-")),
+    ...links,
   });
   return {
     deploy,
@@ -49,16 +51,21 @@ interface CtxOpts {
   runId?: string;
   rw?: boolean;
   splitEnv?: Record<string, string>;
+  commandPolicy?: CommandPolicy;
+  scopedCommand?: (command: string) => string;
 }
+
+const NOT_A_GIT_CHECKOUT = { stdout: "", stderr: "not a git repository", code: 128, timedOut: false };
 
 function fileSandbox(files: Array<{ path: string; data: Uint8Array }>): Sandbox {
   const under = (dir: string) => {
-    const d = (dir ?? "").replace(/^\.?\/+/, "").replace(/\/+$/, "");
+    const d = trimRelDir(dir);
     return files.filter((f) => !d || d === "." || f.path === d || f.path.startsWith(`${d}/`));
   };
   return {
     listDir: async (_h: SandboxHandle, dir: string) => under(dir).map((f) => f.path),
     readFileBytes: async (_h: SandboxHandle, p: string) => files.find((f) => f.path === p)?.data ?? null,
+    run: async () => NOT_A_GIT_CHECKOUT,
     exportFiles: async (_h: SandboxHandle, opts?: { includePaths?: readonly string[] }) => {
       const dir = opts?.includePaths?.[0] ?? "";
       return under(dir).map((f) => ({ area: "workspace" as const, path: f.path, data: f.data }));
@@ -73,7 +80,7 @@ function ctx(deploy: DeployService, opts: CtxOpts = {}) {
     sandbox,
     provision: opts.provision ?? (async () => ({}) as SandboxHandle),
     layers: opts.rw === false ? [] : [{ scopeId: scopeId("personal", "U1"), mountPath: "", mode: "rw" }],
-    commandPolicy: () => ({}) as never,
+    commandPolicy: () => opts.commandPolicy ?? { mode: "denylist", rules: [] },
     authorizeCommand: () => false,
     grantedHandles: [],
     workspace: {} as never,
@@ -82,6 +89,7 @@ function ctx(deploy: DeployService, opts: CtxOpts = {}) {
     createdBy: "U1",
     ...(opts.ledger ? { ledger: opts.ledger } : {}),
     ...(opts.runId ? { runId: opts.runId } : {}),
+    ...(opts.scopedCommand ? { scopedCommand: opts.scopedCommand } : {}),
     ...(opts.splitEnv
       ? { actingSlackUserId: "U1", layerAuth: { credentialPaths: [], splitEnvTemplates: [opts.splitEnv] } }
       : {}),
@@ -398,7 +406,7 @@ test("publish on a sandbox WITHOUT exportFiles (AWS) still collects the tree, an
   const awsLike = (readFor: (p: string) => Uint8Array | null): Sandbox =>
     ({
       listDir: async (_h: SandboxHandle, dir: string) => {
-        const d = (dir ?? "").replace(/^\.?\/+/, "").replace(/\/+$/, "");
+        const d = trimRelDir(dir);
         return files.filter((f) => !d || d === "." || f.path.startsWith(`${d}/`)).map((f) => f.path);
       },
       readFileBytes: async (_h: SandboxHandle, p: string) => readFor(p),
@@ -545,6 +553,7 @@ test("publish never copies resident credentials into the deployment", async () =
       } satisfies Deployment;
     },
     deploymentGrantees: async () => [],
+    appUrl: () => "/d/authed/",
   } as unknown as DeployService;
 
   const tc = createToolContext({
@@ -572,6 +581,7 @@ function exportSandbox(entries: AgentComputerExportEntry[], workspace = appFile(
   return {
     listDir: async () => workspace.map((f) => f.path),
     readFileBytes: async (_h: SandboxHandle, p: string) => workspace.find((f) => f.path === p)?.data ?? null,
+    run: async () => NOT_A_GIT_CHECKOUT,
     exportFiles: async (
       _h: SandboxHandle,
       opts?: {
@@ -607,6 +617,7 @@ function spyDeploy(): { deploy: DeployService; captured: () => DeployOrUpdateInp
       } satisfies Deployment;
     },
     deploymentGrantees: async () => [],
+    appUrl: () => "/d/authed/",
   } as unknown as DeployService;
   return { deploy, captured: () => captured };
 }
@@ -758,4 +769,61 @@ test("Stop after the deploy starts leaves the deploy to finish under its lock", 
   const r = await pending;
   assert.equal(r.version, 1);
   assert.ok(await deployStore.getByName("carries-on"));
+});
+
+function gitSandbox(files: Array<{ path: string; data: Uint8Array }>, run: Sandbox["run"]): Sandbox {
+  return Object.assign(fileSandbox(files), { run });
+}
+
+const gitProbeOutput = (stdout: string) => ({ stdout, stderr: "", code: 0, timedOut: false });
+
+test("publish links the app on its own subdomain and records the git source of the published dir", async () => {
+  const s = svc({ deployAppsDomain: "apps.example.com", publicWebUrl: "https://qm.example.com" });
+  const commands: string[] = [];
+  const sandbox = gitSandbox([{ path: "app/server.js", data: bytes("listen") }], async (_h, command) => {
+    commands.push(command);
+    return gitProbeOutput(
+      "remote=https://x-access-token:ghs_secret@github.com/Omniloy/maria-demo.git\nbranch=main\ncommit=1a2b3c4\n",
+    );
+  });
+  const r = await ctx(s.deploy, { sandbox, scopedCommand: (command) => `unset AWS_ACCESS_KEY_ID; ${command}` }).publish(
+    { dir: "app/", entrypoint: "node server.js", name: "maria-demo" },
+  );
+
+  assert.equal(r.url, "https://maria-demo.apps.example.com/");
+  assert.equal(r.entrypoint, "node server.js");
+  assert.deepEqual(r.source, { dir: "app", repo: "Omniloy/maria-demo", branch: "main", commit: "1a2b3c4" });
+  assert.equal(commands.length, 1);
+  assert.match(commands[0]!, /^unset AWS_ACCESS_KEY_ID; cd -- 'app' && /, "the probe runs through the scoped wrapper");
+  assert.doesNotMatch(JSON.stringify(r), /ghs_secret/);
+  const d = (await s.deployStore.getByName("maria-demo"))!;
+  assert.deepEqual((await s.deployStore.versionOf(d.id, 1))!.source, r.source, "the source is kept on the version");
+});
+
+test("publish falls back to the /d/ link and still succeeds when the git probe fails", async () => {
+  const s = svc({ publicWebUrl: "https://qm.example.com/" });
+  const sandbox = gitSandbox(appFile(), async () => {
+    throw new Error("exec channel closed");
+  });
+  const r = await ctx(s.deploy, { sandbox }).publish({ entrypoint: "node server.js", name: "plain" });
+
+  assert.equal(r.url, "https://qm.example.com/d/plain/");
+  assert.deepEqual(r.source, { dir: "." });
+});
+
+test("the git probe obeys command policy: a denied probe never runs and the publish still succeeds", async () => {
+  const s = svc();
+  let ran = 0;
+  const sandbox = gitSandbox(appFile(), async () => {
+    ran++;
+    return gitProbeOutput("remote=\nbranch=main\ncommit=1a2b3c4\n");
+  });
+  const r = await ctx(s.deploy, {
+    sandbox,
+    commandPolicy: { mode: "denylist", rules: [{ pattern: "\\bgit\\b", decision: "deny" }] },
+  }).publish({ entrypoint: "node server.js", name: "no-git" });
+
+  assert.equal(ran, 0);
+  assert.equal(r.version, 1);
+  assert.deepEqual(r.source, { dir: "." });
 });

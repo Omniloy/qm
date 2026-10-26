@@ -71,7 +71,7 @@ assumptions that matter.
 1. Render it — headless Chromium, the real page, at the sizes it will be seen.
 2. Check the things that actually break: content present, no console errors, links and
    layout intact, contrast legible, keyboard focus visible, reduced-motion honored.
-3. Fix and re-render. Only then hand over the path or the `/d/<name>/` link.
+3. Fix and re-render. Only then hand over the path or the published app's link.
 
 ## Boundaries
 

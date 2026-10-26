@@ -287,6 +287,14 @@ function sseEvent(res: ServerResponse, event: string, data: unknown): void {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
+function withDeploymentWebUrl(d: Record<string, unknown>): Record<string, unknown> {
+  const webUrl =
+    typeof d.url === "string" && /^https?:\/\//i.test(d.url)
+      ? d.url
+      : `/deployments/${encodeURIComponent(String(d.id))}/`;
+  return { ...d, webUrl };
+}
+
 function mayManageDeployment(d: { permission?: unknown }): boolean {
   return d.permission === "write";
 }
@@ -2529,7 +2537,7 @@ const apiRoutes: readonly WebRoute[] = [
         return json(res, 502, { error: "bad_core_response" });
       }
       return json(res, 200, {
-        deployments: deployments.map((d) => ({ ...d, webUrl: `/deployments/${encodeURIComponent(String(d.id))}/` })),
+        deployments: deployments.map(withDeploymentWebUrl),
       });
     },
   },
@@ -2549,10 +2557,7 @@ const apiRoutes: readonly WebRoute[] = [
         const parsed = JSON.parse(r.text) as { deployment?: Record<string, unknown> };
         if (!parsed.deployment) return json(res, 502, { error: "bad_core_response" });
         return json(res, 200, {
-          deployment: {
-            ...parsed.deployment,
-            webUrl: `/deployments/${encodeURIComponent(String(parsed.deployment.id))}/`,
-          },
+          deployment: withDeploymentWebUrl(parsed.deployment),
         });
       } catch {
         return json(res, 502, { error: "bad_core_response" });

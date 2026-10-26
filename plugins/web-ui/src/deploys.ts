@@ -25,8 +25,10 @@ import {
   deploymentInScope,
   deploymentListRefreshCanRedraw,
   deploymentListAfterRestoreRefresh,
+  deploymentHref,
   deploymentLatestAt,
-  deploymentSlug,
+  deploymentLinkLabel,
+  deploymentSlugAffixes,
   deploymentTab,
   deploymentTabEmptyMessage,
   deploymentTitle,
@@ -156,7 +158,7 @@ function deploymentRow(d: DeploymentView): TemplateResult {
         running && d.webUrl
           ? html`<a
               class="deploy-row-main"
-              href=${withBase(d.webUrl)}
+              href=${deploymentHref(d.webUrl, withBase)}
               target="_blank"
               rel="noreferrer"
               aria-label=${`Open ${deploymentTitle(d)}`}
@@ -284,11 +286,11 @@ function drawDeployDetail(d: DeploymentView, loading = false): void {
               <h2 dir="auto">${deploymentTitle(d)}</h2>
               <span class="deploy-status ${statusClass(d)}"><span></span>${statusLabel(d)}</span>
             </div>
-            <div class="deploy-detail-url">/d/${deploymentSlug(d)}/</div>
+            <div class="deploy-detail-url">${deploymentLinkLabel(d)}</div>
           </div>
           <div class="actions">
-            ${running && d.webUrl ? html`<a class="btn primary" href=${withBase(d.webUrl)} target="_blank" rel="noreferrer">Open app ${icon(ExternalLink, 14)}</a>` : nothing}
-            ${d.webUrl ? html`<button class="btn" type="button" @click=${(event: Event) => void copyText(new URL(withBase(d.webUrl!), window.location.href).href, event.currentTarget as HTMLButtonElement)}>${icon(Copy, 14)}<span>Copy URL</span></button>` : nothing}
+            ${running && d.webUrl ? html`<a class="btn primary" href=${deploymentHref(d.webUrl, withBase)} target="_blank" rel="noreferrer">Open app ${icon(ExternalLink, 14)}</a>` : nothing}
+            ${d.webUrl ? html`<button class="btn" type="button" @click=${(event: Event) => void copyText(new URL(deploymentHref(d.webUrl!, withBase), window.location.href).href, event.currentTarget as HTMLButtonElement)}>${icon(Copy, 14)}<span>Copy URL</span></button>` : nothing}
           </div>
         </div>
         ${loading ? html`<div class="hint">Loading authoritative app details…</div>` : nothing}
@@ -318,7 +320,7 @@ function drawDeployDetail(d: DeploymentView, loading = false): void {
                 </div>
                 <div class="deploy-setting-row">
                   <div><strong>App URL</strong><span>Changes the app URL. Existing links do not redirect.</span></div>
-                  ${editingSlug ? deployEditForm(d, "name") : html`<div class="deploy-setting-value"><code>/d/${deploymentSlug(d)}/</code><button class="btn" type="button" @click=${() => startEditDeploy(d, "name")}>Change</button></div>`}
+                  ${editingSlug ? deployEditForm(d, "name") : html`<div class="deploy-setting-value"><code>${deploymentLinkLabel(d)}</code><button class="btn" type="button" @click=${() => startEditDeploy(d, "name")}>Change</button></div>`}
                 </div>
                 <div class="deploy-setting-row">
                   <div>
@@ -430,6 +432,7 @@ function embedAncestorsSummary(d: DeploymentView): TemplateResult {
 function deployEditForm(d: DeploymentView, field: DeployEditField): TemplateResult {
   if (field === "embedAncestors") return deployEmbedForm(d);
   const slug = field === "name";
+  const { prefix, suffix } = deploymentSlugAffixes(d);
   return html`
     <form
       class="deploy-edit-form"
@@ -440,7 +443,7 @@ function deployEditForm(d: DeploymentView, field: DeployEditField): TemplateResu
     >
       <label>
         <span class="deploy-slug-input ${slug ? "" : "name"}"
-          >${slug ? html`<span>/d/</span>` : nothing}<input
+          >${slug && prefix ? html`<span>${prefix}</span>` : nothing}<input
             class="deploy-edit-input"
             aria-label=${slug ? "URL slug" : "Display name"}
             ?disabled=${deploySaving}
@@ -449,7 +452,7 @@ function deployEditForm(d: DeploymentView, field: DeployEditField): TemplateResu
               deployDraft = (event.currentTarget as HTMLInputElement).value;
             }}
             @keydown=${(event: KeyboardEvent) => event.key === "Escape" && cancelEditDeploy()}
-          />${slug ? html`<span>/</span>` : nothing}</span
+          />${slug ? html`<span>${suffix}</span>` : nothing}</span
         >
       </label>
       <button class="icon-btn" type="submit" aria-label="Save" ${tip("Save")} ?disabled=${deploySaving}>

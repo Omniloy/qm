@@ -12,6 +12,7 @@ import type { ClientToolDeclaration, CronFireLogEntry, EntryType, ScopeId } from
 import type { ToolContext, PublishInput, PublishAudienceDescriptor } from "../tools/primitives.ts";
 import type { GapWork } from "../sessions/session-store.ts";
 import { NeedsApproval, CommandDenied } from "../tools/primitives.ts";
+import { describePublishSource } from "../deploy/publish-source.ts";
 import { classifyScopeLabel } from "../classify/scope-classifier.ts";
 import type { McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
 import { splitToScope } from "../api/artifact-share.ts";
@@ -1234,9 +1235,10 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       "publication-time grants. `public: true` makes the app reachable without sign-in; it is never the default. " +
       "Use apps action share for subsequent grants. Share the full absolute URL " +
       "returned by apps action publish so it works in Slack and other surfaces. Use `name` for a friendly, " +
-      "stable link /d/<name>/; the app is served under that path prefix, so every URL it emits — fetch " +
-      "paths, form actions, script/style/image src — must be relative (`api/count`, not `/api/count`), " +
-      "or the browser will request it from the portal root and get a 404; " +
+      "stable link: the app's own subdomain (https://<name>.<apps domain>/) when the instance has an apps " +
+      "domain, otherwise the path prefix /d/<name>/. Because an app may be served under that path prefix, every " +
+      "URL it emits — fetch paths, form actions, script/style/image src — must be relative (`api/count`, not " +
+      "`/api/count`), or the browser will request it from the portal root and get a 404; " +
       "`renameFrom` to rename; `rollbackTo` to flip back to an earlier version. " +
       "Egress is open, " +
       "so bake data in or have the app fetch it. When the runtime sets $DATA_DIR, state the app " +
@@ -1276,7 +1278,8 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       ),
       name: Type.Optional(
         Type.String({
-          description: "Friendly, globally-unique handle → link is /d/<name>/. Lowercase letters/digits/hyphens.",
+          description:
+            "Friendly, globally-unique handle that names the app's link (its own subdomain when the instance has an apps domain, otherwise /d/<name>/). Lowercase letters/digits/hyphens.",
         }),
       ),
       renameFrom: Type.Optional(
@@ -1326,6 +1329,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           ref.stopSignal ?? ref.abortSignal,
         );
         const reach = describePublishAudience(r.audience);
+        const sourceLine = describePublishSource(r.source, r.entrypoint);
         const alwaysOnNote = r.alwaysOn ? "\nAlways-on: the app is kept warm — no idle cold starts." : "";
         const embedNote = r.embedAncestors?.length ? `\nEmbeddable by: ${r.embedAncestors.join(", ")}` : "";
         const publicNote = r.public ? "\nAccess: public — anyone with the link can open it without signing in." : "";
@@ -1341,11 +1345,13 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
             name: r.name,
             version: r.version,
             url: r.url,
+            ...(r.entrypoint ? { entrypoint: r.entrypoint } : {}),
+            ...(r.source ? { source: r.source } : {}),
             ...(r.audience ? { audience: r.audience } : {}),
             ...(r.dataDir ? { dataDir: r.dataDir } : {}),
           },
           text(
-            `Published ${r.name ?? r.id} (v${r.version}) → ${r.url}\n${reach}${publicNote}${alwaysOnNote}${embedNote}${dataNote}`,
+            `Published ${r.name ?? r.id} v${r.version} → ${r.url}\n${sourceLine ? `${sourceLine}\n` : ""}${reach}${publicNote}${alwaysOnNote}${embedNote}${dataNote}`,
           ),
         );
       } catch (e) {
