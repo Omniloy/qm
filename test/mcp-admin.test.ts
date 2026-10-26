@@ -105,26 +105,17 @@ test("MCP admin validates and preserves credential scope, without returning secr
   assert.equal((await store.get("crm"))?.credentialAccountType, undefined);
 });
 
-test("per-user MCP servers accept plain HTTP only on the hostnames the operator lists", async (t) => {
+test("per-user MCP servers need HTTPS outside loopback, and can opt into discovery", async (t) => {
   const store = createMcpServerStore(createMemoryMap<McpServer>());
-  const { put } = await serveAdmin(t, { mcpServers: store, mcpPerUserHttpHosts: ["ms365-mcp"] });
-  const perUser = (url: string) =>
-    put("microsoft-365", { url, validate: false, credentialScope: "per-user", credentialHost: "graph.microsoft.com" });
-  assert.equal((await perUser("http://ms365-mcp:3000")).status, 200);
-  assert.equal((await store.get("microsoft-365"))?.url, "http://ms365-mcp:3000");
-  assert.equal((await store.get("microsoft-365"))?.toolMode, undefined, "full listing stays the default");
-  const discovery = await put("microsoft-365", {
-    url: "http://ms365-mcp:3000",
-    validate: false,
-    credentialScope: "per-user",
-    credentialHost: "graph.microsoft.com",
-    toolMode: "discovery",
-  });
-  assert.equal(discovery.status, 200);
-  assert.equal((await store.get("microsoft-365"))?.toolMode, "discovery");
-  assert.equal((await put("microsoft-365", { url: "http://ms365-mcp:3000", toolMode: "lazy" })).status, 400);
-  assert.equal((await perUser("http://ms365-mcp.evil.example:3000")).status, 400);
-  assert.equal((await perUser("http://other-sidecar:3000")).status, 400);
+  const { put } = await serveAdmin(t, { mcpServers: store });
+  const perUser = (url: string, extra: object = {}) =>
+    put("crm", { url, validate: false, credentialScope: "per-user", credentialHost: "accounts.example.com", ...extra });
+  assert.equal((await perUser("http://crm-sidecar:3000")).status, 400);
+  assert.equal((await perUser("http://127.0.0.1:3000")).status, 200);
+  assert.equal((await store.get("crm"))?.toolMode, undefined, "full listing stays the default");
+  assert.equal((await perUser("https://crm.example.com/mcp", { toolMode: "discovery" })).status, 200);
+  assert.equal((await store.get("crm"))?.toolMode, "discovery");
+  assert.equal((await put("crm", { url: "https://crm.example.com/mcp", toolMode: "lazy" })).status, 400);
   assert.equal(
     (await put("shared", { url: "http://other-sidecar:3000", validate: false, credentialScope: "shared" })).status,
     200,

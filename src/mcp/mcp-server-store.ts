@@ -27,6 +27,7 @@ export interface McpServer {
   resolvedIconCheckedAt?: number;
   readOnly: boolean;
   enabled: boolean;
+  managed?: true;
   updatedAt: number;
   updatedBy: string;
 }
@@ -71,7 +72,10 @@ export interface McpServerStore {
   onChange(listener: () => void): () => void;
 }
 
-export function createMcpServerStore(backing: DurableMap<McpServer>): McpServerStore {
+export function createMcpServerStore(
+  backing: DurableMap<McpServer>,
+  managed: () => Promise<McpServer[]> = async () => [],
+): McpServerStore {
   const listeners = new Set<() => void>();
   const emit = () => {
     for (const l of listeners) l();
@@ -79,11 +83,14 @@ export function createMcpServerStore(backing: DurableMap<McpServer>): McpServerS
   const clean = (server: McpServer): McpServer => ({ ...server, name: singleLineName(server.name) || server.id });
   return {
     async list() {
-      const entries = await backing.entries();
-      return entries.map(([, v]) => clean(v)).sort((a, b) => a.id.localeCompare(b.id));
+      const [entries, fixed] = await Promise.all([backing.entries(), managed()]);
+      const ids = new Set(fixed.map((server) => server.id));
+      return [...fixed, ...entries.map(([, v]) => v).filter((server) => !ids.has(server.id))]
+        .map(clean)
+        .sort((a, b) => a.id.localeCompare(b.id));
     },
     get: async (id) => {
-      const server = await backing.get(id);
+      const server = (await managed()).find((candidate) => candidate.id === id) ?? (await backing.get(id));
       return server ? clean(server) : null;
     },
     put: async (server) => {

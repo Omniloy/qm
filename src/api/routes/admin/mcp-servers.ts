@@ -34,6 +34,13 @@ function parseScopes(value: unknown): string[] | undefined | null {
   return scopes.length ? scopes : undefined;
 }
 
+function sendManaged(ctx: ApiCtx) {
+  return sendJson(ctx.res, 409, {
+    error: "managed",
+    message: "this MCP server is set up by the deployment from its OAuth app and can't be edited or removed here",
+  });
+}
+
 async function actor(ctx: ApiCtx) {
   const scope = orgScope(ctx.deps);
   return authorizeAdmin(ctx, scope);
@@ -120,6 +127,8 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
       message: "id must be 2-40 chars: lowercase letters, digits, hyphens, starting with a letter",
     });
   }
+  const existing = await ctx.deps.mcpServers.get(id);
+  if (existing?.managed) return sendManaged(ctx);
   const b = ctx.body as Partial<Omit<McpServer, "oauthScopes" | "iconUrl">> & {
     iconUrl?: unknown;
     validate?: boolean;
@@ -148,7 +157,6 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
   if (!AUTH_MODES.includes(auth)) {
     return sendJson(ctx.res, 400, { error: "bad_request", message: `auth must be one of ${AUTH_MODES.join(", ")}` });
   }
-  const existing = await ctx.deps.mcpServers.get(id);
   const oauth = auth === "oauth";
   const inheritedScope = existing?.auth === "oauth" ? undefined : existing?.credentialScope;
   const credentialScope = oauth ? "per-user" : (b.credentialScope ?? inheritedScope ?? "shared");
@@ -181,11 +189,11 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
   if (
     credentialScope === "per-user" &&
     parsed.protocol !== "https:" &&
-    !["localhost", "127.0.0.1", "[::1]", ...(ctx.deps.mcpPerUserHttpHosts ?? [])].includes(parsed.hostname)
+    !["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname)
   ) {
     return sendJson(ctx.res, 400, {
       error: "bad_request",
-      message: "per-user credentials require HTTPS (except loopback and MCP_PER_USER_HTTP_HOSTS)",
+      message: "per-user credentials require HTTPS (except loopback)",
     });
   }
   const iconUrl = b.iconUrl === undefined ? existing?.iconUrl : parseMcpIconUrl(b.iconUrl);
@@ -303,7 +311,9 @@ export async function deleteMcpServer(ctx: ApiCtx): Promise<void> {
   if (!authorized) return;
   if (!ctx.deps.mcpServers) return sendJson(ctx.res, 404, { error: "not_found" });
   const id = ctx.params.id ?? "";
-  if (!(await ctx.deps.mcpServers.get(id))) return sendJson(ctx.res, 404, { error: "not_found" });
+  const existing = await ctx.deps.mcpServers.get(id);
+  if (!existing) return sendJson(ctx.res, 404, { error: "not_found" });
+  if (existing.managed) return sendManaged(ctx);
   await ctx.deps.mcpServers.delete(id);
   await purgeMcpOAuth(ctx.deps, id);
   audit(ctx.deps, {

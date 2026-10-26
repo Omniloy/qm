@@ -199,7 +199,7 @@ test("MCP servers and Composio are managed from the Connectors view", async () =
   try {
     dom.window.eval(
       `ui.configure({orgScope:()=>"org:test",connectorName:x=>x,fmtTime:x=>x,api:async(method,path,body)=>{window.calls.push({method,path,body});
-        if(path==="/api/mcp-servers")return{ok:true,data:{servers:[{id:"linear",name:"Linear",url:"https://mcp.linear.app/mcp",icon:"https://linear.app/favicon.ico",auth:"bearer",hasBearerToken:true,credentialScope:"shared",readOnly:false,enabled:true}],tools:[{name:"linear_list",serverId:"linear"}]}};
+        if(path==="/api/mcp-servers")return{ok:true,data:{servers:[{id:"linear",name:"Linear",url:"https://mcp.linear.app/mcp",icon:"https://linear.app/favicon.ico",auth:"bearer",hasBearerToken:true,credentialScope:"shared",readOnly:false,enabled:true},{id:"microsoft-365",name:"Microsoft 365",url:"http://ms365-mcp:3000/mcp",auth:"none",credentialScope:"per-user",credentialHost:"graph.microsoft.com",toolMode:"discovery",readOnly:false,enabled:true,managed:true,updatedBy:"deployment"}],tools:[{name:"linear_list",serverId:"linear"}]}};
         if(path==="/api/connector-catalog")return{ok:true,data:{catalog:[]}};
         if(path.includes("?view=connectors"))return{ok:true,data:{connectors:[],serviceCredentials:[]}};
         return{ok:true,data:{tools:["a","b"]}};}})`,
@@ -211,6 +211,12 @@ test("MCP servers and Composio are managed from the Connectors view", async () =
     assert.ok(view.querySelector("#card-mcp-servers"));
     assert.ok(view.querySelector("#card-composio"));
     assert.match(doc.getElementById("mcp-list")!.textContent!, /Linear[\s\S]*1 tool/);
+    const [linearRow, managedRow] = [...doc.querySelectorAll("#mcp-list .credential-row")];
+    const actions = (row: Element | undefined) =>
+      [...(row?.querySelectorAll(".credential-actions button") ?? [])].map((b) => b.textContent!.trim());
+    assert.deepEqual(actions(linearRow), ["Edit", "Remove"]);
+    assert.deepEqual(actions(managedRow), [], "a managed server can't be edited or removed");
+    assert.match(managedRow!.textContent!, /by deployment[\s\S]*Managed/);
     const icon = doc.querySelector<HTMLImageElement>("#mcp-list .mcp-icon img")!;
     assert.equal(icon.getAttribute("src"), "https://linear.app/favicon.ico");
     assert.equal(icon.getAttribute("referrerpolicy"), "no-referrer");

@@ -97,7 +97,6 @@ export interface ServerDeps {
   composioFetch?: typeof fetch;
   suggestedActivities?: ReturnType<typeof createSuggestedActivityService>;
   production?: boolean;
-  mcpPerUserHttpHosts?: readonly string[];
   allowUnauthenticatedCore?: boolean;
   signingSecret?: string;
   capabilitySecret?: string;

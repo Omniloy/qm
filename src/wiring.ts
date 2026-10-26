@@ -222,6 +222,7 @@ import { createMemoryService, type MemoryService } from "./memory/memory-service
 import { createConfiguredMemoryService } from "./memory/provider-factory.ts";
 import { createPostgresMemoryService } from "./memory/postgres-memory-service.ts";
 import { createMcpServerStore, type McpServer, type McpServerStore } from "./mcp/mcp-server-store.ts";
+import { managedMcpServers } from "./mcp/managed-mcp-servers.ts";
 import { createMcpToolService, type McpToolService } from "./mcp/mcp-tool-service.ts";
 import {
   createMcpOAuthStores,
@@ -946,7 +947,17 @@ export function buildApp(
       return memorySessions.store.getEntries(sessionId, { limit: MEMORY_CAPTURE_ENTRY_WINDOW });
     },
   });
-  const mcpServers = createMcpServerStore(artifactMap<McpServer>("mcp_servers"));
+  const mcpServers = createMcpServerStore(
+    artifactMap<McpServer>("mcp_servers"),
+    managedMcpServers({
+      ms365McpUrl: config.ms365McpUrl,
+      providerConfigured: (provider) =>
+        resolveClient(provider, {}).then(
+          () => true,
+          () => false,
+        ),
+    }),
+  );
   const errors = withErrorReporting(config.databaseUrl ? createPostgresErrorLog(config.databaseUrl) : createErrorLog());
   const sandboxOnError = (e: { category: string; code: string; message: string; scopeLabel?: string }) =>
     errors.record({
@@ -3153,7 +3164,6 @@ export function serverDeps(
   return {
     externalSlackPolicies: config.externalSlackPolicies,
     production: config.production,
-    ...(config.mcpPerUserHttpHosts ? { mcpPerUserHttpHosts: config.mcpPerUserHttpHosts } : {}),
     checkReadiness: built.checkReadiness,
     ...(built.backgroundOwnership
       ? {
