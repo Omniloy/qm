@@ -19,7 +19,8 @@ Read the `microsoft-365` skill first for access and approval rules.
 - Attachments: `list-mail-attachments`, then `get-mail-attachment-content`.
 - Before saying a message still needs a reply, check the conversation: look for a later
   message from the user in `sentitems` with the same `conversationId`.
-- Replies: `create-reply-draft` (then `update-mail-message` to set the body) and, after
-  approval, `send-draft-message`. New mail: `create-draft-email` then `send-draft-message`,
-  or `send-mail` for an approved message in one step.
-- Organise with `move-mail-message`, and mark read or flag with `update-mail-message`.
+- Sending always goes through a draft. New mail: `create-draft-email` with the full
+  recipients, subject and body. Replies: `create-reply-draft` with the reply text in
+  `body.Comment`. Show the user the draft, and after their approval send it with
+  `send-draft-message`.
+- Organise with `move-mail-message`.

@@ -12,11 +12,10 @@ are separate apps the user can turn on or off; use the tools you have.
 
 - `microsoft-365_list-chats` lists recent chats; `expand=members` shows who is in each.
   `list-chat-members` lists one chat's members.
-- `list-chat-messages` reads a chat, newest first (`top` up to 50);
-  `get-chat-message` and `list-chat-message-replies` read one message and its replies.
-- `send-chat-message` posts and `reply-to-chat-message` answers a message, after the
-  user approves the exact text. Send plain text unless formatting matters; HTML bodies
-  need `contentType: "html"`.
+- `list-chat-messages` reads a chat, newest first (`top` up to 50); `get-chat-message`
+  reads one message. Chats have no reply threads: a new message is the reply.
+- `send-chat-message` posts after the user approves the exact text. Send plain text
+  unless formatting matters; HTML bodies need `contentType: "html"`.
 
 ## Channels
 

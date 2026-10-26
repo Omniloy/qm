@@ -132,8 +132,22 @@ services:
       - --allow-unauthenticated-discovery
     environment:
       SILENT: "true"
+      LOG_LEVEL: warn
+      MS365_MCP_LOG_DIR: /var/log/ms365
       MS365_MCP_RATE_LIMIT_DISABLED: "true"
-      ENABLED_TOOLS: "^(accept-calendar-event|create-calendar-event|create-draft-email|create-onedrive-folder|create-reply-draft|create-sharepoint-list-item|decline-calendar-event|delete-calendar-event|download-bytes|find-meeting-times|get-calendar-event|get-calendar-view|get-channel-message|get-chat-message|get-current-user|get-download-url|get-drive-item|get-drive-root-item|get-mail-attachment-content|get-mail-message|get-meeting-transcript-content|get-online-meeting|get-schedule|get-sharepoint-site-by-path|get-sharepoint-site-list-item|list-calendars|list-channel-message-replies|list-channel-messages|list-chat-members|list-chat-message-replies|list-chat-messages|list-chats|list-drives|list-folder-files|list-joined-teams|list-mail-attachments|list-mail-folder-messages|list-mail-folders|list-mail-messages|list-meeting-transcripts|list-online-meetings|list-sharepoint-site-drives|list-sharepoint-site-list-items|list-sharepoint-site-lists|list-team-channels|move-mail-message|move-rename-onedrive-item|parse-teams-url|read-mail-text|reply-to-channel-message|reply-to-chat-message|search-onedrive-files|search-sharepoint-sites|send-channel-message|send-chat-message|send-draft-message|send-mail|tentatively-accept-calendar-event|update-calendar-event|update-mail-message|update-sharepoint-list-item|upload-file-content)$"
+      MS365_MCP_REQUIRE_CONFIRM: "true"
+      ENABLED_TOOLS: "^(accept-calendar-event|create-calendar-event|create-draft-email|create-reply-draft|decline-calendar-event|delete-calendar-event|download-bytes|get-calendar-event|get-calendar-view|get-channel-message|get-chat-message|get-current-user|get-download-url|get-drive-item|get-drive-root-item|get-mail-attachment-content|get-mail-message|get-meeting-transcript-content|get-online-meeting|get-schedule|get-sharepoint-site-by-path|get-sharepoint-site-list-item|list-calendars|list-channel-message-replies|list-channel-messages|list-chat-members|list-chat-messages|list-chats|list-drives|list-folder-files|list-joined-teams|list-mail-attachments|list-mail-folder-messages|list-mail-folders|list-mail-messages|list-meeting-transcripts|list-online-meetings|list-sharepoint-site-drives|list-sharepoint-site-list-items|list-sharepoint-site-lists|list-team-channels|move-mail-message|parse-teams-url|read-mail-text|reply-to-channel-message|search-onedrive-files|search-sharepoint-sites|send-channel-message|send-chat-message|send-draft-message|tentatively-accept-calendar-event|update-calendar-event|upload-file-content)$"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+      - /var/log/ms365:size=16m,uid=1000,gid=1000
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
     networks: [qm]
     mem_limit: 256m
 

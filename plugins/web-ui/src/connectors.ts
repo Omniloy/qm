@@ -44,6 +44,8 @@ interface ConnectorProvider {
   hosts?: Array<{ host?: string } | string>;
   icon?: string;
   apps?: ConnectorAppSetting[];
+  appsUnavailable?: boolean;
+  grantable?: boolean;
 }
 
 interface ConnectorAppSetting {
@@ -971,8 +973,8 @@ function appSettingsCard(): TemplateResult {
       <span class="kc-eyebrow">Settings</span>
       <h2 id="kc-app-settings-title">${connectorName(pending.provider)} apps</h2>
       <p id="kc-app-settings-body">
-        The agent only sees the apps you leave on. Turning off the ones you don't use keeps its context small and its
-        replies fast.
+        Choose which apps the agent is offered. Fewer apps keep its context small and its replies fast. This doesn't
+        limit what your connection can reach. Changes apply from your next message.
       </p>
       <div class="kc-app-switches">
         ${pending.apps.map(
@@ -1076,9 +1078,10 @@ function drawConnectors(): void {
       credentials.map((credential) => [credential.credentialId, { id: credential.credentialId, kind: "connector" }]),
     );
     const grants = keychainGrants.filter((grant) => isActiveGrant(grant, credentialsById.get(grant.credentialId)));
-    const first = meta.grantable
-      ? credentials.find((credential) => credential.connected && !credential.needsReconnect)
-      : undefined;
+    const first =
+      meta.grantable && p.grantable !== false
+        ? credentials.find((credential) => credential.connected && !credential.needsReconnect)
+        : undefined;
     const grantable: KeychainCredential | null = first
       ? { id: first.credentialId, service: meta.name, kind: "connector" }
       : null;
@@ -1119,14 +1122,14 @@ function drawConnectors(): void {
                 : ""
             }
             ${
-              (connected || needsReconnect) && p.apps?.length
+              p.apps?.length || p.appsUnavailable
                 ? html`<button
                     class="icon-btn subtle compact"
                     type="button"
                     aria-label=${`${meta.name} settings`}
-                    title=${`${meta.name} settings`}
+                    title=${p.appsUnavailable ? `${meta.name} settings couldn't load. Try again later.` : `${meta.name} settings`}
                     data-confirm-key=${`apps:${id}`}
-                    ?disabled=${keychainOperations.mutationInFlight}
+                    ?disabled=${keychainOperations.mutationInFlight || !p.apps?.length}
                     @click=${(event: Event) => openAppSettings(id, event.currentTarget as HTMLElement)}
                   >
                     ${icon(Settings, 16)}

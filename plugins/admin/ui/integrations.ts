@@ -255,10 +255,10 @@ cards["card-connectors"] = () => {
           placeholder=${s.editing && s.list.find((c) => c.provider === s.editing)?.hasSecret ? "•••• set (re-enter to replace)" : "(write-only)"}
           style="width: 100%"
       /></label>
-      ${tenantField()}
       <p class="field-hint" id="conn-secret-hint">
         ${s.editing ? "Saving requires the client secret. Re-enter it to keep this connector working." : "Secret values are write-only and will not be displayed after saving."}
       </p>
+      ${tenantField()}
       <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; margin-bottom: 10px"
         ><input
           type="checkbox"
@@ -486,7 +486,8 @@ function connectorRows() {
   );
 }
 function tenantField() {
-  const label = connectors.catalog.find((c) => c.provider === connectors.draft.provider)?.tenantLabel;
+  const entry = connectors.catalog.find((c) => c.provider === connectors.draft.provider);
+  const label = entry?.tenantLabel;
   if (!label) return nothing;
   return html`<label style="display: block; margin-bottom: 8px"
     >${label + " (optional)"}
@@ -496,7 +497,7 @@ function tenantField() {
       .value=${connectors.draft.hostedDomain}
       @input=${(e: Event) => connectors.change("hostedDomain", (e.target as HTMLInputElement).value)}
       autocomplete="off"
-      placeholder="Leave empty to accept any account"
+      placeholder=${entry.tenantPlaceholder ?? ""}
       style="width: 100%"
   /></label>`;
 }

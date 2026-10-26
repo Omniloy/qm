@@ -13,7 +13,7 @@ const APPS = [
   ["sharepoint", "SharePoint"],
 ] as const;
 
-test("the connected Microsoft 365 card opens app settings from its gear and saves the switches", async () => {
+test("the Microsoft 365 card opens app settings from its gear, even before connecting, and saves the switches", async () => {
   const dom = new JSDOM('<!doctype html><div id="app"></div><main id="main"></main>', {
     url: "http://localhost/keychain",
   });
@@ -48,7 +48,7 @@ test("the connected Microsoft 365 card opens app settings from its gear and save
     Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
   }
   const originalFetch = globalThis.fetch;
-  const disabled = new Set<string>();
+  const disabled = new Set<string>(["teams-channels", "meeting-transcripts", "sharepoint"]);
   const saves: unknown[] = [];
   const apps = () => APPS.map(([id, label]) => ({ id, label, enabled: !disabled.has(id) }));
   globalThis.fetch = async (input, init) => {
@@ -65,7 +65,7 @@ test("the connected Microsoft 365 card opens app settings from its gear and save
     if (path.endsWith("/api/connectors"))
       return Response.json({
         providers: {
-          microsoft: { available: true, connected: true, hosts: [], apps: apps() },
+          microsoft: { available: true, connected: false, hosts: [], apps: apps(), grantable: false },
           google: { available: true, connected: true, hosts: [] },
         },
       });
@@ -87,14 +87,15 @@ test("the connected Microsoft 365 card opens app settings from its gear and save
     await renderConnectors();
     await tick();
     assert.match(card("microsoft").textContent ?? "", /Microsoft 365/);
-    assert.ok(gear(), "the connected Microsoft 365 card has a settings gear");
+    assert.ok(gear(), "the Microsoft 365 card has a settings gear before the account is connected");
+    assert.equal(gear()!.disabled, false);
     assert.equal(card("google").querySelector('[aria-label$=" settings"]'), null, "providers without apps have none");
 
     gear()!.click();
     await tick();
     assert.deepEqual(
       switches().map((el) => [el.dataset.app, el.getAttribute("aria-checked")]),
-      APPS.map(([id]) => [id, "true"]),
+      APPS.map(([id]) => [id, ["teams-channels", "meeting-transcripts", "sharepoint"].includes(id) ? "false" : "true"]),
     );
     switches()
       .find((el) => el.dataset.app === "mail")!
@@ -110,10 +111,10 @@ test("the connected Microsoft 365 card opens app settings from its gear and save
       mail: false,
       calendar: true,
       "teams-chats": true,
-      "teams-channels": true,
-      "meeting-transcripts": true,
+      "teams-channels": false,
+      "meeting-transcripts": false,
       onedrive: true,
-      sharepoint: false,
+      sharepoint: true,
     });
     assert.equal(document.querySelector(".kc-app-settings"), null, "saving closes the dialog");
     assert.match(document.body.textContent ?? "", /Saved Microsoft 365 settings/);
@@ -126,7 +127,7 @@ test("the connected Microsoft 365 card opens app settings from its gear and save
       switches()
         .filter((el) => el.getAttribute("aria-checked") === "false")
         .map((el) => el.dataset.app),
-      ["mail", "sharepoint"],
+      ["mail", "teams-channels", "meeting-transcripts"],
       "the saved switches come back after a reload",
     );
     document.querySelector<HTMLButtonElement>(".kc-app-settings [data-dialog-cancel]")!.click();

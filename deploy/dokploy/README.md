@@ -374,30 +374,42 @@ OneDrive, SharePoint) is a per-person OAuth connector whose tools come from the
 `ms365-mcp` service, a pinned image of
 [Softeria/ms-365-mcp-server](https://github.com/Softeria/ms-365-mcp-server) (MIT). It runs
 on the private `qm` network only, holds no credentials, and forwards the `Bearer` token
-core sends on each call straight to Microsoft Graph. `ENABLED_TOOLS` in the compose file
-limits it to exactly the tools of those seven apps
-(`src/connectors/connector-apps.ts`; a test keeps the two in sync). Core sets
-`MCP_PER_USER_HTTP_HOSTS: ms365-mcp`, which lets a per-person MCP server use plain HTTP
-on that one hostname; every other per-person server still needs HTTPS.
+core sends on each call straight to Microsoft Graph; the token never enters a sandbox.
+`ENABLED_TOOLS` in the compose file limits it to exactly the tools of those seven apps
+(`src/connectors/connector-apps.ts`; a test keeps the two in sync). The container is
+read-only with its logs on a size-limited tmpfs at `LOG_LEVEL=warn` (the server logs
+tool parameters at info), drops all capabilities, and sets
+`MS365_MCP_REQUIRE_CONFIRM=true` so calls that change or delete data need an explicit
+`confirm: true`. Core sets `MCP_PER_USER_HTTP_HOSTS: ms365-mcp`, which lets a per-person
+MCP server use plain HTTP on that one hostname; every other per-person server still needs
+HTTPS. If the sidecar starts after core, core lists its tools again within 30 seconds.
 
-Setup, once:
+Setup, once (no Dokploy env var is needed):
 
 1. In the Microsoft Entra admin center → **App registrations**, register a web app.
    Use the redirect URI `https://<host>/v1/connectors/oauth/microsoft/callback`, create a
    client secret, add the Microsoft Graph delegated permissions listed in the admin
    setup guide, and grant admin consent for the tenant.
 2. In the admin console → **Connectors** → **OAuth apps**, add **Microsoft 365** with
-   the application (client) ID and secret. For an app registered for your organization
-   only, also enter the directory's GUID in **Directory (tenant) ID**; sign-in is then
-   limited to that tenant. Leave it empty only for an app registered for any
-   organizational directory, which then accepts any work or school tenant.
-3. In **Connectors** → **MCP servers**, add the server with ID `microsoft-365`, URL
-   `http://ms365-mcp:3000/mcp`, auth **None**, **Per person** with credential host
-   `graph.microsoft.com`, and **Read only** off.
+   the application (client) ID and secret. For an app registered for any organizational
+   directory (multitenant), leave **Directory (tenant) ID** empty: any work or school
+   account can sign in. For an app registered for your organization only, enter the
+   directory's GUID there; sign-in is then limited to that tenant. When the field is
+   empty, core falls back to `MICROSOFT_TENANT_ID` if a deployment sets it.
+3. In **Connectors** → **MCP servers**, add the server with ID exactly `microsoft-365`
+   (the skills refer to its `microsoft-365_*` tools), URL `http://ms365-mcp:3000/mcp`,
+   auth **None**, **Per person** with credential host `graph.microsoft.com`, and
+   **Read only** off.
+4. If outbound traffic is allowlisted, allow `graph.microsoft.com`,
+   `login.microsoftonline.com`, and the tenant's `<tenant>.sharepoint.com` and
+   `<tenant>-my.sharepoint.com` hosts.
 
-People then connect from **Keychain** and use the gear on the Microsoft 365 card to
-choose which apps the agent sees. A turned-off app's tools and skill are left out of the
-agent's turn entirely.
+People then connect from **Keychain**. The gear on the Microsoft 365 card chooses which
+apps the agent is offered (Teams channels, meeting transcripts, and SharePoint start
+off); turned-off apps' tools and skills are left out of the agent's context. The tools
+are only offered in the person's DM with the agent or when they are the live speaker in
+an Open shared conversation, and sending mail, posting messages, changing events, or
+uploading files waits for the person's approval.
 
 ## MCP servers, Composio and skill sharing
 

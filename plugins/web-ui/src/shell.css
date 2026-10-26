@@ -13312,7 +13312,7 @@ body.app-edit-embed .custom-chat-shell.app-edit-chat > .chat-bottom-dock {
   padding: 2px;
   border-radius: 999px;
   box-sizing: border-box;
-  background: var(--muted-foreground);
+  background: color-mix(in srgb, var(--muted-foreground) 45%, transparent);
   transition: background 120ms ease;
 }
 .kc-app-switch-track span {
@@ -13328,6 +13328,12 @@ body.app-edit-embed .custom-chat-shell.app-edit-chat > .chat-bottom-dock {
 }
 .kc-app-switch.on .kc-app-switch-track span {
   transform: translateX(14px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .kc-app-switch-track,
+  .kc-app-switch-track span {
+    transition: none;
+  }
 }
 .kc-grant .kc-eyebrow {
   color: var(--muted-foreground);

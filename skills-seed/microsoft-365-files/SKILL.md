@@ -1,6 +1,6 @@
 ---
 name: microsoft-365-files
-description: Browse, search, read, and upload files in the user's OneDrive and SharePoint sites, and work with SharePoint lists.
+description: Browse, search, read, and upload files in the user's OneDrive and SharePoint sites, and read SharePoint lists.
 ---
 
 # OneDrive and SharePoint
@@ -17,15 +17,15 @@ tools once you have a drive id.
   `/sites/Finance`), then `list-sharepoint-site-drives` for its document libraries.
 - With a drive id: `get-drive-root-item`, `list-folder-files` (children of an item),
   `get-drive-item`, and `search-onedrive-files` (searches that drive).
-- Reading content: for anything over a few KB call `get-download-url` and fetch the
-  returned URL in the sandbox (`curl -L -o file "<url>"`); it needs no token and expires
-  quickly. `download-bytes` returns small files inline as base64.
-- Writing, after approval: `upload-file-content` for files up to 4 MB, and in OneDrive
-  `create-onedrive-folder` and `move-rename-onedrive-item`.
+- Reading content: `download-bytes` returns a file's bytes as base64 through the tool, so
+  use it for documents of a modest size and read only what the task needs.
+  `get-download-url` returns a short-lived link the user can open themselves; share it
+  with them rather than fetching it from your computer.
+- Writing, after approval: `upload-file-content` creates or replaces a file from base64
+  text passed as a tool argument, so keep it to small text files (notes, CSV, Markdown).
 
 ## SharePoint lists
 
 - `list-sharepoint-site-lists`, then `list-sharepoint-site-list-items` with
   `expand=fields` to read columns, and `get-sharepoint-site-list-item` for one item.
-- `create-sharepoint-list-item` and `update-sharepoint-list-item` change data other
-  people rely on: show the exact field values and get approval first.
+- Changing list items isn't available here; tell the user to edit the list in SharePoint.

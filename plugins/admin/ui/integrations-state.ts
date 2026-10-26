@@ -79,6 +79,7 @@ export type Connector = {
   scopes?: string[];
   setupGuide?: { url: string; console: string; steps: string[] };
   tenantLabel?: string;
+  tenantPlaceholder?: string;
   hostedDomain?: string;
 };
 export type ServiceCredential = {

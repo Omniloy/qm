@@ -15,15 +15,16 @@ details of that app.
 
 - The `microsoft-365_*` tools call Microsoft Graph as the person you are working for, with
   the work or school account they connected under **Keychain → Microsoft 365**. Every call
-  uses that person's own token; you cannot act as anyone else.
-- An error saying to connect the account means they have not connected Microsoft 365, or
-  the connection expired. Send them to Keychain to (re)connect; never ask for a password
-  or token.
-- No `microsoft-365_*` tools at all means the Microsoft 365 tool server is not set up on
-  this workspace: tell the user an admin has to add it.
-- Each person chooses which apps you can use with the settings (gear) button on their
-  Microsoft 365 card in Keychain. A tool or app skill you don't have is turned off there;
-  say so instead of trying another route.
+  uses that person's own token; you cannot act as anyone else. The token never enters your
+  computer, so use the tools rather than `curl` or scripts against Graph.
+- The tools are offered only in the person's DM with you, or when they are the live
+  speaker in an Open shared conversation. Elsewhere, ask them to DM you instead.
+- No `microsoft-365_*` tools in a DM means the person hasn't connected Microsoft 365, the
+  connection expired, or an admin hasn't set up the Microsoft 365 tool server. Send them to
+  Keychain to connect or reconnect; never ask for a password or token.
+- The settings (gear) button on the Microsoft 365 card in Keychain chooses which apps you
+  are offered, to keep your context small. Teams channels, meeting transcripts and
+  SharePoint start off. If an app's tools are missing, say the person can turn it on there.
 - `microsoft-365_get-current-user` returns the connected account's id, name, and email.
 
 ## Reading
@@ -36,9 +37,10 @@ details of that app.
 
 ## Writes need the user's go-ahead
 
-Sending mail, posting in a chat or channel, creating, changing, accepting or declining an
-event, uploading, moving or renaming files, and changing SharePoint list items all act as
-the user and are visible to other people. Before any of them, show the user exactly what
-will be sent or changed (recipients, text, time, file) and wait for their explicit
-approval in this conversation. Prefer drafts (`create-draft-email`, `create-reply-draft`)
-when the user has not approved the final text.
+Sending mail or posting in a chat or channel, creating, changing, accepting or declining
+an event, and uploading files act as the user and are visible to other people. Before any
+of them, show the user exactly what will be sent or changed (recipients, text, time, file)
+and ask for approval in this conversation. The call itself then waits for the person's
+approval in the product as well. Calls that change or delete data also take `confirm:
+true`; set it only after the user approved that exact action. Prefer drafts
+(`create-draft-email`, `create-reply-draft`) until the user has approved the final text.
