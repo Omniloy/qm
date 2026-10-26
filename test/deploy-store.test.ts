@@ -13,7 +13,7 @@ import {
 } from "../src/deploy/deploy-store.ts";
 import { createDeployService } from "../src/deploy/deploy-service.ts";
 import { createAclStore } from "../src/acl/acl-store.ts";
-import type { DeployGitArchive } from "../src/deploy/deploy-git-store.ts";
+import { createDeployGitStore, type DeployGitArchive } from "../src/deploy/deploy-git-store.ts";
 import { createMemoryDurableByteStore } from "../src/files/durable-byte-store.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import { scopeId } from "../src/types.ts";
@@ -542,6 +542,50 @@ test("legacy inline-bundle rows still restore and migrate to blob refs on read",
   assert.ok(await archiveBytes.open(migrated.blobKey!), "the offloaded blob is readable");
 });
 
+test("filesOf reads the archive once and every blob through one git process", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "deploy-git-batch-"));
+  const spawnLog = join(dir, "spawns");
+  const gitBin = join(dir, "git");
+  writeFileSync(gitBin, `#!/bin/sh\necho "$*" >> "${spawnLog}"\nexec git "$@"\n`, { mode: 0o755 });
+  const backing = createMemoryMap<DeployGitArchive>();
+  let archiveReads = 0;
+  const archiveStore = {
+    ...backing,
+    get: (id: string) => {
+      archiveReads++;
+      return backing.get(id);
+    },
+  };
+  const files: Array<{ path: string; data: string | Uint8Array }> = Array.from({ length: 400 }, (_, i) => ({
+    path: `node_modules/pkg-${i}/index.js`,
+    data: i % 7 === 0 ? "shared\n" : `module.exports = ${i};\n\n`,
+  }));
+  files.push({ path: "empty.txt", data: "" }, { path: "bin.dat", data: new Uint8Array([0, 10, 255, 10, 0]) });
+  const writer = createDeployGitStore({ repoRoot: join(dir, "writer"), gitBin, archiveStore });
+  const sha = await writer.commit({ deploymentId: "d1", version: 1, files });
+  const reader = createDeployGitStore({ repoRoot: join(dir, "reader"), gitBin, archiveStore });
+  archiveReads = 0;
+  writeFileSync(spawnLog, "");
+
+  const read = await reader.filesOf("d1", sha);
+
+  assert.equal(archiveReads, 1, "the archive row is fetched once per filesOf, not once per file");
+  const spawns = readFileSync(spawnLog, "utf8").trim().split("\n");
+  assert.ok(spawns.length <= 6, `git spawned ${spawns.length} times: ${spawns.join(" | ")}`);
+  assert.equal(spawns.filter((s) => s.includes("cat-file")).length, 1);
+  const byPath = new Map(read.map((f) => [f.path, Buffer.from(f.data)]));
+  assert.equal(byPath.size, files.length);
+  for (const f of files) assert.deepEqual(byPath.get(f.path), Buffer.from(f.data), f.path);
+
+  archiveReads = 0;
+  const subset = await reader.filesOf("d1", sha, ["bin.dat", "./empty.txt"]);
+  assert.equal(archiveReads, 1);
+  assert.deepEqual(
+    subset.map((f) => f.path),
+    ["bin.dat", "empty.txt"],
+  );
+});
+
 test("publicUrlOf strips a stale access token from any query position, and leaves clean URLs alone", () => {
   assert.equal(publicUrlOf({ host: "h", port: 1, publicUrl: "https://x.apps.q/?access=tok" }), "https://x.apps.q/");
   assert.equal(
@@ -589,4 +633,39 @@ test("resident home files are held to the same path rules as app files", async (
     /invalid deploy path/,
     "a home file cannot smuggle git metadata past the app-file check",
   );
+});
+
+test("a commit past git's auto-gc threshold commits and reads back every file", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "deploy-git-many-"));
+  const archiveStore = createMemoryMap<DeployGitArchive>();
+  const files = Array.from({ length: 7200 }, (_, i) => ({
+    path: `src/m${i % 50}/f${i}.js`,
+    data: `export default ${i};\n`,
+  }));
+  const writer = createDeployGitStore({ repoRoot: join(dir, "writer"), archiveStore });
+  const sha = await writer.commit({ deploymentId: "many", version: 1, files });
+  const reader = createDeployGitStore({ repoRoot: join(dir, "reader"), archiveStore });
+  const read = await reader.filesOf("many", sha);
+  assert.equal(read.length, files.length);
+  const byPath = new Map(read.map((f) => [f.path, Buffer.from(f.data).toString("utf8")]));
+  for (const f of files) assert.equal(byPath.get(f.path), f.data, f.path);
+});
+
+test("the push into the bare repo runs receive-pack through the configured binary with auto-gc off", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "deploy-git receive pack "));
+  const spawnLog = join(dir, "spawns");
+  const gitBin = join(dir, "it's git");
+  writeFileSync(gitBin, `#!/bin/sh\necho "$*" >> "${spawnLog}"\nexec git "$@"\n`, { mode: 0o755 });
+  const store = createDeployGitStore({ repoRoot: join(dir, "repos"), gitBin });
+  const sha = await store.commit({ deploymentId: "rp", version: 1, files: [{ path: "a.txt", data: "a\n" }] });
+  assert.deepEqual(
+    (await store.filesOf("rp", sha)).map((f) => f.path),
+    ["a.txt"],
+  );
+  const spawns = readFileSync(spawnLog, "utf8").trim().split("\n");
+  assert.ok(
+    spawns.some((s) => s.startsWith("-c gc.auto=0 receive-pack ")),
+    `receive-pack did not run through the configured binary: ${spawns.join(" | ")}`,
+  );
+  assert.ok(spawns.every((s) => s.startsWith("-c gc.auto=0 ")));
 });

@@ -698,3 +698,64 @@ test("publish drops git metadata on the per-file fallback path too", async () =>
     ["server.js"],
   );
 });
+
+test("publish stops waiting on Stop before the deploy starts and never deploys", async () => {
+  const s = svc();
+  const controller = new AbortController();
+  const exporting = Promise.withResolvers<void>();
+  const sandbox = {
+    exportFiles: async () => {
+      exporting.resolve();
+      return new Promise<never>(() => {});
+    },
+  } as unknown as Sandbox;
+  const pending = ctx(s.deploy, { sandbox }).publish(
+    { dir: ".", entrypoint: "node server.js", name: "stopped" },
+    controller.signal,
+  );
+  await exporting.promise;
+  controller.abort();
+  await assert.rejects(pending, { name: "AbortError" });
+  assert.equal(s.starts, 0);
+  assert.equal(await s.deployStore.getByName("stopped"), null);
+  await assert.rejects(
+    ctx(s.deploy, { files: appFile() }).publish(
+      { dir: ".", entrypoint: "node server.js", name: "stopped" },
+      AbortSignal.abort(),
+    ),
+    { name: "AbortError" },
+  );
+  assert.equal(s.starts, 0);
+});
+
+test("Stop after the deploy starts leaves the deploy to finish under its lock", async () => {
+  const deployStore: DeployStore = createDeployStore();
+  const applying = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const deploy = createDeployService({
+    deployStore,
+    provider: {
+      profile: { managedScaleToZero: false },
+      apply: async () => {
+        applying.resolve();
+        await release.promise;
+        return { host: "127.0.0.1", port: 20000 };
+      },
+      destroy: async () => {},
+    },
+    auditLog: { record() {}, events: async () => [], tail: async () => [] },
+    acl: createAclStore(),
+    deployDir: mkdtempSync(join(tmpdir(), "pub-")),
+  });
+  const controller = new AbortController();
+  const pending = ctx(deploy, { files: appFile() }).publish(
+    { dir: ".", entrypoint: "node server.js", name: "carries-on" },
+    controller.signal,
+  );
+  await applying.promise;
+  controller.abort();
+  release.resolve();
+  const r = await pending;
+  assert.equal(r.version, 1);
+  assert.ok(await deployStore.getByName("carries-on"));
+});

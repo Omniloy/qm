@@ -579,3 +579,86 @@ for (const failure of ["acknowledge", "tape"] as const) {
     }
   });
 }
+
+test("Stop ends a turn whose tool never settles and leaves a replayable transcript", async () => {
+  const signals = createMemoryRunSignalStore();
+  const harness = createPiHarness({ apiKey: "sk-test", signals });
+  const store = createMemorySessionStore();
+  const session = await store.getOrCreateByThread("web:stop-hung-tool", "dm", "personal:tester" as ScopeId);
+  const lease = (await store.acquireLease(session.id, "turn")).lease!;
+  const realFetch = globalThis.fetch;
+  const requests: string[] = [];
+  globalThis.fetch = (async (_url: unknown, init?: { body?: unknown }) => {
+    requests.push(String(init?.body ?? ""));
+    if (requests.length > 1) return sse(textReplyEvents("fresh turn"));
+    const events = textReplyEvents("");
+    events[1] = {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "tool_use", id: "hung-memory", name: "memory", input: {} },
+    };
+    events[2] = {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "input_json_delta", partial_json: JSON.stringify({ action: "read" }) },
+    };
+    events[4] = { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 3 } };
+    return sse(events);
+  }) as typeof fetch;
+  const entries: SessionEntry[] = [];
+  const emit = async (entry: NewEntry) => {
+    const saved = await store.append(lease, entry);
+    entries.push(saved);
+    return saved;
+  };
+  try {
+    let stoppedAt = 0;
+    await harness.turns.runTurn(
+      turnInput(
+        session.id,
+        { entries: [], tape: [] },
+        {
+          session,
+          runId: "stop-hung",
+          tools: {
+            memoryRead: async () => {
+              stoppedAt = Date.now();
+              await signals.send("stop-hung", { kind: "abort" });
+              return new Promise<string>(() => {});
+            },
+          } as HarnessTurnInput["tools"],
+          emit,
+          tape: (row) => store.appendTape(lease, row),
+        },
+      ),
+    );
+    assert.ok(stoppedAt > 0);
+    assert.ok(Date.now() - stoppedAt < 5_000, "the turn ends promptly after Stop");
+    const results = entries.filter((entry) => entry.type === "tool_result");
+    assert.equal(entries.filter((entry) => entry.type === "tool_call").length, 1);
+    assert.equal(results.length, 1);
+    assert.equal((results[0]!.payload as { cancelled?: boolean }).cancelled, true);
+    const tape = await store.getTape(session.id);
+    const toolResults = tape.filter((row) => (row.payload as { role?: string }).role === "toolResult");
+    assert.equal(toolResults.length, 1);
+    assert.equal((toolResults[0]!.payload as { toolCallId?: string; isError?: boolean }).toolCallId, "hung-memory");
+    assert.equal((toolResults[0]!.payload as { isError?: boolean }).isError, true);
+    const { projectTapeEntries } = await import("../src/harness/tape-projection.ts");
+    assert.ok(projectTapeEntries(session.id, tape));
+    await harness.turns.runTurn(
+      turnInput(
+        session.id,
+        { entries: [], tape: [] },
+        { session, runId: "after-stop", emit, input: "next", history: [...entries] },
+      ),
+    );
+    const next = requests.at(-1)!;
+    assert.match(next, /hung-memory/);
+    assert.match(next, /\[cancelled\]/);
+    assert.equal(entries.at(-1)?.type, "assistant");
+  } finally {
+    globalThis.fetch = realFetch;
+    await store.releaseLease(lease);
+    await harness.turns.close?.();
+  }
+});

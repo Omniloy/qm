@@ -359,7 +359,9 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
     if (processIdentity) chownSync(jail, processIdentity.uid, processIdentity.gid);
     const ref = harnessToolContext(turn);
     const controller = new AbortController();
+    const stop = new AbortController();
     ref.abortSignal = controller.signal;
+    ref.stopSignal = stop.signal;
     const bridged = toolsEnabled ? bridgedTools(ref, harnessToolOptions(opts, turn)) : [];
     const bridgedNames = bridged.map((definition) => `mcp__qm__${definition.name}`);
     const childToolNames = bridged
@@ -522,7 +524,8 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
       },
     });
     active.add(sdkQuery);
-    const interrupt = async (fromUser: boolean) => {
+    const interrupt = async (fromUser: boolean, stopping = true) => {
+      if (stopping) stop.abort();
       stopped ||= fromUser;
       interrupted = true;
       queue.close();
@@ -530,7 +533,7 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
       controller.abort();
     };
     terminateProvider = () => {
-      void interrupt(false);
+      void interrupt(false, false);
     };
     const onCancel = () => {
       void interrupt(false);

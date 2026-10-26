@@ -863,3 +863,27 @@ for (const text of ["You've hit your limit · resets 5pm", "Claude AI usage limi
     assert.equal((await harness.turns.runTurn(harnessTurn().turn)).reply, text);
   });
 }
+
+test("Claude's internal terminate leaves a parallel slow tool call to finish instead of cancelling it", async () => {
+  let slow: Promise<{ content?: Array<{ text?: string }>; isError?: boolean }> | undefined;
+  currentScript = async function* () {
+    slow = toolHandlers.get("memory")!({ action: "read" }) as NonNullable<typeof slow>;
+    await toolHandlers.get("finish_silently")!({ reason: "nothing new" });
+    yield resultMessage("");
+  };
+  const harness = createClaudeHarness();
+  const { turn } = harnessTurn({
+    pollFire: true,
+    tools: {
+      memoryRead: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        return "remembered facts";
+      },
+    } as unknown as HarnessTurnInput["tools"],
+  });
+  await harness.turns.runTurn(turn);
+  const slowResult = await slow!;
+  assert.notEqual(slowResult.isError, true);
+  assert.match(slowResult.content?.[0]?.text ?? "", /remembered facts/);
+  await harness.turns.close?.();
+});

@@ -156,6 +156,15 @@ test("stopping returns Send immediately and queues every submit path without int
         assert.equal(stopping, true);
       });
     }
+    const strip = document.createElement("div");
+    render(composer!.queuedStrip(agent), strip);
+    const chip = strip.querySelector(".queued-chip");
+    assert.ok(chip, "a message sent while stopping is queued in core as its own turn");
+    assert.equal(
+      chip.querySelector<HTMLButtonElement>(".queued-steer")!.disabled,
+      true,
+      "it cannot be steered into the run being stopped, so core starts it once that run ends",
+    );
     const attachment = {
       id: "test-file",
       type: "document" as const,

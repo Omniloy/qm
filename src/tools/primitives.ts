@@ -239,7 +239,7 @@ export interface ToolContext extends SurfaceToolDeps {
   read(path: string, signal?: AbortSignal): Promise<ReadResult>;
   skill(name: string, opts?: { path?: string; sandboxId?: string; signal?: AbortSignal }): Promise<SkillResult>;
   write(path: string, data?: string, share?: ShareDirective[]): Promise<WriteResult>;
-  publish(input: PublishInput): Promise<PublishResult>;
+  publish(input: PublishInput, signal?: AbortSignal): Promise<PublishResult>;
   setDeploymentPublic(id: string, isPublic: boolean): Promise<{ id: string; name?: string; public: boolean }>;
   createPlayground(input: { title: string; html: string }): Promise<PlaygroundArtifact>;
   memorySearch(q: string, limit?: number): Promise<string[] | null>;
@@ -1079,7 +1079,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
       );
     },
 
-    async publish(input: PublishInput): Promise<PublishResult> {
+    async publish(input: PublishInput, signal?: AbortSignal): Promise<PublishResult> {
       if (!writableScopeId) throw new Error("publish needs a writable scope to own the app");
       const owner: ScopeId = scopeId("personal", deps.createdBy);
       const createdInScope: ScopeId = writableScopeId;
@@ -1097,9 +1097,9 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
       if (effectiveEntrypoint && input.dir && hasParentPathSegment(input.dir)) {
         throw new Error("publish directory must stay inside the workspace — no .. path segments");
       }
-      const handle = await deps.provision();
+      const handle = await withAbort(() => deps.provision(), signal);
       const files: DeployFile[] = effectiveEntrypoint
-        ? filesUnder(await collectTree(deps.sandbox, handle, input.dir), input.dir)
+        ? filesUnder(await withAbort(() => collectTree(deps.sandbox, handle, input.dir), signal), input.dir)
         : [];
       if (effectiveEntrypoint && files.length === 0) {
         throw new Error(`publish: no files found under ${input.dir ?? "."} - nothing to deploy`);
@@ -1137,6 +1137,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
         }
         return { scope, permission: s.permission };
       });
+      signal?.throwIfAborted();
       return once(async () => {
         const d = await deps.deploy.deployOrUpdate({
           ownerScopeId: owner,

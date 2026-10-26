@@ -7,7 +7,8 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { DurableMap } from "../persistence/durable-map.ts";
 import type { DurableByteStore } from "../files/durable-byte-store.ts";
 import { collectBytes } from "../util/bytes.ts";
-import { swallowAs } from "../util/errors.ts";
+import { shq } from "../util/shell.ts";
+import { swallow, swallowAs } from "../util/errors.ts";
 import { normalizeRelPath } from "./deploy-fs.ts";
 
 export interface DeployGitInputFile {
@@ -40,10 +41,9 @@ export interface DeployGitStore {
   filesOf(deploymentId: string, commitSha: string, paths?: string[]): Promise<DeployGitInputFile[]>;
   diff(deploymentId: string, fromCommit: string | undefined, toCommit: string): Promise<DeployGitDiff>;
   bundle(deploymentId: string, commitSha: string): Promise<Uint8Array>;
-  setRef(deploymentId: string, ref: string, sha: string): Promise<void>;
+  setRefs(deploymentId: string, refs: Record<string, string>): Promise<void>;
   deleteRef(deploymentId: string, ref: string): Promise<void>;
   refOf(deploymentId: string, ref: string): Promise<string | null>;
-  blob(deploymentId: string, sha: string): Promise<Uint8Array | null>;
   repoUrl(deploymentId: string): Promise<string>;
 }
 
@@ -66,6 +66,13 @@ const CURRENT_REF = "refs/heads/current";
 const DEFAULT_REPO_ROOT = join(tmpdir(), "qm-deploy-git");
 const GIT_AUTHOR = ["-c", "user.name=QM", "-c", "user.email=deployments@qm.local"];
 const ARCHIVE_ETAG_FILE = "qm-archive-etag";
+const NO_AUTO_GC = ["-c", "gc.auto=0"];
+
+interface GitOptions {
+  cwd?: string;
+  okExitCodes?: number[];
+  stdin?: string;
+}
 
 interface GitResult {
   code: number;
@@ -75,26 +82,38 @@ interface GitResult {
 export function createDeployGitStore(opts: DeployGitStoreOptions = {}): DeployGitStore {
   const repoRoot = opts.repoRoot ?? DEFAULT_REPO_ROOT;
   const gitBin = opts.gitBin ?? "git";
+  const receivePack = `--receive-pack=${shq(gitBin)} ${NO_AUTO_GC.join(" ")} receive-pack`;
   const archiveStore = opts.archiveStore;
   const archiveBytes = opts.archiveBytes;
   const repoPath = (deploymentId: string): string => join(repoRoot, `${safeRepoName(deploymentId)}.git`);
 
-  async function gitResult(args: string[], options: { cwd?: string; okExitCodes?: number[] } = {}): Promise<GitResult> {
+  async function gitResult(args: string[], options: GitOptions = {}): Promise<GitResult> {
     const ok = new Set(options.okExitCodes ?? [0]);
     return new Promise((resolveGit, rejectGit) => {
-      const child = spawn(gitBin, args, { cwd: options.cwd, stdio: ["ignore", "pipe", "pipe"] });
+      const child = spawn(gitBin, [...NO_AUTO_GC, ...args], {
+        cwd: options.cwd,
+        stdio: [options.stdin == null ? "ignore" : "pipe", "pipe", "pipe"],
+      });
       const stdout: Buffer[] = [];
       const stderr: Buffer[] = [];
-      child.stdout.on("data", (d) => stdout.push(Buffer.from(d)));
-      child.stderr.on("data", (d) => stderr.push(Buffer.from(d)));
+      child.stdout!.on("data", (d) => stdout.push(Buffer.from(d)));
+      child.stderr!.on("data", (d) => stderr.push(Buffer.from(d)));
       child.on("error", rejectGit);
+      if (child.stdin) {
+        child.stdin.on("error", swallowAs("deploy git stdin", undefined));
+        try {
+          child.stdin.end(options.stdin);
+        } catch (e) {
+          swallow("deploy git stdin", e);
+        }
+      }
       child.on("close", (code) => {
         if (ok.has(code ?? -1)) return resolveGit({ code: code ?? -1, stdout: Buffer.concat(stdout) });
         rejectGit(new Error(`git ${args.join(" ")} exited ${code}: ${Buffer.concat(stderr).toString("utf8").trim()}`));
       });
     });
   }
-  const git = async (args: string[], options: { cwd?: string; okExitCodes?: number[] } = {}): Promise<Buffer> =>
+  const git = async (args: string[], options: GitOptions = {}): Promise<Buffer> =>
     (await gitResult(args, options)).stdout;
 
   async function localArchiveEtag(repo: string): Promise<string | null> {
@@ -212,8 +231,7 @@ export function createDeployGitStore(opts: DeployGitStoreOptions = {}): DeployGi
     return { repo, workdir };
   }
 
-  async function treeOf(deploymentId: string, commitSha: string): Promise<DeployGitTreeFile[]> {
-    const repo = await ensureRepo(deploymentId);
+  async function lsTree(repo: string, commitSha: string): Promise<DeployGitTreeFile[]> {
     const out = await git(["--git-dir", repo, "ls-tree", "-r", "-z", "--long", commitSha]);
     return out
       .toString("utf8")
@@ -227,13 +245,21 @@ export function createDeployGitStore(opts: DeployGitStoreOptions = {}): DeployGi
       .sort(byPath);
   }
 
-  async function blob(deploymentId: string, sha: string): Promise<Uint8Array | null> {
-    const repo = await ensureRepo(deploymentId);
-    try {
-      return await git(["--git-dir", repo, "cat-file", "-p", sha]);
-    } catch {
-      return null;
+  async function readBlobs(repo: string, shas: string[]): Promise<Map<string, Buffer>> {
+    const blobs = new Map<string, Buffer>();
+    if (!shas.length) return blobs;
+    const out = await git(["--git-dir", repo, "cat-file", "--batch"], { stdin: `${shas.join("\n")}\n` });
+    let at = 0;
+    while (at < out.length) {
+      const eol = out.indexOf(0x0a, at);
+      if (eol < 0) throw new Error("truncated git cat-file --batch output");
+      const [sha, type, size] = out.subarray(at, eol).toString("utf8").split(" ");
+      at = eol + 1;
+      if (type === "missing") continue;
+      blobs.set(sha!, out.subarray(at, at + Number(size)));
+      at += Number(size) + 1;
     }
+    return blobs;
   }
 
   return {
@@ -259,40 +285,36 @@ export function createDeployGitStore(opts: DeployGitStoreOptions = {}): DeployGi
           },
         );
         const sha = (await git(["rev-parse", "HEAD"], { cwd: workdir })).toString("utf8").trim();
-        await git(["push", "--quiet", repo, `HEAD:refs/deploy-commits/${sha}`], { cwd: workdir });
+        await git(["push", "--quiet", receivePack, repo, `HEAD:refs/deploy-commits/${sha}`], {
+          cwd: workdir,
+        });
         await persistArchive(input.deploymentId, repo);
         return sha;
       } finally {
         await rm(workdir, { recursive: true, force: true });
       }
     },
-    treeOf,
+    async treeOf(deploymentId, commitSha) {
+      return lsTree(await ensureRepo(deploymentId), commitSha);
+    },
     async filesOf(deploymentId, commitSha, paths) {
+      const repo = await ensureRepo(deploymentId);
       const wanted = paths ? new Set(paths.map(normalizeRelPath)) : null;
-      const entries = await treeOf(deploymentId, commitSha);
-      const files: DeployGitInputFile[] = [];
-      for (const entry of entries) {
-        if (wanted && !wanted.has(entry.path)) continue;
-        const data = await blob(deploymentId, entry.sha);
+      const entries = (await lsTree(repo, commitSha)).filter((entry) => !wanted || wanted.has(entry.path));
+      const blobs = await readBlobs(repo, [...new Set(entries.map((entry) => entry.sha))]);
+      return entries.map((entry) => {
+        const data = blobs.get(entry.sha);
         if (data == null) throw new Error(`missing blob ${entry.sha} for ${entry.path}`);
-        files.push({ path: entry.path, data });
-      }
-      return files;
+        return { path: entry.path, data };
+      });
     },
     async diff(deploymentId, fromCommit, toCommit) {
-      const toFiles = new Map((await treeOf(deploymentId, toCommit)).map((f) => [f.path, f]));
+      const repo = await ensureRepo(deploymentId);
+      const toFiles = new Map((await lsTree(repo, toCommit)).map((f) => [f.path, f]));
       if (!fromCommit) {
         return { added: [...toFiles.values()].sort(byPath), modified: [], deleted: [] };
       }
-      const out = await git([
-        "--git-dir",
-        await ensureRepo(deploymentId),
-        "diff",
-        "--name-status",
-        "-z",
-        fromCommit,
-        toCommit,
-      ]);
+      const out = await git(["--git-dir", repo, "diff", "--name-status", "-z", fromCommit, toCommit]);
       const parts = out.toString("utf8").split("\0").filter(Boolean);
       const added: DeployGitTreeFile[] = [];
       const modified: DeployGitTreeFile[] = [];
@@ -327,9 +349,10 @@ export function createDeployGitStore(opts: DeployGitStoreOptions = {}): DeployGi
         await rm(tmp, { recursive: true, force: true });
       }
     },
-    async setRef(deploymentId, ref, sha) {
+    async setRefs(deploymentId, refs) {
       const repo = await ensureRepo(deploymentId);
-      await git(["--git-dir", repo, "update-ref", ref, sha]);
+      const updates = Object.entries(refs).map(([ref, sha]) => `update ${ref} ${sha}\n`);
+      await git(["--git-dir", repo, "update-ref", "--stdin"], { stdin: updates.join("") });
       await persistArchive(deploymentId, repo);
     },
     async deleteRef(deploymentId, ref) {
@@ -345,7 +368,6 @@ export function createDeployGitStore(opts: DeployGitStoreOptions = {}): DeployGi
         return null;
       }
     },
-    blob,
     repoUrl: ensureRepo,
   };
 }
