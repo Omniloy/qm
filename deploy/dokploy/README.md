@@ -285,8 +285,8 @@ than by calling Resend directly — calling Resend proves only that Resend works
 that the embedded broker is configured:
 
 ```bash
-docker exec qm-omniloy-portal-1 printenv | grep AUTH_EMAIL_FROM
-docker logs --since 5m qm-omniloy-portal-1 | grep 'sign-in link'
+docker exec qm-omniloy-portal printenv | grep AUTH_EMAIL_FROM
+docker logs --since 5m qm-omniloy-portal | grep 'sign-in link'
 curl -s -H "Authorization: Bearer $RESEND_API_KEY" \
   https://api.resend.com/emails/<resend-message-id>
 ```
@@ -569,7 +569,9 @@ wildcard certificate for the whole instance; publishing a new app needs no DNS c
 `apps.mo.example.com`. The portal then scopes its session cookie to `mo.example.com`
 on its own. An apps domain beside the portal (`apps.example.com`) forces
 `PORTAL_COOKIE_DOMAIN=example.com`, which sends the session cookie to every host under
-`example.com`, including unrelated sites.
+`example.com`, including unrelated sites. Every app still shares that cookie domain with
+the portal, so app code can set (not read) cookies the portal sees; only signed-in org
+members can publish, which is the trust boundary.
 
 1. **DNS.** One record, DNS-only (grey cloud on Cloudflare):
    `*.apps.mo.example.com  A  <this box>`.
@@ -617,27 +619,30 @@ on its own. An apps domain beside the portal (`apps.example.com`) forces
        qm-apps:
          loadBalancer:
            servers:
-             - url: http://<project>-portal-1:8080
+             - url: http://qm-omniloy-portal:8080
            passHostHeader: true
    ```
 
-   Never point the wildcard at an app container or at core's relay route: the gate that
-   checks who may open an app runs behind the portal.
+   `qm-omniloy-portal` is the portal's fixed `container_name` in the compose file. Never
+   point the wildcard at an app container or at core's relay route: the gate that checks
+   who may open an app runs behind the portal.
 
 4. **Env.** Set `DEPLOY_APPS_DOMAIN=apps.mo.example.com` and
    `AWS_DEPLOY_GATE_SECRET=$(openssl rand -hex 32)` (the gate's on-switch; the name is
    historical and applies to every deploy provider — core refuses to boot with the domain
    set and this missing). Set `PORTAL_COOKIE_DOMAIN` only if the apps domain is not under
    the portal host. Redeploy.
-5. **Verify.** `curl -sI https://anything.apps.mo.example.com/` shows the wildcard
-   certificate, and opening a published app signed out sends you through the portal's
-   sign-in and back to the app. Core logs a warning at boot if the wildcard record does
-   not resolve.
+5. **Verify.**
+   `curl -sv https://anything.apps.mo.example.com/ -o /dev/null 2>&1 | grep -E 'subject|issuer'`
+   shows the wildcard certificate, and opening a published app signed out sends you
+   through the portal's sign-in and back to the app. Core logs a warning at boot if the
+   wildcard record does not resolve.
 
-On a plain `docker compose` install with Caddy in front instead of Traefik, the same
-env applies; add a second site for `*.apps.<host>` that reverse-proxies to `portal:8080`,
-with either a certificate from your own CA (`tls cert.pem key.pem`) or Caddy's internal
-CA (`tls internal`) where browsers may show a warning.
+On a plain `docker compose` install with your own reverse proxy in front instead of
+Traefik, the same env applies; route `*.apps.<host>` to the portal's `PORT` (8080 in this
+compose file) with a certificate browsers trust, from a public CA or your organisation's
+CA. A self-signed or internal-CA certificate the browser does not trust is a hard failure
+there, not a warning to click through: the portal sends HSTS with `includeSubDomains`.
 
 What people publishing apps need to know is in
 [`docs/published-apps.md`](../../docs/published-apps.md).
@@ -906,7 +911,7 @@ docker ps --format '{{.Names}}\t{{.Status}}' | grep qm-omniloy
 docker exec qm-omniloy-core id
 docker exec qm-omniloy-core docker ps --format '{{.Names}}' | head -3
 docker exec qm-omniloy-core printenv | grep -E 'QM_CORE_CONTAINER|ORG_BRAND|SWARMS|EAGER|SUGGESTED|SECURITY_SCREEN'
-docker logs qm-omniloy-portal-1 2>&1 | grep -E 'sign-in broker on http://127.0.0.1:8099|public front door'
+docker logs qm-omniloy-portal 2>&1 | grep -E 'sign-in broker on http://127.0.0.1:8099|public front door'
 curl -s -o /dev/null -w '%{http_code}\n' https://mo.omniloy.com/idp/token
 ```
 

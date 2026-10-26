@@ -41,5 +41,7 @@ it with an editing panel beside it so you can ask for changes while you look at 
 - **Use relative paths** (`./assets/app.js`, `fetch("api/items")`) so the app works at
   both addresses. A root-relative path such as `/api/items` points at the instance itself
   when the app is served under `/d/<app-name>/`.
-- **Listen on port 8080.** The app's server receives requests already authenticated;
-  don't build your own sign-in on top.
+- **Listen on `0.0.0.0`, port 8080** (or `$PORT`). The app's server receives requests
+  already authenticated; don't build your own sign-in on top.
+- **No WebSockets yet.** Upgrade requests are not passed through to apps, so realtime
+  features built on WebSockets or socket.io fail; poll instead.

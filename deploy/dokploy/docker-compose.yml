@@ -148,6 +148,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/portal/Dockerfile
+    container_name: qm-omniloy-portal
     restart: unless-stopped
     depends_on: [core, web-ui]
     env_file:
