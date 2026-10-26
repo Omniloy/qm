@@ -179,20 +179,23 @@ docker exec qm-omniloy-core printenv | grep YOUR_KEY
 
 ### Identity and URLs
 
-| Key                          | Value                                                                               |
-| ---------------------------- | ----------------------------------------------------------------------------------- |
-| `ORG_ID`                     | org slug, e.g. `omniloy`                                                            |
-| `PUBLIC_URL`                 | portal origin, e.g. `https://qm.example.com` — no trailing slash                    |
-| `PUBLIC_HOST`                | the same host without the scheme; Traefik's router rule                             |
-| `HARNESS`                    | `pi`, `claude`, `codex`, or `opencode`                                              |
-| `RELAY_HOST`                 | optional; host for the browser-extension relay, e.g. `relay.qm.example.com`         |
-| `RELAY_PUBLIC_URL`           | optional; the same host as a URL, e.g. `https://relay.qm.example.com`               |
-| `HARNESS_SECURITY_POSTURE`   | `strict`, `auto`, or `dangerous`                                                    |
-| `LOCAL_SANDBOX_IMAGE`        | `qm-sandbox-local:latest`                                                           |
-| `LOCAL_SANDBOX_NETWORK_POOL` | optional; IPv4 CIDR the per-scope `/28` networks come from, default `198.18.0.0/16` |
-| `DATA_HOST_DIR`              | host path for core's data, e.g. `/opt/qm/data`; it _is_ `DATA_DIR` — see above      |
-| `ADMIN_GRANTS`               | `someone@example.com:org_admin`, comma-separated                                    |
-| `DOCKER_GID`                 | optional; group id of `/var/run/docker.sock`, default `998`                         |
+| Key                          | Value                                                                                                                                                                        |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ORG_ID`                     | org slug, e.g. `omniloy`                                                                                                                                                     |
+| `PUBLIC_URL`                 | portal origin, e.g. `https://qm.example.com` — no trailing slash                                                                                                             |
+| `PUBLIC_HOST`                | the same host without the scheme; Traefik's router rule                                                                                                                      |
+| `HARNESS`                    | `pi`, `claude`, `codex`, or `opencode`                                                                                                                                       |
+| `RELAY_HOST`                 | optional; host for the browser-extension relay, e.g. `relay.qm.example.com`                                                                                                  |
+| `RELAY_PUBLIC_URL`           | optional; the same host as a URL, e.g. `https://relay.qm.example.com`                                                                                                        |
+| `HARNESS_SECURITY_POSTURE`   | `strict`, `auto`, or `dangerous`                                                                                                                                             |
+| `LOCAL_SANDBOX_IMAGE`        | `qm-sandbox-local:latest`                                                                                                                                                    |
+| `LOCAL_SANDBOX_NETWORK_POOL` | optional; IPv4 CIDR the per-scope `/28` networks come from, default `198.18.0.0/16`                                                                                          |
+| `DATA_HOST_DIR`              | host path for core's data, e.g. `/opt/qm/data`; it _is_ `DATA_DIR` — see above                                                                                               |
+| `ADMIN_GRANTS`               | `someone@example.com:org_admin`, comma-separated                                                                                                                             |
+| `DOCKER_GID`                 | optional; group id of `/var/run/docker.sock`, default `998`                                                                                                                  |
+| `DEPLOY_APPS_DOMAIN`         | optional; wildcard domain for published apps, e.g. `apps.qm.example.com` — see [Published apps on their own subdomains](#published-apps-on-their-own-subdomains-recommended) |
+| `AWS_DEPLOY_GATE_SECRET`     | required with `DEPLOY_APPS_DOMAIN`; `openssl rand -hex 32`, any deploy provider                                                                                              |
+| `PORTAL_COOKIE_DOMAIN`       | only when `DEPLOY_APPS_DOMAIN` is not under `PUBLIC_HOST`                                                                                                                    |
 
 `ADMIN_GRANTS` is the only source of admin identity. `org_admin` is the sole accepted
 role, and the principal is whatever `OIDC_PRINCIPAL_CLAIM` yields — the lowercased
@@ -546,6 +549,98 @@ To enable it:
 
 Leave both unset and the relay simply is not exposed; the built-in and hosted browsers are
 unaffected.
+
+## Published apps on their own subdomains (recommended)
+
+Without this, every app people publish is served signed-in at `/d/<app>/` on the portal,
+under a sandbox CSP that gives the page an opaque (`null`) origin so app code cannot act
+on the portal's origin. That is safe but breaks almost every modern app: bundlers emit
+`<script type="module" crossorigin>` and `<link crossorigin>`, and a `null`-origin page
+fetches those without the sign-in cookie, so they 401 and the console reports a CORS
+error on a blank page. The same happens to any `fetch()` the app makes to its own API.
+
+`DEPLOY_APPS_DOMAIN` gives every app its own origin instead —
+`https://<app>.<apps domain>/` — with portal single sign-on, sharing and the
+request-access page, and live editing for the owner. It is one wildcard DNS record and one
+wildcard certificate for the whole instance; publishing a new app needs no DNS change.
+`/d/<app>/` keeps working and redirects there.
+
+**Pick the apps domain under the portal host** — for a portal at `mo.example.com`, use
+`apps.mo.example.com`. The portal then scopes its session cookie to `mo.example.com`
+on its own. An apps domain beside the portal (`apps.example.com`) forces
+`PORTAL_COOKIE_DOMAIN=example.com`, which sends the session cookie to every host under
+`example.com`, including unrelated sites.
+
+1. **DNS.** One record, DNS-only (grey cloud on Cloudflare):
+   `*.apps.mo.example.com  A  <this box>`.
+2. **Wildcard certificate.** The `letsencrypt` resolver Dokploy configures uses the
+   HTTP-01 challenge, which cannot issue wildcards, and `traefik.yml` is Dokploy's to
+   own. Issue the certificate outside Traefik with the DNS-01 challenge and hand it to
+   Traefik's file provider. With a Cloudflare token that can edit the zone's DNS, stored
+   root-only in `/root/.secrets/cloudflare-dns-token`:
+
+   ```bash
+   DOMAIN=apps.mo.example.com
+   docker run --rm -v /root/lego:/data \
+     -e CLOUDFLARE_DNS_API_TOKEN="$(cat /root/.secrets/cloudflare-dns-token)" \
+     goacme/lego:v4.19.2 --path /data --email you@example.com --accept-tos \
+     --dns cloudflare --dns.resolvers 1.1.1.1:53 -d "*.$DOMAIN" run
+   install -D -m 600 /root/lego/certificates/_.$DOMAIN.crt /etc/dokploy/traefik/dynamic/qm-apps-certs/wildcard.crt
+   install -D -m 600 /root/lego/certificates/_.$DOMAIN.key /etc/dokploy/traefik/dynamic/qm-apps-certs/wildcard.key
+   ```
+
+   Renew from cron (`renew --days 30` instead of `run`), copy the files again when they
+   change, and `touch` the route file below so Traefik reloads them. Other DNS providers
+   work the same way with the matching `--dns` provider in lego.
+
+3. **Route.** `/etc/dokploy/traefik/dynamic/qm-apps.yml` sends every app host to the
+   portal, which recognises app hosts and forwards them to core's gate:
+
+   ```yaml
+   tls:
+     certificates:
+       - certFile: /etc/dokploy/traefik/dynamic/qm-apps-certs/wildcard.crt
+         keyFile: /etc/dokploy/traefik/dynamic/qm-apps-certs/wildcard.key
+   http:
+     routers:
+       qm-apps-https:
+         rule: HostRegexp(`^[a-z0-9-]+\.apps\.mo\.example\.com$`)
+         entryPoints: [websecure]
+         service: qm-apps
+         tls: {}
+       qm-apps-http:
+         rule: HostRegexp(`^[a-z0-9-]+\.apps\.mo\.example\.com$`)
+         entryPoints: [web]
+         middlewares: [redirect-to-https]
+         service: qm-apps
+     services:
+       qm-apps:
+         loadBalancer:
+           servers:
+             - url: http://<project>-portal-1:8080
+           passHostHeader: true
+   ```
+
+   Never point the wildcard at an app container or at core's relay route: the gate that
+   checks who may open an app runs behind the portal.
+
+4. **Env.** Set `DEPLOY_APPS_DOMAIN=apps.mo.example.com` and
+   `AWS_DEPLOY_GATE_SECRET=$(openssl rand -hex 32)` (the gate's on-switch; the name is
+   historical and applies to every deploy provider — core refuses to boot with the domain
+   set and this missing). Set `PORTAL_COOKIE_DOMAIN` only if the apps domain is not under
+   the portal host. Redeploy.
+5. **Verify.** `curl -sI https://anything.apps.mo.example.com/` shows the wildcard
+   certificate, and opening a published app signed out sends you through the portal's
+   sign-in and back to the app. Core logs a warning at boot if the wildcard record does
+   not resolve.
+
+On a plain `docker compose` install with Caddy in front instead of Traefik, the same
+env applies; add a second site for `*.apps.<host>` that reverse-proxies to `portal:8080`,
+with either a certificate from your own CA (`tls cert.pem key.pem`) or Caddy's internal
+CA (`tls internal`) where browsers may show a warning.
+
+What people publishing apps need to know is in
+[`docs/published-apps.md`](../../docs/published-apps.md).
 
 ## Deploying
 
