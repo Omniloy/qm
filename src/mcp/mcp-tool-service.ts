@@ -383,10 +383,10 @@ export function createMcpToolService(opts: {
   }
 
   const unsubscribe = opts.servers.onChange(() => {
-    void refresh();
+    void refresh().catch((e: unknown) => swallow("mcp refresh after server change", e));
   });
   const timer = setInterval(() => {
-    if (!closed) void refresh();
+    if (!closed) void refresh().catch((e: unknown) => swallow("mcp scheduled refresh", e));
   }, opts.refreshIntervalMs ?? REFRESH_INTERVAL_MS);
   timer.unref?.();
   const catalogTimer = opts.oauth
@@ -395,7 +395,7 @@ export function createMcpToolService(opts: {
       }, opts.catalogSyncIntervalMs ?? CATALOG_SYNC_INTERVAL_MS)
     : undefined;
   catalogTimer?.unref?.();
-  void refresh();
+  void refresh().catch((e: unknown) => swallow("mcp initial refresh", e));
 
   return {
     toolDefs: () => snapshot,
