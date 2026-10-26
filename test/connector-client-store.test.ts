@@ -4,6 +4,7 @@ import { createHash, createCipheriv, randomBytes } from "node:crypto";
 import { createMemoryConfigStore } from "../src/resolution/config-store.ts";
 import { scopeId } from "../src/types.ts";
 import {
+  createConnectorClientConfigured,
   createConnectorClientResolver,
   encryptSecret,
   decryptSecret,
@@ -137,4 +138,30 @@ test("deleting a connector record falls back to env / unconfigured", async () =>
   await store.deleteConnectorClient(orgScope("default-org"), "google");
   assert.equal((await store.listConnectorClients(orgScope("default-org"))).length, 0);
   assert.equal(await store.getConnectorClientSecret(orgScope("default-org"), "google"), null);
+});
+
+test("connector configured check follows the resolver's precedence without decrypting, and surfaces read failures", async () => {
+  const store = createMemoryConfigStore("default-org", { connectorSecretKey: "k" });
+  const configured = createConnectorClientConfigured({
+    list: (scope) => store.listConnectorClients(scope as ReturnType<typeof orgScope>),
+    orgScopeId: orgScope,
+    secrets: createEnvSecretSource(envWithSlack),
+  });
+  assert.equal(await configured("microsoft"), false);
+  assert.equal(await configured("slack"), true, "an environment client counts");
+  await store.setConnectorClient(orgScope("default-org"), "microsoft", { clientId: "m", clientSecret: "s" });
+  assert.equal(await configured("microsoft"), true);
+  await store.setConnectorClient(orgScope("default-org"), "slack", {
+    clientId: "sl",
+    clientSecret: "s",
+    enabled: false,
+  });
+  assert.equal(await configured("slack"), false, "a disabled stored client wins over the environment");
+  const failing = createConnectorClientConfigured({
+    list: async () => {
+      throw new Error("database unavailable");
+    },
+    orgScopeId: orgScope,
+  });
+  await assert.rejects(failing("microsoft"), /database unavailable/);
 });

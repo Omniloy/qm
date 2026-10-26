@@ -362,6 +362,7 @@ export const PROVIDERS: Record<string, OAuthProviderConfig> = {
         "Under Certificates & secrets, create a client secret and copy its Value.",
         "Under API permissions, add the Microsoft Graph delegated permissions listed below, then Grant admin consent for the tenant (ChannelMessage.Read.All and OnlineMeetingTranscript.Read.All need it).",
         "Paste the Application (client) ID and the client secret below, plus the Directory (tenant) ID (a GUID) for a single-tenant app.",
+        "Save. The Microsoft 365 tools server is set up automatically on deployments that run the ms365-mcp sidecar (MS365_MCP_URL), so there is no MCP server to register.",
       ],
       scopesRationale:
         "Delegated Graph permissions back the Microsoft 365 tools (Outlook mail and calendar, Teams chats, channels and meeting transcripts, OneDrive and SharePoint) as the connecting user; offline_access issues the refresh token and openid/profile/email identify the account.",

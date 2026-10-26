@@ -6,6 +6,7 @@
 // connector credentials — reachable only through core, never injected into sandboxes.
 
 import type { DurableMap } from "../persistence/durable-map.ts";
+import { NO_MANAGED_MCP_SERVERS, type ManagedMcpServers } from "./managed-mcp-servers.ts";
 
 export type McpServerAuthMode = "none" | "bearer" | "client-credentials" | "oauth";
 
@@ -27,6 +28,7 @@ export interface McpServer {
   resolvedIconCheckedAt?: number;
   readOnly: boolean;
   enabled: boolean;
+  managed?: true;
   updatedAt: number;
   updatedBy: string;
 }
@@ -68,29 +70,43 @@ export interface McpServerStore {
   put(server: McpServer): Promise<void>;
   updateIf(id: string, fn: (server: McpServer) => McpServer | null): Promise<void>;
   delete(id: string): Promise<void>;
+  isManaged(id: string): boolean;
   onChange(listener: () => void): () => void;
 }
 
-export function createMcpServerStore(backing: DurableMap<McpServer>): McpServerStore {
+export function createMcpServerStore(
+  backing: DurableMap<McpServer>,
+  managed: ManagedMcpServers = NO_MANAGED_MCP_SERVERS,
+): McpServerStore {
   const listeners = new Set<() => void>();
   const emit = () => {
     for (const l of listeners) l();
   };
   const clean = (server: McpServer): McpServer => ({ ...server, name: singleLineName(server.name) || server.id });
+  const writable = (id: string) => {
+    if (managed.ids.has(id)) throw new Error(`MCP server ${id} is managed by the deployment and can't be changed`);
+  };
   return {
     async list() {
-      const entries = await backing.entries();
-      return entries.map(([, v]) => clean(v)).sort((a, b) => a.id.localeCompare(b.id));
+      const [entries, fixed] = await Promise.all([backing.entries(), managed.list()]);
+      return [...fixed, ...entries.map(([, v]) => v).filter((server) => !managed.ids.has(server.id))]
+        .map(clean)
+        .sort((a, b) => a.id.localeCompare(b.id));
     },
     get: async (id) => {
-      const server = await backing.get(id);
+      const server = managed.ids.has(id)
+        ? (await managed.list()).find((candidate) => candidate.id === id)
+        : await backing.get(id);
       return server ? clean(server) : null;
     },
+    isManaged: (id) => managed.ids.has(id),
     put: async (server) => {
+      writable(server.id);
       await backing.put(server.id, clean(server));
       emit();
     },
     updateIf: async (id, fn) => {
+      writable(id);
       let changed = false;
       const apply = (current: McpServer): McpServer => {
         const next = fn(current);
@@ -109,6 +125,7 @@ export function createMcpServerStore(backing: DurableMap<McpServer>): McpServerS
       if (changed) emit();
     },
     delete: async (id) => {
+      writable(id);
       await backing.delete(id);
       emit();
     },

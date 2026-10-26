@@ -383,9 +383,14 @@ core sends on each call straight to Microsoft Graph; the token never enters a sa
 read-only with its logs on a size-limited tmpfs at `LOG_LEVEL=warn` (the server logs
 tool parameters at info), drops all capabilities, and sets
 `MS365_MCP_REQUIRE_CONFIRM=true` so calls that change or delete data need an explicit
-`confirm: true`. Core sets `MCP_PER_USER_HTTP_HOSTS: ms365-mcp`, which lets a per-person
-MCP server use plain HTTP on that one hostname; every other per-person server still needs
-HTTPS. If the sidecar starts after core, core lists its tools again within 30 seconds.
+`confirm: true`. Core sets `MS365_MCP_URL: http://ms365-mcp:3000/mcp`. Once the
+Microsoft 365 OAuth app is saved, core sets up the `microsoft-365` MCP server against
+that URL by itself (per person, credential host `graph.microsoft.com`, not read-only,
+discovery mode); it shows as **Managed** under **Connectors** → **MCP servers** and
+can't be edited there. Discovery offers the agent three small tools (search, describe,
+call) instead of the 53 Graph tools, whose schemas would otherwise cost tens of
+thousands of tokens on every turn. If the sidecar starts after core, core lists its
+tools again within 30 seconds.
 
 Setup, once (no Dokploy env var is needed):
 
@@ -401,15 +406,22 @@ Setup, once (no Dokploy env var is needed):
    empty, core falls back to `MICROSOFT_TENANT_ID` if a deployment sets it. The same
    rule applies to Google: an admin-card Google client with an empty **Workspace domain**
    uses `GOOGLE_WORKSPACE_DOMAIN` when it is set.
-3. In **Connectors** → **MCP servers**, add the server with ID exactly `microsoft-365`
-   (the skills refer to its `microsoft-365_*` tools), URL `http://ms365-mcp:3000/mcp`,
-   auth **None**, **Per person** with credential host `graph.microsoft.com`,
-   **Read only** off, and **Discovery** on. Discovery offers the agent three small
-   tools (search, describe, call) instead of the 53 Graph tools, whose schemas would
-   otherwise cost tens of thousands of tokens on every turn.
-4. If outbound traffic is allowlisted, allow `graph.microsoft.com`,
+3. If outbound traffic is allowlisted, allow `graph.microsoft.com`,
    `login.microsoftonline.com`, and the tenant's `<tenant>.sharepoint.com` and
    `<tenant>-my.sharepoint.com` hosts.
+
+If people can connect Microsoft 365 in **Keychain** but the agent has no Microsoft
+tools, check **Connectors** → **MCP servers**. No **Microsoft 365** row marked
+**Managed** means `MS365_MCP_URL` is missing from core's environment or the OAuth app
+is disabled; a managed row with no tools means `ms365-mcp` is not running or not healthy
+on the `qm` network. A `microsoft-365` server registered by hand before this was
+automatic is never served while `MS365_MCP_URL` is set, but it comes back with its old
+settings if `MS365_MCP_URL` is unset or core is rolled back. Remove it once the managed
+server is live: in the core database run
+`DELETE FROM mcp_servers WHERE id = 'microsoft-365';` (the admin console can't delete it
+while `MS365_MCP_URL` is set).
+`MS365_MCP_URL` replaces the earlier `MCP_PER_USER_HTTP_HOSTS` setting, which core no
+longer reads.
 
 People then connect from **Keychain**. The gear on the Microsoft 365 card chooses which
 apps the agent is offered (all start on); a turned-off app's tools never appear in

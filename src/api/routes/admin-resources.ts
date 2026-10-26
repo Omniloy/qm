@@ -35,7 +35,8 @@ import { parseBotLedger } from "../../surface-cache/channel-policy-store.ts";
 import { authorizeUrl, PROVIDERS, type ConsentMode } from "../../connectors/oauth.ts";
 import { encodeRef, serviceCredRef } from "../../acl/resource-ref.ts";
 import { audit } from "./shared.ts";
-import { errMessage, reportFailure } from "../../util/errors.ts";
+import { errMessage, reportFailure, swallow } from "../../util/errors.ts";
+import { withTimeout } from "../../util/async.ts";
 import {
   DEFAULT_SECURITY_SCREEN_RUBRIC,
   parseSecurityPosture,
@@ -199,6 +200,16 @@ const credentialServices = async (
 
 const MAX_ORDERS_CHARS = 20_000;
 const MAX_SOUL_CHARS = 100_000;
+
+const MCP_REFRESH_WAIT_MS = 5_000;
+
+async function refreshMcpTools(deps: ServerDeps): Promise<void> {
+  const service = deps.mcpToolService;
+  if (!service) return;
+  await withTimeout(() => service.refresh(), MCP_REFRESH_WAIT_MS, "mcp refresh after OAuth app change").catch(
+    (e: unknown) => swallow("mcp refresh after OAuth app change", e),
+  );
+}
 
 function channelContainer(scope: string): string | undefined {
   const { kind, ref } = parseScopeId(scope);
@@ -1042,6 +1053,7 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
       if (!PROVIDERS[provider]) return { error: `unknown OAuth provider: ${provider}` };
       if (b.delete === true) {
         await deps.config!.deleteConnectorClient(scope, provider);
+        await refreshMcpTools(deps);
         return { ok: true };
       }
       if (typeof b.clientId !== "string" || typeof b.clientSecret !== "string") {
@@ -1073,6 +1085,7 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
         return { error: errMessage(e), code: "connector_invalid" };
       }
       await deps.config!.setConnectorClient(scope, provider, input);
+      await refreshMcpTools(deps);
       return { ok: true };
     },
   },

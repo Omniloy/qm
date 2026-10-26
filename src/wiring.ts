@@ -222,6 +222,7 @@ import { createMemoryService, type MemoryService } from "./memory/memory-service
 import { createConfiguredMemoryService } from "./memory/provider-factory.ts";
 import { createPostgresMemoryService } from "./memory/postgres-memory-service.ts";
 import { createMcpServerStore, type McpServer, type McpServerStore } from "./mcp/mcp-server-store.ts";
+import { managedMcpServers } from "./mcp/managed-mcp-servers.ts";
 import { createMcpToolService, type McpToolService } from "./mcp/mcp-tool-service.ts";
 import {
   createMcpOAuthStores,
@@ -306,6 +307,7 @@ import {
 import { createFeatureFlagStore, type FeatureFlagRecord, type FeatureFlagStore } from "./feature-flags.ts";
 import { makeRefresh, type OAuthClientResolver, type OAuthState } from "./connectors/oauth.ts";
 import {
+  createConnectorClientConfigured,
   createConnectorClientResolver,
   deriveConnectorKey,
   type SecretKey,
@@ -946,7 +948,24 @@ export function buildApp(
       return memorySessions.store.getEntries(sessionId, { limit: MEMORY_CAPTURE_ENTRY_WINDOW });
     },
   });
-  const mcpServers = createMcpServerStore(artifactMap<McpServer>("mcp_servers"));
+  const secretSource =
+    config.secretsBackend === "aws"
+      ? createLayeredSecretSource(
+          createEnvSecretSource(),
+          createAwsSecretsManagerSource({ prefix: config.secretsPrefix }),
+        )
+      : createEnvSecretSource();
+  const mcpServers = createMcpServerStore(
+    artifactMap<McpServer>("mcp_servers"),
+    managedMcpServers({
+      ms365McpUrl: config.ms365McpUrl,
+      providerConfigured: createConnectorClientConfigured({
+        list: (scope) => configStore.listConnectorClients(scope),
+        orgScopeId: (o) => scopeId("org", o),
+        secrets: secretSource,
+      }),
+    }),
+  );
   const errors = withErrorReporting(config.databaseUrl ? createPostgresErrorLog(config.databaseUrl) : createErrorLog());
   const sandboxOnError = (e: { category: string; code: string; message: string; scopeLabel?: string }) =>
     errors.record({
@@ -1294,13 +1313,6 @@ export function buildApp(
     withLegacyMutation: (scope, action) => sandboxResources.withLegacyMutation(scope, action),
     hasLiveWork: async (scope) => !!processes && (await processes.liveByScope(scope)).length > 0,
   });
-  const secretSource =
-    config.secretsBackend === "aws"
-      ? createLayeredSecretSource(
-          createEnvSecretSource(),
-          createAwsSecretsManagerSource({ prefix: config.secretsPrefix }),
-        )
-      : createEnvSecretSource();
   const resolveClient: OAuthClientResolver = createConnectorClientResolver({
     reader: configStore,
     orgScopeId: (o) => scopeId("org", o),
@@ -3153,7 +3165,6 @@ export function serverDeps(
   return {
     externalSlackPolicies: config.externalSlackPolicies,
     production: config.production,
-    ...(config.mcpPerUserHttpHosts ? { mcpPerUserHttpHosts: config.mcpPerUserHttpHosts } : {}),
     checkReadiness: built.checkReadiness,
     ...(built.backgroundOwnership
       ? {

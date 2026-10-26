@@ -75,7 +75,7 @@ export interface Config {
     "aws" | "local" | "sprites" | "smolmachines" | "e2b" | "modal" | "porter" | "agent37" | "superserve";
   deployProvider: "docker" | "aws" | "fly" | "porter";
   egressServiceHosts?: string[];
-  mcpPerUserHttpHosts?: string[];
+  ms365McpUrl?: string;
   brandingDefault?: OrgBranding;
   modelId?: string;
   opencodeModel?: string;
@@ -1072,6 +1072,19 @@ function securityScreenBackendEnvStrict(value: string | undefined): Config["secu
   );
 }
 
+function mcpServerUrlEnv(name: string, value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    throw new Error(`${name} must be an http(s) URL, e.g. http://ms365-mcp:3000/mcp`);
+  }
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    throw new Error(`${name} must be an http(s) URL without credentials, query, or fragment`);
+  }
+  return url.href;
+}
+
 function csvPaths(value: string | undefined): string[] | undefined {
   if (value === undefined) return undefined;
   if (boolEnv(value) === false) return [];
@@ -1481,13 +1494,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
             .filter(Boolean),
         }
       : {}),
-    ...(env.MCP_PER_USER_HTTP_HOSTS
-      ? {
-          mcpPerUserHttpHosts: env.MCP_PER_USER_HTTP_HOSTS.split(",")
-            .map((s) => s.trim().toLowerCase())
-            .filter(Boolean),
-        }
-      : {}),
+    ...(env.MS365_MCP_URL?.trim() ? { ms365McpUrl: mcpServerUrlEnv("MS365_MCP_URL", env.MS365_MCP_URL) } : {}),
     ...(orgBrandingFromEnv(env) ? { brandingDefault: orgBrandingFromEnv(env) } : {}),
     ...(env.PI_MODEL ? { modelId: canonicalModelId(env.PI_MODEL) } : {}),
     ...(env.OPENCODE_MODEL || env.PI_MODEL

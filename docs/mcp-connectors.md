@@ -51,9 +51,10 @@ Do not put user-specific data into names, descriptions, or schemas.
 
 `credentialHost` explicitly authorizes sending that connector's user token to the
 registered server. Only register a trusted service permitted to receive those
-tokens. Per-user endpoints require HTTPS, except on loopback for local development
-and on the exact hostnames an operator lists in `MCP_PER_USER_HTTP_HOSTS`
-(comma-separated), for a sidecar reachable only on a private network.
+tokens. Per-user endpoints an admin registers require HTTPS, except on loopback for
+local development. The managed Microsoft 365 server below is the one exception: its
+URL comes from deployment config, so it can reach a sidecar over plain HTTP on a
+private network.
 
 Tools of a `per-user` server act as one person, so they follow the same rule as that
 person's connector credentials: they are offered and callable only in the person's own DM
@@ -103,6 +104,33 @@ the same refusals and Open-membership check, the write approval keyed on the rea
 with the real arguments shown, the same audit records, result handling and stop
 behaviour. The lookups themselves are not held for approval. When no tool of the server is
 available (no access, no account, every app off), the three tools are not offered.
+
+## Managed Microsoft 365 server
+
+A deployment that runs the Microsoft 365 sidecar sets `MS365_MCP_URL` on core (the
+Dokploy compose sets `http://ms365-mcp:3000/mcp`). While that is set and the
+`microsoft` OAuth app is configured and enabled (in Admin → OAuth apps, or through
+`MICROSOFT_OAUTH_CLIENT_ID` and `MICROSOFT_OAUTH_CLIENT_SECRET`), the server store includes a
+managed `microsoft-365` server: that URL, `auth: "none"`, `per-user` with credential
+host `graph.microsoft.com`, not read-only, and `toolMode: "discovery"`. It has no
+stored row: `src/mcp/managed-mcp-servers.ts` derives it on every read, so its settings
+can't drift and it disappears as soon as either condition stops holding. Saving or
+removing an OAuth app refreshes the tool service at once; other instances pick the
+change up on their next scheduled refresh.
+
+Admins see it marked **Managed** in the MCP servers list and can't edit or remove it;
+while `MS365_MCP_URL` is set the admin API answers `409` for the `microsoft-365` id,
+whether or not the app is configured. Disabling or removing the Microsoft 365 OAuth app
+turns it off. A `microsoft-365` server registered by hand before this existed stays in
+the database but is never served while `MS365_MCP_URL` is set, so it can't stand in for
+the managed one. The store itself refuses to write or delete a managed id, not only the
+admin API. That stale row comes back, with its old settings, if `MS365_MCP_URL` is ever
+unset or core is rolled back to a version without managed servers. To remove it, delete
+it under **Connectors** → **MCP servers** before setting `MS365_MCP_URL`, or afterwards
+in Postgres: `DELETE FROM mcp_servers WHERE id = 'microsoft-365';` (safe while the
+variable is set, because the managed server has no row). If the OAuth app lookup itself fails (for example the database is
+unreachable), reading the server list fails rather than dropping the server, and the
+tool service keeps its last tools until the next successful refresh.
 
 ## Each person signs in (MCP Authorization)
 

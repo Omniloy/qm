@@ -22,6 +22,7 @@ export type McpServer = {
   hasCatalog?: boolean;
   readOnly: boolean;
   enabled: boolean;
+  managed?: boolean;
   toolMode?: "full" | "discovery";
   updatedBy?: string;
 };
@@ -284,7 +285,7 @@ function rows() {
           <div class="credential-title"><strong>${s.name}</strong><span class="credential-slug">${s.id}</span></div>
           <div class="hint">${s.url}${s.updatedBy ? " · by " + s.updatedBy : ""}</div>
           <div class="credential-badges">
-            ${badge(s.enabled ? "Enabled" : "Disabled", s.enabled ? "ok" : "warn")}${badge(AUTH_LABELS[s.auth], "info")}${badge(s.credentialScope === "per-user" ? "Each person's account" : "Shared identity", "muted")}${badge(tools + " tool" + (tools === 1 ? "" : "s"), tools ? "ok" : "muted")}${s.readOnly ? badge("Read-only", "muted") : nothing}${secretMissing ? badge("Secret missing", "err") : nothing}${s.auth === "oauth" && s.oauth ? badge(hostOf(s.oauth.issuer), "muted") : nothing}${s.auth === "oauth" && !s.oauth ? badge("Not registered", "err") : nothing}${s.auth === "oauth" && !s.hasCatalog ? badge("No tools yet — connect or reconnect an account", "warn") : nothing}
+            ${s.managed ? badge("Managed", "info") : nothing}${badge(s.enabled ? "Enabled" : "Disabled", s.enabled ? "ok" : "warn")}${badge(AUTH_LABELS[s.auth], "info")}${badge(s.credentialScope === "per-user" ? "Each person's account" : "Shared identity", "muted")}${badge(tools + " tool" + (tools === 1 ? "" : "s"), tools ? "ok" : "muted")}${s.readOnly ? badge("Read-only", "muted") : nothing}${secretMissing ? badge("Secret missing", "err") : nothing}${s.auth === "oauth" && s.oauth ? badge(hostOf(s.oauth.issuer), "muted") : nothing}${s.auth === "oauth" && !s.oauth ? badge("Not registered", "err") : nothing}${s.auth === "oauth" && !s.hasCatalog ? badge("No tools yet — connect or reconnect an account", "warn") : nothing}
           </div>
         </div>
         <div class="credential-actions">
@@ -296,10 +297,19 @@ function rows() {
                     Re-register client
                   </button>`
               : nothing
-          }<button type="button" @click=${() => mcp.open(s)}>Edit</button
-          ><button type="button" class="rowbtn danger" aria-label=${"Remove " + s.name} @click=${() => mcp.remove(s)}>
-            Remove
-          </button>
+          }${
+            s.managed
+              ? nothing
+              : html`<button type="button" @click=${() => mcp.open(s)}>Edit</button
+                  ><button
+                    type="button"
+                    class="rowbtn danger"
+                    aria-label=${"Remove " + s.name}
+                    @click=${() => mcp.remove(s)}
+                  >
+                    Remove
+                  </button>`
+          }
         </div>
       </div>`;
     },

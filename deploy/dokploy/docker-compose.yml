@@ -71,7 +71,7 @@ services:
       PORTAL_SESSION_SECRET: ${PORTAL_SESSION_SECRET}
       DEPLOY_APPS_DOMAIN: ${DEPLOY_APPS_DOMAIN:-}
       AWS_DEPLOY_GATE_SECRET: ${AWS_DEPLOY_GATE_SECRET:-}
-      MCP_PER_USER_HTTP_HOSTS: ms365-mcp
+      MS365_MCP_URL: http://ms365-mcp:3000/mcp
     volumes:
       - ${DATA_HOST_DIR}:${DATA_HOST_DIR}
       - /var/run/docker.sock:/var/run/docker.sock
