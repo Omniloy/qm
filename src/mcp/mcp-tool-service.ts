@@ -105,6 +105,8 @@ export function createMcpToolService(opts: {
   let snapshot: McpToolDescriptor[] = [];
   let closed = false;
   let retry: ReturnType<typeof setTimeout> | undefined;
+  const lastCatalog = new Map<string, McpCatalogTool[]>();
+  const listFailures = new Map<string, number>();
 
   function record(action: string, resource: string, status: string, principalId?: string): void {
     opts.audit?.record({
@@ -151,7 +153,7 @@ export function createMcpToolService(opts: {
   }
 
   function describe(server: McpServer, tools: McpCatalogTool[]): McpToolDescriptor[] {
-    const personal = server.credentialScope === "per-user" || server.auth === "oauth";
+    const personal = server.auth !== "oauth" && server.credentialScope === "per-user";
     return tools.slice(0, MAX_TOOLS_PER_SERVER).map((tool) => ({
       name: `${server.id}_${tool.name}`.replace(/[^a-zA-Z0-9_-]/g, "_"),
       serverId: server.id,
@@ -161,7 +163,7 @@ export function createMcpToolService(opts: {
       readOnly: server.readOnly,
       perUser: personal,
       approvalRequired: personal && !server.readOnly && tool.readOnlyHint !== true,
-      ...(server.credentialScope === "per-user" && server.credentialHost
+      ...(personal && server.credentialHost
         ? { credentialHost: server.credentialHost, credentialAccountType: server.credentialAccountType ?? "default" }
         : {}),
     }));
@@ -185,34 +187,55 @@ export function createMcpToolService(opts: {
     return (await opts.servers.list()).filter((s) => s.enabled);
   }
 
+  async function listCatalog(server: McpServer, audited: boolean): Promise<McpCatalogTool[] | undefined> {
+    try {
+      const raw = server.auth === "oauth" ? await catalogTools(server) : await clientFor(server).listTools();
+      lastCatalog.set(server.id, raw);
+      const recovered = listFailures.delete(server.id);
+      if (audited || recovered) record("list", server.id, `ok tools=${raw.length}`);
+      return raw;
+    } catch (e) {
+      const failures = (listFailures.get(server.id) ?? 0) + 1;
+      listFailures.set(server.id, failures);
+      if (audited || failures === 1) record("list", server.id, `error: ${errMessage(e)}`);
+      return lastCatalog.get(server.id);
+    }
+  }
+
+  function scheduleListRetry(): void {
+    if (closed || retry || !listFailures.size) return;
+    const attempts = Math.max(...listFailures.values());
+    const delay = Math.min((opts.listRetryMs ?? LIST_RETRY_MS) * 2 ** (attempts - 1), REFRESH_INTERVAL_MS);
+    retry = setTimeout(() => {
+      retry = undefined;
+      if (!closed) void retryFailedListings().catch((e: unknown) => swallow("mcp list retry", e));
+    }, delay);
+    retry.unref?.();
+  }
+
+  async function retryFailedListings(): Promise<void> {
+    const servers = await enabledServers();
+    for (const server of servers.filter((s) => listFailures.has(s.id))) {
+      const raw = await listCatalog(server, false);
+      if (raw) byServer.set(server.id, describe(server, raw));
+    }
+    publish(servers);
+    scheduleListRetry();
+  }
+
   async function refresh(): Promise<void> {
     const servers = await enabledServers();
+    const ids = new Set(servers.map((server) => server.id));
+    for (const id of lastCatalog.keys()) if (!ids.has(id)) lastCatalog.delete(id);
+    for (const id of listFailures.keys()) if (!ids.has(id)) listFailures.delete(id);
     const next = new Map<string, McpToolDescriptor[]>();
-    let failed = false;
     for (const server of servers) {
-      try {
-        const tools = describe(
-          server,
-          server.auth === "oauth" ? await catalogTools(server) : await clientFor(server).listTools(),
-        );
-        next.set(server.id, tools);
-        record("list", server.id, `ok tools=${tools.length}`);
-      } catch (e) {
-        failed = true;
-        const previous = byServer.get(server.id);
-        if (previous) next.set(server.id, previous);
-        record("list", server.id, `error: ${errMessage(e)}`);
-      }
+      const raw = await listCatalog(server, true);
+      if (raw) next.set(server.id, describe(server, raw));
     }
     byServer = next;
     publish(servers);
-    if (failed && !closed && !retry) {
-      retry = setTimeout(() => {
-        retry = undefined;
-        if (!closed) void refresh();
-      }, opts.listRetryMs ?? LIST_RETRY_MS);
-      retry.unref?.();
-    }
+    scheduleListRetry();
   }
 
   async function syncCatalogs(): Promise<void> {

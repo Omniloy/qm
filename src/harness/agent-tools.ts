@@ -4386,7 +4386,10 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
   });
   return active.map((t) =>
     withRuntimeBarrier(
-      withToolBodyTiming(abandonOnStop(withToolApprovalGate(t, ref, { recordCall, recordResult })), ref),
+      withToolBodyTiming(
+        abandonOnStop(withToolApprovalGate(t, ref, { recordCall, recordResult }, mcpNames.has(t.name))),
+        ref,
+      ),
       ref,
     ),
   );
@@ -4394,6 +4397,12 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
 
 const TOOL_APPROVAL_EXEMPT = new Set(["finish_silently"]);
 const TOOL_APPROVAL_REASON = "this tool call requires human approval";
+const APPROVAL_ARGUMENTS_MAX_CHARS = 1200;
+
+function approvalArguments(params: unknown): string {
+  const json = JSON.stringify(params ?? {});
+  return json.length > APPROVAL_ARGUMENTS_MAX_CHARS ? `${headSlice(json, APPROVAL_ARGUMENTS_MAX_CHARS)}…` : json;
+}
 
 function withToolApprovalGate(
   tool: ToolDefinition,
@@ -4407,6 +4416,7 @@ function withToolApprovalGate(
       isError?: boolean,
     ) => Promise<T>;
   },
+  showArguments = false,
 ): ToolDefinition {
   if (TOOL_APPROVAL_EXEMPT.has(tool.name)) return tool;
   const inner = tool.execute.bind(tool);
@@ -4423,7 +4433,8 @@ function withToolApprovalGate(
       const approvalIdentity = ["sandbox", "files", "apps", "skills", "goal", "cron"].includes(tool.name)
         ? `${tool.name}:${resourceAction ?? "invalid"}`
         : tool.name;
-      const commandLabel = resourceAction ? `${tool.name} ${resourceAction}` : tool.name;
+      let commandLabel = resourceAction ? `${tool.name} ${resourceAction}` : tool.name;
+      if (showArguments) commandLabel = `${tool.name} ${approvalArguments(params)}`;
       if (gate && !gate(approvalIdentity)) {
         ref.pendingApprovals?.push({
           command: commandLabel,

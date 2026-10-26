@@ -164,6 +164,19 @@ test("per-person MCP tools need personal access, a connected account, and an ena
   assert.equal(await shared.callMcpTool("crm_query", {}), "ok");
   assert.deepEqual(calls, ["microsoft-365_list-chats", "crm_query"]);
 
+  let open = true;
+  const speaker = toolContext(defs, calls, {
+    personalMcpAccess: connected,
+    authorizePersonalMcp: async () => {
+      if (!open) throw new Error("Open speaker keychain access is no longer authorized");
+    },
+  });
+  assert.equal(await speaker.callMcpTool("microsoft-365_list-chats", {}), "ok");
+  open = false;
+  await assert.rejects(() => speaker.callMcpTool("microsoft-365_list-chats", {}), /no longer authorized/);
+  assert.equal(await speaker.callMcpTool("crm_query", {}), "ok", "shared tools don't re-check the speaker");
+  calls.length = 0;
+
   const options = harnessToolOptions({} as never, { tools: tc } as unknown as HarnessTurnInput);
   assert.deepEqual(
     options.mcpTools?.().map((def) => def.name),

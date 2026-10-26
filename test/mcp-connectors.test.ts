@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createMcpClient, McpHttpError, mcpResultText, type McpFetch } from "../src/mcp/mcp-client.ts";
 import { createMcpServerStore, isValidMcpServerId, type McpServer } from "../src/mcp/mcp-server-store.ts";
 import { createMcpToolService } from "../src/mcp/mcp-tool-service.ts";
+import type { AuditLog } from "../src/audit/audit-log.ts";
 import { createKeychain, type KeychainCredential } from "../src/credentials/keychain.ts";
 import { deriveConnectorKey } from "../src/connectors/connector-client-store.ts";
 import { createServer } from "node:http";
@@ -144,6 +145,62 @@ test("a server that is down at boot is listed again soon, and a failed refresh k
   up = false;
   await service.refresh();
   assert.equal(service.toolDefs().length, 2, "a sidecar restart doesn't wipe the tools in the meantime");
+  service.close();
+});
+
+test("tools kept through an outage are rebuilt from the server's current config, and retries stay out of the audit", async () => {
+  const store = createMcpServerStore(createMemoryMap<McpServer>());
+  const { fetch: healthy } = fakeServerFetch();
+  let up = true;
+  const fetch: McpFetch = async (url, init) => (up ? healthy(url, init) : jsonResponse({ error: "down" }, 503));
+  const lists: string[] = [];
+  const audit = {
+    record: (entry: { action: string; status?: string }) => {
+      if (entry.action === "mcp.list") lists.push(entry.status ?? "");
+    },
+  } as unknown as AuditLog;
+  await store.put(server());
+  const service = createMcpToolService({
+    servers: store,
+    fetchImpl: fetch,
+    refreshIntervalMs: 3600_000,
+    listRetryMs: 2,
+    audit,
+  });
+  await service.refresh();
+  const flags = () => service.toolDefs().map((d) => [d.remoteName, d.perUser, d.approvalRequired, d.readOnly]);
+  assert.deepEqual(flags(), [
+    ["query", false, false, true],
+    ["update", false, false, true],
+  ]);
+
+  up = false;
+  await store.put(server({ credentialScope: "per-user", credentialHost: "graph.microsoft.com" }));
+  await service.refresh();
+  assert.deepEqual(
+    flags(),
+    [
+      ["query", true, false, true],
+      ["update", true, false, true],
+    ],
+    "a shared server switched to per-user during an outage is per-user at once",
+  );
+  await store.put(server({ credentialScope: "per-user", credentialHost: "graph.microsoft.com", readOnly: false }));
+  await service.refresh();
+  assert.deepEqual(
+    flags(),
+    [
+      ["query", true, true, false],
+      ["update", true, true, false],
+    ],
+    "turning read-only off during an outage requires approval at once",
+  );
+  const before = lists.length;
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(lists.length, before, "background retries of a down server write no audit rows");
+  up = true;
+  for (let i = 0; i < 200 && lists.length === before; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.deepEqual(lists.slice(before), ["ok tools=2"], "recovery is audited once");
   service.close();
 });
 
@@ -490,6 +547,10 @@ test("OAuth servers expose the durable catalog without contacting the server", a
       .map((d) => d.name)
       .sort(),
     ["granola_query", "granola_update"],
+  );
+  assert.ok(
+    h.service.toolDefs().every((d) => !d.perUser && !d.approvalRequired && d.credentialHost === undefined),
+    "OAuth MCP servers keep their existing visibility and approval behaviour",
   );
   assert.equal(h.srv.log.length, 0);
   await assert.rejects(h.service.probe((await h.store.get("granola"))!), /signed-in user/);

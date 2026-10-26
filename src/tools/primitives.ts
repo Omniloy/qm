@@ -509,6 +509,7 @@ export interface ToolContextDeps {
   mcp?: McpToolService;
   disabledConnectorApps?: DisabledConnectorApps;
   personalMcpAccess?: ReadonlySet<string>;
+  authorizePersonalMcp?: () => Promise<void>;
   sessionHistory?: {
     search(q: string, limit?: number): Promise<string[]>;
     open(seq: number): Promise<string | null>;
@@ -1278,6 +1279,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
       const def = deps.mcp.toolDefs().find((candidate) => candidate.name === name);
       const refusal = def && mcpToolRefusal(def);
       if (refusal) throw new Error(refusal);
+      if (def?.perUser) await deps.authorizePersonalMcp?.();
       return deps.mcp.call(name, args, deps.createdBy);
     },
 

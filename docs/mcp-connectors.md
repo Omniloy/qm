@@ -55,16 +55,17 @@ tokens. Per-user endpoints require HTTPS, except on loopback for local developme
 and on the exact hostnames an operator lists in `MCP_PER_USER_HTTP_HOSTS`
 (comma-separated), for a sidecar reachable only on a private network.
 
-Tools of a per-user server (including `auth: "oauth"` servers) act as one person, so
-they follow the same rule as that person's connector credentials: they are offered and
-callable only in the person's own DM with the agent, when the person is the live speaker
-in an Open shared conversation, or in an owner-authorized automation, and never on
-external, guest, or strict read-only turns. A server with a `credentialHost` is also
-offered only to people who have a usable token for that host, so people who never
-connected the account don't pay for its tool definitions. A call to a per-user tool
-that changes data (a server not marked `readOnly`, and a tool without the MCP
-`readOnlyHint` annotation) waits for the person's approval through the existing tool
-approval flow, in every posture.
+Tools of a `per-user` server act as one person, so they follow the same rule as that
+person's connector credentials: they are offered and callable only in the person's own DM
+with the agent, when the person is the live speaker in an Open shared conversation, or in
+an owner-authorized automation, and never on external, guest, or strict read-only turns.
+Open membership and sharing posture are checked again on every call. A server with a
+`credentialHost` is also offered only to people who have a usable token for that host,
+so people who never connected the account don't pay for its tool definitions. A call to
+a per-user tool that changes data (a server not marked `readOnly`, and a tool without the
+MCP `readOnlyHint` annotation) waits for the person's approval through the existing tool
+approval flow, in every posture; the approval shows the call's arguments so the person
+sees exactly what would be sent. `auth: "oauth"` servers (below) keep their own behaviour.
 
 A per-user server whose `credentialHost` belongs to an OAuth connector that declares
 apps (Microsoft 365, in `src/connectors/connector-apps.ts`) is also filtered by each

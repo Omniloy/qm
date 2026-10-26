@@ -395,7 +395,9 @@ Setup, once (no Dokploy env var is needed):
    directory (multitenant), leave **Directory (tenant) ID** empty: any work or school
    account can sign in. For an app registered for your organization only, enter the
    directory's GUID there; sign-in is then limited to that tenant. When the field is
-   empty, core falls back to `MICROSOFT_TENANT_ID` if a deployment sets it.
+   empty, core falls back to `MICROSOFT_TENANT_ID` if a deployment sets it. The same
+   rule applies to Google: an admin-card Google client with an empty **Workspace domain**
+   uses `GOOGLE_WORKSPACE_DOMAIN` when it is set.
 3. In **Connectors** → **MCP servers**, add the server with ID exactly `microsoft-365`
    (the skills refer to its `microsoft-365_*` tools), URL `http://ms365-mcp:3000/mcp`,
    auth **None**, **Per person** with credential host `graph.microsoft.com`, and
