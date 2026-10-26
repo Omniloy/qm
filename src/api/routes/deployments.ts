@@ -1133,7 +1133,7 @@ async function runGitHttpBackend(input: {
     REMOTE_USER: "deployment-git",
   };
   return new Promise((resolve, reject) => {
-    const child = spawn("git", ["-c", "http.receivepack=true", "http-backend"], {
+    const child = spawn("git", ["-c", "http.receivepack=true", "-c", "gc.auto=0", "http-backend"], {
       env,
       stdio: ["pipe", "pipe", "pipe"],
     });

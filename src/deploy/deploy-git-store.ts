@@ -65,6 +65,8 @@ const CURRENT_REF = "refs/heads/current";
 const DEFAULT_REPO_ROOT = join(tmpdir(), "qm-deploy-git");
 const GIT_AUTHOR = ["-c", "user.name=QM", "-c", "user.email=deployments@qm.local"];
 const ARCHIVE_ETAG_FILE = "qm-archive-etag";
+const NO_AUTO_GC = ["-c", "gc.auto=0"];
+const RECEIVE_PACK_NO_AUTO_GC = "--receive-pack=git -c gc.auto=0 receive-pack";
 
 interface GitOptions {
   cwd?: string;
@@ -87,7 +89,7 @@ export function createDeployGitStore(opts: DeployGitStoreOptions = {}): DeployGi
   async function gitResult(args: string[], options: GitOptions = {}): Promise<GitResult> {
     const ok = new Set(options.okExitCodes ?? [0]);
     return new Promise((resolveGit, rejectGit) => {
-      const child = spawn(gitBin, args, { cwd: options.cwd, stdio: "pipe" });
+      const child = spawn(gitBin, [...NO_AUTO_GC, ...args], { cwd: options.cwd, stdio: "pipe" });
       const stdout: Buffer[] = [];
       const stderr: Buffer[] = [];
       child.stdout.on("data", (d) => stdout.push(Buffer.from(d)));
@@ -273,7 +275,9 @@ export function createDeployGitStore(opts: DeployGitStoreOptions = {}): DeployGi
           },
         );
         const sha = (await git(["rev-parse", "HEAD"], { cwd: workdir })).toString("utf8").trim();
-        await git(["push", "--quiet", repo, `HEAD:refs/deploy-commits/${sha}`], { cwd: workdir });
+        await git(["push", "--quiet", RECEIVE_PACK_NO_AUTO_GC, repo, `HEAD:refs/deploy-commits/${sha}`], {
+          cwd: workdir,
+        });
         await persistArchive(input.deploymentId, repo);
         return sha;
       } finally {

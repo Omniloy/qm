@@ -634,3 +634,19 @@ test("resident home files are held to the same path rules as app files", async (
     "a home file cannot smuggle git metadata past the app-file check",
   );
 });
+
+test("a commit past git's auto-gc threshold commits and reads back every file", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "deploy-git-many-"));
+  const archiveStore = createMemoryMap<DeployGitArchive>();
+  const files = Array.from({ length: 7200 }, (_, i) => ({
+    path: `src/m${i % 50}/f${i}.js`,
+    data: `export default ${i};\n`,
+  }));
+  const writer = createDeployGitStore({ repoRoot: join(dir, "writer"), archiveStore });
+  const sha = await writer.commit({ deploymentId: "many", version: 1, files });
+  const reader = createDeployGitStore({ repoRoot: join(dir, "reader"), archiveStore });
+  const read = await reader.filesOf("many", sha);
+  assert.equal(read.length, files.length);
+  const byPath = new Map(read.map((f) => [f.path, Buffer.from(f.data).toString("utf8")]));
+  for (const f of files) assert.equal(byPath.get(f.path), f.data, f.path);
+});
