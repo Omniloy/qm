@@ -415,7 +415,9 @@ tools, check **Connectors** → **MCP servers**. No **Microsoft 365** row marked
 **Managed** means `MS365_MCP_URL` is missing from core's environment or the OAuth app
 is disabled; a managed row with no tools means `ms365-mcp` is not running or not healthy
 on the `qm` network. A `microsoft-365` server registered by hand before this was
-automatic is hidden while the managed one is present; it needs no action.
+automatic is never served while `MS365_MCP_URL` is set; it needs no action.
+`MS365_MCP_URL` replaces the earlier `MCP_PER_USER_HTTP_HOSTS` setting, which core no
+longer reads.
 
 People then connect from **Keychain**. The gear on the Microsoft 365 card chooses which
 apps the agent is offered (all start on); a turned-off app's tools never appear in

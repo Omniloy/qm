@@ -118,10 +118,14 @@ can't drift and it disappears as soon as either condition stops holding. Saving 
 removing an OAuth app refreshes the tool service at once; other instances pick the
 change up on their next scheduled refresh.
 
-Admins see it marked **Managed** in the MCP servers list and can't edit or remove it
-(the admin API answers `409`); disabling or removing the Microsoft 365 OAuth app turns
-it off. A `microsoft-365` server registered by hand stays stored but is hidden while
-the managed one is present, and is listed again if the managed one goes away.
+Admins see it marked **Managed** in the MCP servers list and can't edit or remove it;
+while `MS365_MCP_URL` is set the admin API answers `409` for the `microsoft-365` id,
+whether or not the app is configured. Disabling or removing the Microsoft 365 OAuth app
+turns it off. A `microsoft-365` server registered by hand before this existed stays in
+the database but is never served while `MS365_MCP_URL` is set, so it can't stand in for
+the managed one. If the OAuth app lookup itself fails (for example the database is
+unreachable), reading the server list fails rather than dropping the server, and the
+tool service keeps its last tools until the next successful refresh.
 
 ## Each person signs in (MCP Authorization)
 

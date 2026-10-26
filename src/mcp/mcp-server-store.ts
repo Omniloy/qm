@@ -6,6 +6,7 @@
 // connector credentials — reachable only through core, never injected into sandboxes.
 
 import type { DurableMap } from "../persistence/durable-map.ts";
+import { NO_MANAGED_MCP_SERVERS, type ManagedMcpServers } from "./managed-mcp-servers.ts";
 
 export type McpServerAuthMode = "none" | "bearer" | "client-credentials" | "oauth";
 
@@ -69,12 +70,13 @@ export interface McpServerStore {
   put(server: McpServer): Promise<void>;
   updateIf(id: string, fn: (server: McpServer) => McpServer | null): Promise<void>;
   delete(id: string): Promise<void>;
+  isManaged(id: string): boolean;
   onChange(listener: () => void): () => void;
 }
 
 export function createMcpServerStore(
   backing: DurableMap<McpServer>,
-  managed: () => Promise<McpServer[]> = async () => [],
+  managed: ManagedMcpServers = NO_MANAGED_MCP_SERVERS,
 ): McpServerStore {
   const listeners = new Set<() => void>();
   const emit = () => {
@@ -83,16 +85,18 @@ export function createMcpServerStore(
   const clean = (server: McpServer): McpServer => ({ ...server, name: singleLineName(server.name) || server.id });
   return {
     async list() {
-      const [entries, fixed] = await Promise.all([backing.entries(), managed()]);
-      const ids = new Set(fixed.map((server) => server.id));
-      return [...fixed, ...entries.map(([, v]) => v).filter((server) => !ids.has(server.id))]
+      const [entries, fixed] = await Promise.all([backing.entries(), managed.list()]);
+      return [...fixed, ...entries.map(([, v]) => v).filter((server) => !managed.ids.has(server.id))]
         .map(clean)
         .sort((a, b) => a.id.localeCompare(b.id));
     },
     get: async (id) => {
-      const server = (await managed()).find((candidate) => candidate.id === id) ?? (await backing.get(id));
+      const server = managed.ids.has(id)
+        ? (await managed.list()).find((candidate) => candidate.id === id)
+        : await backing.get(id);
       return server ? clean(server) : null;
     },
+    isManaged: (id) => managed.ids.has(id),
     put: async (server) => {
       await backing.put(server.id, clean(server));
       emit();

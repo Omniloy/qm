@@ -37,7 +37,8 @@ function parseScopes(value: unknown): string[] | undefined | null {
 function sendManaged(ctx: ApiCtx) {
   return sendJson(ctx.res, 409, {
     error: "managed",
-    message: "this MCP server is set up by the deployment from its OAuth app and can't be edited or removed here",
+    message:
+      "this MCP server is set up by the deployment once its OAuth app is configured, and can't be edited or removed here",
   });
 }
 
@@ -127,8 +128,8 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
       message: "id must be 2-40 chars: lowercase letters, digits, hyphens, starting with a letter",
     });
   }
+  if (ctx.deps.mcpServers.isManaged(id)) return sendManaged(ctx);
   const existing = await ctx.deps.mcpServers.get(id);
-  if (existing?.managed) return sendManaged(ctx);
   const b = ctx.body as Partial<Omit<McpServer, "oauthScopes" | "iconUrl">> & {
     iconUrl?: unknown;
     validate?: boolean;
@@ -311,9 +312,8 @@ export async function deleteMcpServer(ctx: ApiCtx): Promise<void> {
   if (!authorized) return;
   if (!ctx.deps.mcpServers) return sendJson(ctx.res, 404, { error: "not_found" });
   const id = ctx.params.id ?? "";
-  const existing = await ctx.deps.mcpServers.get(id);
-  if (!existing) return sendJson(ctx.res, 404, { error: "not_found" });
-  if (existing.managed) return sendManaged(ctx);
+  if (ctx.deps.mcpServers.isManaged(id)) return sendManaged(ctx);
+  if (!(await ctx.deps.mcpServers.get(id))) return sendJson(ctx.res, 404, { error: "not_found" });
   await ctx.deps.mcpServers.delete(id);
   await purgeMcpOAuth(ctx.deps, id);
   audit(ctx.deps, {

@@ -305,7 +305,12 @@ import {
   type DeviceFlowCutoverStore,
 } from "./credentials/device-flow-cutover.ts";
 import { createFeatureFlagStore, type FeatureFlagRecord, type FeatureFlagStore } from "./feature-flags.ts";
-import { makeRefresh, type OAuthClientResolver, type OAuthState } from "./connectors/oauth.ts";
+import {
+  createSecretClientResolver,
+  makeRefresh,
+  type OAuthClientResolver,
+  type OAuthState,
+} from "./connectors/oauth.ts";
 import {
   createConnectorClientResolver,
   deriveConnectorKey,
@@ -951,11 +956,16 @@ export function buildApp(
     artifactMap<McpServer>("mcp_servers"),
     managedMcpServers({
       ms365McpUrl: config.ms365McpUrl,
-      providerConfigured: (provider) =>
-        resolveClient(provider, {}).then(
+      providerConfigured: async (provider) => {
+        const stored = (await configStore.listConnectorClients(orgScope)).find(
+          (client) => client.provider === provider,
+        );
+        if (stored) return stored.enabled;
+        return createSecretClientResolver(secretSource)(provider, {}).then(
           () => true,
           () => false,
-        ),
+        );
+      },
     }),
   );
   const errors = withErrorReporting(config.databaseUrl ? createPostgresErrorLog(config.databaseUrl) : createErrorLog());
