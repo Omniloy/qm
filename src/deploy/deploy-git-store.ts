@@ -7,7 +7,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { DurableMap } from "../persistence/durable-map.ts";
 import type { DurableByteStore } from "../files/durable-byte-store.ts";
 import { collectBytes } from "../util/bytes.ts";
-import { swallowAs } from "../util/errors.ts";
+import { swallow, swallowAs } from "../util/errors.ts";
 import { normalizeRelPath } from "./deploy-fs.ts";
 
 export interface DeployGitInputFile {
@@ -89,14 +89,23 @@ export function createDeployGitStore(opts: DeployGitStoreOptions = {}): DeployGi
   async function gitResult(args: string[], options: GitOptions = {}): Promise<GitResult> {
     const ok = new Set(options.okExitCodes ?? [0]);
     return new Promise((resolveGit, rejectGit) => {
-      const child = spawn(gitBin, [...NO_AUTO_GC, ...args], { cwd: options.cwd, stdio: "pipe" });
+      const child = spawn(gitBin, [...NO_AUTO_GC, ...args], {
+        cwd: options.cwd,
+        stdio: [options.stdin == null ? "ignore" : "pipe", "pipe", "pipe"],
+      });
       const stdout: Buffer[] = [];
       const stderr: Buffer[] = [];
-      child.stdout.on("data", (d) => stdout.push(Buffer.from(d)));
-      child.stderr.on("data", (d) => stderr.push(Buffer.from(d)));
+      child.stdout!.on("data", (d) => stdout.push(Buffer.from(d)));
+      child.stderr!.on("data", (d) => stderr.push(Buffer.from(d)));
       child.on("error", rejectGit);
-      child.stdin.on("error", rejectGit);
-      child.stdin.end(options.stdin ?? "");
+      if (child.stdin) {
+        child.stdin.on("error", swallowAs("deploy git stdin", undefined));
+        try {
+          child.stdin.end(options.stdin);
+        } catch (e) {
+          swallow("deploy git stdin", e);
+        }
+      }
       child.on("close", (code) => {
         if (ok.has(code ?? -1)) return resolveGit({ code: code ?? -1, stdout: Buffer.concat(stdout) });
         rejectGit(new Error(`git ${args.join(" ")} exited ${code}: ${Buffer.concat(stderr).toString("utf8").trim()}`));
