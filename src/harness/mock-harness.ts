@@ -436,6 +436,7 @@ export function createMockHarness(): Harness {
               },
               scopeLabel: turn.scopeLabel,
             });
+            await screen.hold?.();
             reply = stub;
           } else {
             await turn.emit({ type: "tool_result", payload: result, scopeLabel: turn.scopeLabel });
@@ -598,6 +599,7 @@ export function createMockHarness(): Harness {
                   })
                   .catch((): ToolResultScreen => ({ outcome: "unscreened" }))
               : ({ outcome: "allow" } as ToolResultScreen);
+          if (screen.outcome === "quarantine") await screen.hold?.();
           if (r.content == null) reply = `(no skill file: ${name}/SKILL.md)`;
           else reply = screen.outcome === "quarantine" ? "[tool output quarantined by the security screen]" : r.content;
         } else if (command0.startsWith("!skill ")) {

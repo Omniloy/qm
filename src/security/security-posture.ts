@@ -172,7 +172,7 @@ export function toolResultContextOf(
 }
 
 export type ToolResultScreen =
-  { outcome: "allow" | "unscreened" } | { outcome: "quarantine"; reason?: string; approvalRequested?: boolean };
+  { outcome: "allow" | "unscreened" } | { outcome: "quarantine"; reason?: string; hold?: () => Promise<void> };
 
 const INTERNAL_RESULT_TOOLS = new Set([
   "background",

@@ -3836,34 +3836,36 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                       const maskHeld = (text: string): string =>
                         redactSecretText(text, (raw) => tools.maskSecrets?.(raw) ?? raw);
                       const heldReason = verdict.reason ? maskHeld(verdict.reason) : undefined;
-                      deps.auditLog.record({
-                        at: Date.now(),
-                        principalId: actor.id,
-                        action: "security_posture.tool_result_quarantine",
-                        resource: input.surface ?? "unknown",
-                        scopeLabel: scopeId,
-                        status: "refused",
-                        detail: JSON.stringify({
-                          reason: "screen_verdict",
-                          tool: toolLabel,
-                          ...(source ? { source } : {}),
-                          ...(heldReason ? { verdict: heldReason } : {}),
-                          ...(verdict.category ? { category: verdict.category } : {}),
-                        }),
-                      });
-                      const securityHold = context
-                        ? await securityHoldFor(context, verdict, maskHeld).catch(
-                            swallowAs("orchestrator: security hold", undefined),
+                      const hold = async (): Promise<void> => {
+                        deps.auditLog.record({
+                          at: Date.now(),
+                          principalId: actor.id,
+                          action: "security_posture.tool_result_quarantine",
+                          resource: input.surface ?? "unknown",
+                          scopeLabel: scopeId,
+                          status: "refused",
+                          detail: JSON.stringify({
+                            reason: "screen_verdict",
+                            tool: toolLabel,
+                            ...(source ? { source } : {}),
+                            ...(heldReason ? { verdict: heldReason } : {}),
+                            ...(verdict.category ? { category: verdict.category } : {}),
+                          }),
+                        });
+                        if (
+                          quarantineReleaseApprovals.some(
+                            (qa) =>
+                              qa.approvalKey === releaseKey &&
+                              qa.screenedOutput?.text === result &&
+                              qa.screenedOutput?.sourceScopeId === sourceScopeId,
                           )
-                        : undefined;
-                      if (
-                        !quarantineReleaseApprovals.some(
-                          (qa) =>
-                            qa.approvalKey === releaseKey &&
-                            qa.screenedOutput?.text === result &&
-                            qa.screenedOutput?.sourceScopeId === sourceScopeId,
                         )
-                      ) {
+                          return;
+                        const securityHold = context
+                          ? await securityHoldFor(context, verdict, maskHeld).catch(
+                              swallowAs("orchestrator: security hold", undefined),
+                            )
+                          : undefined;
                         if (securityHold)
                           await countHold(deps.screeningHoldCounts, securityHoldSourceKey(securityHold.source)).catch(
                             swallowAs("orchestrator: count hold", undefined),
@@ -3889,12 +3891,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                           approvalKey: releaseKey,
                           grantModes: { session: false, always: false },
                         });
-                      }
-                      return {
-                        outcome: "quarantine",
-                        approvalRequested: true,
-                        ...(heldReason ? { reason: heldReason } : {}),
                       };
+                      return { outcome: "quarantine", hold, ...(heldReason ? { reason: heldReason } : {}) };
                     }
                     deps.auditLog.record({
                       at: Date.now(),

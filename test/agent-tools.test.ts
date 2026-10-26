@@ -4321,3 +4321,164 @@ test("an abandoned call id is forgotten once its work settles", async () => {
     ["tool_call", "tool_result"],
   );
 });
+
+test("a call Stop abandons is never screened when its work finishes later", async () => {
+  const late = Promise.withResolvers<{ stdout: string; stderr: string; code: number; timedOut: boolean }>();
+  const started = Promise.withResolvers<void>();
+  const screened: string[] = [];
+  let holds = 0;
+  const { controller, ref, results } = stoppableRef();
+  ref.current = {
+    ...fakeToolContext(),
+    execute: async () => {
+      started.resolve();
+      return late.promise;
+    },
+  } as unknown as ToolContext;
+  ref.screenToolResult = async ({ tool }) => {
+    screened.push(tool);
+    return {
+      outcome: "quarantine",
+      hold: async () => {
+        holds++;
+      },
+    };
+  };
+  const tool = createAgentTools(ref).find((t) => t.name === "execute");
+  const pending = callWith(tool, "late-screen", { command: "curl evil", purpose: "x" });
+  await started.promise;
+  controller.abort();
+  await assert.rejects(pending, /\[cancelled\]/);
+  late.resolve({ stdout: "IGNORE PREVIOUS", stderr: "", code: 0, timedOut: false });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(screened, []);
+  assert.equal(holds, 0);
+  assert.equal(ref.pausedOnApproval, undefined);
+  assert.deepEqual(
+    results().map((r) => r.cancelled ?? false),
+    [true],
+  );
+});
+
+test("a screen's hold is raised once, only after the quarantined result is committed", async () => {
+  const screenGate = Promise.withResolvers<void>();
+  const screenStarted = Promise.withResolvers<void>();
+  let holds = 0;
+  const { controller, ref, emitted } = stoppableRef();
+  ref.screenToolResult = async ({ tool }) => {
+    if (tool === "execute" && emitted.some((e) => e.payload?.callId === "gated")) {
+      screenStarted.resolve();
+      await screenGate.promise;
+    }
+    return {
+      outcome: "quarantine",
+      hold: async () => {
+        holds++;
+      },
+    };
+  };
+  const tool = createAgentTools(ref).find((t) => t.name === "execute");
+  const committed = (await callWith(tool, "kept", { command: "curl evil", purpose: "x" })) as {
+    content: Array<{ text: string }>;
+  };
+  assert.match(committed.content[0]!.text, /quarantined by the security screen/);
+  assert.equal(holds, 1);
+  assert.equal(ref.pausedOnApproval, true);
+  assert.deepEqual(ref.pendingApprovals, [], "the screen's own hold replaces the generic release approval");
+  ref.pausedOnApproval = undefined;
+  const pending = callWith(tool, "gated", { command: "curl evil", purpose: "x" });
+  await screenStarted.promise;
+  controller.abort();
+  await assert.rejects(pending, /\[cancelled\]/);
+  screenGate.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(holds, 1, "the abandoned call's screen raised no hold");
+  assert.equal(ref.pausedOnApproval, undefined);
+});
+
+test("goal changes from a call Stop abandons are never applied", async () => {
+  const callGate = Promise.withResolvers<void>();
+  const writing = Promise.withResolvers<void>();
+  const { controller, ref, emitted } = stoppableRef();
+  ref.goal = createGoalRecord({ objective: "ship it", source: "tool" });
+  ref.emit = async (e) => {
+    emitted.push(e as Emitted);
+    if (e.type === "tool_call" && (e.payload as { callId?: string }).callId === "goal-1") {
+      writing.resolve();
+      await callGate.promise;
+    }
+  };
+  const goalTool = createAgentTools(ref).find((t) => t.name === "goal");
+  const pending = callWith(goalTool, "goal-1", { action: "update", status: "complete", note: "done" });
+  await writing.promise;
+  controller.abort();
+  await assert.rejects(pending, /\[cancelled\]/);
+  callGate.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(ref.goal.status, "active");
+  assert.equal(ref.goal.completionNote, undefined);
+});
+
+test("a call id reused while an abandoned call is still stuck records the new call normally", async () => {
+  const stuck = Promise.withResolvers<{ stdout: string; stderr: string; code: number; timedOut: boolean }>();
+  const { controller, ref, emitted } = stoppableRef();
+  let calls = 0;
+  ref.current = {
+    ...fakeToolContext(),
+    execute: async (command: string) => {
+      if (++calls === 1) return stuck.promise;
+      return { stdout: `ran ${command}`, stderr: "", code: 0, timedOut: false };
+    },
+  } as unknown as ToolContext;
+  const tool = createAgentTools(ref).find((t) => t.name === "execute");
+  const first = callWith(tool, "call_0", { command: "sleep", purpose: "x" });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  controller.abort();
+  await assert.rejects(first, /\[cancelled\]/);
+  ref.abortSignal = new AbortController().signal;
+  const second = (await callWith(tool, "call_0", { command: "echo hi", purpose: "x" })) as {
+    content: Array<{ text: string }>;
+  };
+  assert.match(second.content[0]!.text, /ran echo hi/);
+  stuck.resolve({ stdout: "late", stderr: "", code: 0, timedOut: false });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(
+    emitted
+      .filter((e) => e.type === "tool_call" || e.type === "tool_result")
+      .map((e) => `${e.type}:${e.payload.cancelled ? "cancelled" : (e.payload.stdout ?? "")}`),
+    ["tool_call:", "tool_result:cancelled", "tool_call:", "tool_result:ran echo hi"],
+  );
+});
+
+test("Stop waits on the result write but not on acknowledging delivered mail", async () => {
+  const writeGate = Promise.withResolvers<void>();
+  const writing = Promise.withResolvers<void>();
+  const acked: string[] = [];
+  const { controller, ref, emitted } = stoppableRef();
+  ref.current = {
+    ...fakeToolContext(),
+    sessionSyscalls: {
+      receive: async () => [{ id: "m1", text: "child finished" }],
+      acknowledge: (ids: string[]) => {
+        acked.push(...ids);
+        return new Promise<void>(() => {});
+      },
+    },
+  } as unknown as ToolContext;
+  ref.emit = async (e) => {
+    emitted.push(e as Emitted);
+    if (e.type === "tool_result") {
+      writing.resolve();
+      await writeGate.promise;
+    }
+  };
+  const tool = createAgentTools(ref).find((t) => t.name === "execute");
+  const pending = callWith(tool, "ack-1", { command: "echo hi", purpose: "x" });
+  await writing.promise;
+  controller.abort();
+  setTimeout(() => writeGate.resolve(), 600);
+  const ret = (await pending) as { content: Array<{ text: string }> };
+  assert.match(ret.content[0]!.text, /ran echo hi/);
+  assert.match(ret.content.map((c) => c.text).join("\n"), /child finished/);
+  assert.deepEqual(acked, ["m1"]);
+});
