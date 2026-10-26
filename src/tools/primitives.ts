@@ -57,7 +57,8 @@ import type {
 } from "../connectors/background-exec-broker.ts";
 import type { MonitorBroker, BackgroundWatchResult, BackgroundUnwatchResult } from "../monitors/monitor-broker.ts";
 import { deploymentEntrypoint, type DeployService, type DeployFile } from "../deploy/deploy-service.ts";
-import { publicUrlOf } from "../deploy/deploy-store.ts";
+import type { DeploymentSource } from "../deploy/deploy-store.ts";
+import { readPublishSource } from "../deploy/publish-source.ts";
 import { carriesGitMetadata } from "../deploy/deploy-fs.ts";
 import type { AclStore } from "../acl/acl-store.ts";
 import { encodeRef, fileRef } from "../acl/resource-ref.ts";
@@ -116,6 +117,8 @@ interface PublishResult {
   name?: string;
   version: number;
   url: string;
+  entrypoint?: string;
+  source?: DeploymentSource;
   audience?: PublishAudienceDescriptor;
   dataDir?: string;
   alwaysOn?: boolean;
@@ -493,7 +496,6 @@ export interface ToolContextDeps {
   files?: FileArtifactStore;
   auditLog?: AuditLog;
   createdBy: string;
-  publicWebUrl?: string;
   publishContext?: {
     conversationKind: ConversationKind;
     channelRef?: string;
@@ -1104,6 +1106,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
       if (effectiveEntrypoint && files.length === 0) {
         throw new Error(`publish: no files found under ${input.dir ?? "."} - nothing to deploy`);
       }
+      const source = effectiveEntrypoint ? await readPublishSource(deps.sandbox, handle, input.dir, signal) : undefined;
       const authEnv = effectiveEntrypoint
         ? Object.assign(
             {},
@@ -1164,8 +1167,8 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
               }
             : {}),
           ...(resolvedShare?.length ? { share: resolvedShare } : {}),
+          ...(source ? { source } : {}),
         });
-        const ref = d.name ?? d.id;
         const grantees = await deps.deploy.deploymentGrantees(d.id);
         const base = audienceFromGrantees(
           grantees.map((g) => g.scope),
@@ -1175,14 +1178,16 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
           aud.incomplete && effectiveEntrypoint !== undefined && input.share === undefined && aud.reason
             ? { ...base, note: aud.reason }
             : base;
-        const urlBase = deps.publicWebUrl?.replace(/\/$/, "") ?? "";
-        const url = publicUrlOf(d.endpoint) ?? `${urlBase}/d/${ref}/`;
+        const version = d.appliedVersion ?? d.currentVersion;
+        const applied = d.versions.find((v) => v.version === version);
         const dataDir = effectiveEntrypoint ? deps.deploy.providerProfile?.dataDir : undefined;
         return {
           id: d.id,
           ...(d.name ? { name: d.name } : {}),
-          version: d.appliedVersion ?? d.currentVersion,
-          url,
+          version,
+          url: deps.deploy.appUrl(d),
+          ...(applied?.entrypoint ? { entrypoint: applied.entrypoint } : {}),
+          ...(applied?.source ? { source: applied.source } : {}),
           audience,
           ...(dataDir ? { dataDir } : {}),
           ...(d.alwaysOn ? { alwaysOn: true } : {}),

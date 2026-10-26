@@ -4260,7 +4260,7 @@ test("an internal terminate abort does not abandon a parallel publish or refuse 
   const pending = callWith(apps, "publish-1", { action: "publish", dir: "app", entrypoint: "node server.js" });
   controller.abort();
   const ret = (await pending) as { content: Array<{ text: string }> };
-  assert.match(ret.content[0]!.text, /Published slow \(v2\)/);
+  assert.match(ret.content[0]!.text, /Published slow v2 → /);
   assert.equal(received, stop.signal);
   assert.deepEqual(
     results().map((r) => r.cancelled ?? false),

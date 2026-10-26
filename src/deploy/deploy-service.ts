@@ -18,7 +18,9 @@ import {
   type DeployStore,
   type Deployment,
   type DeployEndpoint,
+  type DeploymentSource,
   type DeploymentVersion,
+  appUrlOf,
 } from "./deploy-store.ts";
 import type { DeployApplyOptions, DeployProfile, DeployProvider } from "./deploy-provider.ts";
 import { createNoopLeaderLease, type LeaderLease } from "../persistence/leader-lease.ts";
@@ -38,6 +40,7 @@ export interface RedeployInput {
   env?: Record<string, string>;
   stampEnv?: Record<string, string>;
   alwaysOn?: boolean;
+  source?: DeploymentSource;
 }
 
 export interface DeployInput extends RedeployInput {
@@ -67,6 +70,7 @@ export interface DeployOrUpdateInput {
   embedAncestors?: string[];
   public?: boolean;
   defaultAudience?: { contextScopeId: ScopeId; granteeScopeIds: ScopeId[]; snapshotAt: number; force?: boolean };
+  source?: DeploymentSource;
 }
 
 export interface ReachOptions {
@@ -75,6 +79,7 @@ export interface ReachOptions {
 
 export interface DeployService {
   readonly providerProfile: DeployProfile;
+  appUrl(d: Deployment): string;
   deploy(input: DeployInput): Promise<Deployment>;
   redeploy(id: string, input: RedeployInput): Promise<Deployment>;
   getDeployment(idOrName: string): Promise<Deployment | null>;
@@ -396,6 +401,10 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
   return {
     providerProfile: deps.provider.profile,
 
+    appUrl(d) {
+      return appUrlOf(d, deps);
+    },
+
     async deploy(input) {
       if (input.name !== undefined) {
         validateName(input.name);
@@ -415,6 +424,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         ...(input.createdInScope !== undefined ? { createdInScope: input.createdInScope } : {}),
         ...(env ? { env } : {}),
         ...(input.alwaysOn !== undefined ? { alwaysOn: input.alwaysOn } : {}),
+        ...(input.source ? { source: input.source } : {}),
       });
       let endpoint: DeployEndpoint;
       try {
@@ -451,6 +461,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
           files: input.files,
           ...(homeDir ? { homeDir } : {}),
           ...(env ? { env } : {}),
+          ...(input.source ? { source: input.source } : {}),
         });
         const endpoint = await applyVersion(id, v, before.appliedVersion ?? before.currentVersion, input.alwaysOn);
         await markVersionRunning(id, v.version, endpoint);
@@ -763,6 +774,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
             ...(input.homeFiles ? { homeFiles: input.homeFiles } : {}),
             ...(input.env ? { env: input.env } : {}),
             ...(input.stampEnv ? { stampEnv: input.stampEnv } : {}),
+            ...(input.source ? { source: input.source } : {}),
           });
           if (input.defaultAudience)
             await reconcileDefaultAudience(
@@ -816,6 +828,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
           ...(input.homeFiles ? { homeFiles: input.homeFiles } : {}),
           ...(input.env ? { env: input.env } : {}),
           ...(input.stampEnv ? { stampEnv: input.stampEnv } : {}),
+          ...(input.source ? { source: input.source } : {}),
         });
         isCreate = false;
       } else {
@@ -831,6 +844,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
           ...(input.env ? { env: input.env } : {}),
           ...(input.stampEnv ? { stampEnv: input.stampEnv } : {}),
           ...(input.alwaysOn !== undefined ? { alwaysOn: input.alwaysOn } : {}),
+          ...(input.source ? { source: input.source } : {}),
         });
         isCreate = true;
       }

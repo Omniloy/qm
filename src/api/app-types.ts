@@ -100,7 +100,7 @@ import { type BotPolicy, type ChannelPolicy, type ChannelPolicyStore } from "../
 import { type AmbientDecision } from "../surface-cache/ambient-judge.ts";
 import type { AmbientJudgmentStore } from "../surface-cache/ambient-judgment-store.ts";
 import type { AckEmojiPickStore } from "../surface-cache/ack-emoji-pick-store.ts";
-import type { Deployment } from "../deploy/deploy-store.ts";
+import type { Deployment, DeploymentSource } from "../deploy/deploy-store.ts";
 import type { DeploymentLayerRuntime } from "../deployment/load-layer.ts";
 import { type ArtifactHome, type ArtifactType } from "./artifact-share.ts";
 import type {
@@ -125,6 +125,7 @@ interface DeploymentVersionView {
   createdAt: number;
   commit?: string;
   parentCommit?: string;
+  source?: DeploymentSource;
 }
 
 export interface DeploymentView {
@@ -134,6 +135,7 @@ export interface DeploymentView {
   createdInScope?: ScopeId;
   name?: string;
   displayName?: string;
+  url: string;
   currentVersion: number;
   appliedVersion?: number;
   status: Deployment["status"];
@@ -150,12 +152,13 @@ export interface ViewerDeployment extends DeploymentView {
   permission: Permission;
 }
 
-export function deploymentView(d: Deployment): DeploymentView {
-  const versions = d.versions.map(({ version, createdAt, commit, parentCommit }) => ({
+export function deploymentView(d: Deployment, url: string): DeploymentView {
+  const versions = d.versions.map(({ version, createdAt, commit, parentCommit, source }) => ({
     version,
     createdAt,
     ...(commit ? { commit } : {}),
     ...(parentCommit ? { parentCommit } : {}),
+    ...(source ? { source } : {}),
   }));
   return {
     id: d.id,
@@ -164,6 +167,7 @@ export function deploymentView(d: Deployment): DeploymentView {
     ...(d.createdInScope ? { createdInScope: d.createdInScope } : {}),
     ...(d.name ? { name: d.name } : {}),
     ...(d.displayName ? { displayName: d.displayName } : {}),
+    url,
     currentVersion: d.currentVersion,
     ...(d.appliedVersion !== undefined ? { appliedVersion: d.appliedVersion } : {}),
     status: d.status,
@@ -663,6 +667,7 @@ export interface App {
   deploy(input: DeployInput): Promise<Deployment>;
   redeploy(id: string, input: RedeployInput): Promise<Deployment>;
   listDeployments(): Promise<Deployment[]>;
+  deploymentView(d: Deployment): DeploymentView;
   getDeployment(idOrName: string): Promise<Deployment | null>;
   listDeploymentsForViewer(principalId: string): Promise<ViewerDeployment[]>;
   effectiveDeploymentPermission(d: Deployment, principalId: string): Promise<Permission | null>;

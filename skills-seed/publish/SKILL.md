@@ -53,7 +53,7 @@ Give an auto-named deployment a friendly link:
 apps({ action: "publish", renameFrom: "s-1176-p-5050", name: "status-board" })
 ```
 
-`apps` action `publish` returns `{ id, name, version, url, dataDir? }` — give the user the full absolute `url`, whose path is `/d/<name>/`.
+`apps` action `publish` returns `{ id, name, version, url, entrypoint, source, dataDir? }` — give the user the full absolute `url`: the app's own subdomain (`https://<name>.<apps domain>/`) when the instance has an apps domain, otherwise a `/d/<name>/` path. `source` records the published directory and, when it is a git checkout, its repository, branch, commit and whether it had uncommitted changes.
 
 ## App bar and editing
 
@@ -107,7 +107,7 @@ publish:
 
 3. If it's broken, fix it and check again — don't tell the user a site is ready before you've
    confirmed it serves. Only once it checks out do you call `apps` action `publish` and hand over the
-   `/d/<name>/` link.
+   `url` it returns.
 
 ## Sharing — say who can reach it
 
@@ -136,7 +136,7 @@ apps({ action: "share", id: "status-board", toScope: "org", permission: "read" }
 
 ## What you can rely on
 
-- **Stable, friendly link.** `/d/<name>/` doesn't change when you ship a new version, and
+- **Stable, friendly link.** The app's link (its subdomain or `/d/<name>/`) doesn't change when you ship a new version, and
   `renameFrom` lets you change it on request without losing history or shares.
 - **Immutable versions + rollback.** Every publish is a new immutable version; `rollbackTo`
   is an instant pointer flip. Safe to ship often.

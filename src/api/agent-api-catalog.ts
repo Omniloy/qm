@@ -562,19 +562,19 @@ const FAMILIES: AgentApiFamily[] = [
       (m === "POST" &&
         /^\/v1\/deployments\/[^/]+\/(share|archive|restore|name|display-name|always-on|embed-ancestors)$/.test(p)),
     guidance:
-      'To see the published apps you can reach across scopes, GET /v1/deployments (each row carries your permission and a clone/push gitUrl). Read what an app renders as the asking person with GET /v1/deployments/:id/fetch. A published app (`apps` action `publish`) is reachable only by its owner plus whoever the owner shares it with. For authenticated access, POST /v1/deployments/:id/share with `scope:"org"`, `recipient:"<name>"`, or an exact `email:"person@example.com"` with `access:"view"`; external email grants are view-only and send an invitation with the app link. Check `invitation.emailSent` and surface `emailProblem` if delivery fails. This does not make the recipient an instance member. To make the app reachable without sign-in, POST the same endpoint with `{public:true}`; `{public:false}` restricts it again. Public access is never the default and only the owner may change it. POST /v1/deployments/:id/embed-ancestors with `{embedAncestors:["https://tools.example.com", ...]}` lets those sites embed the app; pass `[]` to forbid embedding again. To rename, archive, restore, or change always-on behavior, use the corresponding endpoint.',
+      'To see the published apps you can reach across scopes, GET /v1/deployments (each row carries your permission, the canonical app link `url`, and a clone/push gitUrl). Read what an app renders as the asking person with GET /v1/deployments/:id/fetch. A published app (`apps` action `publish`) is reachable only by its owner plus whoever the owner shares it with. For authenticated access, POST /v1/deployments/:id/share with `scope:"org"`, `recipient:"<name>"`, or an exact `email:"person@example.com"` with `access:"view"`; external email grants are view-only and send an invitation with the app link. Check `invitation.emailSent` and surface `emailProblem` if delivery fails. This does not make the recipient an instance member. To make the app reachable without sign-in, POST the same endpoint with `{public:true}`; `{public:false}` restricts it again. Public access is never the default and only the owner may change it. POST /v1/deployments/:id/embed-ancestors with `{embedAncestors:["https://tools.example.com", ...]}` lets those sites embed the app; pass `[]` to forbid embedding again. To rename, archive, restore, or change always-on behavior, use the corresponding endpoint.',
     routes: [
       {
         method: "GET",
         path: "/v1/deployments",
         summary:
-          "list the published apps you can reach across scopes — each row carries your effective permission (read|write) and a ready-to-clone/push gitUrl; find deployment ids here for share / name / display-name / archive / git-url",
+          "list the published apps you can reach across scopes — each row carries your effective permission (read|write), the canonical app link url, and a ready-to-clone/push gitUrl; find deployment ids here for share / name / display-name / archive / git-url",
       },
       {
         method: "GET",
         path: "/v1/deployments/:id",
         summary:
-          "inspect one deployment you can reach — status, owner/home scope, effective permission, current and applied versions, version history with commit ids and timestamps, and gitUrl",
+          "inspect one deployment you can reach — status, owner/home scope, effective permission, current and applied versions, its canonical link url, version history with commit ids, timestamps and the source each version was published from, and gitUrl",
       },
       {
         method: "GET",

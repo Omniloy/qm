@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createApp, deploymentView } from "../src/api/app.ts";
+import { createApp } from "../src/api/app.ts";
 import { createIdentityService } from "../src/identity/identity-service.ts";
 import { createToolContext, type ToolContext } from "../src/tools/primitives.ts";
 import { createDeployStore } from "../src/deploy/deploy-store.ts";
@@ -30,7 +30,10 @@ import { scopeId } from "../src/types.ts";
 
 type Dir = { resolve: (orgId: string, q: string) => Promise<RecipientResolution> };
 
-function makeDeploy(canManageEmail?: (email: string) => Promise<boolean>): { deploy: DeployService; acl: AclStore } {
+function makeDeploy(
+  canManageEmail?: (email: string) => Promise<boolean>,
+  deployAppsDomain?: string,
+): { deploy: DeployService; acl: AclStore } {
   const acl: AclStore = createAclStore();
   const deploy = createDeployService({
     deployStore: createDeployStore(),
@@ -42,6 +45,7 @@ function makeDeploy(canManageEmail?: (email: string) => Promise<boolean>): { dep
     auditLog: { record() {}, events: async () => [], tail: async () => [] },
     acl,
     ...(canManageEmail ? { canManageEmail } : {}),
+    ...(deployAppsDomain ? { deployAppsDomain } : {}),
     deployDir: mkdtempSync(join(tmpdir(), "share-api-")),
   });
   return { deploy, acl };
@@ -188,9 +192,10 @@ test("deployment projections omit runtime secrets and local paths", async () => 
     publicUrl: "https://app.example",
     proxyHeaders: { authorization: "secret" },
   };
-  const view = deploymentView(stored) as Record<string, any>;
+  const view = app.deploymentView(stored) as Record<string, any>;
 
   assert.equal(view.publicUrl, undefined);
+  assert.equal(view.url, "https://app.example/");
   assert.equal(view.endpoint, undefined);
   assert.equal(view.versions[0].env, undefined);
   assert.equal(view.versions[0].snapshotDir, undefined);
@@ -721,7 +726,7 @@ test("uniform app share accepts exact emails and enforces view-only outside the 
 });
 
 test("new email grants send an app-specific invitation once; re-adds and revocations send nothing", async () => {
-  const { deploy, acl } = makeDeploy();
+  const { deploy, acl } = makeDeploy(undefined, "apps.example.com");
   const sent: Array<{ to: string; subject: string; text: string; html: string }> = [];
   const app = createApp({
     deploy,
@@ -776,7 +781,7 @@ test("failed invitation delivery leaves the grant and reports the failure and ma
       },
     },
   ]) {
-    const { deploy, acl } = makeDeploy();
+    const { deploy, acl } = makeDeploy(undefined, "apps.example.com");
     const app = createApp({
       deploy,
       acl,

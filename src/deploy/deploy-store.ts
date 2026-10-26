@@ -22,6 +22,15 @@ export interface DeploymentVersion {
   commit?: string;
   parentCommit?: string;
   env?: Record<string, string>;
+  source?: DeploymentSource;
+}
+
+export interface DeploymentSource {
+  dir: string;
+  repo?: string;
+  branch?: string;
+  commit?: string;
+  dirty?: boolean;
 }
 
 export interface DeployEndpoint {
@@ -45,6 +54,31 @@ export function publicUrlOf(endpoint: DeployEndpoint | null | undefined): string
   } catch {
     return raw;
   }
+}
+
+const APP_HOST_LABEL_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+export function isAppHostLabel(label: string): boolean {
+  return APP_HOST_LABEL_RE.test(label);
+}
+
+export function appSubdomainOrigin(
+  d: Pick<Deployment, "id" | "name">,
+  appsDomain: string | undefined,
+): string | undefined {
+  const ref = d.name ?? d.id;
+  return appsDomain && isAppHostLabel(ref) ? `https://${ref}.${appsDomain}` : undefined;
+}
+
+export interface AppLinkConfig {
+  deployAppsDomain?: string;
+  publicWebUrl?: string;
+}
+
+export function appUrlOf(d: Pick<Deployment, "id" | "name" | "endpoint">, links: AppLinkConfig): string {
+  const subdomain = appSubdomainOrigin(d, links.deployAppsDomain);
+  const served = subdomain ? `${subdomain}/` : `${(links.publicWebUrl ?? "").replace(/\/+$/, "")}/d/${d.name ?? d.id}/`;
+  return publicUrlOf(d.endpoint) ?? served;
 }
 
 type DeploymentStatus = "running" | "stopped" | "archived";
@@ -85,6 +119,7 @@ interface VersionInput {
   homeDir?: string;
   env?: Record<string, string>;
   files?: DeployGitInputFile[];
+  source?: DeploymentSource;
 }
 
 export interface DeployStore {
@@ -298,6 +333,7 @@ export function createDeployStore(backing?: DurableMap<Deployment> | DeployStore
       ...(input.env ? { env: input.env } : {}),
       ...(commit ? { commit } : {}),
       ...(parentCommit ? { parentCommit } : {}),
+      ...(input.source ? { source: input.source } : {}),
     };
   }
 
