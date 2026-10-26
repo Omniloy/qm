@@ -927,6 +927,7 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
     }
     let ref!: ToolContextRef;
     let toolAbort!: AbortController;
+    let toolStop!: AbortController;
     let tools!: BridgedTool[];
     let dynamicTools!: Array<Record<string, unknown>>;
     let model: string | undefined;
@@ -934,7 +935,9 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
     try {
       ref = harnessToolContext(turn);
       toolAbort = new AbortController();
+      toolStop = new AbortController();
       ref.abortSignal = toolAbort.signal;
+      ref.stopSignal = toolStop.signal;
       tools = toolsEnabled ? bridgedTools(ref, harnessToolOptions(opts, turn)) : [];
       dynamicTools = tools.map((tool) => ({
         type: "function",
@@ -1161,7 +1164,8 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
     };
     let turnId = "";
     let stoppedByUser = false;
-    const interrupt = async (stopped: boolean) => {
+    const interrupt = async (stopped: boolean, stopping = stopped) => {
+      if (stopping) toolStop.abort();
       if (stopped && !state.stopped) {
         state.stoppedReply = textFromTurn({
           id: turnId,
@@ -1297,7 +1301,7 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
               new Promise<never>((_, reject) => {
                 timer = setTimeout(() => {
                   runtimeCleanupRequested = true;
-                  void interrupt(false);
+                  void interrupt(false, true);
                   reject(setupTimedOut);
                 }, remainingWallMs);
               }),

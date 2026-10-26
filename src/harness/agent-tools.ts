@@ -90,6 +90,7 @@ export interface ToolContextRef {
   onGapWork?: (work: GapWork) => void;
   fast?: boolean;
   abortSignal?: AbortSignal;
+  stopSignal?: AbortSignal;
   pollFire?: boolean;
   silentRequested?: boolean;
 
@@ -430,8 +431,8 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
   const bgTtlMin = Math.round(bgTtlSec / 60);
   const bgTtlMaxMin = Math.round(bgTtlMaxSec / 60);
   const capabilityTtlHours = Math.round(SANDBOX_CAPABILITY_TTL_MS / 3_600_000);
-  const openCalls = new Set<string>();
-  const abandonedCalls = new Set<string>();
+  const callStates = new Map<string, "open" | "committed" | "abandoned">();
+  const abandoned = (callId: string): boolean => callStates.get(callId) === "abandoned";
   const writeEntry = async (type: EntryType, payload: unknown, sourceScopeId?: ScopeId | null): Promise<void> => {
     if (!ref.emit || !ref.scopeLabel) return;
     const scopeLabel = classifyScopeLabel({
@@ -446,20 +447,20 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     }
     await ref.emit({ type, payload, scopeLabel });
   };
-  const log = async (type: EntryType, payload: unknown, sourceScopeId?: ScopeId | null): Promise<void> => {
+  const log = async (type: EntryType, payload: unknown, sourceScopeId?: ScopeId | null): Promise<boolean> => {
     const callId = (payload as { callId?: unknown } | null)?.callId;
     if (typeof callId === "string" && (type === "tool_call" || type === "tool_result")) {
-      if (type === "tool_result" ? abandonedCalls.delete(callId) : abandonedCalls.has(callId)) return;
-      if (type === "tool_call") openCalls.add(callId);
-      else openCalls.delete(callId);
+      if (abandoned(callId)) return false;
+      callStates.set(callId, type === "tool_call" ? "open" : "committed");
     }
     await writeEntry(type, payload, sourceScopeId);
+    return true;
   };
 
   const callPayloads = new Map<string, Record<string, unknown>>();
-  const recordCall = (callId: string, payload: Record<string, unknown>): Promise<void> => {
+  const recordCall = async (callId: string, payload: Record<string, unknown>): Promise<void> => {
     callPayloads.set(callId, payload);
-    return log("tool_call", { ...sandboxLog(payload), callId });
+    await log("tool_call", { ...sandboxLog(payload), callId });
   };
 
   const resultQueue = createKeyedQueue();
@@ -475,7 +476,6 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     screenAs?: { provenance?: ToolResultProvenance; source?: string; context?: ToolResultContext },
   ): Promise<T> =>
     resultQueue("result", async () => {
-      if (abandonedCalls.delete(callId)) return ret;
       const originalTool = String(summary.tool ?? "");
       const call = callPayloads.get(callId);
       callPayloads.delete(callId);
@@ -493,6 +493,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           .filter((c, i) => c.type !== "text" || i === firstText);
       }
       let persistedSummary = summary;
+      const onCommit: Array<() => void> = [];
       const tool = String(summary.tool ?? "");
       const provenance =
         screenAs?.provenance ??
@@ -538,15 +539,17 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           };
           isError = true;
           if (releaseRequested) {
-            if (!screen.approvalRequested)
-              ref.pendingApprovals!.push({
-                command: tool,
-                reason: "Security screen quarantined this tool's output — release it to the agent?",
-                kind: "approval",
-                approvalKey: `security-screen-release:${toolLabelOf(tool)}`,
-                grantModes: { session: false, always: false },
-              });
-            ref.pausedOnApproval = true;
+            onCommit.push(() => {
+              if (!screen.approvalRequested)
+                ref.pendingApprovals!.push({
+                  command: tool,
+                  reason: "Security screen quarantined this tool's output — release it to the agent?",
+                  kind: "approval",
+                  approvalKey: `security-screen-release:${toolLabelOf(tool)}`,
+                  grantModes: { session: false, always: false },
+                });
+              ref.pausedOnApproval = true;
+            });
             (ret as { terminate?: boolean }).terminate = true;
           }
         } else if (screen.outcome === "unscreened") {
@@ -566,7 +569,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         }
       }
       const delivered: string[] = [];
-      const mailbox = await ref.current?.sessionSyscalls?.receive?.().catch(() => []);
+      const mailbox = abandoned(callId) ? [] : await ref.current?.sessionSyscalls?.receive?.().catch(() => []);
       for (const message of mailbox ?? []) {
         if (quarantinedMessages.has(message.id)) continue;
         const messageTool = `session_message_${message.id}`;
@@ -580,8 +583,10 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           })
           .catch((): ToolResultScreen => ({ outcome: "unscreened" }));
         if (screen?.outcome === "quarantine") {
-          quarantinedMessages.add(message.id);
-          ref.pausedOnApproval = true;
+          onCommit.push(() => {
+            quarantinedMessages.add(message.id);
+            ref.pausedOnApproval = true;
+          });
           (ret as { terminate?: boolean }).terminate = true;
           const notice = "[An internal agent message is quarantined pending human approval.]";
           ret.content.push({ type: "text", text: notice });
@@ -593,7 +598,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         result += `\n\n${text}`;
         delivered.push(message.id);
       }
-      await log(
+      const committed = await log(
         "tool_result",
         {
           ...(capPayloadStrings(persistedSummary) as Record<string, unknown>),
@@ -605,6 +610,8 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         },
         delivered.length ? ref.scopeLabel : sourceScopeId,
       );
+      if (!committed) return ret;
+      for (const apply of onCommit) apply();
       if (delivered.length) await ref.current?.sessionSyscalls?.acknowledge?.(delivered).catch(() => undefined);
       return ret;
     });
@@ -668,30 +675,30 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     ),
   };
 
-  const blockOnApproval = (
+  const blockOnApproval = async (
     callId: string,
     e: NeedsApproval,
     purpose?: string,
     summary: Record<string, unknown> = { tool: "execute" },
   ) => {
-    if (!abandonedCalls.has(callId)) {
-      ref.pendingApprovals?.push({
-        command: e.command,
-        reason: e.approvalReason,
-        kind: e.kind,
-        matched: e.matched,
-        ...(purpose ? { purpose } : {}),
-        ...(e.approvalKey ? { approvalKey: e.approvalKey } : {}),
-        ...(e.grantModes ? { grantModes: e.grantModes } : {}),
-      });
-      ref.pausedOnApproval = true;
-    }
-    return recordResult(
+    const blocked = await recordResult(
       callId,
       { ...summary, blocked: "needs_approval", reason: e.approvalReason },
       { ...text(`[blocked: needs human approval] ${e.approvalReason}`), terminate: true },
       true,
     );
+    if (abandoned(callId)) return blocked;
+    ref.pendingApprovals?.push({
+      command: e.command,
+      reason: e.approvalReason,
+      kind: e.kind,
+      matched: e.matched,
+      ...(purpose ? { purpose } : {}),
+      ...(e.approvalKey ? { approvalKey: e.approvalKey } : {}),
+      ...(e.grantModes ? { grantModes: e.grantModes } : {}),
+    });
+    ref.pausedOnApproval = true;
+    return blocked;
   };
 
   const runExecute = async (
@@ -1292,7 +1299,10 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         name: params.name,
       });
       try {
-        const r = await tc.publish({ ...params, share: params.audience } as PublishInput, ref.abortSignal);
+        const r = await tc.publish(
+          { ...params, share: params.audience } as PublishInput,
+          ref.stopSignal ?? ref.abortSignal,
+        );
         const reach = describePublishAudience(r.audience);
         const alwaysOnNote = r.alwaysOn ? "\nAlways-on: the app is kept warm — no idle cold starts." : "";
         const embedNote = r.embedAncestors?.length ? `\nEmbeddable by: ${r.embedAncestors.join(", ")}` : "";
@@ -4177,7 +4187,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           terminate: true,
         },
       );
-      ref.runtimeHandoff = { context: "recent" };
+      if (!abandoned(callId)) ref.runtimeHandoff = { context: "recent" };
       return result;
     },
   });
@@ -4236,7 +4246,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         { ...text(JSON.stringify(result)), ...(handoff ? { terminate: true } : {}) },
         !result.ok,
       );
-      if (handoff) ref.runtimeHandoff = handoff;
+      if (handoff && !abandoned(callId)) ref.runtimeHandoff = handoff;
       return ret;
     },
   });
@@ -4282,27 +4292,34 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
   ];
   const mcpNames = new Set(mcpTools.map((t) => t.name));
   const active = opts?.readOnly ? tools.filter((t) => READ_ONLY_TOOL_NAMES.has(t.name) || mcpNames.has(t.name)) : tools;
-  const abandonCall = async (callId: string, toolName: string): Promise<void> => {
+  const abandonCall = async (callId: string, toolName: string): Promise<boolean> => {
+    const state = callStates.get(callId);
+    if (state === "committed") return false;
+    callStates.set(callId, "abandoned");
     const call = callPayloads.get(callId);
     callPayloads.delete(callId);
-    abandonedCalls.add(callId);
-    if (!openCalls.delete(callId)) return;
-    await writeEntry("tool_result", {
-      ...sandboxLog({ tool: call?.tool ?? toolName, ...(call?.action !== undefined ? { action: call.action } : {}) }),
-      callId,
-      isError: true,
-      cancelled: true,
-      result: ABANDONED_TOOL_RESULT,
-    }).catch((e: unknown) => swallow("agent-tools: cancelled tool result", e));
+    if (state === "open")
+      await writeEntry("tool_result", {
+        ...sandboxLog({ tool: call?.tool ?? toolName, ...(call?.action !== undefined ? { action: call.action } : {}) }),
+        callId,
+        isError: true,
+        cancelled: true,
+        result: ABANDONED_TOOL_RESULT,
+      }).catch((e: unknown) => swallow("agent-tools: cancelled tool result", e));
+    return true;
   };
-  const abandonOnAbort = (tool: ToolDefinition): ToolDefinition => ({
+  const abandonOnStop = (tool: ToolDefinition): ToolDefinition => ({
     ...tool,
     async execute(...args) {
       const [callId, , toolSignal] = args;
-      const signals = [ref.abortSignal, toolSignal].filter((signal): signal is AbortSignal => !!signal);
-      if (!signals.length) return tool.execute(...args);
-      const signal = AbortSignal.any(signals);
       const work = Promise.resolve().then(() => tool.execute(...args));
+      void work.then(
+        () => callStates.delete(callId),
+        () => callStates.delete(callId),
+      );
+      const signals = [ref.stopSignal ?? ref.abortSignal, toolSignal].filter((s): s is AbortSignal => !!s);
+      if (!signals.length) return work;
+      const signal = AbortSignal.any(signals);
       try {
         return await withAbort(() => work, signal);
       } catch (e) {
@@ -4316,14 +4333,14 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         ]);
         if (settled && "value" in settled) return settled.value;
         if (settled) throw settled.reason;
-        await abandonCall(callId, tool.name);
+        if (!(await abandonCall(callId, tool.name))) return work;
         throw new Error(ABANDONED_TOOL_RESULT, { cause: e });
       }
     },
   });
   return active.map((t) =>
     withRuntimeBarrier(
-      withToolBodyTiming(abandonOnAbort(withToolApprovalGate(t, ref, { recordCall, recordResult })), ref),
+      withToolBodyTiming(abandonOnStop(withToolApprovalGate(t, ref, { recordCall, recordResult })), ref),
       ref,
     ),
   );

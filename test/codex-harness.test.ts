@@ -2136,3 +2136,76 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   assert.equal(result.reply, "denied");
   assert.equal(shared, false);
 });
+
+test("Codex's internal terminate leaves a parallel slow tool call to finish instead of cancelling it", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-codex-terminate-test-"));
+  const answers = join(dir, "answers.jsonl");
+  const binary = join(dir, "parallel-codex");
+  writeFileSync(
+    binary,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const readline = require("node:readline");
+const rl = readline.createInterface({ input: process.stdin });
+const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+let memoryAnswered = false;
+let interruptId;
+const complete = () => {
+  send({ id: interruptId, result: {} });
+  send({ method: "turn/completed", params: { threadId: "thread-par", turn: { id: "turn-par", status: "interrupted", items: [] } } });
+};
+rl.on("line", (line) => {
+  const msg = JSON.parse(line);
+  if (msg.method === "initialize") return send({ id: msg.id, result: {} });
+  if (msg.method === "initialized") return;
+  if (msg.method === "thread/start") return send({ id: msg.id, result: { thread: { id: "thread-par" } } });
+  if (msg.method === "turn/start") {
+    send({ id: msg.id, result: { turn: { id: "turn-par", status: "inProgress", items: [] } } });
+    send({ id: "memory-call", method: "item/tool/call", params: { threadId: "thread-par", turnId: "turn-par", callId: "memory-1", tool: "memory", arguments: { action: "read" } } });
+    return send({ id: "finish-call", method: "item/tool/call", params: { threadId: "thread-par", turnId: "turn-par", callId: "finish-1", tool: "finish_silently", arguments: { reason: "nothing new" } } });
+  }
+  if (msg.id === "memory-call") {
+    fs.appendFileSync(${JSON.stringify(answers)}, JSON.stringify(msg.result) + "\\n");
+    memoryAnswered = true;
+    if (interruptId !== undefined) complete();
+    return;
+  }
+  if (msg.method === "turn/interrupt") {
+    interruptId = msg.id;
+    if (memoryAnswered) complete();
+  }
+});
+`,
+  );
+  chmodSync(binary, 0o755);
+  const harness = createCodexHarness({ binaryPath: binary, env: testHarnessEnv(dir), turnWallClockMs: 5_000 });
+  t.after(async () => {
+    await harness.turns.close?.();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const scope = { kind: "org", id: "test" } as unknown as ScopeId;
+  await harness.turns.runTurn({
+    session: { id: "parallel-terminate" } as Session,
+    input: "poll",
+    systemPrompt: "finish silently",
+    history: [],
+    tools: {
+      memoryRead: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        return "remembered facts";
+      },
+    } as unknown as HarnessTurnInput["tools"],
+    scopeLabel: scope,
+    orgScopeId: scope,
+    pollFire: true,
+    emit: async (entry) =>
+      ({ ...entry, sessionId: "parallel-terminate", seq: 1, createdAt: Date.now() }) as SessionEntry,
+    recordModelCall: () => {},
+  });
+  const [answer] = readFileSync(answers, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.equal(answer.success, true);
+  assert.match(JSON.stringify(answer.contentItems), /remembered facts/);
+});
