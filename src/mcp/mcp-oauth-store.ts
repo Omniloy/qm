@@ -39,6 +39,7 @@ export interface McpCatalogTool {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  readOnlyHint?: boolean;
 }
 
 export interface McpCatalog {

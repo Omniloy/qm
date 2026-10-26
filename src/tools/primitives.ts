@@ -67,7 +67,7 @@ import { swallow, errMessage } from "../util/errors.ts";
 import { fileArtifactId, type FileArtifactStore } from "../files/file-artifact-store.ts";
 import type { ScopedConfigStore } from "../resolution/config-store.ts";
 import { MEMORY_FILE, type MemoryService } from "../memory/memory-service.ts";
-import type { McpToolService, McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
+import { personalMcpKey, type McpToolService, type McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
 import { connectorAppToolVisible, type DisabledConnectorApps } from "../connectors/connector-apps.ts";
 import type { ReachResolution } from "../resolution/scope-reach.ts";
 import type {
@@ -508,6 +508,7 @@ export interface ToolContextDeps {
   memoryAccess?: { write?: ScopeId; read: ScopeId[] };
   mcp?: McpToolService;
   disabledConnectorApps?: DisabledConnectorApps;
+  personalMcpAccess?: ReadonlySet<string>;
   sessionHistory?: {
     search(q: string, limit?: number): Promise<string[]>;
     open(seq: number): Promise<string | null>;
@@ -536,6 +537,17 @@ export interface ToolContextDeps {
 }
 
 export function createToolContext(deps: ToolContextDeps): ToolContext {
+  const mcpToolRefusal = (def: McpToolDescriptor): string | null => {
+    if (!def.perUser) return null;
+    const access = deps.personalMcpAccess;
+    if (!access)
+      return `${def.name} acts as the person's own account, which is only offered in their DM with you or when they are the live speaker in an Open shared conversation`;
+    if (def.credentialHost && !access.has(personalMcpKey(def.credentialHost, def.credentialAccountType)))
+      return `${def.name} needs the person to connect that account in Keychain first`;
+    if (!connectorAppToolVisible(def, deps.disabledConnectorApps ?? {}))
+      return `${def.name} belongs to an app the person turned off in their connector settings`;
+    return null;
+  };
   const writableScopeId = deps.layers.find((l) => l.mode === "rw")?.scopeId ?? null;
   const fallbackMounts = deps.layers.filter((l) => l.mode === "ro" && l.mountPath);
   const persistExclude = deps.persistWritesToStore?.excludeDirs;
@@ -1258,16 +1270,14 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
     },
 
     mcpToolDefs(): McpToolDescriptor[] {
-      return (deps.mcp?.toolDefs() ?? []).filter((def) =>
-        connectorAppToolVisible(def, deps.disabledConnectorApps ?? {}),
-      );
+      return (deps.mcp?.toolDefs() ?? []).filter((def) => !mcpToolRefusal(def));
     },
 
     async callMcpTool(name: string, args: Record<string, unknown>): Promise<string> {
       if (!deps.mcp) throw new Error("no MCP connectors are configured");
       const def = deps.mcp.toolDefs().find((candidate) => candidate.name === name);
-      if (def && !connectorAppToolVisible(def, deps.disabledConnectorApps ?? {}))
-        throw new Error(`${name} belongs to an app the user turned off in their connector settings`);
+      const refusal = def && mcpToolRefusal(def);
+      if (refusal) throw new Error(refusal);
       return deps.mcp.call(name, args, deps.createdBy);
     },
 

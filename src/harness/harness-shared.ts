@@ -1,5 +1,4 @@
 import { randomBytes } from "node:crypto";
-import type { McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
 import {
   parseSecurityScreenVerdict,
   SECURITY_SCREEN_STEP,
@@ -18,7 +17,6 @@ export interface HarnessToolPlumbing {
   scratchExec?: boolean;
   ownerAuthExec?: boolean;
   reachExec?: boolean;
-  mcpTools?: () => McpToolDescriptor[];
   controlTools?: boolean;
   sandboxResources?: boolean;
   execTimeoutMs?: number;
@@ -120,12 +118,11 @@ export function harnessToolContext(turn: HarnessTurnInput): ToolContextRef {
 }
 
 export function harnessToolOptions(opts: HarnessToolPlumbing, turn?: HarnessTurnInput): AgentToolsOptions {
-  const mcpTools = turn ? () => turn.tools.mcpToolDefs() : opts.mcpTools;
   return {
     scratchExec: opts.scratchExec,
     ownerAuthExec: opts.ownerAuthExec,
     reachExec: opts.reachExec,
-    ...(mcpTools ? { mcpTools } : {}),
+    ...(turn ? { mcpTools: () => turn.tools.mcpToolDefs() } : {}),
     controlTools: opts.controlTools,
     sandboxResources: opts.sandboxResources,
     execTimeoutMs: opts.execTimeoutMs,

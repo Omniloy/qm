@@ -4,6 +4,7 @@ import { providerForHost } from "./oauth.ts";
 export interface ConnectorApp {
   id: string;
   label: string;
+  defaultEnabled: boolean;
   tools: readonly string[];
   skills: readonly string[];
 }
@@ -22,6 +23,7 @@ const MICROSOFT_365_APPS: readonly ConnectorApp[] = [
   {
     id: "mail",
     label: "Mail",
+    defaultEnabled: true,
     tools: [
       "get-current-user",
       "list-mail-messages",
@@ -33,9 +35,7 @@ const MICROSOFT_365_APPS: readonly ConnectorApp[] = [
       "get-mail-attachment-content",
       "create-draft-email",
       "create-reply-draft",
-      "update-mail-message",
       "send-draft-message",
-      "send-mail",
       "move-mail-message",
     ],
     skills: ["microsoft-365", "microsoft-365-mail"],
@@ -43,6 +43,7 @@ const MICROSOFT_365_APPS: readonly ConnectorApp[] = [
   {
     id: "calendar",
     label: "Calendar",
+    defaultEnabled: true,
     tools: [
       "get-current-user",
       "list-calendars",
@@ -54,7 +55,6 @@ const MICROSOFT_365_APPS: readonly ConnectorApp[] = [
       "accept-calendar-event",
       "decline-calendar-event",
       "tentatively-accept-calendar-event",
-      "find-meeting-times",
       "get-schedule",
     ],
     skills: ["microsoft-365", "microsoft-365-calendar"],
@@ -62,21 +62,21 @@ const MICROSOFT_365_APPS: readonly ConnectorApp[] = [
   {
     id: "teams-chats",
     label: "Teams chats",
+    defaultEnabled: true,
     tools: [
       "get-current-user",
       "list-chats",
       "list-chat-members",
       "list-chat-messages",
       "get-chat-message",
-      "list-chat-message-replies",
       "send-chat-message",
-      "reply-to-chat-message",
     ],
     skills: ["microsoft-365", "microsoft-365-teams"],
   },
   {
     id: "teams-channels",
     label: "Teams channels",
+    defaultEnabled: false,
     tools: [
       "get-current-user",
       "list-joined-teams",
@@ -92,6 +92,7 @@ const MICROSOFT_365_APPS: readonly ConnectorApp[] = [
   {
     id: "meeting-transcripts",
     label: "Meeting transcripts",
+    defaultEnabled: false,
     tools: [
       "get-current-user",
       "parse-teams-url",
@@ -105,18 +106,14 @@ const MICROSOFT_365_APPS: readonly ConnectorApp[] = [
   {
     id: "onedrive",
     label: "OneDrive",
-    tools: [
-      "get-current-user",
-      "list-drives",
-      ...MICROSOFT_DRIVE_TOOLS,
-      "create-onedrive-folder",
-      "move-rename-onedrive-item",
-    ],
+    defaultEnabled: true,
+    tools: ["get-current-user", "list-drives", ...MICROSOFT_DRIVE_TOOLS],
     skills: ["microsoft-365", "microsoft-365-files"],
   },
   {
     id: "sharepoint",
     label: "SharePoint",
+    defaultEnabled: false,
     tools: [
       "get-current-user",
       "search-sharepoint-sites",
@@ -125,8 +122,6 @@ const MICROSOFT_365_APPS: readonly ConnectorApp[] = [
       "list-sharepoint-site-lists",
       "list-sharepoint-site-list-items",
       "get-sharepoint-site-list-item",
-      "create-sharepoint-list-item",
-      "update-sharepoint-list-item",
       ...MICROSOFT_DRIVE_TOOLS,
     ],
     skills: ["microsoft-365", "microsoft-365-files"],
@@ -142,6 +137,24 @@ export function connectorApps(provider: string): readonly ConnectorApp[] | undef
 }
 
 export type DisabledConnectorApps = Readonly<Record<string, readonly string[]>>;
+
+type ConnectorAppChoices = Readonly<Record<string, Readonly<Record<string, boolean>>>>;
+
+function disabledFrom(choices: ConnectorAppChoices): DisabledConnectorApps {
+  return Object.fromEntries(
+    Object.entries(CONNECTOR_APPS).map(([provider, apps]) => {
+      const chosen = Object.hasOwn(choices, provider) ? choices[provider]! : {};
+      return [
+        provider,
+        apps
+          .filter((app) => !(Object.hasOwn(chosen, app.id) ? chosen[app.id] : app.defaultEnabled))
+          .map((app) => app.id),
+      ];
+    }),
+  );
+}
+
+export const DEFAULT_DISABLED_CONNECTOR_APPS: DisabledConnectorApps = disabledFrom({});
 
 export interface ConnectorAppState {
   id: string;
@@ -193,7 +206,7 @@ export function connectorAppSkillVisible(skill: string, disabled: DisabledConnec
 
 export interface ConnectorAppPrefsRecord {
   principalId: string;
-  disabled: Record<string, string[]>;
+  choices: Record<string, Record<string, boolean>>;
   updatedAt: number;
 }
 
@@ -208,27 +221,19 @@ export function createConnectorAppPrefs(
 ): ConnectorAppPrefs {
   const store = requireAtomic(map);
   return {
-    disabled: async (principalId) => (await store.get(principalId))?.disabled ?? {},
+    disabled: async (principalId) => disabledFrom((await store.get(principalId))?.choices ?? {}),
     async set(principalId, provider, enabled) {
       const apps = connectorApps(provider);
       if (!apps) throw new Error(`${provider} has no app settings`);
       const unknown = Object.keys(enabled).filter((id) => !apps.some((app) => app.id === id));
       if (unknown.length) throw new Error(`unknown ${provider} apps: ${unknown.join(", ")}`);
-      const apply = (current: Record<string, string[]>): Record<string, string[]> => {
-        const off = new Set(current[provider] ?? []);
-        for (const [id, on] of Object.entries(enabled)) {
-          if (on) off.delete(id);
-          else off.add(id);
-        }
-        return { ...current, [provider]: apps.map((app) => app.id).filter((id) => off.has(id)) };
-      };
-      await store.putIfAbsent(principalId, { principalId, disabled: {}, updatedAt: now() });
+      await store.putIfAbsent(principalId, { principalId, choices: {}, updatedAt: now() });
       const next = await store.update(principalId, (rec) => ({
         ...rec,
-        disabled: apply(rec.disabled),
+        choices: { ...rec.choices, [provider]: { ...rec.choices[provider], ...enabled } },
         updatedAt: now(),
       }));
-      return connectorAppStates(provider, next?.disabled ?? {});
+      return connectorAppStates(provider, disabledFrom(next?.choices ?? {}));
     },
   };
 }

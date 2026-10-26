@@ -124,6 +124,29 @@ test("tool service exposes namespaced tools and calls through", async () => {
   service.close();
 });
 
+test("a server that is down at boot is listed again soon, and a failed refresh keeps its last tools", async () => {
+  const store = createMcpServerStore(createMemoryMap<McpServer>());
+  const { fetch: healthy } = fakeServerFetch();
+  let up = false;
+  const fetch: McpFetch = async (url, init) => (up ? healthy(url, init) : jsonResponse({ error: "starting" }, 503));
+  await store.put(server());
+  const service = createMcpToolService({
+    servers: store,
+    fetchImpl: fetch,
+    refreshIntervalMs: 3600_000,
+    listRetryMs: 5,
+  });
+  await service.refresh();
+  assert.equal(service.toolDefs().length, 0);
+  up = true;
+  for (let i = 0; i < 100 && service.toolDefs().length === 0; i++) await new Promise((r) => setTimeout(r, 5));
+  assert.equal(service.toolDefs().length, 2, "the failed listing is retried without waiting for the slow refresh");
+  up = false;
+  await service.refresh();
+  assert.equal(service.toolDefs().length, 2, "a sidecar restart doesn't wipe the tools in the meantime");
+  service.close();
+});
+
 test("disabled server's tools disappear and calls fail", async () => {
   const store = createMcpServerStore(createMemoryMap<McpServer>());
   const { fetch } = fakeServerFetch();

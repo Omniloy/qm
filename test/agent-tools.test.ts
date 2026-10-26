@@ -965,7 +965,10 @@ test("the screen never rewrites a strict-posture per-tool gate", async () => {
   };
   const [execute] = createAgentTools(ref);
   const result = (await call(execute, { command: "echo hi" })) as { content: Array<{ text?: string }> };
-  assert.match(result.content[0]?.text ?? "", /\[blocked: needs human approval\] strict posture/);
+  assert.match(
+    result.content[0]?.text ?? "",
+    /\[blocked: needs human approval\] this tool call requires human approval/,
+  );
   const persisted = emitted.find((entry) => entry.type === "tool_result")!.payload;
   assert.equal(persisted.blocked, "needs_approval");
   assert.equal(persisted.quarantined, undefined);
@@ -3501,6 +3504,8 @@ test("resource catalog exposes one home per operation and leaves MCP tools intac
           description: "Search",
           inputSchema: { type: "object", properties: {} },
           readOnly: true,
+          perUser: false,
+          approvalRequired: false,
         },
       ],
     },

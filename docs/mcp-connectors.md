@@ -55,11 +55,29 @@ tokens. Per-user endpoints require HTTPS, except on loopback for local developme
 and on the exact hostnames an operator lists in `MCP_PER_USER_HTTP_HOSTS`
 (comma-separated), for a sidecar reachable only on a private network.
 
+Tools of a per-user server (including `auth: "oauth"` servers) act as one person, so
+they follow the same rule as that person's connector credentials: they are offered and
+callable only in the person's own DM with the agent, when the person is the live speaker
+in an Open shared conversation, or in an owner-authorized automation, and never on
+external, guest, or strict read-only turns. A server with a `credentialHost` is also
+offered only to people who have a usable token for that host, so people who never
+connected the account don't pay for its tool definitions. A call to a per-user tool
+that changes data (a server not marked `readOnly`, and a tool without the MCP
+`readOnlyHint` annotation) waits for the person's approval through the existing tool
+approval flow, in every posture.
+
 A per-user server whose `credentialHost` belongs to an OAuth connector that declares
-apps (Microsoft 365, in `src/connectors/connector-apps.ts`) is filtered per person: each
-tool is offered, and callable, only while one of the apps it belongs to is turned on in
-that person's connector settings. Tools no app claims are left to the server's own
-allowlist.
+apps (Microsoft 365, in `src/connectors/connector-apps.ts`) is also filtered by each
+person's app settings: a tool is offered, and callable, only while one of the apps that
+claims it is on. Tools no app claims are left to the server's own allowlist. These
+settings manage the agent's context and speed; they are not access control, because the
+connected account's permissions and the shared tools (file and attachment downloads take
+any Graph path) still reach other apps' data. Settings apply from the person's next turn.
+If they can't be read, the turn uses each app's default and the Keychain card says the
+settings couldn't load rather than offering to overwrite them. In an Open shared
+conversation the tool list follows the current speaker, so speakers with different
+settings alternating in one thread lose some prompt caching.
+
 HTTP redirects are rejected for every MCP authentication mode. Updating an endpoint
 or credential host is an administrative trust decision. Tool call auditing records
 the initiating actor as before; authentication does not expand the audience allowed

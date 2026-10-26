@@ -13,6 +13,7 @@ import { shq } from "../util/shell.ts";
 import { homeRelativePath } from "./paths.ts";
 import type { CredentialPathSpec } from "./resident-paths.ts";
 import { envKey } from "./connector-token.ts";
+import { connectorHostInSandbox } from "../connectors/oauth.ts";
 
 const COMPOSIO_ENV_KEY = "COMPOSIO_API_KEY";
 
@@ -515,6 +516,13 @@ function isValidOrigin(origin: string | undefined): origin is string {
   }
 }
 
+function connectorStaysInCore(c: Pick<KeychainCredential, "managed" | "host">): boolean {
+  return c.managed === "connector" && !!c.host && !connectorHostInSandbox(c.host);
+}
+
+const CORE_ONLY_CONNECTOR =
+  "this connector's token stays in core and reaches the agent only through its tools; it cannot be loaded into a computer or granted";
+
 function personVisible(c: Pick<KeychainCredential, "kind" | "managed">): boolean {
   return c.kind !== "broker" && (!c.managed || c.managed === "fill");
 }
@@ -977,6 +985,7 @@ export function createKeychain(deps: {
     cred: KeychainCredential,
     extra?: { grantId: string; purpose: string },
   ): Promise<MaterializedCred> {
+    if (connectorStaysInCore(cred)) throw new KeychainError(403, CORE_ONLY_CONNECTOR);
     const value = cred.host ? await connectorTokenForRecord(cred) : null;
     if (!value || !cred.host) {
       throw new KeychainError(
@@ -1083,6 +1092,7 @@ export function createKeychain(deps: {
     if (cred.managed === "fill") {
       throw new KeychainError(403, "a browser fill credential is owner-fill-only and cannot be granted to any scope");
     }
+    if (connectorStaysInCore(cred)) throw new KeychainError(403, CORE_ONLY_CONNECTOR);
     if (!samePerson(cred.ownerId, input.ownerId)) {
       throw new KeychainError(
         403,
@@ -1584,7 +1594,7 @@ export function createKeychain(deps: {
       for (const grant of await activeGrantsFor(scopeId)) {
         if (grant.mode !== "standing") continue;
         const cred = await deps.creds.get(grant.credentialId);
-        if (!cred || cred.kind !== "env" || isBackendCredential(cred)) continue;
+        if (!cred || cred.kind !== "env" || isBackendCredential(cred) || connectorStaysInCore(cred)) continue;
         if (cred.managed === "connector") {
           const value = cred.host ? await connectorTokenForRecord(cred) : null;
           if (value && cred.host) {

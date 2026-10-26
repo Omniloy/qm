@@ -167,7 +167,7 @@ export function createMockHarness(): Harness {
           if (!turn.toolApprovalGate || turn.toolApprovalGate(tool)) return false;
           collected.push({
             command: tool,
-            reason: "strict posture: this tool call requires human approval",
+            reason: "this tool call requires human approval",
             kind: "approval",
             approvalKey: `tool:${tool}`,
           });
@@ -849,6 +849,17 @@ export function createMockHarness(): Harness {
           reply = r.ok
             ? `members: ${(r.members ?? []).map((m) => m.displayName).join(", ")}`
             : `[couldn't read members] ${r.message ?? "unavailable"}`;
+        } else if (command0.startsWith("!mcp_call ") && gateTool(command0.slice("!mcp_call ".length).trim())) {
+          reply = "";
+        } else if (command0.startsWith("!mcp_call ")) {
+          reply = `mcp: ${await turn.tools.callMcpTool(command0.slice("!mcp_call ".length).trim(), {})}`;
+        } else if (command0 === "!mcp_tools") {
+          reply = `mcp: ${
+            turn.tools
+              .mcpToolDefs()
+              .map((def) => def.name)
+              .join(",") || "none"
+          }`;
         } else if (command0.startsWith("!read_file ")) {
           const refArg = cmd.slice(cmd.indexOf("!read_file ") + "!read_file ".length).trim();
           const r = await turn.tools.readFile(refArg);

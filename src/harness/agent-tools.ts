@@ -4393,7 +4393,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
 }
 
 const TOOL_APPROVAL_EXEMPT = new Set(["finish_silently"]);
-const STRICT_TOOL_APPROVAL_REASON = "strict posture: this tool call requires human approval";
+const TOOL_APPROVAL_REASON = "this tool call requires human approval";
 
 function withToolApprovalGate(
   tool: ToolDefinition,
@@ -4427,7 +4427,7 @@ function withToolApprovalGate(
       if (gate && !gate(approvalIdentity)) {
         ref.pendingApprovals?.push({
           command: commandLabel,
-          reason: STRICT_TOOL_APPROVAL_REASON,
+          reason: TOOL_APPROVAL_REASON,
           kind: "approval",
           approvalKey: `tool:${approvalIdentity}`,
           ...(tool.name === "sandbox" && isObj(params) && typeof params.purpose === "string"
@@ -4440,7 +4440,7 @@ function withToolApprovalGate(
           ...(resourceAction ? { action: resourceAction } : {}),
           ...(isObj(params) && typeof params.purpose === "string" ? { purpose: params.purpose } : {}),
           blocked: "needs_approval",
-          reason: STRICT_TOOL_APPROVAL_REASON,
+          reason: TOOL_APPROVAL_REASON,
         });
         return rec.recordResult(
           callId,
@@ -4448,12 +4448,10 @@ function withToolApprovalGate(
             tool: tool.name,
             ...(resourceAction ? { action: resourceAction } : {}),
             blocked: "needs_approval",
-            reason: STRICT_TOOL_APPROVAL_REASON,
+            reason: TOOL_APPROVAL_REASON,
           },
           {
-            content: [
-              { type: "text" as const, text: `[blocked: needs human approval] ${STRICT_TOOL_APPROVAL_REASON}` },
-            ],
+            content: [{ type: "text" as const, text: `[blocked: needs human approval] ${TOOL_APPROVAL_REASON}` }],
             details: {},
             terminate: true,
           },

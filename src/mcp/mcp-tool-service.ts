@@ -24,6 +24,7 @@ import type { McpCatalogStore, McpCatalogTool, McpUserTokenStore } from "./mcp-o
 import type { McpServer, McpServerStore } from "./mcp-server-store.ts";
 
 const REFRESH_INTERVAL_MS = 5 * 60_000;
+const LIST_RETRY_MS = 30_000;
 const CATALOG_SYNC_INTERVAL_MS = 60_000;
 const CATALOG_MAX_AGE_MS = 24 * 60 * 60_000;
 const CATALOG_CAPTURE_TIMEOUT_MS = 10_000;
@@ -48,7 +49,14 @@ export interface McpToolDescriptor {
   description: string;
   inputSchema: Record<string, unknown>;
   readOnly: boolean;
+  perUser: boolean;
+  approvalRequired: boolean;
   credentialHost?: string;
+  credentialAccountType?: string;
+}
+
+export function personalMcpKey(host: string, accountType: string | undefined): string {
+  return `${host}|${accountType ?? "default"}`;
 }
 
 export interface McpToolService {
@@ -85,6 +93,7 @@ export function createMcpToolService(opts: {
   fetchImpl?: McpFetch;
   now?: () => number;
   refreshIntervalMs?: number;
+  listRetryMs?: number;
   catalogSyncIntervalMs?: number;
 }): McpToolService {
   const now = opts.now ?? (() => Date.now());
@@ -95,6 +104,7 @@ export function createMcpToolService(opts: {
   let byServer = new Map<string, McpToolDescriptor[]>();
   let snapshot: McpToolDescriptor[] = [];
   let closed = false;
+  let retry: ReturnType<typeof setTimeout> | undefined;
 
   function record(action: string, resource: string, status: string, principalId?: string): void {
     opts.audit?.record({
@@ -141,6 +151,7 @@ export function createMcpToolService(opts: {
   }
 
   function describe(server: McpServer, tools: McpCatalogTool[]): McpToolDescriptor[] {
+    const personal = server.credentialScope === "per-user" || server.auth === "oauth";
     return tools.slice(0, MAX_TOOLS_PER_SERVER).map((tool) => ({
       name: `${server.id}_${tool.name}`.replace(/[^a-zA-Z0-9_-]/g, "_"),
       serverId: server.id,
@@ -148,8 +159,10 @@ export function createMcpToolService(opts: {
       description: tool.description || `${tool.name} on ${server.name}`,
       inputSchema: tool.inputSchema,
       readOnly: server.readOnly,
+      perUser: personal,
+      approvalRequired: personal && !server.readOnly && tool.readOnlyHint !== true,
       ...(server.credentialScope === "per-user" && server.credentialHost
-        ? { credentialHost: server.credentialHost }
+        ? { credentialHost: server.credentialHost, credentialAccountType: server.credentialAccountType ?? "default" }
         : {}),
     }));
   }
@@ -175,6 +188,7 @@ export function createMcpToolService(opts: {
   async function refresh(): Promise<void> {
     const servers = await enabledServers();
     const next = new Map<string, McpToolDescriptor[]>();
+    let failed = false;
     for (const server of servers) {
       try {
         const tools = describe(
@@ -184,11 +198,21 @@ export function createMcpToolService(opts: {
         next.set(server.id, tools);
         record("list", server.id, `ok tools=${tools.length}`);
       } catch (e) {
+        failed = true;
+        const previous = byServer.get(server.id);
+        if (previous) next.set(server.id, previous);
         record("list", server.id, `error: ${errMessage(e)}`);
       }
     }
     byServer = next;
     publish(servers);
+    if (failed && !closed && !retry) {
+      retry = setTimeout(() => {
+        retry = undefined;
+        if (!closed) void refresh();
+      }, opts.listRetryMs ?? LIST_RETRY_MS);
+      retry.unref?.();
+    }
   }
 
   async function syncCatalogs(): Promise<void> {
@@ -359,6 +383,7 @@ export function createMcpToolService(opts: {
     },
     close() {
       closed = true;
+      clearTimeout(retry);
       clearInterval(timer);
       clearInterval(catalogTimer);
       unsubscribe();

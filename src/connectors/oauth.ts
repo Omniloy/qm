@@ -26,6 +26,7 @@ interface OAuthSetupGuide {
 interface OAuthTenant {
   env: string;
   label: string;
+  placeholder: string;
   authParam?: string;
   urlDefault?: string;
   format?: { pattern: RegExp; description: string };
@@ -57,6 +58,7 @@ export interface OAuthProviderConfig {
   egressRule: string[];
   setupGuide: OAuthSetupGuide;
   tenant?: OAuthTenant;
+  sandboxCredential?: boolean;
   scopeParam?: string;
   authParams?: Record<string, string>;
   exchange?: OAuthExchangeAdapter;
@@ -287,7 +289,12 @@ export const PROVIDERS: Record<string, OAuthProviderConfig> = {
       "accounts.google.com",
     ],
     authParams: { access_type: "offline", prompt: "consent" },
-    tenant: { env: "GOOGLE_WORKSPACE_DOMAIN", label: "Workspace domain", authParam: "hd" },
+    tenant: {
+      env: "GOOGLE_WORKSPACE_DOMAIN",
+      label: "Workspace domain",
+      placeholder: "Leave empty to accept any Google account",
+      authParam: "hd",
+    },
     exchange: googleExchange,
     setupGuide: {
       console: "Google Cloud Console → APIs & Services → Credentials",
@@ -334,9 +341,11 @@ export const PROVIDERS: Record<string, OAuthProviderConfig> = {
     consentMode: "admin",
     egressRule: ["graph.microsoft.com", "login.microsoftonline.com", "sharepoint.com"],
     pkce: true,
+    sandboxCredential: false,
     tenant: {
       env: "MICROSOFT_TENANT_ID",
       label: "Directory (tenant) ID",
+      placeholder: "Leave empty to accept any work or school account",
       urlDefault: "organizations",
       format: {
         pattern: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
@@ -696,6 +705,10 @@ export function providerForHost(host: string): { name: string; config: OAuthProv
     if (config.hosts.some((h) => host === h || host.endsWith(`.${h}`))) return { name, config };
   }
   return null;
+}
+
+export function connectorHostInSandbox(host: string): boolean {
+  return providerForHost(host.toLowerCase())?.config.sandboxCredential !== false;
 }
 
 export function makeRefresh(opts: {
