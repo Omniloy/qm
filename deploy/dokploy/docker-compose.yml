@@ -68,6 +68,9 @@ services:
       PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET}
       CONNECTOR_SECRET_KEY: ${CONNECTOR_SECRET_KEY}
       SKILL_SIGNING_SECRET: ${SKILL_SIGNING_SECRET}
+      PORTAL_SESSION_SECRET: ${PORTAL_SESSION_SECRET}
+      DEPLOY_APPS_DOMAIN: ${DEPLOY_APPS_DOMAIN:-}
+      AWS_DEPLOY_GATE_SECRET: ${AWS_DEPLOY_GATE_SECRET:-}
     volumes:
       - ${DATA_HOST_DIR}:${DATA_HOST_DIR}
       - /var/run/docker.sock:/var/run/docker.sock
@@ -136,6 +139,7 @@ services:
       CORE_SIGNING_SECRET: ${CORE_SIGNING_SECRET}
       PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET}
       WEB_UI_FAVICON_SVG_FILE: /etc/qm/brand/logo.svg
+      DEPLOY_APPS_DOMAIN: ${DEPLOY_APPS_DOMAIN:-}
     volumes:
       - ../layers/omniloy/logo.svg:/etc/qm/brand/logo.svg:ro
     networks: [qm]
@@ -144,6 +148,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/portal/Dockerfile
+    container_name: qm-omniloy-portal
     restart: unless-stopped
     depends_on: [core, web-ui]
     env_file:
@@ -179,6 +184,8 @@ services:
       OIDC_PRINCIPAL_CLAIM: email
       OIDC_ALLOWED_EMAIL_DOMAIN: ${AUTH_ALLOWED_EMAIL_DOMAIN}
       PORTAL_DEPLOYMENTS_ENABLED: "1"
+      DEPLOY_APPS_DOMAIN: ${DEPLOY_APPS_DOMAIN:-}
+      PORTAL_COOKIE_DOMAIN: ${PORTAL_COOKIE_DOMAIN:-}
       PORTAL_XFF_TRUSTED_HOPS: "1"
       PORTAL_SESSION_SECRET: ${PORTAL_SESSION_SECRET}
       PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET}
