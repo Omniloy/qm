@@ -3,6 +3,7 @@ import type { ScopeId } from "../types.ts";
 import { createMemoryMap, type DurableMap } from "../persistence/durable-map.ts";
 import type { PgPool } from "../persistence/pg-pool.ts";
 import { swallow } from "../util/errors.ts";
+import { HOSTNAME_LABEL } from "../config.ts";
 import {
   createDeployGitStore,
   type DeployGitDiff,
@@ -30,7 +31,6 @@ export interface DeploymentSource {
   repo?: string;
   branch?: string;
   commit?: string;
-  dirty?: boolean;
 }
 
 export interface DeployEndpoint {
@@ -56,10 +56,8 @@ export function publicUrlOf(endpoint: DeployEndpoint | null | undefined): string
   }
 }
 
-const APP_HOST_LABEL_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
-
 export function isAppHostLabel(label: string): boolean {
-  return APP_HOST_LABEL_RE.test(label);
+  return new RegExp(`^${HOSTNAME_LABEL}$`).test(label);
 }
 
 export function appSubdomainOrigin(
@@ -75,10 +73,14 @@ export interface AppLinkConfig {
   publicWebUrl?: string;
 }
 
+export function absoluteAppUrl(url: string): string | undefined {
+  return /^https?:\/\//i.test(url) ? url : undefined;
+}
+
 export function appUrlOf(d: Pick<Deployment, "id" | "name" | "endpoint">, links: AppLinkConfig): string {
   const subdomain = appSubdomainOrigin(d, links.deployAppsDomain);
-  const served = subdomain ? `${subdomain}/` : `${(links.publicWebUrl ?? "").replace(/\/+$/, "")}/d/${d.name ?? d.id}/`;
-  return publicUrlOf(d.endpoint) ?? served;
+  if (subdomain) return `${subdomain}/`;
+  return publicUrlOf(d.endpoint) ?? `${(links.publicWebUrl ?? "").replace(/\/+$/, "")}/d/${d.name ?? d.id}/`;
 }
 
 type DeploymentStatus = "running" | "stopped" | "archived";

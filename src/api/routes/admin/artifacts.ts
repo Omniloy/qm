@@ -3,6 +3,7 @@ import { isCronRuntime } from "../../../cron/runtime.ts";
 import { errMessage } from "../../../util/errors.ts";
 import { parseScopeId, type Destination } from "../../../types.ts";
 import { sendJson } from "../../http.ts";
+import { absoluteAppUrl } from "../../../deploy/deploy-store.ts";
 import { audit, orgScope, requireScopedAdmin } from "../shared.ts";
 import { adminReachesSkill, effectiveSkillOwner } from "../../../skills/skill-rights.ts";
 import { isSourceManagedSkill } from "../../../skills/skill-store.ts";
@@ -68,7 +69,7 @@ export async function listAdminArtifacts(ctx: ApiCtx): Promise<void> {
         createdBy: d.createdBy,
         createdAt: d.versions[0]?.createdAt,
         lastAccessAt: d.lastAccessAt,
-        url: app.deploymentView(d).url,
+        url: absoluteAppUrl(app.deploymentUrl(d)),
       }));
     return sendJson(res, 200, { scopeId: scope, deployments });
   }

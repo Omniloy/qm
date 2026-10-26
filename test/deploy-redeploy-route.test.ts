@@ -43,7 +43,7 @@ describe("deployment redeploy route", () => {
     };
     const app = {
       listDeployments: async () => [deployment],
-      deploymentView: (d: Deployment) => deploymentView(d, "https://envy.apps.test/"),
+      deploymentView: (d: Deployment) => deploymentView(d, "https://envy.apps.test/", true),
       canManageDeployment: async () => true,
       redeploy: async (_id: string, input: RedeployInput) => {
         received = input;

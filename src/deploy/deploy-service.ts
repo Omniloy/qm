@@ -79,6 +79,7 @@ export interface ReachOptions {
 
 export interface DeployService {
   readonly providerProfile: DeployProfile;
+  readonly appsDomain?: string;
   appUrl(d: Deployment): string;
   deploy(input: DeployInput): Promise<Deployment>;
   redeploy(id: string, input: RedeployInput): Promise<Deployment>;
@@ -400,6 +401,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
 
   return {
     providerProfile: deps.provider.profile,
+    ...(deps.deployAppsDomain ? { appsDomain: deps.deployAppsDomain } : {}),
 
     appUrl(d) {
       return appUrlOf(d, deps);

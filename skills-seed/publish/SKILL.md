@@ -53,7 +53,7 @@ Give an auto-named deployment a friendly link:
 apps({ action: "publish", renameFrom: "s-1176-p-5050", name: "status-board" })
 ```
 
-`apps` action `publish` returns `{ id, name, version, url, entrypoint, source, dataDir? }` — give the user the full absolute `url`: the app's own subdomain (`https://<name>.<apps domain>/`) when the instance has an apps domain, otherwise a `/d/<name>/` path. `source` records the published directory and, when it is a git checkout, its repository, branch, commit and whether it had uncommitted changes.
+`apps` action `publish` returns `{ id, name, version, url, entrypoint, source, dataDir? }` — give the user the full absolute `url`: the app's own subdomain (`https://<name>.<apps domain>/`) when the instance has an apps domain, otherwise a `/d/<name>/` path. `source` records the published directory and, when it is a git checkout, its repository, branch and commit.
 
 ## App bar and editing
 

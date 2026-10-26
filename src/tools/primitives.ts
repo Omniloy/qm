@@ -13,7 +13,7 @@ import type { SandboxAccessPlan, SandboxResources } from "../sandbox/sandbox-res
 import { join } from "node:path";
 import { interpolateSplitEnv } from "../deployment/deployment-layer.ts";
 import type { CredentialPathSpec } from "../credentials/resident-paths.ts";
-import type { ComputerStatus, ExecResult, Sandbox, SandboxHandle } from "../sandbox/sandbox.ts";
+import type { ComputerStatus, ExecOptions, ExecResult, Sandbox, SandboxHandle } from "../sandbox/sandbox.ts";
 import { ROUTE_CACHE_TTL_MS, type SandboxBackendName } from "../sandbox/sandbox-routing.ts";
 import type { SandboxMigrationRunner } from "../sandbox/sandbox-migration-runner.ts";
 import { CapabilityUnsupportedError, hasParentPathSegment, supportsAgentComputerExport } from "../sandbox/sandbox.ts";
@@ -59,7 +59,7 @@ import type { MonitorBroker, BackgroundWatchResult, BackgroundUnwatchResult } fr
 import { deploymentEntrypoint, type DeployService, type DeployFile } from "../deploy/deploy-service.ts";
 import type { DeploymentSource } from "../deploy/deploy-store.ts";
 import { readPublishSource } from "../deploy/publish-source.ts";
-import { carriesGitMetadata } from "../deploy/deploy-fs.ts";
+import { carriesGitMetadata, trimRelDir } from "../deploy/deploy-fs.ts";
 import type { AclStore } from "../acl/acl-store.ts";
 import { encodeRef, fileRef } from "../acl/resource-ref.ts";
 import type { AuditLog } from "../audit/audit-log.ts";
@@ -1100,13 +1100,23 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
         throw new Error("publish directory must stay inside the workspace — no .. path segments");
       }
       const handle = await withAbort(() => deps.provision(), signal);
-      const files: DeployFile[] = effectiveEntrypoint
-        ? filesUnder(await withAbort(() => collectTree(deps.sandbox, handle, input.dir), signal), input.dir)
-        : [];
+      const runProbe = (command: string, opts: ExecOptions): Promise<ExecResult> => {
+        authorizeExecution(command);
+        return deps.sandbox.run(handle, deps.scopedCommand?.(command, handle.env) ?? command, {
+          ...opts,
+          ...(signal ? { signal } : {}),
+        });
+      };
+      const [tree, source] = effectiveEntrypoint
+        ? await Promise.all([
+            withAbort(() => collectTree(deps.sandbox, handle, input.dir), signal),
+            readPublishSource(runProbe, input.dir),
+          ])
+        : [[], undefined];
+      const files: DeployFile[] = filesUnder(tree, input.dir);
       if (effectiveEntrypoint && files.length === 0) {
         throw new Error(`publish: no files found under ${input.dir ?? "."} - nothing to deploy`);
       }
-      const source = effectiveEntrypoint ? await readPublishSource(deps.sandbox, handle, input.dir, signal) : undefined;
       const authEnv = effectiveEntrypoint
         ? Object.assign(
             {},
@@ -1498,7 +1508,7 @@ async function collectTree(
   handle: SandboxHandle,
   dir?: string,
 ): Promise<Array<{ path: string; data: Uint8Array }>> {
-  const base = (dir ?? "").replace(/^\.?\/+/, "").replace(/\/+$/, "");
+  const base = trimRelDir(dir);
   if (supportsAgentComputerExport(sandbox)) {
     try {
       const entries = await sandbox.exportFiles(handle, {
@@ -1524,15 +1534,15 @@ async function collectTree(
 }
 
 function isUnderAnyDir(path: string, dirs: readonly string[]): boolean {
-  const p = path.replace(/^\.?\/+/, "").replace(/\/+$/, "");
+  const p = trimRelDir(path);
   return dirs.some((raw) => {
-    const dir = raw.replace(/^\.?\/+/, "").replace(/\/+$/, "");
+    const dir = trimRelDir(raw);
     return dir !== "" && (p === dir || p.startsWith(`${dir}/`));
   });
 }
 
 function filesUnder(snapshot: Array<{ path: string; data: Uint8Array }>, dir?: string): DeployFile[] {
-  const d = (dir ?? "").replace(/^\.?\/+/, "").replace(/\/+$/, "");
+  const d = trimRelDir(dir);
   if (!d || d === ".") return snapshot.map((f) => ({ path: f.path, data: f.data }));
   const prefix = `${d}/`;
   return snapshot

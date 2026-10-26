@@ -1,35 +1,34 @@
-import type { Sandbox, SandboxHandle } from "../sandbox/sandbox.ts";
+import type { ExecOptions, ExecResult } from "../sandbox/sandbox.ts";
 import { swallow } from "../util/errors.ts";
 import { shq } from "../util/shell.ts";
+import { trimRelDir } from "./deploy-fs.ts";
 import type { DeploymentSource } from "./deploy-store.ts";
 
 const GIT_SOURCE_TIMEOUT_MS = 10_000;
-
-export function publishSourceDir(dir: string | undefined): string {
-  return (dir ?? "").replace(/^\.?\/+/, "").replace(/\/+$/, "") || ".";
-}
+const GIT = "git --no-pager -c safe.directory='*' -c core.fsmonitor=false";
 
 export function gitSourceCommand(dir: string): string {
   return [
     `cd -- ${shq(dir)}`,
-    "git rev-parse --is-inside-work-tree >/dev/null 2>&1",
-    `printf 'remote=%s\\nbranch=%s\\ncommit=%s\\nchanges=%s\\n' "$(git remote get-url origin 2>/dev/null)" "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" "$(git rev-parse --short HEAD 2>/dev/null)" "$(git status --porcelain -- . 2>/dev/null | wc -l)"`,
+    "export GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0 GIT_PAGER=cat",
+    `${GIT} rev-parse --is-inside-work-tree >/dev/null 2>&1`,
+    `printf 'remote=%s\\nbranch=%s\\ncommit=%s\\n' "$(${GIT} config --get remote.origin.url 2>/dev/null)" "$(${GIT} rev-parse --abbrev-ref HEAD 2>/dev/null)" "$(${GIT} rev-parse --short HEAD 2>/dev/null)"`,
   ].join(" && ");
 }
 
 export function repoLabel(remote: string): string | undefined {
+  if (/^[a-z0-9+.-]+::/i.test(remote)) return undefined;
   let host: string;
   let path: string;
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(remote)) {
-    let url: URL;
     try {
-      url = new URL(remote);
+      const url = new URL(remote);
+      if (!["https:", "http:", "ssh:", "git:"].includes(url.protocol)) return undefined;
+      host = url.hostname;
+      path = decodeURIComponent(url.pathname);
     } catch {
       return undefined;
     }
-    if (url.protocol === "file:") return undefined;
-    host = url.hostname;
-    path = url.pathname;
   } else {
     const scp = /^(?:[^@/:]+@)?([^/:]+):(.+)$/.exec(remote);
     if (!scp) return undefined;
@@ -37,7 +36,7 @@ export function repoLabel(remote: string): string | undefined {
     path = scp[2]!;
   }
   const repo = path.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "");
-  if (!host || !repo) return undefined;
+  if (host.length < 2 || !repo || /[@:\s\\]/.test(host) || /[@:\s\\]/.test(repo)) return undefined;
   return host.toLowerCase() === "github.com" ? repo : `${host.toLowerCase()}/${repo}`;
 }
 
@@ -55,22 +54,16 @@ export function parseGitSource(stdout: string): Omit<DeploymentSource, "dir"> | 
     ...(repo ? { repo } : {}),
     ...(branch && branch !== "HEAD" ? { branch } : {}),
     commit,
-    dirty: Number(fields.get("changes")) > 0,
   };
 }
 
 export async function readPublishSource(
-  sandbox: Pick<Sandbox, "run">,
-  handle: SandboxHandle,
+  run: (command: string, opts: ExecOptions) => Promise<ExecResult>,
   dir: string | undefined,
-  signal?: AbortSignal,
 ): Promise<DeploymentSource> {
-  const source: DeploymentSource = { dir: publishSourceDir(dir) };
+  const source: DeploymentSource = { dir: trimRelDir(dir) || "." };
   try {
-    const r = await sandbox.run(handle, gitSourceCommand(source.dir), {
-      timeoutMs: GIT_SOURCE_TIMEOUT_MS,
-      ...(signal ? { signal } : {}),
-    });
+    const r = await run(gitSourceCommand(source.dir), { timeoutMs: GIT_SOURCE_TIMEOUT_MS });
     const git = r.code === 0 ? parseGitSource(r.stdout) : undefined;
     return git ? { ...source, ...git } : source;
   } catch (e) {
@@ -84,9 +77,8 @@ export function describePublishSource(source: DeploymentSource | undefined, entr
   if (source) {
     parts.push(source.dir === "." ? "whole workspace" : `${source.dir}/`);
     const revision = [source.branch, source.commit].filter(Boolean).join(" ");
-    const changes = source.dirty ? " (uncommitted changes)" : "";
-    if (source.repo) parts.push(`repo ${source.repo}${revision ? ` @ ${revision}` : ""}${changes}`);
-    else if (revision) parts.push(`git ${revision}${changes}`);
+    if (source.repo) parts.push(`repo ${source.repo}${revision ? ` @ ${revision}` : ""}`);
+    else if (revision) parts.push(`git ${revision}`);
   }
   if (entrypoint) parts.push(`entrypoint: ${entrypoint}`);
   return parts.length ? `Source: ${parts.join(" · ")}` : "";

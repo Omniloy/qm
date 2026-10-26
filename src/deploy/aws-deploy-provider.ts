@@ -1,7 +1,7 @@
 import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { orgId as configOrgId } from "../config.ts";
 import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts";
-import { appSubdomainOrigin, type Deployment, type DeploymentVersion } from "./deploy-store.ts";
+import type { Deployment, DeploymentVersion } from "./deploy-store.ts";
 import type { DeployEndpoint, DeployProvider, DeployReconcileInput } from "./deploy-provider.ts";
 import { bytes, normalizeRelPath, posixJoin, readTree } from "./deploy-fs.ts";
 import { AwsApiError, createMicrovmApi, createMicrovmClient, type AwsMicrovmApi } from "../sandbox/aws-microvm-api.ts";
@@ -74,7 +74,6 @@ export interface AwsDeployProviderOptions {
   rotateAfterSeconds?: number;
   maxIdleDurationSeconds?: number;
   suspendedDurationSeconds?: number;
-  appsDomain?: string;
   tokenTtlMinutes?: number;
   dataBucket?: string;
   dataPrefix?: string;
@@ -125,7 +124,6 @@ export function createAwsDeployProvider(opts: AwsDeployProviderOptions): DeployP
   const rotateAfterMs = (opts.rotateAfterSeconds ?? 27_000) * 1000;
   const maxIdleDurationSeconds = opts.maxIdleDurationSeconds ?? 900;
   const suspendedDurationSeconds = opts.suspendedDurationSeconds ?? 3600;
-  const appsDomain = opts.appsDomain;
   const tokenTtlMinutes = opts.tokenTtlMinutes ?? 30;
   const dataBucket = opts.dataBucket;
   const dataPrefix = (opts.dataPrefix ?? "deploy-data").replace(/\/+$/, "");
@@ -531,18 +529,15 @@ export function createAwsDeployProvider(opts: AwsDeployProviderOptions): DeployP
     await startApp(id, endpoint, version);
   }
 
-  async function endpointFor(d: Deployment, microvmId: string, endpoint: string): Promise<DeployEndpoint> {
+  async function endpointFor(microvmId: string, endpoint: string): Promise<DeployEndpoint> {
     const token = await tokenFor(microvmId);
-    const result: DeployEndpoint = {
+    return {
       host: endpoint,
       port: ENDPOINT_PORT,
       tls: true,
       httpVersion: "2",
       proxyHeaders: { "X-aws-proxy-auth": token, "X-aws-proxy-port": String(appPort) },
     };
-    const subdomain = appSubdomainOrigin(d, appsDomain);
-    if (subdomain) result.publicUrl = `${subdomain}/`;
-    return result;
   }
 
   const resolveLive = async (d: Deployment, genCurrent: () => boolean): Promise<DeployEndpoint | null> => {
@@ -604,7 +599,7 @@ export function createAwsDeployProvider(opts: AwsDeployProviderOptions): DeployP
         }
       }).catch((e) => swallow("aws-deploy: litestream creds refresh", e));
     }
-    return endpointFor(d, stored.microvmId, stored.endpoint);
+    return endpointFor(stored.microvmId, stored.endpoint);
   };
 
   const place = async (
@@ -620,7 +615,7 @@ export function createAwsDeployProvider(opts: AwsDeployProviderOptions): DeployP
     const body = await ensureBody(d);
     await materialize(d, body.id, body.endpoint, body.fresh, version, input);
     bumpResolveGen(d.id);
-    return endpointFor(d, body.id, body.endpoint);
+    return endpointFor(body.id, body.endpoint);
   };
 
   return {

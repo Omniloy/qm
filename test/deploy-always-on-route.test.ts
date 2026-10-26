@@ -48,7 +48,7 @@ describe("deployment always-on route", () => {
     const app = {
       authorizesCapabilityScope: async () => true,
       listDeployments: async () => [deployment],
-      deploymentView: (d: Deployment) => deploymentView(d, "https://warm-app.apps.test/"),
+      deploymentView: (d: Deployment) => deploymentView(d, "https://warm-app.apps.test/", true),
       canManageDeployment: async (_id: string, principalId: string) => principalId === "U1",
       setDeploymentAlwaysOn: async (_id: string, alwaysOn: boolean) => {
         flag = alwaysOn;

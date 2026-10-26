@@ -13,6 +13,10 @@ function isGitMetadataComponent(part: string): boolean {
   return p === ".git" || /^git~[0-9]+$/.test(p);
 }
 
+export function trimRelDir(dir: string | undefined): string {
+  return (dir ?? "").replace(/^\.?\/+/, "").replace(/\/+$/, "");
+}
+
 export function carriesGitMetadata(path: string): boolean {
   return path.replace(/\\/g, "/").split("/").filter(Boolean).some(isGitMetadataComponent);
 }

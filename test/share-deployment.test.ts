@@ -1,4 +1,5 @@
 import { authBrokerRoutes } from "../src/api/routes/auth-broker.ts";
+import { trimRelDir } from "../src/deploy/deploy-fs.ts";
 import { createDirectoryStore } from "../src/directory/directory-store.ts";
 import { createControlService } from "../src/api/control-service.ts";
 import { test } from "node:test";
@@ -372,7 +373,7 @@ test('resolveShareTarget: scope "org"→org, scope id verbatim, recipient→pers
 const APP_FILES = [{ path: "server.js", data: new TextEncoder().encode("listen") }];
 const appSandbox = (): Sandbox => {
   const under = (dir: string) => {
-    const d = (dir ?? "").replace(/^\.?\/+/, "").replace(/\/+$/, "");
+    const d = trimRelDir(dir);
     return APP_FILES.filter((f) => !d || d === "." || f.path === d || f.path.startsWith(`${d}/`));
   };
   return {
@@ -732,7 +733,6 @@ test("new email grants send an app-specific invitation once; re-adds and revocat
     deploy,
     acl,
     identity: createIdentityService(),
-    deployAppsDomain: "apps.example.com",
     inviteMailer: {
       async send(message: (typeof sent)[number]) {
         sent.push(message);
@@ -786,7 +786,6 @@ test("failed invitation delivery leaves the grant and reports the failure and ma
       deploy,
       acl,
       identity: createIdentityService(),
-      deployAppsDomain: "apps.example.com",
       inviteMailer: mailer,
     } as unknown as Parameters<typeof createApp>[0]);
     const d = await app.deploy({
@@ -808,14 +807,13 @@ test("failed invitation delivery leaves the grant and reports the failure and ma
 });
 
 test("uniform app share uses the same invitation sender", async () => {
-  const { deploy, acl } = makeDeploy();
+  const { deploy, acl } = makeDeploy(undefined, "apps.example.com");
   const sent: string[] = [];
   const app = createApp({
     deploy,
     acl,
     identity: createIdentityService(),
     directory: createDirectoryStore(),
-    deployAppsDomain: "apps.example.com",
     inviteMailer: {
       async send(message: { to: string }) {
         sent.push(message.to);

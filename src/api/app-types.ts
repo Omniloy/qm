@@ -152,13 +152,13 @@ export interface ViewerDeployment extends DeploymentView {
   permission: Permission;
 }
 
-export function deploymentView(d: Deployment, url: string): DeploymentView {
+export function deploymentView(d: Deployment, url: string, includeSource: boolean): DeploymentView {
   const versions = d.versions.map(({ version, createdAt, commit, parentCommit, source }) => ({
     version,
     createdAt,
     ...(commit ? { commit } : {}),
     ...(parentCommit ? { parentCommit } : {}),
-    ...(source ? { source } : {}),
+    ...(includeSource && source ? { source } : {}),
   }));
   return {
     id: d.id,
@@ -668,6 +668,7 @@ export interface App {
   redeploy(id: string, input: RedeployInput): Promise<Deployment>;
   listDeployments(): Promise<Deployment[]>;
   deploymentView(d: Deployment): DeploymentView;
+  deploymentUrl(d: Deployment): string;
   getDeployment(idOrName: string): Promise<Deployment | null>;
   listDeploymentsForViewer(principalId: string): Promise<ViewerDeployment[]>;
   effectiveDeploymentPermission(d: Deployment, principalId: string): Promise<Permission | null>;
@@ -815,7 +816,6 @@ export interface AppDeps {
   emailAuthMembers?: DirectoryMember[];
   projects?: ProjectStore;
   deploy: DeployService;
-  deployAppsDomain?: string;
   deploymentLayer?: DeploymentLayerRuntime;
   files: FileArtifactStore;
   approvals?: DurableMap<PendingApprovalRecord>;
