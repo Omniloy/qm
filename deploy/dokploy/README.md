@@ -403,15 +403,17 @@ Setup, once (no Dokploy env var is needed):
    uses `GOOGLE_WORKSPACE_DOMAIN` when it is set.
 3. In **Connectors** → **MCP servers**, add the server with ID exactly `microsoft-365`
    (the skills refer to its `microsoft-365_*` tools), URL `http://ms365-mcp:3000/mcp`,
-   auth **None**, **Per person** with credential host `graph.microsoft.com`, and
-   **Read only** off.
+   auth **None**, **Per person** with credential host `graph.microsoft.com`,
+   **Read only** off, and **Discovery** on. Discovery offers the agent three small
+   tools (search, describe, call) instead of the 53 Graph tools, whose schemas would
+   otherwise cost tens of thousands of tokens on every turn.
 4. If outbound traffic is allowlisted, allow `graph.microsoft.com`,
    `login.microsoftonline.com`, and the tenant's `<tenant>.sharepoint.com` and
    `<tenant>-my.sharepoint.com` hosts.
 
 People then connect from **Keychain**. The gear on the Microsoft 365 card chooses which
-apps the agent is offered (Teams channels, meeting transcripts, and SharePoint start
-off); turned-off apps' tools and skills are left out of the agent's context. The tools
+apps the agent is offered (all start on); a turned-off app's tools never appear in
+search, can't be described or called, and its skill is left out of the agent's context. The tools
 are only offered in the person's DM with the agent or when they are the live speaker in
 an Open shared conversation, and sending mail, posting messages, changing events, or
 uploading files waits for the person's approval.

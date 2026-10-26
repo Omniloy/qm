@@ -5,13 +5,13 @@ description: Search, read, triage, draft, and send Outlook mail in the user's Mi
 
 # Outlook mail
 
-Read the `microsoft-365` skill first for access and approval rules.
+Read the `microsoft-365` skill first for access, approvals, and how to call these tools.
 
-- Find mail with `microsoft-365_list-mail-messages`. For keyword search pass `search`
+- Find mail with `list-mail-messages`. For keyword search pass `search`
   wrapped in double quotes using KQL, for example `"from:ana@contoso.com subject:invoice"`;
   use `filter` for structured conditions such as `isRead eq false` or
   `receivedDateTime ge 2026-10-01T00:00:00Z`. `search` and `orderby` can't be combined.
-- Triage many messages at once with `microsoft-365_read-mail-text` (up to 20 ids): it
+- Triage many messages at once with `read-mail-text` (up to 20 ids): it
   returns clean text without quoted history. Use `get-mail-message` only when you need one
   message's full body or headers.
 - Folders: `list-mail-folders`, then `list-mail-folder-messages`. Well-known folder names

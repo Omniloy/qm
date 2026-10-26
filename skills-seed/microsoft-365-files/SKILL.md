@@ -5,13 +5,13 @@ description: Browse, search, read, and upload files in the user's OneDrive and S
 
 # OneDrive and SharePoint
 
-Read the `microsoft-365` skill first for access and approval rules. OneDrive and
+Read the `microsoft-365` skill first for access, approvals, and how to call these tools. OneDrive and
 SharePoint are separate apps the user can turn on or off; both use the same drive item
 tools once you have a drive id.
 
 ## Drives and items
 
-- OneDrive: `microsoft-365_list-drives` returns the user's drive id.
+- OneDrive: `list-drives` returns the user's drive id.
 - SharePoint: `search-sharepoint-sites` (by keyword) or `get-sharepoint-site-by-path`
   (hostname and server-relative path, for example `contoso.sharepoint.com` and
   `/sites/Finance`), then `list-sharepoint-site-drives` for its document libraries.

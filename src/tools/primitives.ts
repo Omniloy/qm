@@ -69,7 +69,11 @@ import { fileArtifactId, type FileArtifactStore } from "../files/file-artifact-s
 import type { ScopedConfigStore } from "../resolution/config-store.ts";
 import { MEMORY_FILE, type MemoryService } from "../memory/memory-service.ts";
 import { personalMcpKey, type McpToolService, type McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
-import { connectorAppToolVisible, type DisabledConnectorApps } from "../connectors/connector-apps.ts";
+import {
+  connectorAppToolVisible,
+  enabledConnectorApps,
+  type DisabledConnectorApps,
+} from "../connectors/connector-apps.ts";
 import type { ReachResolution } from "../resolution/scope-reach.ts";
 import type {
   ControlService,
@@ -1286,7 +1290,9 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
     },
 
     mcpToolDefs(): McpToolDescriptor[] {
-      return (deps.mcp?.toolDefs() ?? []).filter((def) => !mcpToolRefusal(def));
+      return (deps.mcp?.toolDefs() ?? [])
+        .filter((def) => !mcpToolRefusal(def))
+        .map((def) => (def.apps ? { ...def, apps: enabledConnectorApps(def, deps.disabledConnectorApps ?? {}) } : def));
     },
 
     async callMcpTool(name: string, args: Record<string, unknown>): Promise<string> {

@@ -5,12 +5,12 @@ description: Read and post in the user's Microsoft Teams chats and team channels
 
 # Teams chats and channels
 
-Read the `microsoft-365` skill first for access and approval rules. Chats and channels
+Read the `microsoft-365` skill first for access, approvals, and how to call these tools. Chats and channels
 are separate apps the user can turn on or off; use the tools you have.
 
 ## Chats (one-on-one, group, and meeting chats)
 
-- `microsoft-365_list-chats` lists recent chats; `expand=members` shows who is in each.
+- `list-chats` lists recent chats; `expand=members` shows who is in each.
   `list-chat-members` lists one chat's members.
 - `list-chat-messages` reads a chat, newest first (`top` up to 50); `get-chat-message`
   reads one message. Chats have no reply threads: a new message is the reply.

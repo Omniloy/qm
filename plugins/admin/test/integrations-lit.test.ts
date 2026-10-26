@@ -265,6 +265,7 @@ test("MCP servers and Composio are managed from the Connectors view", async () =
       bearerToken: "tok",
       readOnly: true,
       enabled: true,
+      toolMode: "full",
     });
     assert.match(doc.getElementById("st-mcp-servers")!.textContent!, /2 tools found/);
 
@@ -312,6 +313,7 @@ test("editing an MCP server keeps its stored secret unless a new one is typed", 
     credentialAccountType: "company",
     readOnly: true,
     enabled: true,
+    toolMode: "discovery",
   });
   await s.save();
   assert.deepEqual(bodies, [
@@ -326,6 +328,7 @@ test("editing an MCP server keeps its stored secret unless a new one is typed", 
       clientId: "cid",
       readOnly: true,
       enabled: true,
+      toolMode: "discovery",
     },
   ]);
 });

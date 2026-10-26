@@ -5,14 +5,14 @@ description: Find a Teams meeting and read its transcript in the user's Microsof
 
 # Teams meeting transcripts
 
-Read the `microsoft-365` skill first for access rules.
+Read the `microsoft-365` skill first for access and how to call these tools.
 
 Graph can't list every meeting; you find one through its join link:
 
 1. Get the join URL: from the calendar event (`onlineMeeting.joinUrl`, see
    `microsoft-365-calendar`) or from a link the user pastes. Turn a short `/meet/` or
-   recap link into a standard join URL with `microsoft-365_parse-teams-url`.
-2. `microsoft-365_list-online-meetings` with `filter=JoinWebUrl eq '<joinUrl>'` returns
+   recap link into a standard join URL with `parse-teams-url`.
+2. `list-online-meetings` with `filter=JoinWebUrl eq '<joinUrl>'` returns
    the meeting and its id. The filter is required.
 3. `list-meeting-transcripts` with that meeting id lists its transcripts (one per
    transcription session).

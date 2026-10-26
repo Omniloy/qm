@@ -22,6 +22,7 @@ import {
 } from "./mcp-client.ts";
 import type { McpCatalogStore, McpCatalogTool, McpUserTokenStore } from "./mcp-oauth-store.ts";
 import type { McpServer, McpServerStore } from "./mcp-server-store.ts";
+import { connectorAppIdsForTool } from "../connectors/connector-apps.ts";
 
 const REFRESH_INTERVAL_MS = 5 * 60_000;
 const LIST_RETRY_MS = 30_000;
@@ -51,6 +52,8 @@ export interface McpToolDescriptor {
   readOnly: boolean;
   perUser: boolean;
   approvalRequired: boolean;
+  toolMode: "full" | "discovery";
+  apps?: string[];
   credentialHost?: string;
   credentialAccountType?: string;
 }
@@ -153,6 +156,11 @@ export function createMcpToolService(opts: {
     });
   }
 
+  function appsOf(remoteName: string, credentialHost: string | undefined): { apps?: string[] } {
+    const apps = connectorAppIdsForTool(remoteName, credentialHost);
+    return apps.length ? { apps } : {};
+  }
+
   function describe(server: McpServer, tools: McpCatalogTool[]): McpToolDescriptor[] {
     const personal = server.auth !== "oauth" && server.credentialScope === "per-user";
     return tools.slice(0, MAX_TOOLS_PER_SERVER).map((tool) => ({
@@ -164,6 +172,8 @@ export function createMcpToolService(opts: {
       readOnly: server.readOnly,
       perUser: personal,
       approvalRequired: personal && !server.readOnly && tool.readOnlyHint !== true,
+      toolMode: server.toolMode ?? "full",
+      ...appsOf(tool.name, personal ? server.credentialHost : undefined),
       ...(personal && server.credentialHost
         ? { credentialHost: server.credentialHost, credentialAccountType: server.credentialAccountType ?? "default" }
         : {}),
@@ -235,6 +245,7 @@ export function createMcpToolService(opts: {
       current.perUser === def.perUser &&
       current.approvalRequired === def.approvalRequired &&
       current.readOnly === def.readOnly &&
+      current.toolMode === def.toolMode &&
       current.credentialHost === def.credentialHost &&
       current.credentialAccountType === def.credentialAccountType
     );

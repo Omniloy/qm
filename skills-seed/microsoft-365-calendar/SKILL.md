@@ -5,14 +5,14 @@ description: Read the user's Outlook calendar, check free and busy time, and cre
 
 # Outlook calendar
 
-Read the `microsoft-365` skill first for access and approval rules.
+Read the `microsoft-365` skill first for access, approvals, and how to call these tools.
 
 - Time zone: Graph returns times in UTC unless asked otherwise, and you can't read the
   user's mailbox time zone setting. Use the time zone from your instructions or the
   conversation if one is given; otherwise ask the user once. Then pass it in the tool's
   `timezone` parameter where it has one (Windows or IANA name, e.g. `Europe/Madrid`), and
   always tell the user times in their own zone.
-- "What's on my calendar" questions: `microsoft-365_get-calendar-view` with
+- "What's on my calendar" questions: `get-calendar-view` with
   `startDateTime` and `endDateTime` (ISO 8601). It expands recurring meetings into
   occurrences.
 - Other calendars: `list-calendars` shows the ones the user owns or shares.

@@ -302,16 +302,16 @@ test("Microsoft 365 app settings round-trip through status and the signed apps r
     const before = await status("U1");
     assert.equal(before.google!.apps, undefined);
     assert.equal(before.microsoft!.apps!.length, 7);
-    const defaults = ["teams-channels", "meeting-transcripts", "sharepoint"];
+    const defaults: string[] = [];
     assert.deepEqual(off(before.microsoft!.apps), defaults);
 
     const res = await save({
       principalId: "U1",
       provider: "microsoft",
-      apps: { mail: false, onedrive: false, sharepoint: true },
+      apps: { mail: false, onedrive: false },
     });
     assert.equal(res.status, 200);
-    const saved = ["mail", "teams-channels", "meeting-transcripts", "onedrive"];
+    const saved = ["mail", "onedrive"];
     assert.deepEqual(off(((await res.json()) as { apps: Array<{ id: string; enabled: boolean }> }).apps), saved);
     assert.deepEqual(off((await status("U1")).microsoft!.apps), saved);
     assert.deepEqual(off((await status("U2")).microsoft!.apps), defaults);

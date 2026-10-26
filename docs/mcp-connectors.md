@@ -84,6 +84,26 @@ or credential host is an administrative trust decision. Tool call auditing recor
 the initiating actor as before; authentication does not expand the audience allowed
 to receive the result.
 
+## Discovery mode
+
+A server registered with `"toolMode": "discovery"` (the admin form's **Discovery**
+checkbox) is not offered as one agent tool per server tool. Instead the agent gets three
+fixed tools, `<id>_search_tools` (by keyword or app), `<id>_describe_tool` (one tool's
+description and input schema) and `<id>_call_tool` (run a tool by name with arguments),
+about 900 characters in total whatever the server's size. They stay identical across
+turns and speakers, which keeps the prompt cache warm. Use it for servers with many large
+tools, such as the Microsoft 365 sidecar. The default, `"full"`, lists every tool as
+before.
+
+The three tools see exactly the tools a direct listing would offer this turn: per-person
+access, connected account, connector app settings, and read-only turns all apply, and
+search, describe and call are checked again at each use. A tool they don't offer can't be
+described or called. `call_tool` runs the real tool through the same path as a direct call:
+the same refusals and Open-membership check, the write approval keyed on the real tool name
+with the real arguments shown, the same audit records, result handling and stop
+behaviour. The lookups themselves are not held for approval. When no tool of the server is
+available (no access, no account, every app off), the three tools are not offered.
+
 ## Each person signs in (MCP Authorization)
 
 `auth: "oauth"` is for remote MCP servers that implement the

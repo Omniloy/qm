@@ -4,7 +4,6 @@ import { providerForHost } from "./oauth.ts";
 export interface ConnectorApp {
   id: string;
   label: string;
-  defaultEnabled: boolean;
   tools: readonly string[];
   skills: readonly string[];
 }
@@ -23,7 +22,6 @@ const MICROSOFT_365_APPS: readonly ConnectorApp[] = [
   {
     id: "mail",
     label: "Mail",
-    defaultEnabled: true,
     tools: [
       "get-current-user",
       "list-mail-messages",
@@ -43,7 +41,6 @@ const MICROSOFT_365_APPS: readonly ConnectorApp[] = [
   {
     id: "calendar",
     label: "Calendar",
-    defaultEnabled: true,
     tools: [
       "get-current-user",
       "list-calendars",
@@ -62,7 +59,6 @@ const MICROSOFT_365_APPS: readonly ConnectorApp[] = [
   {
     id: "teams-chats",
     label: "Teams chats",
-    defaultEnabled: true,
     tools: [
       "get-current-user",
       "list-chats",
@@ -76,7 +72,6 @@ const MICROSOFT_365_APPS: readonly ConnectorApp[] = [
   {
     id: "teams-channels",
     label: "Teams channels",
-    defaultEnabled: false,
     tools: [
       "get-current-user",
       "list-joined-teams",
@@ -92,7 +87,6 @@ const MICROSOFT_365_APPS: readonly ConnectorApp[] = [
   {
     id: "meeting-transcripts",
     label: "Meeting transcripts",
-    defaultEnabled: false,
     tools: [
       "get-current-user",
       "parse-teams-url",
@@ -106,14 +100,12 @@ const MICROSOFT_365_APPS: readonly ConnectorApp[] = [
   {
     id: "onedrive",
     label: "OneDrive",
-    defaultEnabled: true,
     tools: ["get-current-user", "list-drives", ...MICROSOFT_DRIVE_TOOLS],
     skills: ["microsoft-365", "microsoft-365-files"],
   },
   {
     id: "sharepoint",
     label: "SharePoint",
-    defaultEnabled: false,
     tools: [
       "get-current-user",
       "search-sharepoint-sites",
@@ -144,12 +136,7 @@ function disabledFrom(choices: ConnectorAppChoices): DisabledConnectorApps {
   return Object.fromEntries(
     Object.entries(CONNECTOR_APPS).map(([provider, apps]) => {
       const chosen = Object.hasOwn(choices, provider) ? choices[provider]! : {};
-      return [
-        provider,
-        apps
-          .filter((app) => !(Object.hasOwn(chosen, app.id) ? chosen[app.id] : app.defaultEnabled))
-          .map((app) => app.id),
-      ];
+      return [provider, apps.filter((app) => Object.hasOwn(chosen, app.id) && !chosen[app.id]).map((app) => app.id)];
     }),
   );
 }
@@ -177,6 +164,13 @@ function visibleThroughApps(
   return apps.some((app) => member(app) && !off.has(app.id));
 }
 
+export function connectorAppIdsForTool(remoteName: string, credentialHost: string | undefined): string[] {
+  const provider = credentialHost ? providerForHost(credentialHost)?.name : undefined;
+  return (provider ? (connectorApps(provider) ?? []) : [])
+    .filter((app) => app.tools.includes(remoteName))
+    .map((app) => app.id);
+}
+
 export function connectorAppToolVisible(
   tool: { remoteName: string; credentialHost?: string },
   disabled: DisabledConnectorApps,
@@ -186,6 +180,15 @@ export function connectorAppToolVisible(
   const member = (app: ConnectorApp) => app.tools.includes(tool.remoteName);
   if (!provider || !apps?.some(member)) return true;
   return visibleThroughApps(apps, disabled[provider], member);
+}
+
+export function enabledConnectorApps(
+  tool: { apps?: string[]; credentialHost?: string },
+  disabled: DisabledConnectorApps,
+): string[] {
+  const provider = tool.credentialHost ? providerForHost(tool.credentialHost)?.name : undefined;
+  const off = new Set(provider ? (disabled[provider] ?? []) : []);
+  return (tool.apps ?? []).filter((app) => !off.has(app));
 }
 
 export function connectorAppSkillProviders(): Record<string, string> {

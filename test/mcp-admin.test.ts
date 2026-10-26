@@ -112,6 +112,17 @@ test("per-user MCP servers accept plain HTTP only on the hostnames the operator 
     put("microsoft-365", { url, validate: false, credentialScope: "per-user", credentialHost: "graph.microsoft.com" });
   assert.equal((await perUser("http://ms365-mcp:3000")).status, 200);
   assert.equal((await store.get("microsoft-365"))?.url, "http://ms365-mcp:3000");
+  assert.equal((await store.get("microsoft-365"))?.toolMode, undefined, "full listing stays the default");
+  const discovery = await put("microsoft-365", {
+    url: "http://ms365-mcp:3000",
+    validate: false,
+    credentialScope: "per-user",
+    credentialHost: "graph.microsoft.com",
+    toolMode: "discovery",
+  });
+  assert.equal(discovery.status, 200);
+  assert.equal((await store.get("microsoft-365"))?.toolMode, "discovery");
+  assert.equal((await put("microsoft-365", { url: "http://ms365-mcp:3000", toolMode: "lazy" })).status, 400);
   assert.equal((await perUser("http://ms365-mcp.evil.example:3000")).status, 400);
   assert.equal((await perUser("http://other-sidecar:3000")).status, 400);
   assert.equal(

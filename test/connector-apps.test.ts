@@ -35,6 +35,7 @@ const graphTool = (remoteName: string): McpToolDescriptor => ({
   readOnly: false,
   perUser: true,
   approvalRequired: false,
+  toolMode: "full",
   credentialHost: "graph.microsoft.com",
   credentialAccountType: "default",
 });
@@ -48,21 +49,12 @@ const sharedTool: McpToolDescriptor = {
   readOnly: true,
   perUser: false,
   approvalRequired: false,
+  toolMode: "full",
 };
 
-test("Microsoft 365 declares the seven work apps; the heaviest start off for new people", () => {
-  assert.deepEqual(
-    connectorAppStates("microsoft", DEFAULT_DISABLED_CONNECTOR_APPS).map((app) => [app.id, app.enabled]),
-    [
-      ["mail", true],
-      ["calendar", true],
-      ["teams-chats", true],
-      ["teams-channels", false],
-      ["meeting-transcripts", false],
-      ["onedrive", true],
-      ["sharepoint", false],
-    ],
-  );
+test("Microsoft 365 declares the seven work apps, all on for new people", () => {
+  assert.deepEqual(DEFAULT_DISABLED_CONNECTOR_APPS, { microsoft: [] });
+  assert.ok(connectorAppStates("microsoft", DEFAULT_DISABLED_CONNECTOR_APPS).every((app) => app.enabled));
   assert.deepEqual(
     connectorAppStates("microsoft", {}).map((app) => app.id),
     MICROSOFT_APPS,
@@ -76,13 +68,13 @@ test("app settings persist per person in the durable map, merge partial updates,
   const prefs = createConnectorAppPrefs(map, () => 42);
   assert.deepEqual(await prefs.disabled("ana@example.com"), DEFAULT_DISABLED_CONNECTOR_APPS);
 
-  const states = await prefs.set("ana@example.com", "microsoft", { mail: false, sharepoint: true });
+  const states = await prefs.set("ana@example.com", "microsoft", { mail: false, sharepoint: false });
   assert.deepEqual(
     states.filter((app) => !app.enabled).map((app) => app.id),
-    ["mail", "teams-channels", "meeting-transcripts"],
+    ["mail", "sharepoint"],
   );
   await prefs.set("ana@example.com", "microsoft", { mail: true, calendar: false });
-  const expected = { microsoft: ["calendar", "teams-channels", "meeting-transcripts"] };
+  const expected = { microsoft: ["calendar", "sharepoint"] };
   assert.deepEqual(await prefs.disabled("ana@example.com"), expected);
   assert.deepEqual(await prefs.disabled("bo@example.com"), DEFAULT_DISABLED_CONNECTOR_APPS);
 

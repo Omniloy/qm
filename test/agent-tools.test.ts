@@ -970,6 +970,7 @@ test("a held MCP write shows the person exactly what it would send", async () =>
         readOnly: false,
         perUser: true,
         approvalRequired: true,
+        toolMode: "full",
       },
     ],
   });
@@ -3540,6 +3541,7 @@ test("resource catalog exposes one home per operation and leaves MCP tools intac
           readOnly: true,
           perUser: false,
           approvalRequired: false,
+          toolMode: "full",
         },
       ],
     },

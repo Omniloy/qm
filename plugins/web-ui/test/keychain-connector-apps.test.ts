@@ -48,7 +48,7 @@ test("the Microsoft 365 card opens app settings from its gear, even before conne
     Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
   }
   const originalFetch = globalThis.fetch;
-  const disabled = new Set<string>(["teams-channels", "meeting-transcripts", "sharepoint"]);
+  const disabled = new Set<string>();
   const saves: unknown[] = [];
   const apps = () => APPS.map(([id, label]) => ({ id, label, enabled: !disabled.has(id) }));
   globalThis.fetch = async (input, init) => {
@@ -95,7 +95,7 @@ test("the Microsoft 365 card opens app settings from its gear, even before conne
     await tick();
     assert.deepEqual(
       switches().map((el) => [el.dataset.app, el.getAttribute("aria-checked")]),
-      APPS.map(([id]) => [id, ["teams-channels", "meeting-transcripts", "sharepoint"].includes(id) ? "false" : "true"]),
+      APPS.map(([id]) => [id, "true"]),
     );
     switches()
       .find((el) => el.dataset.app === "mail")!
@@ -111,10 +111,10 @@ test("the Microsoft 365 card opens app settings from its gear, even before conne
       mail: false,
       calendar: true,
       "teams-chats": true,
-      "teams-channels": false,
-      "meeting-transcripts": false,
+      "teams-channels": true,
+      "meeting-transcripts": true,
       onedrive: true,
-      sharepoint: true,
+      sharepoint: false,
     });
     assert.equal(document.querySelector(".kc-app-settings"), null, "saving closes the dialog");
     assert.match(document.body.textContent ?? "", /Saved Microsoft 365 settings/);
@@ -127,7 +127,7 @@ test("the Microsoft 365 card opens app settings from its gear, even before conne
       switches()
         .filter((el) => el.getAttribute("aria-checked") === "false")
         .map((el) => el.dataset.app),
-      ["mail", "teams-channels", "meeting-transcripts"],
+      ["mail", "sharepoint"],
       "the saved switches come back after a reload",
     );
     document.querySelector<HTMLButtonElement>(".kc-app-settings [data-dialog-cancel]")!.click();
