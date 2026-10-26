@@ -110,7 +110,7 @@ available (no access, no account, every app off), the three tools are not offere
 A deployment that runs the Microsoft 365 sidecar sets `MS365_MCP_URL` on core (the
 Dokploy compose sets `http://ms365-mcp:3000/mcp`). While that is set and the
 `microsoft` OAuth app is configured and enabled (in Admin → OAuth apps, or through
-`MICROSOFT_CLIENT_ID` and `MICROSOFT_CLIENT_SECRET`), the server store includes a
+`MICROSOFT_OAUTH_CLIENT_ID` and `MICROSOFT_OAUTH_CLIENT_SECRET`), the server store includes a
 managed `microsoft-365` server: that URL, `auth: "none"`, `per-user` with credential
 host `graph.microsoft.com`, not read-only, and `toolMode: "discovery"`. It has no
 stored row: `src/mcp/managed-mcp-servers.ts` derives it on every read, so its settings
@@ -123,7 +123,12 @@ while `MS365_MCP_URL` is set the admin API answers `409` for the `microsoft-365`
 whether or not the app is configured. Disabling or removing the Microsoft 365 OAuth app
 turns it off. A `microsoft-365` server registered by hand before this existed stays in
 the database but is never served while `MS365_MCP_URL` is set, so it can't stand in for
-the managed one. If the OAuth app lookup itself fails (for example the database is
+the managed one. The store itself refuses to write or delete a managed id, not only the
+admin API. That stale row comes back, with its old settings, if `MS365_MCP_URL` is ever
+unset or core is rolled back to a version without managed servers. To remove it, delete
+it under **Connectors** → **MCP servers** before setting `MS365_MCP_URL`, or afterwards
+in Postgres: `DELETE FROM mcp_servers WHERE id = 'microsoft-365';` (safe while the
+variable is set, because the managed server has no row). If the OAuth app lookup itself fails (for example the database is
 unreachable), reading the server list fails rather than dropping the server, and the
 tool service keeps its last tools until the next successful refresh.
 

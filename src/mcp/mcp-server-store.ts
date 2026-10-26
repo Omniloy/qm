@@ -83,6 +83,9 @@ export function createMcpServerStore(
     for (const l of listeners) l();
   };
   const clean = (server: McpServer): McpServer => ({ ...server, name: singleLineName(server.name) || server.id });
+  const writable = (id: string) => {
+    if (managed.ids.has(id)) throw new Error(`MCP server ${id} is managed by the deployment and can't be changed`);
+  };
   return {
     async list() {
       const [entries, fixed] = await Promise.all([backing.entries(), managed.list()]);
@@ -98,10 +101,12 @@ export function createMcpServerStore(
     },
     isManaged: (id) => managed.ids.has(id),
     put: async (server) => {
+      writable(server.id);
       await backing.put(server.id, clean(server));
       emit();
     },
     updateIf: async (id, fn) => {
+      writable(id);
       let changed = false;
       const apply = (current: McpServer): McpServer => {
         const next = fn(current);
@@ -120,6 +125,7 @@ export function createMcpServerStore(
       if (changed) emit();
     },
     delete: async (id) => {
+      writable(id);
       await backing.delete(id);
       emit();
     },

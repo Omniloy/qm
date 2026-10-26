@@ -415,7 +415,11 @@ tools, check **Connectors** → **MCP servers**. No **Microsoft 365** row marked
 **Managed** means `MS365_MCP_URL` is missing from core's environment or the OAuth app
 is disabled; a managed row with no tools means `ms365-mcp` is not running or not healthy
 on the `qm` network. A `microsoft-365` server registered by hand before this was
-automatic is never served while `MS365_MCP_URL` is set; it needs no action.
+automatic is never served while `MS365_MCP_URL` is set, but it comes back with its old
+settings if `MS365_MCP_URL` is unset or core is rolled back. Remove it once the managed
+server is live: in the core database run
+`DELETE FROM mcp_servers WHERE id = 'microsoft-365';` (the admin console can't delete it
+while `MS365_MCP_URL` is set).
 `MS365_MCP_URL` replaces the earlier `MCP_PER_USER_HTTP_HOSTS` setting, which core no
 longer reads.
 

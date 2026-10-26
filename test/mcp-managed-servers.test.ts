@@ -31,7 +31,7 @@ const manual: McpServer = {
   updatedBy: "admin-alice@default-org",
 };
 
-function managedStore(ms365McpUrl: string | undefined, configured: { microsoft: boolean | Error }) {
+function managedStore(ms365McpUrl: string | undefined, configured: { microsoft: boolean }) {
   const providers: string[] = [];
   const store = createMcpServerStore(
     createMemoryMap<McpServer>(),
@@ -39,7 +39,6 @@ function managedStore(ms365McpUrl: string | undefined, configured: { microsoft: 
       ms365McpUrl,
       providerConfigured: async (provider) => {
         providers.push(provider);
-        if (configured.microsoft instanceof Error) throw configured.microsoft;
         return provider === "microsoft" && configured.microsoft;
       },
     }),
@@ -89,10 +88,44 @@ test("sidecar plus Microsoft OAuth app yields the server with exact settings, an
   assert.equal(await store.get("microsoft-365"), null);
 });
 
+test("the store refuses writes to a managed id, whether or not the server is currently present", async () => {
+  const configured = { microsoft: true };
+  const backing = createMemoryMap<McpServer>();
+  await backing.put(manual.id, manual);
+  const store = createMcpServerStore(
+    backing,
+    managedMcpServers({ ms365McpUrl: SIDECAR, providerConfigured: async () => configured.microsoft }),
+  );
+  for (const present of [true, false]) {
+    configured.microsoft = present;
+    await assert.rejects(store.put({ ...manual, url: "https://evil.example.com/mcp" }), /managed by the deployment/);
+    await assert.rejects(
+      store.updateIf("microsoft-365", (current) => ({ ...current, url: "https://evil.example.com/mcp" })),
+      /managed by the deployment/,
+    );
+    await assert.rejects(store.delete("microsoft-365"), /managed by the deployment/);
+  }
+  assert.deepEqual(await backing.get("microsoft-365"), manual, "the stored row is untouched");
+  await store.put({ ...manual, id: "crm", url: "https://crm.example.com/mcp" });
+  await store.delete("crm");
+  assert.equal(await store.get("crm"), null, "other ids stay writable");
+});
+
 test("with a sidecar URL a hand-registered microsoft-365 row is never served, and other servers are untouched", async () => {
   const configured = { microsoft: true };
-  const { providers, store } = managedStore(SIDECAR, configured);
-  await store.put(manual);
+  const backing = createMemoryMap<McpServer>();
+  await backing.put(manual.id, manual);
+  const providers: string[] = [];
+  const store = createMcpServerStore(
+    backing,
+    managedMcpServers({
+      ms365McpUrl: SIDECAR,
+      providerConfigured: async (provider) => {
+        providers.push(provider);
+        return configured.microsoft;
+      },
+    }),
+  );
   await store.put({ ...manual, id: "crm", name: "CRM", url: "https://crm.example.com/mcp" });
   providers.length = 0;
   assert.equal((await store.get("crm"))?.url, "https://crm.example.com/mcp");
@@ -113,9 +146,17 @@ test("with a sidecar URL a hand-registered microsoft-365 row is never served, an
 });
 
 test("a failed OAuth app lookup fails the read instead of dropping or swapping the server", async () => {
-  const configured: { microsoft: boolean | Error } = { microsoft: new Error("database unavailable") };
-  const { store } = managedStore(SIDECAR, configured);
-  await store.put(manual);
+  const backing = createMemoryMap<McpServer>();
+  await backing.put(manual.id, manual);
+  const store = createMcpServerStore(
+    backing,
+    managedMcpServers({
+      ms365McpUrl: SIDECAR,
+      providerConfigured: async () => {
+        throw new Error("database unavailable");
+      },
+    }),
+  );
   await assert.rejects(store.list(), /database unavailable/);
   await assert.rejects(store.get("microsoft-365"), /database unavailable/);
 });
@@ -147,9 +188,9 @@ test("saving the Microsoft OAuth app sets up the managed tools server, which adm
   sidecar.listen(0, "127.0.0.1");
   await once(sidecar, "listening");
   const sidecarUrl = `http://127.0.0.1:${(sidecar.address() as AddressInfo).port}/mcp`;
-  const envBefore = { id: process.env.MICROSOFT_CLIENT_ID, secret: process.env.MICROSOFT_CLIENT_SECRET };
-  delete process.env.MICROSOFT_CLIENT_ID;
-  delete process.env.MICROSOFT_CLIENT_SECRET;
+  const envBefore = { id: process.env.MICROSOFT_OAUTH_CLIENT_ID, secret: process.env.MICROSOFT_OAUTH_CLIENT_SECRET };
+  delete process.env.MICROSOFT_OAUTH_CLIENT_ID;
+  delete process.env.MICROSOFT_OAUTH_CLIENT_SECRET;
   const dir = await mkdtemp(join(tmpdir(), "mcp-managed-"));
   const built = buildApp(testConfig({ dataDir: dir, ms365McpUrl: sidecarUrl }));
   const server = createInsecureTestServer(built.app, {
@@ -167,8 +208,8 @@ test("saving the Microsoft OAuth app sets up the managed tools server, which adm
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await new Promise<void>((resolve) => sidecar.close(() => resolve()));
     await rm(dir, { recursive: true, force: true });
-    if (envBefore.id !== undefined) process.env.MICROSOFT_CLIENT_ID = envBefore.id;
-    if (envBefore.secret !== undefined) process.env.MICROSOFT_CLIENT_SECRET = envBefore.secret;
+    if (envBefore.id !== undefined) process.env.MICROSOFT_OAUTH_CLIENT_ID = envBefore.id;
+    if (envBefore.secret !== undefined) process.env.MICROSOFT_OAUTH_CLIENT_SECRET = envBefore.secret;
   });
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1/admin`;
   const servers = async () =>
@@ -183,13 +224,10 @@ test("saving the Microsoft OAuth app sets up the managed tools server, which adm
   assert.equal(ms365?.url, sidecarUrl);
   assert.equal(ms365?.managed, true);
   assert.equal(ms365?.toolMode, "discovery");
-  for (let i = 0; i < 400 && !built.mcpToolService.toolDefs().length; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
   assert.deepEqual(
     built.mcpToolService.toolDefs().map((d) => [d.serverId, d.remoteName, d.toolMode, d.credentialHost]),
     [["microsoft-365", "list-chats", "discovery", "graph.microsoft.com"]],
-    "the tool service picks the server up on save, without a restart",
+    "the save answers once the tool service has picked the server up, without a restart",
   );
 
   const edit = await fetch(`${base}/mcp-servers/microsoft-365`, {
@@ -209,9 +247,6 @@ test("saving the Microsoft OAuth app sets up the managed tools server, which adm
 
   assert.equal((await connector({ provider: "microsoft", delete: true })).status, 200);
   assert.deepEqual(await servers(), []);
-  for (let i = 0; i < 400 && built.mcpToolService.toolDefs().length; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
   assert.deepEqual(built.mcpToolService.toolDefs(), [], "removing the OAuth app removes its tools");
   const register = await fetch(`${base}/mcp-servers/microsoft-365`, {
     method: "PUT",

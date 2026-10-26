@@ -36,6 +36,7 @@ import { authorizeUrl, PROVIDERS, type ConsentMode } from "../../connectors/oaut
 import { encodeRef, serviceCredRef } from "../../acl/resource-ref.ts";
 import { audit } from "./shared.ts";
 import { errMessage, reportFailure, swallow } from "../../util/errors.ts";
+import { withTimeout } from "../../util/async.ts";
 import {
   DEFAULT_SECURITY_SCREEN_RUBRIC,
   parseSecurityPosture,
@@ -200,8 +201,14 @@ const credentialServices = async (
 const MAX_ORDERS_CHARS = 20_000;
 const MAX_SOUL_CHARS = 100_000;
 
-function refreshMcpTools(deps: ServerDeps): void {
-  void deps.mcpToolService?.refresh().catch((e: unknown) => swallow("mcp refresh after OAuth app change", e));
+const MCP_REFRESH_WAIT_MS = 5_000;
+
+async function refreshMcpTools(deps: ServerDeps): Promise<void> {
+  const service = deps.mcpToolService;
+  if (!service) return;
+  await withTimeout(() => service.refresh(), MCP_REFRESH_WAIT_MS, "mcp refresh after OAuth app change").catch(
+    (e: unknown) => swallow("mcp refresh after OAuth app change", e),
+  );
 }
 
 function channelContainer(scope: string): string | undefined {
@@ -1046,7 +1053,7 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
       if (!PROVIDERS[provider]) return { error: `unknown OAuth provider: ${provider}` };
       if (b.delete === true) {
         await deps.config!.deleteConnectorClient(scope, provider);
-        refreshMcpTools(deps);
+        await refreshMcpTools(deps);
         return { ok: true };
       }
       if (typeof b.clientId !== "string" || typeof b.clientSecret !== "string") {
@@ -1078,7 +1085,7 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
         return { error: errMessage(e), code: "connector_invalid" };
       }
       await deps.config!.setConnectorClient(scope, provider, input);
-      refreshMcpTools(deps);
+      await refreshMcpTools(deps);
       return { ok: true };
     },
   },
