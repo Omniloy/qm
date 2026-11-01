@@ -217,6 +217,7 @@ test("q4f16 on WebGPU feeds half embeddings, keeps KV on the GPU and shares the 
     assert.deepEqual(options.executionProviders, ["webgpu"]);
   }
   assert.equal(h.created.find((c) => c.kind === "encoder")?.options.preferredOutputLocation, undefined);
+  assert.ok(h.created.every((c) => c.options.logSeverityLevel === 3));
   await engine.dispose();
   assert.deepEqual(h.released.sort(), ["encoder", "init", "step"]);
 });

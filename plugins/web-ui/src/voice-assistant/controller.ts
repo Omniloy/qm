@@ -26,7 +26,7 @@ import {
   type VoiceTaskSummary,
   type VoiceToolCall,
 } from "./protocol.ts";
-import { createTextChunker, stepsForChunk, type TextChunker } from "./text-chunker.ts";
+import { createTextChunker, stepsForChunk, withoutClosingPunctuation, type TextChunker } from "./text-chunker.ts";
 import type { VoiceConfirmation, VoiceToolOutcome } from "./tools.ts";
 import { confirmationAnswer, matchWake } from "./wake.ts";
 
@@ -78,6 +78,10 @@ const RESTING_VAD: Partial<VadOptions> = {
   negativeSpeechThreshold: DEFAULT_VAD_OPTIONS.negativeSpeechThreshold,
 };
 
+function confirmationSubject(c: VoiceConfirmation): string {
+  return [c.title, c.summary ?? ""].map(withoutClosingPunctuation).filter(Boolean).join(": ");
+}
+
 const COPY = {
   es: {
     loadingVad: "Cargando el detector de voz",
@@ -91,7 +95,7 @@ const COPY = {
     fatal: "No se ha podido iniciar el asistente de voz.",
     voiceTts: "No se ha podido cargar la voz.",
     confirm: (c: VoiceConfirmation) =>
-      `${c.title}${c.summary ? `: ${c.summary}` : ""}. ¿${c.approved ? "Lo apruebo" : "Lo rechazo"}? Di sí o no.`,
+      `${confirmationSubject(c)}. ¿${c.approved ? "Lo apruebo" : "Lo rechazo"}? Di sí o no.`,
     approved: "Aprobado.",
     rejected: "Rechazado.",
     declined: "Vale, no hago nada.",
@@ -118,7 +122,7 @@ const COPY = {
     fatal: "The voice assistant could not start.",
     voiceTts: "The voice could not be loaded.",
     confirm: (c: VoiceConfirmation) =>
-      `${c.title}${c.summary ? `: ${c.summary}` : ""}. ${c.approved ? "Approve it" : "Reject it"}? Say yes or no.`,
+      `${confirmationSubject(c)}. ${c.approved ? "Approve it" : "Reject it"}? Say yes or no.`,
     approved: "Approved.",
     rejected: "Rejected.",
     declined: "Okay, I won't do anything.",
@@ -210,6 +214,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
   const announcements: string[] = [];
   const pendingSegments = new Set<number>();
   const rewoken = new Set<number>();
+  const handledCalls = new Set<string>();
 
   let state: VoiceState = "arming";
   let muted = deps.muted === true;
@@ -417,10 +422,12 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
     setState("listening");
   };
 
-  const fail = (error: unknown) => {
+  const fail = (error: unknown, spoken: Utterance) => {
     const reason = error instanceof VoiceReplyError ? error.reason : "upstream_error";
     errorStatus = copy().errors[reason];
     deps.chime("error");
+    feed(spoken, spoken.text ? ` ${errorStatus}` : errorStatus);
+    render();
   };
 
   const requestFor = (): VoiceReplyRequest => ({
@@ -445,8 +452,16 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
 
   const converse = async (controller: AbortController, spoken: Utterance) => {
     let readResult = false;
+    const runs = new Set<string>();
+    const firstTime = (call: VoiceToolCall): boolean => {
+      const run = `${call.name}:${JSON.stringify(call.args)}`;
+      if (handledCalls.has(call.id) || runs.has(run)) return false;
+      handledCalls.add(call.id);
+      runs.add(run);
+      return true;
+    };
     for (let hop = 0; ; hop++) {
-      const calls: VoiceToolCall[] = [];
+      const received: VoiceToolCall[] = [];
       let said = "";
       try {
         for await (const frame of deps.reply(requestFor(), controller.signal)) {
@@ -455,7 +470,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
             said += frame.text;
             feed(spoken, frame.text);
           } else if (frame.type === "tool_call") {
-            calls.push({ id: frame.id, name: frame.name, args: frame.args } as VoiceToolCall);
+            received.push({ id: frame.id, name: frame.name, args: frame.args } as VoiceToolCall);
           } else if (frame.type === "error") {
             throw new VoiceReplyError(frame.reason);
           } else {
@@ -467,6 +482,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
           history.push({ role: "assistant", content: clip(said) });
       }
       if (controller.signal.aborted) return;
+      const calls = received.filter(firstTime);
       history.push({ role: "assistant", content: clip(said), ...(calls.length ? { toolCalls: calls } : {}) });
       if (calls.length === 0) return;
       flushText(spoken);
@@ -505,6 +521,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
     confirmation = null;
     errorStatus = "";
     announcement = "";
+    const turnStart = history.length;
     history.push({ role: "user", content: clip(text) });
     captions = { user: { text, final: true }, agent: null };
     setState("thinking");
@@ -515,7 +532,8 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
       else await converse(controller, spoken);
     } catch (error) {
       if (controller.signal.aborted || isAbort(error)) return;
-      fail(error);
+      history.length = turnStart;
+      fail(error, spoken);
     } finally {
       if (turn === controller) turn = null;
     }

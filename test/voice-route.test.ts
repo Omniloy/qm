@@ -211,7 +211,9 @@ test("the voice model replaces the default and the default stays as the fallback
       openai.inputs[0]!.candidates.map(({ modelId, reasoning }) => ({ modelId, reasoning })),
       [
         { modelId: "gpt-6.1-terra", reasoning: "none" },
+        { modelId: "codex/gpt-6.1-terra", reasoning: "none" },
         { modelId: "gpt-6.1-sol", reasoning: "lowest" },
+        { modelId: "codex/gpt-6.1-sol", reasoning: "lowest" },
       ],
     );
   } finally {

@@ -171,6 +171,11 @@ test("a failed summary falls back to a plain sentence", async () => {
   await t.announcer.settled();
   assert.equal(t.delivered[0]!.text, "Listo: Tarea web:ana:1.");
   assert.equal(fallbackAnnouncement("approval", "Correo", "en"), "Correo needs your approval.");
+  assert.equal(
+    fallbackAnnouncement("done", "Responde con un saludo: hola.", "es"),
+    "Listo: Responde con un saludo: hola.",
+  );
+  assert.equal(fallbackAnnouncement("failed", "Informe Q3?!", "en"), "Could not finish: Informe Q3.");
 });
 
 test("nothing is delivered after dispose", async () => {

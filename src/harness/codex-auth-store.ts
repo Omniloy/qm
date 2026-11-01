@@ -1,5 +1,6 @@
 import { CODEX_OAUTH_ISSUER, asObject, codexOAuthJwtAccountId, type JsonObject } from "./codex-auth-file.ts";
-import { codexOAuthRefreshToken, readCodexOAuthAuthFile, sanitizedCodexOAuthAuth } from "./codex-auth-file.ts";
+import { codexOAuthAccessToken, codexOAuthRefreshToken, readCodexOAuthAuthFile } from "./codex-auth-file.ts";
+import { sanitizedCodexOAuthAuth } from "./codex-auth-file.ts";
 import type { CredentialFile, Keychain } from "../credentials/keychain.ts";
 import { swallow } from "../util/errors.ts";
 import { acquireCodexOAuthAuthLock, writeCodexOAuthAuthFile } from "./codex-auth.ts";
@@ -42,7 +43,7 @@ function jwtExpiryMs(token: unknown): number | undefined {
 
 /** Epoch ms when this auth's access token expires, if it carries an exp claim. */
 export function codexOAuthAccessTokenExpiresAt(auth: JsonObject | null): number | undefined {
-  return jwtExpiryMs(asObject(auth?.tokens)?.access_token);
+  return jwtExpiryMs(codexOAuthAccessToken(auth));
 }
 
 /** Validate an already-parsed auth.json value the same way readCodexOAuthAuthFile validates a file. */

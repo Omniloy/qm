@@ -150,16 +150,16 @@ class FakeTensor {
 
 function fakeOrt(opts: { failProvider?: string; durationSeconds?: number } = {}) {
   const runs: Run[] = [];
-  const created: { path: string; providers: string[] }[] = [];
+  const created: { path: string; providers: string[]; logSeverityLevel?: number }[] = [];
   const released: string[] = [];
   const duration = opts.durationSeconds ?? 0.1;
   const ort = {
     Tensor: FakeTensor,
     InferenceSession: {
-      async create(bytes: Uint8Array, options: { executionProviders: string[] }) {
+      async create(bytes: Uint8Array, options: { executionProviders: string[]; logSeverityLevel?: number }) {
         const path = new TextDecoder().decode(bytes);
         if (options.executionProviders.includes(opts.failProvider ?? "")) throw new Error(`no ${opts.failProvider}`);
-        created.push({ path, providers: options.executionProviders });
+        created.push({ path, providers: options.executionProviders, logSeverityLevel: options.logSeverityLevel });
         return {
           async run(feeds: Record<string, FakeTensor>) {
             runs.push({ session: path, feeds });
@@ -314,6 +314,7 @@ test("the engine loader falls back from WebGPU to WASM and warms up the chosen b
   const engine = await loadTtsEngine("supertonic-3", { ort: fake.ort, backend: "webgpu", readFile: readFake });
   assert.equal(engine.backend, "wasm");
   assert.ok(fake.created.every((c) => c.providers.join() === "wasm"));
+  assert.ok(fake.created.every((c) => c.logSeverityLevel === 3));
   assert.ok(fake.runs.some((r) => r.session === SUPERTONIC_PATHS.vocoder));
 });
 

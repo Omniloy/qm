@@ -95,6 +95,11 @@ export function sanitizedCodexOAuthAuth(auth: JsonObject): JsonObject {
   return copy;
 }
 
+export function codexOAuthAccessToken(value: unknown): string | undefined {
+  const tokens = asObject(asObject(value)?.tokens);
+  return typeof tokens?.access_token === "string" && tokens.access_token ? tokens.access_token : undefined;
+}
+
 export function codexOAuthRefreshToken(value: unknown): string | undefined {
   const auth = asObject(value);
   const tokens = auth ? asObject(auth.tokens) : null;

@@ -6,6 +6,7 @@ import {
   type VoiceReplyFrame,
   type VoiceReplyRequest,
 } from "./protocol.ts";
+import { withoutClosingPunctuation } from "./text-chunker.ts";
 import { taskState, taskTitle, type TaskTail } from "./tools.ts";
 
 type TaskState = ReturnType<typeof taskState>;
@@ -44,7 +45,8 @@ const STATE_LABELS: Record<VoiceLanguage, Record<AnnouncementKind, string>> = {
   en: { done: "finished", failed: "could not be finished", approval: "awaiting approval" },
 };
 
-export function fallbackAnnouncement(kind: AnnouncementKind, title: string, language: VoiceLanguage): string {
+export function fallbackAnnouncement(kind: AnnouncementKind, task: string, language: VoiceLanguage): string {
+  const title = withoutClosingPunctuation(task);
   if (language === "en") {
     if (kind === "approval") return `${title} needs your approval.`;
     return kind === "failed" ? `Could not finish: ${title}.` : `Done: ${title}.`;

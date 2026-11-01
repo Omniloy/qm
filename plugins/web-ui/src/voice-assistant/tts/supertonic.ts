@@ -152,6 +152,7 @@ export async function createSupertonic(deps: SupertonicDeps): Promise<TtsEngine>
   const options: OrtWeb.InferenceSession.SessionOptions = {
     executionProviders: [...deps.executionProviders],
     graphOptimizationLevel: "all",
+    logSeverityLevel: 3,
   };
   const sessions: Session[] = [];
   const open = async (path: string) => {

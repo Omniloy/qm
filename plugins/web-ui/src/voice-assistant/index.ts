@@ -34,6 +34,7 @@ import {
 import { currentVoiceSettings, onVoiceSettingsChange, storeVoiceMuted, storedVoiceMuted } from "./settings-store.ts";
 import { isVoiceThread, runVoiceTool, taskSummaries, type TaskTail, type VoiceToolDeps } from "./tools.ts";
 import { mountVoiceStage, type VoiceStage } from "./voice-stage.ts";
+import { onFirstActivation } from "./activation.ts";
 import { asrVariantFor } from "./asr/models.ts";
 import { TTS_MODEL_FILES } from "./tts/models.ts";
 
@@ -389,21 +390,6 @@ export function openVoiceStage(): void {
   stage?.open();
 }
 
-function onFirstActivation(run: () => void): void {
-  const activation = (navigator as Navigator & { userActivation?: { hasBeenActive: boolean } }).userActivation;
-  if (activation?.hasBeenActive) {
-    run();
-    return;
-  }
-  const once = () => {
-    document.removeEventListener("pointerdown", once, true);
-    document.removeEventListener("keydown", once, true);
-    if (stage) run();
-  };
-  document.addEventListener("pointerdown", once, true);
-  document.addEventListener("keydown", once, true);
-}
-
 export async function mountVoiceAssistant(mount: VoiceMountOptions): Promise<void> {
   options = mount;
   if (host) return;
@@ -436,7 +422,10 @@ export async function mountVoiceAssistant(mount: VoiceMountOptions): Promise<voi
   stopSettings = onVoiceSettingsChange(() => {
     if (!session && idleView) showIdle(idleView.status);
   });
-  if (mount.autoStart) onFirstActivation(() => void startVoice(false));
+  if (mount.autoStart)
+    onFirstActivation(() => {
+      if (stage) void startVoice(false);
+    });
 }
 
 export function unmountVoiceAssistant(): void {

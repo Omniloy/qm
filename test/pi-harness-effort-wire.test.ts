@@ -444,3 +444,21 @@ test("applyNoReasoning asks each API for no reasoning in its own dialect", () =>
   applyNoReasoning(responses, getRequiredModel("gpt-6.1-terra"));
   assert.deepEqual(responses, { reasoning: { effort: "none" } });
 });
+
+test("the company ChatGPT sign-in serves the Codex voice model and nothing else serves it", async () => {
+  const voice = (resolveProviderKeys: () => Promise<Record<string, string>>) =>
+    collect(
+      createPiHarness({ resolveProviderKeys }).models.streamVoiceReply!({
+        candidates: [{ modelId: "codex/gpt-6.1-terra", reasoning: "none" }],
+        systemPrompt: "",
+        messages: [{ role: "user", content: "hola" }],
+        tools: [],
+        maxTokens: 300,
+        signal: AbortSignal.abort(),
+      }),
+    );
+  assert.deepEqual(await voice(async () => ({ openai: "sk-test" })), [{ type: "unsupported" }]);
+  const signedIn = await voice(async () => ({ "openai-codex": "chatgpt-access" }));
+  assert.deepEqual(signedIn[0], { type: "start", modelId: "codex/gpt-6.1-terra" });
+  assert.equal(signedIn.at(-1)?.type, "end");
+});

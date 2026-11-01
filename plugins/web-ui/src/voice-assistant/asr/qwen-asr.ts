@@ -106,6 +106,7 @@ export async function createQwenAsr(deps: QwenAsrDeps): Promise<AsrEngine> {
   const base: Ort.InferenceSession.SessionOptions = {
     executionProviders: [...deps.executionProviders],
     graphOptimizationLevel: "all",
+    logSeverityLevel: 3,
   };
   const decoderOptions: Ort.InferenceSession.SessionOptions = {
     ...base,

@@ -408,6 +408,16 @@ qm-voice-orb[size="dock"] {
     padding-top: 4rem;
     padding-bottom: 7.5rem;
   }
+
+  .voice-dock-orb {
+    top: calc(60px + env(safe-area-inset-top));
+    right: max(12px, env(safe-area-inset-right));
+    bottom: auto;
+  }
+
+  .voice-dock-orb qm-voice-orb {
+    --om-orb-dock: 44px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

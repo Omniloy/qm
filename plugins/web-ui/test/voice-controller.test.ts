@@ -321,10 +321,14 @@ test("tool calls run and their results go back in a follow-up request", async ()
 });
 
 test("follow-up hops stop after the limit even when the model keeps calling tools", async () => {
-  const looping: Script = {
-    frames: [{ type: "tool_call", id: "c", name: "check_tasks", args: {} }, { type: "done" }],
-  };
-  const t = setup(Array.from({ length: 10 }, () => structuredClone(looping)));
+  const t = setup(
+    Array.from({ length: 10 }, (_, i) => ({
+      frames: [
+        { type: "tool_call", id: `c${i}`, name: "task_result", args: { taskRef: `web:u:${i}` } },
+        { type: "done" },
+      ] as VoiceReplyFrame[],
+    })),
+  );
   t.ready();
   t.controller.type("¿qué hay?");
   for (let i = 0; i < 12; i++) await flush();
@@ -333,14 +337,55 @@ test("follow-up hops stop after the limit even when the model keeps calling tool
   assert.equal(t.controller.state, "listening");
 });
 
-test("a reply error chimes, shows why, and goes back to listening", async () => {
-  const t = setup([{ frames: [{ type: "error", reason: "voice_model_unsupported" }] }]);
+test("a repeated tool call runs once and ends the turn instead of starting the same task again", async () => {
+  const call = {
+    type: "tool_call",
+    id: "voice-call-1",
+    name: "delegate_task",
+    args: { instruction: "Di hola", title: "Hola" },
+  } as const;
+  const again = { ...call, id: "voice-call-2" };
+  const t = setup([
+    { frames: [call, { type: "done" }] },
+    { frames: [call, again, { type: "done" }] },
+    { frames: [call, { type: "done" }] },
+  ]);
+  t.ready();
+  t.controller.type("di hola");
+  for (let i = 0; i < 8; i++) await flush();
+  assert.equal(t.tools.length, 1);
+  assert.equal(t.requests.length, 2);
+  assert.equal(t.controller.state, "listening");
+  t.controller.type("¿y ahora?");
+  for (let i = 0; i < 4; i++) await flush();
+  assert.equal(t.tools.length, 1);
+  const ids = t.requests.at(-1)!.messages.flatMap((m) => (m.role === "assistant" ? (m.toolCalls ?? []) : []));
+  assert.deepEqual(
+    ids.map((c) => c.id),
+    ["voice-call-1"],
+  );
+});
+
+test("a reply error chimes, says why out loud, and drops the failed turn from the history", async () => {
+  const t = setup([
+    { frames: [{ type: "error", reason: "voice_model_unsupported" }] },
+    { frames: [{ type: "delta", text: "Hola." }, { type: "done" }] },
+  ]);
   t.ready();
   t.controller.type("hola");
   await flush();
-  assert.equal(t.controller.state, "listening");
   assert.deepEqual(t.chimes, ["error"]);
   assert.equal(t.view().status, "Tu modelo no admite el asistente de voz.");
+  assert.deepEqual(
+    t.speaks().map((m) => m.text),
+    ["Tu modelo no admite el asistente de voz."],
+  );
+  t.pcmFor(0);
+  t.playback.emit({ type: "drained", utteranceId: t.speaks()[0]!.utteranceId });
+  assert.equal(t.controller.state, "listening");
+  t.controller.type("otra vez");
+  await flush();
+  assert.deepEqual(t.requests.at(-1)!.messages, [{ role: "user", content: "otra vez" }]);
 });
 
 test("a rejected request surfaces the server's reason", async () => {
@@ -471,8 +516,8 @@ test("an approval is only carried out after the user says yes to a read-back the
   const t = setup();
   const confirm = {
     approved: true,
-    title: "Correo",
-    summary: "enviar el informe a Juan",
+    title: "Correo.",
+    summary: "enviar el informe a Juan.",
     execute: async () => {
       executed.push(true);
       return { content: "{}" };

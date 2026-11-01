@@ -43,6 +43,10 @@ const ABBREVIATIONS = new Set([
   "ie",
 ]);
 
+export function withoutClosingPunctuation(text: string): string {
+  return text.replace(/[\s.!?…:;,]+$/u, "");
+}
+
 export function stepsForChunk(chunkIndex: number): number {
   return chunkIndex === 0 ? FIRST_CHUNK_STEPS : LATER_CHUNK_STEPS;
 }

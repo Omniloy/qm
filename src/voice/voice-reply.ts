@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 import type { HarnessVoiceCandidate, HarnessVoiceMessage, HarnessVoiceTool } from "../harness/harness.ts";
-import { codexProviderModelId, voiceModelFor } from "../model/pi-models.ts";
+import { codexProviderModelId, codexSubscriptionModelId, resolveModel, voiceModelFor } from "../model/pi-models.ts";
 import { loadPersonalModelAccess, piRoutingAuth, routePersonalModelAccess } from "../core/individual-auth-routing.ts";
 import { userRuntimeConfigBody, type RuntimeDeps } from "../api/runtime-config.ts";
 import { scopeId } from "../types.ts";
@@ -215,13 +215,19 @@ export function voiceSystemPrompt(request: VoiceReplyRequest): string {
   return [copy.reply, request.tools ? copy.tools : copy.noTools, tasks].join("\n\n");
 }
 
+function withSubscriptionTwin(candidate: HarnessVoiceCandidate): HarnessVoiceCandidate[] {
+  if (resolveModel(candidate.modelId)?.provider !== "openai") return [candidate];
+  return [candidate, { ...candidate, modelId: codexSubscriptionModelId(candidate.modelId) }];
+}
+
 export async function voiceCandidates(deps: RuntimeDeps, actorId: string): Promise<HarnessVoiceCandidate[]> {
   const { effective } = await userRuntimeConfigBody({ deps }, scopeId("personal", actorId), actorId);
   const voiceModel = voiceModelFor(effective.modelId);
-  const wanted: HarnessVoiceCandidate[] = [
+  const preferred: HarnessVoiceCandidate[] = [
     ...(voiceModel && voiceModel !== effective.modelId ? [{ modelId: voiceModel, reasoning: "none" as const }] : []),
     { modelId: effective.modelId, reasoning: voiceModel === effective.modelId ? "none" : "lowest" },
   ];
+  const wanted = preferred.flatMap(withSubscriptionTwin);
   const store = deps.userModelCredentials;
   const account = store ? await deps.config?.getModelAccountDurable(actorId) : undefined;
   if (!store || !account || account === "company") return wanted;
@@ -235,6 +241,7 @@ export async function voiceCandidates(deps: RuntimeDeps, actorId: string): Promi
     }
     const auth = await piRoutingAuth(routing, store, actorId);
     if (!auth?.model || codexProviderModelId(auth.model) !== codexProviderModelId(candidate.modelId)) continue;
+    if (served.some((pick) => pick.modelId === auth.model)) continue;
     served.push({ modelId: auth.model, reasoning: candidate.reasoning, providerKeys: auth.providerKeys });
   }
   return served;

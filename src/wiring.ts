@@ -353,7 +353,8 @@ import type { SessionStore } from "./sessions/session-store.ts";
 import { createMockHarness } from "./harness/mock-harness.ts";
 import { createOpenCodeHarness, openCodeHarnessConfigOptions } from "./harness/opencode-harness.ts";
 import { createCodexHarness, codexHarnessConfigOptions } from "./harness/codex-harness.ts";
-import { keychainCodexAuthStore } from "./harness/codex-auth-store.ts";
+import { fileCodexAuthStore, keychainCodexAuthStore } from "./harness/codex-auth-store.ts";
+import { codexOAuthAccessToken } from "./harness/codex-auth-file.ts";
 import { keychainHarnessAuthEnv } from "./credentials/harness-auth-env.ts";
 import { probeClaudeSubscription } from "./credentials/claude-subscription-probe.ts";
 import { createClaudeHarness, claudeHarnessConfigOptions } from "./harness/claude-harness.ts";
@@ -1484,12 +1485,21 @@ export function buildApp(
     await refreshCustomProviders();
     await modelRegistry.refresh();
   };
+  const orgCodexFileStore = config.codexAuthFile ? fileCodexAuthStore(config.codexAuthFile) : undefined;
+  const orgCodexAuthStore =
+    config.codexAuthCredential && keychain
+      ? keychainCodexAuthStore({ keychain, credentialId: config.codexAuthCredential })
+      : orgCodexFileStore;
+  const orgCodexAccessToken = async (): Promise<string | undefined> =>
+    codexOAuthAccessToken(await orgCodexAuthStore?.load().catch(swallowAs("model: org codex sign-in", null))) ??
+    (config.codexProcessEnv.CODEX_ACCESS_TOKEN || undefined);
   const resolveModelProviderKeys = async () => {
     await refreshModels();
-    const [anthropic, openai, openrouter, enabledCustom] = await Promise.all([
+    const [anthropic, openai, openrouter, codexSubscription, enabledCustom] = await Promise.all([
       modelCredentials.resolve("anthropic"),
       modelCredentials.resolve("openai"),
       modelCredentials.resolve("openrouter"),
+      orgCodexAccessToken(),
       customProviders.enabled(),
     ]);
     const customKeys = Object.fromEntries(
@@ -1512,6 +1522,7 @@ export function buildApp(
       ...(anthropic ? { anthropic } : {}),
       ...(openai ? { openai } : {}),
       ...(openrouter ? { openrouter } : {}),
+      ...(codexSubscription ? { [CODEX_SUBSCRIPTION_PROVIDER]: codexSubscription } : {}),
       ...customKeys,
     };
   };
@@ -1601,13 +1612,7 @@ export function buildApp(
       "codex",
       createCodexHarness({
         ...codexHarnessConfigOptions(config),
-        // Keychain custody: the subscription login lives encrypted in its
-        // owner's keychain; core refreshes it centrally and hands the harness
-        // ephemeral derived material. The credential can be (re)registered at
-        // runtime — resolution happens on every load.
-        ...(config.codexAuthCredential && keychain
-          ? { authStore: keychainCodexAuthStore({ keychain, credentialId: config.codexAuthCredential }) }
-          : {}),
+        ...(orgCodexAuthStore ? { authStore: orgCodexAuthStore } : {}),
         signals: runSignals,
         tasks,
       }),
