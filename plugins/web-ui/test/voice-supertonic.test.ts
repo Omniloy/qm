@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SUPERTONIC_VOICES } from "../src/voice-assistant/protocol.ts";
+import { SUPERTONIC_VOICES } from "../src/voice-assistant/voices.ts";
 import { backendAttempts, loadTtsEngine } from "../src/voice-assistant/tts/engine.ts";
 import { TTS_MODEL_FILES } from "../src/voice-assistant/tts/models.ts";
 import { normalizeSpeechText } from "../src/voice-assistant/tts/normalize.ts";
@@ -114,7 +114,7 @@ test("the manifest pins every Supertonic 3 file with size and digest", () => {
     SUPERTONIC_PATHS.textEncoder,
     SUPERTONIC_PATHS.vectorEstimator,
     SUPERTONIC_PATHS.vocoder,
-    ...SUPERTONIC_VOICES.map(SUPERTONIC_PATHS.voice),
+    ...SUPERTONIC_VOICES.map((voice) => SUPERTONIC_PATHS.voice(voice.id)),
   ]) {
     assert.ok(paths.includes(path), path);
   }

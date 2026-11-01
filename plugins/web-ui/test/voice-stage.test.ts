@@ -22,6 +22,7 @@ const globals = {
   document: win.document,
   HTMLElement: win.HTMLElement,
   HTMLButtonElement: win.HTMLButtonElement,
+  HTMLSelectElement: win.HTMLSelectElement,
   Node: win.Node,
   Event: win.Event,
   CustomEvent: win.CustomEvent,
@@ -43,6 +44,11 @@ function view(over: Partial<VoiceStageView> = {}): VoiceStageView {
   return {
     state: "sleeping",
     language: "es",
+    voice: "F1",
+    voices: [
+      { id: "F1", label: "Voz femenina 1", gender: "female" },
+      { id: "M1", label: "Voz masculina 1", gender: "male" },
+    ],
     muted: false,
     status: "",
     captions: { user: null, agent: null },
@@ -59,6 +65,8 @@ function setup() {
     onToggleMute: () => calls.push("mute"),
     onTypeInstead: (text) => typed.push(text),
     onClose: () => calls.push("close"),
+    onLanguage: (language) => calls.push(`language:${language}`),
+    onVoice: (voice) => calls.push(`voice:${voice}`),
   };
   const host = document.createElement("div");
   document.body.append(host);
@@ -260,4 +268,49 @@ test("labels follow the language setting", async () => {
   assert.equal(host.querySelector(".voice-type-toggle")!.getAttribute("aria-label"), "Type instead");
   stage.destroy();
   assert.equal(host.querySelector(".voice-announcer"), null, "destroy clears the host");
+});
+
+test("the dock picks the language and the voice while talking", async () => {
+  const { host, stage, calls } = setup();
+  stage.update(view({ state: "listening" }));
+  stage.open();
+  await settle();
+  const language = host.querySelector<HTMLSelectElement>(".voice-language-select")!;
+  const voice = host.querySelector<HTMLSelectElement>(".voice-voice-select")!;
+  assert.equal(language.getAttribute("aria-label"), "Idioma");
+  assert.equal(language.value, "es");
+  assert.deepEqual(
+    [...voice.options].map((option) => [option.value, option.textContent?.trim()]),
+    [
+      ["F1", "Voz femenina 1"],
+      ["M1", "Voz masculina 1"],
+    ],
+  );
+  language.value = "en";
+  language.dispatchEvent(new win.Event("change", { bubbles: true }));
+  voice.value = "M1";
+  voice.dispatchEvent(new win.Event("change", { bubbles: true }));
+  assert.deepEqual(calls, ["language:en", "voice:M1"]);
+  stage.update(view({ state: "listening", voice: "M1" }));
+  await settle();
+  assert.equal(host.querySelector<HTMLSelectElement>(".voice-voice-select")!.value, "M1", "the dock follows settings");
+  stage.destroy();
+});
+
+test("typing is only offered while the assistant can answer", async () => {
+  const { host, stage } = setup();
+  stage.update(view({ state: "off", status: "Este navegador no admite WebGPU" }));
+  stage.open();
+  await settle();
+  assert.equal(host.querySelector(".voice-type-toggle"), null, "no type-instead without the speech models");
+  assert.ok(host.querySelector(".voice-language-select"), "language can still be chosen");
+  stage.update(view({ state: "sleeping" }));
+  await settle();
+  host.querySelector<HTMLButtonElement>(".voice-type-toggle")!.click();
+  await settle();
+  assert.ok(host.querySelector(".voice-type-input"));
+  stage.update(view({ state: "off" }));
+  await settle();
+  assert.equal(host.querySelector(".voice-type-input"), null, "the field closes when the assistant stops");
+  stage.destroy();
 });

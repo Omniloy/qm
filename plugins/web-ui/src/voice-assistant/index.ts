@@ -29,10 +29,18 @@ import {
   type SpeechWorkerOut,
   type TtsWorkerIn,
   type TtsWorkerOut,
+  type VoiceSettings,
   type VoiceStageView,
 } from "./protocol.ts";
-import { currentVoiceSettings, onVoiceSettingsChange, storeVoiceMuted, storedVoiceMuted } from "./settings-store.ts";
+import {
+  currentVoiceSettings,
+  onVoiceSettingsChange,
+  saveVoiceSettings,
+  storeVoiceMuted,
+  storedVoiceMuted,
+} from "./settings-store.ts";
 import { isVoiceThread, runVoiceTool, taskSummaries, type TaskTail, type VoiceToolDeps } from "./tools.ts";
+import { voiceChoices } from "./voices.ts";
 import { mountVoiceStage, type VoiceStage } from "./voice-stage.ts";
 import { onFirstActivation } from "./activation.ts";
 import { asrVariantFor } from "./asr/models.ts";
@@ -76,9 +84,12 @@ let releaseLock: (() => void) | null = null;
 let idleView: VoiceStageView | null = null;
 
 function offView(status = ""): VoiceStageView {
+  const settings = currentVoiceSettings();
   return {
     state: "off",
-    language: currentVoiceSettings().language,
+    language: settings.language,
+    voice: settings.voice,
+    voices: voiceChoices(settings),
     muted: storedVoiceMuted(),
     status,
     captions: { user: null, agent: null },
@@ -174,9 +185,15 @@ function openTask(session: CoreSession): void {
   void openSession(session);
 }
 
-function toolDeps(user: string): VoiceToolDeps {
+function changeVoiceSettings(patch: Partial<VoiceSettings>): void {
+  void saveVoiceSettings(patch).catch((error: unknown) => swallow("voice: save settings", error));
+}
+
+function toolDeps(user: string, titles: Map<string, string>): VoiceToolDeps {
   return {
     user,
+    settings: currentVoiceSettings,
+    saveSettings: saveVoiceSettings,
     sessions: sessionsNow,
     startTurn: (body) =>
       api<{ runId?: string; status?: string }>("/api/turn", { method: "POST", body: JSON.stringify(body) }),
@@ -186,7 +203,8 @@ function toolDeps(user: string): VoiceToolDeps {
     activeRun: async (threadRef) => (await activeRunForThread(threadRef)).runId,
     abortRun: abortRunById,
     open: openTask,
-    delegated: () => {
+    delegated: (threadRef, title) => {
+      titles.set(threadRef, title);
       void refreshSessions({ silent: true }).catch((error: unknown) => swallow("voice: refresh sessions", error));
     },
     newId: mintSendKey,
@@ -285,7 +303,8 @@ export async function startVoice(takeover = true): Promise<void> {
     workers.push(speechWorker, ttsWorker);
     const speech = workerPort<SpeechWorkerIn, SpeechWorkerOut>(speechWorker);
     const tts = workerPort<TtsWorkerIn, TtsWorkerOut>(ttsWorker);
-    const deps = toolDeps(user);
+    const titles = new Map<string, string>();
+    const deps = toolDeps(user, titles);
     const controller = createVoiceController({
       speech,
       tts,
@@ -293,7 +312,7 @@ export async function startVoice(takeover = true): Promise<void> {
       settings: currentVoiceSettings,
       reply: streamVoiceReply,
       runTool: (call) => runVoiceTool(call, deps),
-      runningTasks: () => taskSummaries(sessionsState.list),
+      runningTasks: () => taskSummaries(sessionsState.list, titles),
       chime: (kind) => playChime(audio.context, audio.output, kind),
       setMuted: (muted) => audio.setMuted(muted),
       onMutedChange: storeVoiceMuted,
@@ -313,6 +332,7 @@ export async function startVoice(takeover = true): Promise<void> {
         return pending ? (pending.summary ?? pending.purpose ?? pending.command) : "";
       },
       summarize: streamVoiceReply,
+      title: (threadRef) => titles.get(threadRef),
       deliver: (announcement) => {
         notifyHidden(announcement);
         controller.announce(announcement.text);
@@ -410,6 +430,8 @@ export async function mountVoiceAssistant(mount: VoiceMountOptions): Promise<voi
       showIdle(idleView?.status ?? "");
     },
     onTypeInstead: (text) => session?.controller.type(text),
+    onLanguage: (language) => changeVoiceSettings({ language }),
+    onVoice: (voice) => changeVoiceSettings({ voice }),
     onClose: () => undefined,
   });
   showIdle();

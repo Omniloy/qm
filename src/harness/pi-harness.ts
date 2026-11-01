@@ -136,6 +136,7 @@ export interface PiHarnessOptions {
   openrouterApiKey?: string;
   modelGateway?: ModelGatewayTransportConfig;
   resolveProviderKeys?: () => Promise<ProviderKeys>;
+  resolveSubscriptionToken?: () => Promise<string | undefined>;
   tempDirPrefix?: string;
   captureRequests?: boolean;
   systemCacheSplit?: boolean;
@@ -1664,10 +1665,13 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         ...(opts?.openaiApiKey ? { openai: opts.openaiApiKey } : {}),
         ...(opts?.openrouterApiKey ? { openrouter: opts.openrouterApiKey } : {}),
       };
-  const resolveProviderKeys = async (): Promise<ProviderKeys> => ({
-    ...configuredProviderKeys,
-    ...(await opts?.resolveProviderKeys?.()),
-  });
+  const resolveProviderKeys = async (...models: Array<Model<Api> | undefined>): Promise<ProviderKeys> => {
+    const keys = { ...configuredProviderKeys, ...(await opts?.resolveProviderKeys?.()) };
+    if (keys[CODEX_SUBSCRIPTION_PROVIDER] || !models.some((m) => m?.provider === CODEX_SUBSCRIPTION_PROVIDER))
+      return keys;
+    const token = await opts?.resolveSubscriptionToken?.();
+    return token ? { ...keys, [CODEX_SUBSCRIPTION_PROVIDER]: token } : keys;
+  };
   const modelGateway = opts?.modelGateway;
   const keyForModel = (keys: ProviderKeys, model: Model<Api>): string | undefined =>
     modelGatewayRequest(modelGateway, model)?.apiKey ?? keys[String(model.provider)];
@@ -1732,7 +1736,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
     const composedPrompt = systemPrompt + (seedPlan === "preamble" ? replayPreamble(history) : "");
 
     const modelRuntime = await buildModelRuntime(
-      turnProviderKeys ?? (await resolveProviderKeys()),
+      turnProviderKeys ?? (await resolveProviderKeys(model)),
       turnProviderKeys ? undefined : modelGateway,
       systemCacheSplit ? "long" : undefined,
     );
@@ -2597,7 +2601,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         try {
           const modelId = detectModelId();
           const model = getRequiredModel(modelId);
-          const providerKeys = await resolveProviderKeys();
+          const providerKeys = await resolveProviderKeys(model);
           if (!keyForModel(providerKeys, model)) return { respond: true };
           const detectSystemPrompt = buildDetectionPrompt(detect.reactionGuidance);
           const prompt = renderDetectPrompt(detect);
@@ -2618,7 +2622,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
       async compactHistory(input: HarnessCompactInput): Promise<string> {
         const compactModelId = resolveModelId();
         const model = getRequiredModel(compactModelId);
-        const providerKeys = await resolveProviderKeys();
+        const providerKeys = await resolveProviderKeys(model);
         const runtime = await buildModelRuntime(providerKeys, modelGateway);
         return summarizeHistory(input.history, model, (summaryModel, context, options) => {
           input.recordModelCall({
@@ -2637,14 +2641,14 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
 
       async oneShot(systemPrompt: string, prompt: string): Promise<string | undefined> {
         const model = getRequiredModel(resolveModelId());
-        const providerKeys = await resolveProviderKeys();
+        const providerKeys = await resolveProviderKeys(model);
         if (!keyForModel(providerKeys, model)) return undefined;
         return oneShot("pi-oneshot", model, providerKeys, systemPrompt, prompt, { modelGateway });
       },
 
       async judge(systemPrompt: string, prompt: string, signal?: AbortSignal): Promise<string | undefined> {
         const model = getRequiredModel(judgeModelId());
-        const providerKeys = await resolveProviderKeys();
+        const providerKeys = await resolveProviderKeys(model);
         if (!keyForModel(providerKeys, model)) return undefined;
         return oneShot("pi-judge", model, providerKeys, systemPrompt, prompt, {
           modelGateway,
@@ -2664,7 +2668,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         try {
           const modelId = configuredScreenModel ?? detectModelId();
           const model = getRequiredModel(modelId);
-          const providerKeys = await resolveProviderKeys();
+          const providerKeys = await resolveProviderKeys(model);
           if (!keyForModel(providerKeys, model)) return undefined;
           recordModelCall({
             model: modelId,
@@ -2696,7 +2700,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         if (!ackModelId) return undefined;
         try {
           const model = getRequiredModel(ackModelId);
-          const providerKeys = await resolveProviderKeys();
+          const providerKeys = await resolveProviderKeys(model);
           const apiKey = keyForModel(providerKeys, model);
           if (!apiKey) return undefined;
           const prompt = `Candidates: ${candidates.join(", ")}\n\nMessage: ${text.slice(0, 2000)}`;
@@ -2712,7 +2716,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
       async generateTitle(transcript: string): Promise<string | undefined> {
         if (!transcript.trim()) return undefined;
         const model = getRequiredModel(titleModelId());
-        const providerKeys = await resolveProviderKeys();
+        const providerKeys = await resolveProviderKeys(model);
         if (!keyForModel(providerKeys, model)) return undefined;
         const out = await oneShot(
           "pi-title",
@@ -2728,7 +2732,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
       async summarizeApproval(command: string, reason: string, purpose?: string): Promise<string | undefined> {
         if (!command.trim()) return undefined;
         const model = getRequiredModel(titleModelId());
-        const providerKeys = await resolveProviderKeys();
+        const providerKeys = await resolveProviderKeys(model);
         if (!keyForModel(providerKeys, model)) return undefined;
         const prompt = [
           `Policy flagged this as: ${reason}`,
@@ -2747,9 +2751,14 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
       },
 
       async *streamVoiceReply(input: HarnessVoiceReplyInput): AsyncGenerator<HarnessVoiceReplyEvent> {
-        const companyKeys = await resolveProviderKeys();
-        const picks = input.candidates.flatMap((candidate) => {
-          const model = resolveModel(candidate.modelId, !candidate.providerKeys);
+        const resolved = input.candidates.map((candidate) => ({
+          candidate,
+          model: resolveModel(candidate.modelId, !candidate.providerKeys),
+        }));
+        const companyKeys = await resolveProviderKeys(
+          ...resolved.flatMap(({ candidate, model }) => (candidate.providerKeys ? [] : [model])),
+        );
+        const picks = resolved.flatMap(({ candidate, model }) => {
           const servable =
             model && candidate.providerKeys
               ? Boolean(candidate.providerKeys[String(model.provider)])

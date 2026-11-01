@@ -6,6 +6,7 @@ import { icon } from "../ui.ts";
 import { ORB_PRESS_EVENT } from "./orb-element.ts";
 import {
   ORB_INPUTS_BY_STATE,
+  VOICE_LANGUAGES,
   type VoiceLanguage,
   type VoiceStageHandlers,
   type VoiceStageView,
@@ -40,6 +41,8 @@ const COPY = {
     placeholder: "Escribe tu mensaje",
     send: "Enviar",
     close: "Cerrar",
+    language: "Idioma",
+    voice: "Voz",
   },
   en: {
     dialog: "Voice assistant",
@@ -54,16 +57,24 @@ const COPY = {
     placeholder: "Type your message",
     send: "Send",
     close: "Close",
+    language: "Language",
+    voice: "Voice",
   },
 } satisfies Record<VoiceLanguage, Record<string, string>>;
 
 type Copy = (typeof COPY)[VoiceLanguage];
+
+const LANGUAGE_NAMES: Record<VoiceLanguage, string> = { es: "Español", en: "English" };
+
+const TYPING_STATES: ReadonlySet<VoiceState> = new Set(["sleeping", "listening", "thinking", "speaking"]);
 
 const PRESSED_STATES: ReadonlySet<VoiceState> = new Set(["listening", "thinking", "speaking"]);
 
 const EMPTY_VIEW: VoiceStageView = {
   state: "off",
   language: "es",
+  voice: "",
+  voices: [],
   muted: false,
   status: "",
   captions: { user: null, agent: null },
@@ -106,7 +117,7 @@ function editableTarget(target: EventTarget | null): boolean {
 function focusables(root: HTMLElement): HTMLElement[] {
   return [
     ...root.querySelectorAll<HTMLElement>(
-      "button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex='-1'])",
+      "button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex='-1'])",
     ),
   ];
 }
@@ -147,6 +158,7 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
   };
 
   const startTyping = () => {
+    if (!TYPING_STATES.has(view.state)) return;
     typing = true;
     paint();
     requestAnimationFrame(() => host.querySelector<HTMLInputElement>(".voice-type-input")?.focus());
@@ -172,6 +184,17 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
   const onDraft = (e: Event) => {
     draft = (e.target as HTMLInputElement).value;
     paint();
+  };
+
+  const onLanguage = (e: Event) => {
+    const value = (e.target as HTMLSelectElement).value;
+    const language = VOICE_LANGUAGES.find((option) => option === value);
+    if (language && language !== view.language) handlers.onLanguage(language);
+  };
+
+  const onVoice = (e: Event) => {
+    const value = (e.target as HTMLSelectElement).value;
+    if (value !== view.voice && view.voices.some((voice) => voice.id === value)) handlers.onVoice(value);
   };
 
   const onKeydown = (e: KeyboardEvent) => {
@@ -282,14 +305,48 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
                 >
                   ${icon(view.muted ? MicOff : Mic, 20)}
                 </button>
-                <button
-                  type="button"
-                  class="voice-dock-button voice-type-toggle"
-                  aria-label=${copy.type}
-                  @click=${startTyping}
+                ${
+                  TYPING_STATES.has(view.state)
+                    ? html`<button
+                        type="button"
+                        class="voice-dock-button voice-type-toggle"
+                        aria-label=${copy.type}
+                        @click=${startTyping}
+                      >
+                        ${icon(Keyboard, 20)}
+                      </button>`
+                    : nothing
+                }
+                <select
+                  class="voice-dock-select voice-language-select"
+                  aria-label=${copy.language}
+                  .value=${live(view.language)}
+                  @change=${onLanguage}
                 >
-                  ${icon(Keyboard, 20)}
-                </button>`
+                  ${VOICE_LANGUAGES.map(
+                    (language) =>
+                      html`<option value=${language} ?selected=${language === view.language}>
+                        ${LANGUAGE_NAMES[language]}
+                      </option>`,
+                  )}
+                </select>
+                ${
+                  view.voices.length
+                    ? html`<select
+                        class="voice-dock-select voice-voice-select"
+                        aria-label=${copy.voice}
+                        .value=${live(view.voice)}
+                        @change=${onVoice}
+                      >
+                        ${view.voices.map(
+                          (voice) =>
+                            html`<option value=${voice.id} ?selected=${voice.id === view.voice}>
+                              ${voice.label}
+                            </option>`,
+                        )}
+                      </select>`
+                    : nothing
+                }`
         }
       </div>
       <button
@@ -346,6 +403,10 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
       lastAgent = agentText;
       view = next;
       copy = COPY[next.language];
+      if (typing && !TYPING_STATES.has(next.state)) {
+        typing = false;
+        draft = "";
+      }
       paint();
     },
     open() {

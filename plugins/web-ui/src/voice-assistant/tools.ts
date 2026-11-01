@@ -1,5 +1,13 @@
 import { SUBAGENT_THREAD_PREFIX, type CoreSession, type PendingApproval } from "../core-bridge.ts";
-import { VOICE_MAX_RUNNING_TASKS, type VoiceTaskSummary, type VoiceToolCall } from "./protocol.ts";
+import {
+  VOICE_GENDERS,
+  VOICE_LANGUAGES,
+  VOICE_MAX_RUNNING_TASKS,
+  type VoiceSettings,
+  type VoiceTaskSummary,
+  type VoiceToolCall,
+} from "./protocol.ts";
+import { pickVoice, voiceLabel } from "./voices.ts";
 
 export interface VoiceConfirmation {
   approved: boolean;
@@ -22,6 +30,8 @@ export interface TaskTail {
 
 export interface VoiceToolDeps {
   user: string;
+  settings(): VoiceSettings;
+  saveSettings(patch: Partial<VoiceSettings>): Promise<VoiceSettings>;
   sessions(): Promise<CoreSession[]>;
   startTurn(body: { text: string; threadRef: string; idempotencyKey: string }): Promise<{
     runId?: string;
@@ -33,7 +43,7 @@ export interface VoiceToolDeps {
   activeRun(threadRef: string): Promise<string | null>;
   abortRun(runId: string): Promise<void>;
   open(session: CoreSession): void;
-  delegated(): void;
+  delegated(threadRef: string, title: string): void;
   newId(): string;
 }
 
@@ -57,7 +67,11 @@ export function taskTitle(session: Pick<CoreSession, "title" | "channelName">): 
   return (session.title ?? session.channelName ?? "").trim().slice(0, 200) || "Untitled";
 }
 
-export function taskSummaries(sessions: readonly CoreSession[], limit = VOICE_MAX_RUNNING_TASKS): VoiceTaskSummary[] {
+export function taskSummaries(
+  sessions: readonly CoreSession[],
+  titles: ReadonlyMap<string, string> = new Map(),
+  limit = VOICE_MAX_RUNNING_TASKS,
+): VoiceTaskSummary[] {
   const rank = { awaiting_approval: 0, working: 1, idle: 2 } as const;
   return sessions
     .filter((session) => !session.archived && !session.threadRef.startsWith(SUBAGENT_THREAD_PREFIX))
@@ -68,7 +82,11 @@ export function taskSummaries(sessions: readonly CoreSession[], limit = VOICE_MA
         (b.session.lastActivityAt ?? b.session.createdAt) - (a.session.lastActivityAt ?? a.session.createdAt),
     )
     .slice(0, limit)
-    .map(({ session, state }) => ({ taskRef: session.threadRef, title: taskTitle(session), state }));
+    .map(({ session, state }) => ({
+      taskRef: session.threadRef,
+      title: titles.get(session.threadRef) || taskTitle(session),
+      state,
+    }));
 }
 
 function ok(value: Record<string, unknown>): VoiceToolOutcome {
@@ -115,17 +133,33 @@ async function decide(deps: VoiceToolDeps, taskRef: string, approved: boolean): 
   };
 }
 
+const SET_VOICE_KEYS = new Set(["voice", "gender", "next"]);
+
+function voiceRequest(
+  args: Record<string, unknown>,
+): { voice?: string; gender?: (typeof VOICE_GENDERS)[number]; next?: true } | null {
+  const keys = Object.keys(args);
+  if (keys.length !== 1 || !SET_VOICE_KEYS.has(keys[0]!)) return null;
+  if (typeof args.voice === "string") return { voice: args.voice };
+  if ((VOICE_GENDERS as readonly unknown[]).includes(args.gender))
+    return { gender: args.gender as (typeof VOICE_GENDERS)[number] };
+  return args.next === true ? { next: true } : null;
+}
+
 export async function runVoiceTool(call: VoiceToolCall, deps: VoiceToolDeps): Promise<VoiceToolOutcome> {
   try {
     switch (call.name) {
       case "delegate_task": {
         const instruction = String(call.args.instruction ?? "").trim();
         if (!instruction) return fail("empty_instruction");
-        const title = String(call.args.title ?? "").trim() || instruction.slice(0, 60);
+        const title =
+          String(call.args.title ?? "")
+            .trim()
+            .slice(0, 200) || instruction.slice(0, 60);
         const threadRef = voiceThreadRef(deps.user, deps.newId());
         const submit = await deps.startTurn({ text: instruction, threadRef, idempotencyKey: deps.newId() });
         if (!submit.runId && submit.status !== "pending_approval") return fail("not_started");
-        deps.delegated();
+        deps.delegated(threadRef, title);
         return ok({
           taskRef: threadRef,
           title,
@@ -162,6 +196,21 @@ export async function runVoiceTool(call: VoiceToolCall, deps: VoiceToolDeps): Pr
         if (!session) return fail("task_not_found");
         deps.open(session);
         return ok({ taskRef: session.threadRef, opened: true });
+      }
+      case "set_language": {
+        const args = call.args as Record<string, unknown>;
+        const language = args.language;
+        if (Object.keys(args).length !== 1 || !(VOICE_LANGUAGES as readonly unknown[]).includes(language))
+          return fail("invalid_language");
+        const saved = await deps.saveSettings({ language: language as VoiceSettings["language"] });
+        return ok({ language: saved.language, voice: saved.voice });
+      }
+      case "set_voice": {
+        const want = voiceRequest(call.args as Record<string, unknown>);
+        const voice = want ? pickVoice(deps.settings(), want) : null;
+        if (!voice) return fail("invalid_voice");
+        const saved = await deps.saveSettings({ voice });
+        return ok({ voice: saved.voice, label: voiceLabel(saved) });
       }
     }
   } catch (error) {

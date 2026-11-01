@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   ANNOUNCE_QUIET_MS,
   SPEAKING_VAD,
+  THINKING_CHIME_MS,
   createVoiceController,
   spokenChars,
   windowMessages,
@@ -279,7 +280,38 @@ test("speech during a reply barges in: the request is aborted, synthesis cancell
   assert.equal(t.controller.state, "listening");
 });
 
-test("tool calls run and their results go back in a follow-up request", async () => {
+test("a tool whose result must be read goes back to the model in a follow-up request", async () => {
+  const t = setup([
+    {
+      frames: [{ type: "tool_call", id: "c1", name: "task_result", args: { taskRef: "web:u:1" } }, { type: "done" }],
+    },
+    { frames: [{ type: "delta", text: "El informe tiene tres conclusiones." }, { type: "done" }] },
+  ]);
+  t.ready();
+  t.controller.type("¿qué dice el informe?");
+  for (let i = 0; i < 4; i++) await flush();
+  assert.equal(t.tools.length, 1);
+  assert.equal(t.requests.length, 2);
+  assert.deepEqual(t.requests[1]!.messages.slice(1), [
+    {
+      role: "assistant",
+      content: "",
+      toolCalls: [{ id: "c1", name: "task_result", args: { taskRef: "web:u:1" } }],
+    },
+    {
+      role: "tool",
+      toolCallId: "c1",
+      name: "task_result",
+      content: JSON.stringify({ ok: true, name: "task_result" }),
+    },
+  ]);
+  assert.deepEqual(
+    t.speaks().map((s) => s.text),
+    ["El informe tiene tres conclusiones."],
+  );
+});
+
+test("delegating a task takes one model hop: the model's own words are the acknowledgement", async () => {
   const t = setup([
     {
       frames: [
@@ -293,17 +325,19 @@ test("tool calls run and their results go back in a follow-up request", async ()
         { type: "done" },
       ],
     },
-    { frames: [{ type: "delta", text: "Hecho, ya está en marcha." }, { type: "done" }] },
   ]);
   t.ready();
   t.controller.type("resume el último correo");
-  await flush();
-  await flush();
-  assert.equal(t.tools.length, 1);
+  for (let i = 0; i < 4; i++) await flush();
+  assert.equal(t.requests.length, 1, "no second request just to acknowledge");
   assert.equal(t.tools[0]!.name, "delegate_task");
-  assert.equal(t.requests.length, 2);
-  const messages = t.requests[1]!.messages;
-  assert.deepEqual(messages.slice(1), [
+  assert.deepEqual(
+    t.speaks().map((s) => s.text),
+    ["Me pongo con ello."],
+  );
+  t.controller.type("gracias");
+  await flush();
+  assert.deepEqual(t.requests[1]!.messages.slice(1, 3), [
     {
       role: "assistant",
       content: "Me pongo con ello.",
@@ -318,6 +352,234 @@ test("tool calls run and their results go back in a follow-up request", async ()
       content: JSON.stringify({ ok: true, name: "delegate_task" }),
     },
   ]);
+});
+
+test("a silent delegation is acknowledged out loud by the app without another model hop", async () => {
+  const t = setup([
+    {
+      frames: [
+        { type: "tool_call", id: "c1", name: "delegate_task", args: { instruction: "Busca vuelos", title: "Vuelos" } },
+        { type: "done" },
+      ],
+    },
+  ]);
+  t.ready();
+  t.controller.type("busca vuelos a Roma");
+  for (let i = 0; i < 4; i++) await flush();
+  assert.equal(t.requests.length, 1);
+  assert.deepEqual(
+    t.speaks().map((s) => s.text),
+    ["Me pongo con ello."],
+  );
+  t.controller.type("vale");
+  await flush();
+  assert.deepEqual(t.requests[1]!.messages.at(-2), { role: "assistant", content: "Me pongo con ello." });
+});
+
+test("switching language or voice is confirmed in the new language and voice, in one hop", async () => {
+  let settings: VoiceSettings = { ...DEFAULT_VOICE_SETTINGS, enabled: true };
+  const t = setup([
+    { frames: [{ type: "tool_call", id: "l", name: "set_language", args: { language: "en" } }, { type: "done" }] },
+    { frames: [{ type: "tool_call", id: "v", name: "set_voice", args: { gender: "male" } }, { type: "done" }] },
+  ]);
+  t.controller.dispose();
+  const speaks: Array<Extract<TtsWorkerIn, { type: "speak" }>> = [];
+  const scripts: VoiceReplyFrame[][] = [
+    [{ type: "tool_call", id: "l", name: "set_language", args: { language: "en" } }, { type: "done" }],
+    [{ type: "tool_call", id: "v", name: "set_voice", args: { gender: "male" } }, { type: "done" }],
+  ];
+  const c = createVoiceController({
+    speech: t.speech,
+    tts: { post: (m) => void (m.type === "speak" && speaks.push(m)), listen: t.tts.listen },
+    playback: t.playback,
+    settings: () => settings,
+    reply: async function* (request) {
+      t.requests.push(structuredClone(request));
+      yield* scripts.shift() ?? [{ type: "done" }];
+    },
+    runTool: async (call) => {
+      if (call.name === "set_language") settings = { ...settings, language: call.args.language };
+      if (call.name === "set_voice") settings = { ...settings, voice: "M1" };
+      return { content: JSON.stringify({ ok: true }) };
+    },
+    runningTasks: () => [],
+    chime: () => undefined,
+    setMuted: () => undefined,
+    render: () => undefined,
+    onFatal: () => undefined,
+    now: t.clock.now,
+    timers: t.clock.timers,
+  });
+  t.ready();
+  c.type("habla en inglés");
+  for (let i = 0; i < 4; i++) await flush();
+  c.type("use a male voice");
+  for (let i = 0; i < 4; i++) await flush();
+  assert.equal(t.requests.length, 2);
+  assert.deepEqual(
+    speaks.map((s) => [s.text, s.language, s.voice]),
+    [
+      ["Okay, I'll speak English now.", "en", "F1"],
+      ["Okay, this is Male 1.", "en", "M1"],
+    ],
+  );
+  assert.equal(t.requests[1]!.language, "en");
+  assert.equal(t.requests[1]!.context?.voice, "F1");
+  assert.equal(t.requests[1]!.context?.voices?.length, 10);
+  c.dispose();
+});
+
+test("a failed action goes back to the model so it can explain", async () => {
+  const t = setup([
+    { frames: [{ type: "tool_call", id: "s", name: "stop_task", args: { taskRef: "web:u:1" } }, { type: "done" }] },
+    { frames: [{ type: "delta", text: "Esa tarea ya no estaba en marcha." }, { type: "done" }] },
+  ]);
+  t.controller.dispose();
+  const c = createVoiceController({
+    speech: t.speech,
+    tts: t.tts,
+    playback: t.playback,
+    settings: () => ({ ...DEFAULT_VOICE_SETTINGS, enabled: true }),
+    reply: async function* (request) {
+      t.requests.push(structuredClone(request));
+      yield* (
+        [
+          [{ type: "tool_call", id: "s", name: "stop_task", args: { taskRef: "web:u:1" } }, { type: "done" }],
+          [{ type: "delta", text: "Esa tarea ya no estaba en marcha." }, { type: "done" }],
+        ] as VoiceReplyFrame[][]
+      )[t.requests.length - 1] ?? [{ type: "done" }];
+    },
+    runTool: async () => ({ content: JSON.stringify({ ok: false, error: "not_running" }), isError: true }),
+    runningTasks: () => [],
+    chime: () => undefined,
+    setMuted: () => undefined,
+    render: () => undefined,
+    onFatal: () => undefined,
+    now: t.clock.now,
+    timers: t.clock.timers,
+  });
+  t.ready();
+  c.type("para la tarea");
+  for (let i = 0; i < 4; i++) await flush();
+  assert.equal(t.requests.length, 2);
+  assert.deepEqual(
+    t.speaks().map((s) => s.text),
+    ["Esa tarea ya no estaba en marcha."],
+  );
+  c.dispose();
+});
+
+test("words a follow-up hop repeats from the previous hop are not spoken twice", async () => {
+  const t = setup([
+    {
+      frames: [
+        { type: "delta", text: "Lo miro." },
+        { type: "tool_call", id: "r1", name: "task_result", args: { taskRef: "web:u:1" } },
+        { type: "done" },
+      ],
+    },
+    {
+      frames: [
+        { type: "delta", text: "Lo " },
+        { type: "delta", text: "miro." },
+        { type: "tool_call", id: "r1", name: "task_result", args: { taskRef: "web:u:1" } },
+        { type: "done" },
+      ],
+    },
+  ]);
+  t.ready();
+  t.controller.type("¿cómo va?");
+  for (let i = 0; i < 6; i++) await flush();
+  assert.equal(t.requests.length, 2);
+  assert.equal(t.tools.length, 1);
+  assert.deepEqual(
+    t.speaks().map((s) => s.text),
+    ["Lo miro."],
+  );
+});
+
+test("a follow-up hop that repeats the previous words and goes on speaks only what is new", async () => {
+  const t = setup([
+    {
+      frames: [
+        { type: "delta", text: "Lo miro." },
+        { type: "tool_call", id: "r1", name: "task_result", args: { taskRef: "web:u:1" } },
+        { type: "done" },
+      ],
+    },
+    {
+      frames: [
+        { type: "delta", text: "Lo miro." },
+        { type: "delta", text: " Tiene tres conclusiones." },
+        { type: "done" },
+      ],
+    },
+    { frames: [{ type: "done" }] },
+  ]);
+  t.ready();
+  t.controller.type("¿cómo va?");
+  for (let i = 0; i < 6; i++) await flush();
+  assert.deepEqual(
+    t.speaks().map((s) => s.text),
+    ["Lo miro.", "Tiene tres conclusiones."],
+  );
+  t.controller.type("vale");
+  for (let i = 0; i < 3; i++) await flush();
+  const said = t.requests
+    .at(-1)!
+    .messages.filter((m) => m.role === "assistant")
+    .map((m) => m.content);
+  assert.deepEqual(said, ["Lo miro.", " Tiene tres conclusiones."]);
+});
+
+test("an error on the hop after a delegation keeps the started task in the history", async () => {
+  const t = setup([
+    {
+      frames: [
+        { type: "tool_call", id: "c1", name: "check_tasks", args: {} },
+        { type: "tool_call", id: "d1", name: "delegate_task", args: { instruction: "busca X", title: "X" } },
+        { type: "done" },
+      ],
+    },
+    { frames: [{ type: "error", reason: "upstream_error" }] },
+    { frames: [{ type: "done" }] },
+  ]);
+  t.ready();
+  t.controller.type("busca X");
+  for (let i = 0; i < 6; i++) await flush();
+  assert.equal(t.chimes.at(-1), "error");
+  t.controller.type("¿y bien?");
+  for (let i = 0; i < 3; i++) await flush();
+  const messages = t.requests.at(-1)!.messages;
+  assert.deepEqual(
+    messages.map((m) => m.role),
+    ["user", "assistant", "tool", "tool", "user"],
+  );
+  assert.ok(messages.some((m) => m.role === "tool" && m.toolCallId === "d1"));
+});
+
+test("a soft thinking chime plays only when no audio has started after a while", async () => {
+  let release!: () => void;
+  const t = setup([
+    {
+      frames: [{ type: "delta", text: "Un momento, lo compruebo." }, { type: "done" }],
+      hold: new Promise((r) => (release = r)),
+    },
+  ]);
+  t.ready();
+  t.controller.type("¿qué hay?");
+  await flush();
+  t.clock.advance(THINKING_CHIME_MS - 1);
+  assert.deepEqual(t.chimes, []);
+  t.clock.advance(1);
+  assert.deepEqual(t.chimes, ["thinking"]);
+  release();
+  for (let i = 0; i < 3; i++) await flush();
+  t.controller.type("otra");
+  await flush();
+  t.pcmFor(t.speaks().length - 1);
+  t.clock.advance(THINKING_CHIME_MS);
+  assert.deepEqual(t.chimes, ["thinking"]);
 });
 
 test("follow-up hops stop after the limit even when the model keeps calling tools", async () => {
@@ -346,23 +608,26 @@ test("a repeated tool call runs once and ends the turn instead of starting the s
   } as const;
   const again = { ...call, id: "voice-call-2" };
   const t = setup([
-    { frames: [call, { type: "done" }] },
+    { frames: [{ type: "tool_call", id: "list", name: "check_tasks", args: {} }, call, { type: "done" }] },
     { frames: [call, again, { type: "done" }] },
     { frames: [call, { type: "done" }] },
   ]);
   t.ready();
   t.controller.type("di hola");
   for (let i = 0; i < 8; i++) await flush();
-  assert.equal(t.tools.length, 1);
+  assert.deepEqual(
+    t.tools.map((c) => c.name),
+    ["check_tasks", "delegate_task"],
+  );
   assert.equal(t.requests.length, 2);
   assert.equal(t.controller.state, "listening");
   t.controller.type("¿y ahora?");
   for (let i = 0; i < 4; i++) await flush();
-  assert.equal(t.tools.length, 1);
+  assert.equal(t.tools.length, 2);
   const ids = t.requests.at(-1)!.messages.flatMap((m) => (m.role === "assistant" ? (m.toolCalls ?? []) : []));
   assert.deepEqual(
     ids.map((c) => c.id),
-    ["voice-call-1"],
+    ["list", "voice-call-1"],
   );
 });
 
@@ -436,8 +701,13 @@ test("announcements wait until the conversation is idle and quiet, then play wit
   t.clock.advance(1);
   assert.deepEqual(t.chimes, ["announce"]);
   assert.equal(t.view().announcement, "Listo: Informe. Ya tienes el resumen.");
-  const speak = t.speaks().at(-1)!;
-  assert.match(speak.text, /Listo: Informe/);
+  assert.deepEqual(
+    t
+      .speaks()
+      .slice(-2)
+      .map((s) => s.text),
+    ["Listo: Informe.", "Ya tienes el resumen."],
+  );
 });
 
 test("announcements play straight away while sleeping, keep the wake gate, and go back to sleep", () => {
@@ -652,6 +922,51 @@ test("interrupting a turn while a tool runs stops the remaining tools and keeps 
     messages.slice(second + 1).every((m) => m.role !== "tool"),
     "no stale tool result after the new turn",
   );
+  c.dispose();
+});
+
+test("interrupting a delegation that is still starting tells the model it may have started", async () => {
+  const t = setup();
+  t.controller.dispose();
+  const c = createVoiceController({
+    speech: t.speech,
+    tts: t.tts,
+    playback: t.playback,
+    settings: () => ({ ...DEFAULT_VOICE_SETTINGS, enabled: true }),
+    reply: async function* (request) {
+      t.requests.push(structuredClone(request));
+      yield* (
+        t.requests.length === 1
+          ? [
+              { type: "tool_call", id: "d1", name: "delegate_task", args: { instruction: "busca X", title: "X" } },
+              { type: "done" },
+            ]
+          : [{ type: "done" }]
+      ) as VoiceReplyFrame[];
+    },
+    runTool: () => new Promise(() => undefined),
+    runningTasks: () => [],
+    chime: () => undefined,
+    setMuted: () => undefined,
+    render: () => undefined,
+    onFatal: () => undefined,
+    now: t.clock.now,
+    timers: t.clock.timers,
+  });
+  t.ready();
+  c.type("busca X");
+  await flush();
+  c.type("¿ya?");
+  await flush();
+  await flush();
+  const messages = t.requests.at(-1)!.messages;
+  assert.deepEqual(
+    messages.map((m) => m.role),
+    ["user", "assistant", "tool", "user"],
+  );
+  const result = messages[2]!;
+  assert.equal(result.role === "tool" && result.toolCallId, "d1");
+  assert.deepEqual(JSON.parse(result.content), { ok: false, error: "interrupted", started: "unknown" });
   c.dispose();
 });
 

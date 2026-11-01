@@ -25,9 +25,11 @@ import {
   type VoiceState,
   type VoiceTaskSummary,
   type VoiceToolCall,
+  type VoiceToolName,
 } from "./protocol.ts";
 import { createTextChunker, stepsForChunk, withoutClosingPunctuation, type TextChunker } from "./text-chunker.ts";
 import type { VoiceConfirmation, VoiceToolOutcome } from "./tools.ts";
+import { voiceChoices, voiceLabel } from "./voices.ts";
 import { confirmationAnswer, matchWake } from "./wake.ts";
 
 export interface Port<In, Out> {
@@ -71,6 +73,10 @@ export interface VoiceController {
 }
 
 export const ANNOUNCE_QUIET_MS = 1_500;
+export const THINKING_CHIME_MS = 1_200;
+
+const READ_TOOLS: ReadonlySet<VoiceToolName> = new Set(["check_tasks", "task_result"]);
+const SETTING_TOOLS: ReadonlySet<VoiceToolName> = new Set(["set_language", "set_voice"]);
 
 export const SPEAKING_VAD: Partial<VadOptions> = { positiveSpeechThreshold: 0.75, negativeSpeechThreshold: 0.6 };
 const RESTING_VAD: Partial<VadOptions> = {
@@ -100,6 +106,13 @@ const COPY = {
     rejected: "Rechazado.",
     declined: "Vale, no hago nada.",
     confirmFailed: "No he podido hacerlo. Ábrela en pantalla.",
+    acks: {
+      delegate_task: () => "Me pongo con ello.",
+      set_language: () => "Vale, ahora hablo en español.",
+      set_voice: (voice: string) => `Vale, ahora hablo con la ${voice.toLowerCase()}.`,
+      stop_task: () => "Tarea detenida.",
+      open_task: () => "Te la abro.",
+    },
     errors: {
       feature_disabled: "El asistente de voz no está activado para tu cuenta.",
       voice_model_unsupported: "Tu modelo no admite el asistente de voz.",
@@ -127,6 +140,13 @@ const COPY = {
     rejected: "Rejected.",
     declined: "Okay, I won't do anything.",
     confirmFailed: "I could not do that. Open the task on screen.",
+    acks: {
+      delegate_task: () => "I'm on it.",
+      set_language: () => "Okay, I'll speak English now.",
+      set_voice: (voice: string) => `Okay, this is ${voice}.`,
+      stop_task: () => "Task stopped.",
+      open_task: () => "Opening it.",
+    },
     errors: {
       feature_disabled: "The voice assistant is not turned on for your account.",
       voice_model_unsupported: "Your model does not support the voice assistant.",
@@ -200,6 +220,11 @@ function refused(error: string): VoiceToolOutcome {
   return { content: JSON.stringify({ ok: false, error }), isError: true };
 }
 
+const INTERRUPTED: VoiceToolOutcome = {
+  content: JSON.stringify({ ok: false, error: "interrupted", started: "unknown" }),
+  isError: true,
+};
+
 function isAbort(error: unknown): boolean {
   return error instanceof DOMException
     ? error.name === "AbortError"
@@ -235,6 +260,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
   let utteranceSeq = 0;
   let disposed = false;
   let confirmation: VoiceConfirmation | null = null;
+  let thinkingTimer: unknown = null;
 
   const copy = () => COPY[deps.settings().language];
 
@@ -248,9 +274,12 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
 
   const render = () => {
     if (disposed) return;
+    const settings = deps.settings();
     deps.render({
       state,
-      language: deps.settings().language,
+      language: settings.language,
+      voice: settings.voice,
+      voices: voiceChoices(settings),
       muted,
       status: status(),
       captions,
@@ -407,7 +436,21 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
     else finishUtterance(target);
   }
 
+  const clearThinking = () => {
+    if (thinkingTimer !== null) timers.clear(thinkingTimer);
+    thinkingTimer = null;
+  };
+
+  const armThinking = (controller: AbortController) => {
+    clearThinking();
+    thinkingTimer = timers.set(() => {
+      thinkingTimer = null;
+      if (turn === controller && state === "thinking") deps.chime("thinking");
+    }, THINKING_CHIME_MS);
+  };
+
   const silence = () => {
+    clearThinking();
     turn?.abort();
     turn = null;
     if (utterance) {
@@ -430,13 +473,29 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
     render();
   };
 
-  const requestFor = (): VoiceReplyRequest => ({
-    purpose: "reply",
-    language: deps.settings().language,
-    tools: true,
-    messages: windowMessages(history),
-    context: { runningTasks: deps.runningTasks() },
-  });
+  const requestFor = (): VoiceReplyRequest => {
+    const settings = deps.settings();
+    return {
+      purpose: "reply",
+      language: settings.language,
+      tools: true,
+      messages: windowMessages(history),
+      context: { runningTasks: deps.runningTasks(), voices: voiceChoices(settings), voice: settings.voice },
+    };
+  };
+
+  const acknowledgement = (calls: readonly VoiceToolCall[], said: string): string => {
+    const words = copy();
+    const names = [...new Set(calls.map((call) => call.name))];
+    return names
+      .filter((name) => SETTING_TOOLS.has(name) || (!said.trim() && name in words.acks))
+      .map((name) =>
+        name === "set_voice"
+          ? words.acks.set_voice(voiceLabel(deps.settings()))
+          : words.acks[name as Exclude<keyof typeof words.acks, "set_voice">](),
+      )
+      .join(" ");
+  };
 
   const settle = async (pending: VoiceConfirmation, yes: boolean, controller: AbortController, spoken: Utterance) => {
     const words = copy();
@@ -450,8 +509,40 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
     feed(spoken, reply);
   };
 
-  const converse = async (controller: AbortController, spoken: Utterance) => {
+  const recordTool = (call: VoiceToolCall, outcome: VoiceToolOutcome) => {
+    history.push({
+      role: "tool",
+      toolCallId: call.id,
+      name: call.name,
+      content: clip(outcome.content),
+      ...(outcome.isError ? { isError: true } : {}),
+    });
+  };
+
+  const settleTool = (call: VoiceToolCall, signal: AbortSignal) =>
+    new Promise<VoiceToolOutcome | null>((resolve, reject) => {
+      const stop = () => {
+        recordTool(call, INTERRUPTED);
+        resolve(null);
+      };
+      if (signal.aborted) return stop();
+      signal.addEventListener("abort", stop, { once: true });
+      deps.runTool(call).then(
+        (outcome) => {
+          signal.removeEventListener("abort", stop);
+          if (!signal.aborted) resolve(outcome);
+        },
+        (error: unknown) => {
+          signal.removeEventListener("abort", stop);
+          reject(error);
+        },
+      );
+    });
+
+  const converse = async (controller: AbortController, spoken: Utterance, kept: { length: number }) => {
     let readResult = false;
+    let prior = "";
+    const novel = (said: string) => (prior && said.startsWith(prior) ? said.slice(prior.length) : said);
     const runs = new Set<string>();
     const firstTime = (call: VoiceToolCall): boolean => {
       const run = `${call.name}:${JSON.stringify(call.args)}`;
@@ -463,13 +554,19 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
     for (let hop = 0; ; hop++) {
       const received: VoiceToolCall[] = [];
       let said = "";
+      let echo = prior.length > 0;
       try {
         for await (const frame of deps.reply(requestFor(), controller.signal)) {
           if (controller.signal.aborted) break;
           if (frame.type === "delta") {
             said += frame.text;
-            feed(spoken, frame.text);
+            if (!echo) feed(spoken, frame.text);
+            else if (!prior.startsWith(said)) {
+              echo = false;
+              feed(spoken, novel(said));
+            }
           } else if (frame.type === "tool_call") {
+            flushText(spoken);
             received.push({ id: frame.id, name: frame.name, args: frame.args } as VoiceToolCall);
           } else if (frame.type === "error") {
             throw new VoiceReplyError(frame.reason);
@@ -478,35 +575,42 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
           }
         }
       } finally {
-        if (controller.signal.aborted && said && turn === null)
-          history.push({ role: "assistant", content: clip(said) });
+        if (controller.signal.aborted && !echo && said && turn === null)
+          history.push({ role: "assistant", content: clip(novel(said)) });
       }
       if (controller.signal.aborted) return;
+      const fresh = echo ? "" : novel(said);
+      prior = said || prior;
       const calls = received.filter(firstTime);
-      history.push({ role: "assistant", content: clip(said), ...(calls.length ? { toolCalls: calls } : {}) });
+      history.push({ role: "assistant", content: clip(fresh), ...(calls.length ? { toolCalls: calls } : {}) });
       if (calls.length === 0) return;
       flushText(spoken);
       let ask = "";
+      let failed = false;
       for (const call of calls) {
         const blocked = ask ? "awaiting_confirmation" : call.name === "delegate_task" && readResult && "ask_user_first";
-        const outcome = blocked ? refused(blocked) : await deps.runTool(call);
-        if (controller.signal.aborted) return;
+        const outcome = blocked ? refused(blocked) : await settleTool(call, controller.signal);
+        if (!outcome) return;
+        recordTool(call, outcome);
+        kept.length = history.length;
         if (call.name === "task_result") readResult = true;
+        if (outcome.isError) failed = true;
         if (outcome.confirm) {
           confirmation = outcome.confirm;
           ask = copy().confirm(outcome.confirm);
         }
-        history.push({
-          role: "tool",
-          toolCallId: call.id,
-          name: call.name,
-          content: clip(outcome.content),
-          ...(outcome.isError ? { isError: true } : {}),
-        });
       }
       if (ask) {
         history.push({ role: "assistant", content: ask });
         feed(spoken, ask);
+        return;
+      }
+      if (!failed && !calls.some((call) => READ_TOOLS.has(call.name))) {
+        const ack = acknowledgement(calls, fresh);
+        if (ack) {
+          history.push({ role: "assistant", content: ack });
+          feed(spoken, ack);
+        }
         return;
       }
       if (hop >= VOICE_MAX_TOOL_HOPS) return;
@@ -521,21 +625,25 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
     confirmation = null;
     errorStatus = "";
     announcement = "";
-    const turnStart = history.length;
+    const kept = { length: history.length };
     history.push({ role: "user", content: clip(text) });
     captions = { user: { text, final: true }, agent: null };
     setState("thinking");
+    armThinking(controller);
     const spoken = beginUtterance();
     const answer = awaiting ? confirmationAnswer(text) : null;
     try {
       if (awaiting && answer) await settle(awaiting, answer === "yes", controller, spoken);
-      else await converse(controller, spoken);
+      else await converse(controller, spoken, kept);
     } catch (error) {
       if (controller.signal.aborted || isAbort(error)) return;
-      history.length = turnStart;
+      history.length = kept.length;
       fail(error, spoken);
     } finally {
-      if (turn === controller) turn = null;
+      if (turn === controller) {
+        turn = null;
+        clearThinking();
+      }
     }
     if (controller.signal.aborted) return;
     finishText(spoken);

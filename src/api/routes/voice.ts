@@ -10,7 +10,7 @@ import {
   voiceCandidates,
   voiceSystemPrompt,
   VOICE_MAX_OUTPUT_TOKENS,
-  VOICE_TOOLS,
+  voiceTools,
 } from "../../voice/voice-reply.ts";
 import type { ApiCtx, Route } from "./route.ts";
 
@@ -61,7 +61,7 @@ async function reply(ctx: ApiCtx): Promise<void> {
     candidates,
     systemPrompt,
     messages: request.messages,
-    tools: request.tools ? VOICE_TOOLS : [],
+    tools: voiceTools(request),
     maxTokens: VOICE_MAX_OUTPUT_TOKENS,
     signal: controller.signal,
   })[Symbol.asyncIterator]();

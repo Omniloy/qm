@@ -184,6 +184,55 @@ test("keychain store refuses a refresh that switches accounts", async () => {
   assert.equal(state.saves.length, 0);
 });
 
+test("keychain store backs off after a failed refresh and bounds the refresh request", async () => {
+  const state: FakeKeychainState = { meta: META, files: credFiles(authJson("acct", STALE_EXP)), saves: [] };
+  let clock = NOW;
+  const signals: unknown[] = [];
+  const store = keychainCodexAuthStore({
+    keychain: fakeKeychain(state),
+    credentialId: "cred-1",
+    now: () => clock,
+    fetchImpl: (async (_url: string, init: { signal?: unknown }) => {
+      signals.push(init.signal);
+      return { ok: false, status: 401 };
+    }) as unknown as typeof fetch,
+  });
+  for (let i = 0; i < 5; i++) assert.ok(await store.load());
+  assert.equal(signals.length, 1);
+  assert.ok(signals[0] instanceof AbortSignal);
+  clock += 61_000;
+  assert.ok(await store.load());
+  assert.equal(signals.length, 2);
+});
+
+test("keychain store refreshes under the cross-instance lock and skips a rotation another instance already did", async () => {
+  const state: FakeKeychainState = {
+    meta: META,
+    files: credFiles(authJson("acct", STALE_EXP, "refresh-1")),
+    saves: [],
+  };
+  const locked: string[] = [];
+  const store = keychainCodexAuthStore({
+    keychain: fakeKeychain(state),
+    credentialId: "cred-1",
+    now: () => NOW,
+    lock: {
+      async withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+        locked.push(key);
+        state.files = credFiles(authJson("acct", FRESH_EXP, "refresh-2", "rotated-elsewhere"));
+        return fn();
+      },
+    },
+    fetchImpl: () => {
+      throw new Error("must not refresh");
+    },
+  });
+  const auth = await store.load();
+  assert.deepEqual(locked, ["codex-oauth-refresh:cred-1"]);
+  assert.equal((auth!.tokens as Record<string, unknown>).refresh_token, "refresh-2");
+  assert.equal(state.saves.length, 0);
+});
+
 test("keychain store surfaces null when the credential is missing", async () => {
   const state: FakeKeychainState = { meta: META, files: credFiles(authJson("acct", FRESH_EXP)), saves: [] };
   const store = keychainCodexAuthStore({ keychain: fakeKeychain(state), credentialId: "other", now: () => NOW });
@@ -222,14 +271,20 @@ test("file store keeps serving current auth when the refresh endpoint fails", as
   const path = join(dir, "auth.json");
   writeFileSync(path, JSON.stringify(authJson("acct", STALE_EXP, "refresh-1")));
   chmodSync(path, 0o600);
+  let attempts = 0;
   const store = fileCodexAuthStore(
     path,
-    (async () => ({ ok: false, status: 503 })) as unknown as typeof fetch,
+    (async () => {
+      attempts++;
+      return { ok: false, status: 503 };
+    }) as unknown as typeof fetch,
     () => NOW,
   );
   const auth = await store.load();
   assert.ok(auth);
   assert.equal((auth!.tokens as Record<string, unknown>).refresh_token, "refresh-1");
+  assert.ok(await store.load());
+  assert.equal(attempts, 1, "a failed refresh is not retried on every load");
 });
 
 test("installed Codex accepts child auth without a usable refresh token", () => {

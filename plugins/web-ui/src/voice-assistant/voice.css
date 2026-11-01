@@ -286,7 +286,27 @@ qm-voice-orb[size="dock"] {
   background: var(--om-wash);
 }
 
+.voice-dock-select {
+  flex: none;
+  max-width: 9.5rem;
+  height: 36px;
+  padding: 0 0.6rem;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--om-ink);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background-color var(--om-fast) var(--om-ease-standard);
+}
+
+.voice-dock-select:hover {
+  background: var(--om-wash);
+}
+
 .voice-dock-button:focus-visible,
+.voice-dock-select:focus-visible,
 .voice-close:focus-visible,
 .voice-type-input:focus-visible {
   outline: 2px solid var(--om-senal);
@@ -407,6 +427,15 @@ qm-voice-orb[size="dock"] {
   .voice-stage {
     padding-top: 4rem;
     padding-bottom: 7.5rem;
+  }
+
+  .voice-dock {
+    gap: 0.4rem;
+  }
+
+  .voice-dock-select {
+    max-width: 6.5rem;
+    padding: 0 0.35rem;
   }
 
   .voice-dock-orb {

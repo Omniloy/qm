@@ -1488,18 +1488,17 @@ export function buildApp(
   const orgCodexFileStore = config.codexAuthFile ? fileCodexAuthStore(config.codexAuthFile) : undefined;
   const orgCodexAuthStore =
     config.codexAuthCredential && keychain
-      ? keychainCodexAuthStore({ keychain, credentialId: config.codexAuthCredential })
+      ? keychainCodexAuthStore({ keychain, credentialId: config.codexAuthCredential, lock: advisoryLock })
       : orgCodexFileStore;
   const orgCodexAccessToken = async (): Promise<string | undefined> =>
     codexOAuthAccessToken(await orgCodexAuthStore?.load().catch(swallowAs("model: org codex sign-in", null))) ??
     (config.codexProcessEnv.CODEX_ACCESS_TOKEN || undefined);
   const resolveModelProviderKeys = async () => {
     await refreshModels();
-    const [anthropic, openai, openrouter, codexSubscription, enabledCustom] = await Promise.all([
+    const [anthropic, openai, openrouter, enabledCustom] = await Promise.all([
       modelCredentials.resolve("anthropic"),
       modelCredentials.resolve("openai"),
       modelCredentials.resolve("openrouter"),
-      orgCodexAccessToken(),
       customProviders.enabled(),
     ]);
     const customKeys = Object.fromEntries(
@@ -1522,7 +1521,6 @@ export function buildApp(
       ...(anthropic ? { anthropic } : {}),
       ...(openai ? { openai } : {}),
       ...(openrouter ? { openrouter } : {}),
-      ...(codexSubscription ? { [CODEX_SUBSCRIPTION_PROVIDER]: codexSubscription } : {}),
       ...customKeys,
     };
   };
@@ -1579,6 +1577,7 @@ export function buildApp(
         modelGateway: gatewayTransport,
         resolveBaseModelId: () => orgBaseModelId() ?? defaultForHarness("pi"),
         resolveProviderKeys: resolveModelProviderKeys,
+        resolveSubscriptionToken: orgCodexAccessToken,
         signals: runSignals,
       }),
     ],

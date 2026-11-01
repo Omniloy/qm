@@ -3,6 +3,7 @@ export interface TextChunker {
   flush(): string[];
 }
 
+export const FIRST_CHUNK_MIN_CHARS = 12;
 export const CHUNK_MIN_CHARS = 20;
 export const CHUNK_TARGET_CHARS = 120;
 export const CHUNK_MAX_CHARS = 300;
@@ -74,13 +75,21 @@ function breakEnd(text: string, index: number, pattern: RegExp): number {
   return end;
 }
 
-function firstBreak(text: string, pattern: RegExp, limit: number): number {
+function firstBreak(text: string, pattern: RegExp, limit: number, min: number): number {
   for (let i = 0; i < Math.min(text.length, limit); i++) {
     const end = breakEnd(text, i, pattern);
-    if (end >= 0 && end <= limit && text.slice(0, end).trim().length >= CHUNK_MIN_CHARS) return end;
+    if (end >= 0 && end <= limit && text.slice(0, end).trim().length >= min) return end;
     if (end > i) i = end - 1;
   }
   return -1;
+}
+
+function openingBreak(text: string): number {
+  const breaks = [
+    firstBreak(text, SENTENCE_BREAK, CHUNK_TARGET_CHARS, FIRST_CHUNK_MIN_CHARS),
+    firstBreak(text, FIRST_BREAK, CHUNK_TARGET_CHARS, CHUNK_MIN_CHARS),
+  ].filter((end) => end >= 0);
+  return breaks.length ? Math.min(...breaks) : -1;
 }
 
 function lastBreak(text: string, pattern: RegExp, limit: number): number {
@@ -104,7 +113,8 @@ export function createTextChunker(): TextChunker {
   let emitted = 0;
 
   const cut = (final: boolean): number => {
-    const sentence = firstBreak(buffer, emitted === 0 ? FIRST_BREAK : SENTENCE_BREAK, CHUNK_TARGET_CHARS);
+    const sentence =
+      emitted === 0 ? openingBreak(buffer) : firstBreak(buffer, SENTENCE_BREAK, CHUNK_TARGET_CHARS, CHUNK_MIN_CHARS);
     if (sentence >= 0) return sentence;
     if (buffer.length <= CHUNK_TARGET_CHARS) return final ? buffer.length : -1;
     const clause = lastBreak(buffer, CLAUSE_BREAK, CHUNK_TARGET_CHARS);

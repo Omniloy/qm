@@ -2,13 +2,13 @@ import { fetchUiState, putUiState, type UiStateRecord } from "../core-bridge.ts"
 import {
   ANNOUNCE_SCOPES,
   DEFAULT_VOICE_SETTINGS,
-  SUPERTONIC_VOICES,
   TTS_ENGINE_IDS,
   VOICE_LANGUAGES,
   VOICE_MUTED_STORAGE_KEY,
   VOICE_SETTINGS_UI_STATE_KEY,
   type VoiceSettings,
 } from "./protocol.ts";
+import { supportedVoice } from "./voices.ts";
 
 export const WAKE_PHRASE_MAX_CHARS = 60;
 const SAVE_ATTEMPTS = 3;
@@ -32,15 +32,17 @@ export function cleanWakePhrase(value: unknown): string | null {
 
 export function parseVoiceSettings(value: unknown): VoiceSettings {
   const raw = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  const language = member(VOICE_LANGUAGES, raw.language) ? raw.language : DEFAULT_VOICE_SETTINGS.language;
+  const ttsEngine = member(TTS_ENGINE_IDS, raw.ttsEngine) ? raw.ttsEngine : DEFAULT_VOICE_SETTINGS.ttsEngine;
   return {
     enabled: typeof raw.enabled === "boolean" ? raw.enabled : DEFAULT_VOICE_SETTINGS.enabled,
     wakePhrase: cleanWakePhrase(raw.wakePhrase) ?? DEFAULT_VOICE_SETTINGS.wakePhrase,
-    language: member(VOICE_LANGUAGES, raw.language) ? raw.language : DEFAULT_VOICE_SETTINGS.language,
+    language,
     announceScope: member(ANNOUNCE_SCOPES, raw.announceScope)
       ? raw.announceScope
       : DEFAULT_VOICE_SETTINGS.announceScope,
-    voice: member(SUPERTONIC_VOICES, raw.voice) ? raw.voice : DEFAULT_VOICE_SETTINGS.voice,
-    ttsEngine: member(TTS_ENGINE_IDS, raw.ttsEngine) ? raw.ttsEngine : DEFAULT_VOICE_SETTINGS.ttsEngine,
+    voice: supportedVoice(ttsEngine, language, raw.voice ?? DEFAULT_VOICE_SETTINGS.voice),
+    ttsEngine,
   };
 }
 

@@ -18,6 +18,7 @@ export interface Announcement {
   kind: AnnouncementKind;
   title: string;
   text: string;
+  detail: string;
 }
 
 export interface AnnouncerDeps {
@@ -29,6 +30,7 @@ export interface AnnouncerDeps {
   tail(sessionId: string): Promise<TaskTail>;
   pendingApproval(sessionId: string): Promise<string>;
   summarize(request: VoiceReplyRequest, signal: AbortSignal): AsyncIterable<VoiceReplyFrame>;
+  title?(threadRef: string): string | undefined;
   deliver(announcement: Announcement): void;
 }
 
@@ -98,14 +100,14 @@ export function createAnnouncer(deps: AnnouncerDeps): Announcer {
     const tail = await deps.tail(id).catch((): TaskTail => ({ title: null, reply: "", failed: false }));
     let kind: AnnouncementKind = tail.failed ? "failed" : "done";
     if (next === "awaiting_approval") kind = "approval";
-    const title = tail.title?.trim() || (session ? taskTitle(session) : "");
+    const title = deps.title?.(threadRef)?.trim() || tail.title?.trim() || (session ? taskTitle(session) : "");
     const language = deps.language();
     const detail = kind === "approval" ? await deps.pendingApproval(id).catch(() => "") : tail.reply;
     const text = await collectText(
       deps.summarize(announcePrompt(kind, title, detail, language), controller.signal),
     ).catch(() => "");
     if (disposed) return;
-    deps.deliver({ threadRef, kind, title, text: text || fallbackAnnouncement(kind, title, language) });
+    deps.deliver({ threadRef, kind, title, text: text || fallbackAnnouncement(kind, title, language), detail });
   };
 
   const consider = (

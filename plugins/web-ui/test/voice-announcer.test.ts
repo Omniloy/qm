@@ -29,6 +29,7 @@ function setup(
     foreground?: string | null;
     summary?: VoiceReplyFrame[] | Error;
     failed?: boolean;
+    titles?: Record<string, string>;
   } = {},
 ) {
   let sessions = options.sessions ?? [];
@@ -56,6 +57,7 @@ function setup(
       if (summary instanceof Error) throw summary;
       for (const frame of summary) yield frame;
     },
+    title: (threadRef) => options.titles?.[threadRef],
     deliver: (announcement) => void delivered.push(announcement),
   };
   const announcer = createAnnouncer(deps);
@@ -82,6 +84,7 @@ test("a thread going from working to idle is summarised and announced", async ()
       kind: "done",
       title: "Tarea web:ana:1",
       text: "Listo: informe. Tiene tres conclusiones.",
+      detail: "El informe está listo con tres conclusiones.",
     },
   ]);
   const request = t.requests[0]!;
@@ -185,4 +188,16 @@ test("nothing is delivered after dispose", async () => {
   t.announcer.dispose();
   await t.announcer.settled();
   assert.deepEqual(t.delivered, []);
+});
+
+test("a task started by voice is announced under the title the assistant gave it", async () => {
+  const t = setup({
+    sessions: [session("web:ana:voice:1", { working: true })],
+    titles: { "web:ana:voice:1": "Resumen del correo" },
+  });
+  await t.announcer.start();
+  t.announcer.handle({ threadRef: "web:ana:voice:1", sessionId: "s-web:ana:voice:1", state: "idle", at });
+  await t.announcer.settled();
+  assert.equal(t.delivered[0]!.title, "Resumen del correo");
+  assert.match(t.requests[0]!.messages[0]!.content, /Tarea: Resumen del correo\n/);
 });

@@ -445,11 +445,18 @@ test("applyNoReasoning asks each API for no reasoning in its own dialect", () =>
   assert.deepEqual(responses, { reasoning: { effort: "none" } });
 });
 
-test("the company ChatGPT sign-in serves the Codex voice model and nothing else serves it", async () => {
-  const voice = (resolveProviderKeys: () => Promise<Record<string, string>>) =>
+test("the company ChatGPT sign-in is read only for Codex models and serves nothing else", async () => {
+  const reads: string[] = [];
+  const voice = (modelId: string, keys: Record<string, string>, token?: string) =>
     collect(
-      createPiHarness({ resolveProviderKeys }).models.streamVoiceReply!({
-        candidates: [{ modelId: "codex/gpt-6.1-terra", reasoning: "none" }],
+      createPiHarness({
+        resolveProviderKeys: async () => keys,
+        resolveSubscriptionToken: async () => {
+          reads.push(modelId);
+          return token;
+        },
+      }).models.streamVoiceReply!({
+        candidates: [{ modelId, reasoning: "none" }],
         systemPrompt: "",
         messages: [{ role: "user", content: "hola" }],
         tools: [],
@@ -457,8 +464,20 @@ test("the company ChatGPT sign-in serves the Codex voice model and nothing else 
         signal: AbortSignal.abort(),
       }),
     );
-  assert.deepEqual(await voice(async () => ({ openai: "sk-test" })), [{ type: "unsupported" }]);
-  const signedIn = await voice(async () => ({ "openai-codex": "chatgpt-access" }));
+  assert.deepEqual(await voice("codex/gpt-6.1-terra", { openai: "sk-test" }), [{ type: "unsupported" }]);
+  const signedIn = await voice("codex/gpt-6.1-terra", {}, "chatgpt-access");
   assert.deepEqual(signedIn[0], { type: "start", modelId: "codex/gpt-6.1-terra" });
   assert.equal(signedIn.at(-1)?.type, "end");
+  await voice("gpt-6.1-terra", { openai: "sk-test" }, "chatgpt-access");
+  assert.deepEqual(reads, ["codex/gpt-6.1-terra", "codex/gpt-6.1-terra"]);
+  const detect = await createPiHarness({
+    detectModelId: "gpt-6.1-terra",
+    resolveProviderKeys: async () => ({}),
+    resolveSubscriptionToken: async () => {
+      reads.push("detect");
+      return "chatgpt-access";
+    },
+  }).models.shouldRespond!({} as never);
+  assert.deepEqual(detect, { respond: true });
+  assert.ok(!reads.includes("detect"), "non-Codex calls never touch the subscription sign-in");
 });

@@ -1,4 +1,4 @@
-export type ChimeKind = "wake" | "announce" | "error";
+export type ChimeKind = "wake" | "announce" | "error" | "thinking";
 
 const KEY_HZ = 698.46;
 
@@ -27,6 +27,8 @@ export function chimeNotes(kind: ChimeKind): ChimeNote[] {
         { frequency: KEY_HZ * 1.5, at: 0, level: 0.035 },
         { frequency: KEY_HZ * 2, at: 0.11, level: 0.03 },
       ];
+    case "thinking":
+      return [{ frequency: KEY_HZ / 2, at: 0, level: 0.02 }];
     case "error":
       return [
         { frequency: KEY_HZ * 1.5, at: 0, level: 0.03 },

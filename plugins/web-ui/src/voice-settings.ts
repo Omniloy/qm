@@ -3,11 +3,9 @@ import { errMessage } from "../../chassis/src/errors.ts";
 import { fieldSelect } from "./ui.ts";
 import {
   ANNOUNCE_SCOPES,
-  SUPERTONIC_VOICES,
   VOICE_LANGUAGES,
   type AnnounceScope,
   type ModelFile,
-  type SupertonicVoice,
   type VoiceLanguage,
   type VoiceSettings,
 } from "./voice-assistant/protocol.ts";
@@ -16,8 +14,10 @@ import {
   cleanWakePhrase,
   currentVoiceSettings,
   loadVoiceSettings,
+  onVoiceSettingsChange,
   saveVoiceSettings,
 } from "./voice-assistant/settings-store.ts";
+import { voiceChoices } from "./voice-assistant/voices.ts";
 
 export interface VoiceModelsApi {
   voiceModelStatus(): Promise<{
@@ -73,7 +73,6 @@ const COPY = {
     announceNote: "Omni te avisa en voz alta cuando una tarea termina o necesita tu aprobación.",
     scopes: { all: "Todas mis tareas", voice: "Solo las de voz" } satisfies Record<AnnounceScope, string>,
     voice: "Voz",
-    voiceNames: (voice: SupertonicVoice) => `${voice.startsWith("F") ? "Femenina" : "Masculina"} ${voice.slice(1)}`,
     saveFailed: "No se han podido guardar los ajustes de voz.",
   },
   en: {
@@ -101,7 +100,6 @@ const COPY = {
     announceNote: "Omni tells you out loud when a task finishes or needs your approval.",
     scopes: { all: "All my tasks", voice: "Voice tasks only" } satisfies Record<AnnounceScope, string>,
     voice: "Voice",
-    voiceNames: (voice: SupertonicVoice) => `${voice.startsWith("F") ? "Female" : "Male"} ${voice.slice(1)}`,
     saveFailed: "Couldn't save the voice settings.",
   },
 } as const;
@@ -113,6 +111,7 @@ let download: AbortController | null = null;
 let settingsError = "";
 let wakeError = "";
 let loaded = false;
+let redrawRows: () => void = () => undefined;
 
 const loadVoiceModule = (): Promise<VoiceModelsApi> => import("./voice-assistant/index.ts");
 
@@ -358,14 +357,17 @@ export function voiceSettingsRows(
   redraw: () => void,
   api: () => Promise<VoiceModelsApi> = loadVoiceModule,
 ): TemplateResult {
+  redrawRows = redraw;
   if (!loaded) {
     loaded = true;
+    onVoiceSettingsChange(() => redrawRows());
     void loadVoiceSettings().then(redraw, () => undefined);
   }
   if (models.phase === "unknown") void checkModels(api, redraw);
   const settings = currentVoiceSettings();
   const language = settings.language;
   const copy = COPY[language];
+  const voices = voiceChoices(settings);
   return html`
     <div class="settings-row voice-enable-row">
       <div class="settings-row-copy">
@@ -414,15 +416,12 @@ export function voiceSettingsRows(
                 className: "voice-voice-select",
                 ariaLabel: copy.voice,
                 value: settings.voice,
-                options: SUPERTONIC_VOICES.map(
+                options: voices.map(
                   (voice) =>
-                    html`<option value=${voice} ?selected=${voice === settings.voice}>
-                      ${copy.voiceNames(voice)}
-                    </option>`,
+                    html`<option value=${voice.id} ?selected=${voice.id === settings.voice}>${voice.label}</option>`,
                 ),
                 onChange: (value) => {
-                  if ((SUPERTONIC_VOICES as readonly string[]).includes(value))
-                    void save({ voice: value as SupertonicVoice }, redraw);
+                  if (voices.some((voice) => voice.id === value)) void save({ voice: value }, redraw);
                 },
               })}
             </div>

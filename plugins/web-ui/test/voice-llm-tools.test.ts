@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { CoreSession, PendingApproval } from "../src/core-bridge.ts";
 import { VoiceReplyError, parseSseEvent, streamVoiceReply } from "../src/voice-assistant/llm.ts";
-import type { VoiceReplyFrame, VoiceReplyRequest } from "../src/voice-assistant/protocol.ts";
+import {
+  DEFAULT_VOICE_SETTINGS,
+  type VoiceReplyFrame,
+  type VoiceReplyRequest,
+  type VoiceSettings,
+} from "../src/voice-assistant/protocol.ts";
+import { parseVoiceSettings } from "../src/voice-assistant/settings-store.ts";
 import { isVoiceThread, runVoiceTool, taskSummaries, type VoiceToolDeps } from "../src/voice-assistant/tools.ts";
 
 const REQUEST: VoiceReplyRequest = {
@@ -90,8 +96,15 @@ function session(threadRef: string, over: Partial<CoreSession> = {}): CoreSessio
 
 function deps(sessions: CoreSession[], over: Partial<VoiceToolDeps> = {}) {
   const log: string[] = [];
+  let settings: VoiceSettings = { ...DEFAULT_VOICE_SETTINGS, enabled: true };
   const base: VoiceToolDeps = {
     user: "ana@example.com",
+    settings: () => settings,
+    saveSettings: async (patch) => {
+      settings = parseVoiceSettings({ ...settings, ...patch });
+      log.push(`settings:${settings.language}:${settings.voice}`);
+      return settings;
+    },
     sessions: async () => sessions,
     startTurn: async (body) => {
       log.push(`turn:${body.threadRef}:${body.text}:${body.idempotencyKey}`);
@@ -103,7 +116,7 @@ function deps(sessions: CoreSession[], over: Partial<VoiceToolDeps> = {}) {
     activeRun: async () => "run-7",
     abortRun: async (runId) => void log.push(`abort:${runId}`),
     open: (s) => void log.push(`open:${s.threadRef}`),
-    delegated: () => void log.push("delegated"),
+    delegated: (threadRef, title) => void log.push(`delegated:${threadRef}:${title}`),
     newId: (() => {
       let n = 0;
       return () => `id${++n}`;
@@ -125,7 +138,10 @@ test("delegate_task starts a real agent turn on a new web thread of the user", a
     title: "Resumen",
     state: "working",
   });
-  assert.deepEqual(log, ["turn:web:ana@example.com:voice:id1:Resume el correo:id2", "delegated"]);
+  assert.deepEqual(log, [
+    "turn:web:ana@example.com:voice:id1:Resume el correo:id2",
+    "delegated:web:ana@example.com:voice:id1:Resumen",
+  ]);
   assert.ok(isVoiceThread("ana@example.com", "web:ana@example.com:voice:id1"));
   assert.ok(!isVoiceThread("ana@example.com", "web:ana@example.com:id1"));
   assert.ok(!isVoiceThread("ana@example.com", "web:bob@example.com:voice:id1"));
@@ -210,4 +226,38 @@ test("task summaries put work needing the user first and skip subagents and arch
     { taskRef: "web:ana:work", title: "Informe", state: "working" },
     { taskRef: "web:ana:idle", title: "Viejo", state: "idle" },
   ]);
+});
+
+test("task summaries carry the delegated title and never the task's output", () => {
+  const titles = new Map([["web:ana:voice:1", "Resumen del correo"]]);
+  const summaries = taskSummaries([session("web:ana:voice:1", { title: "Resume el último correo" })], titles);
+  assert.deepEqual(summaries, [{ taskRef: "web:ana:voice:1", title: "Resumen del correo", state: "idle" }]);
+});
+
+test("set_language and set_voice change the settings and validate their arguments strictly", async () => {
+  const { deps: d, log } = deps([]);
+  const english = await runVoiceTool({ id: "c", name: "set_language", args: { language: "en" } }, d);
+  assert.deepEqual(JSON.parse(english.content), { ok: true, language: "en", voice: "F1" });
+  const male = await runVoiceTool({ id: "c", name: "set_voice", args: { gender: "male" } }, d);
+  assert.deepEqual(JSON.parse(male.content), { ok: true, voice: "M1", label: "Male 1" });
+  const next = await runVoiceTool({ id: "c", name: "set_voice", args: { next: true } }, d);
+  assert.equal(JSON.parse(next.content).voice, "M2");
+  const again = await runVoiceTool({ id: "c", name: "set_voice", args: { gender: "male" } }, d);
+  assert.equal(JSON.parse(again.content).voice, "M3", "asking for the same gender moves to another voice of it");
+  const named = await runVoiceTool({ id: "c", name: "set_voice", args: { voice: "F2" } }, d);
+  assert.equal(JSON.parse(named.content).label, "Female 2");
+  assert.deepEqual(log, ["settings:en:F1", "settings:en:M1", "settings:en:M2", "settings:en:M3", "settings:en:F2"]);
+  for (const args of [{ voice: "Z9" }, { gender: "robot" }, { next: false }, {}, { voice: "F1", next: true }])
+    assert.equal(
+      (await runVoiceTool({ id: "c", name: "set_voice", args } as never, d)).isError,
+      true,
+      JSON.stringify(args),
+    );
+  for (const args of [{ language: "fr" }, {}, { language: "es", extra: 1 }])
+    assert.equal(
+      (await runVoiceTool({ id: "c", name: "set_language", args } as never, d)).isError,
+      true,
+      JSON.stringify(args),
+    );
+  assert.equal(log.length, 5, "invalid calls never touch the settings");
 });

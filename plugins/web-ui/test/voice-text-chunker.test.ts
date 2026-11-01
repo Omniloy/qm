@@ -4,6 +4,7 @@ import {
   CHUNK_MAX_CHARS,
   CHUNK_MIN_CHARS,
   CHUNK_TARGET_CHARS,
+  FIRST_CHUNK_MIN_CHARS,
   createTextChunker,
   stepsForChunk,
 } from "../src/voice-assistant/text-chunker.ts";
@@ -99,4 +100,11 @@ test("the first chunk uses two denoising steps and the rest use five", () => {
   assert.equal(stepsForChunk(0), 3);
   assert.equal(stepsForChunk(1), 5);
   assert.equal(stepsForChunk(7), 5);
+});
+
+test("a short opening sentence is spoken as soon as the next word starts", () => {
+  const chunker = createTextChunker();
+  assert.deepEqual(chunker.push("Me pongo con ello."), []);
+  assert.deepEqual(chunker.push(" Te"), ["Me pongo con ello."]);
+  assert.ok("Me pongo con ello.".length >= FIRST_CHUNK_MIN_CHARS);
 });

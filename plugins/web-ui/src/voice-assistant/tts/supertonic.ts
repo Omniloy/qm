@@ -1,11 +1,6 @@
 import type * as OrtWeb from "onnxruntime-web";
-import {
-  SUPERTONIC_VOICES,
-  type ExecutionBackend,
-  type TtsEngine,
-  type TtsRequest,
-  type VoiceLanguage,
-} from "../protocol.ts";
+import type { ExecutionBackend, TtsEngine, TtsRequest, VoiceLanguage } from "../protocol.ts";
+import { SUPERTONIC_VOICES } from "../voices.ts";
 import { normalizeSpeechText } from "./normalize.ts";
 
 export type OrtModule = typeof OrtWeb;
@@ -176,7 +171,7 @@ export async function createSupertonic(deps: SupertonicDeps): Promise<TtsEngine>
 
   const styles = new Map<string, Promise<{ ttl: Tensor; dp: Tensor }>>();
   const styleFor = (voice: string) => {
-    if (!(SUPERTONIC_VOICES as readonly string[]).includes(voice)) throw new Error(`supertonic_voice_unknown:${voice}`);
+    if (!SUPERTONIC_VOICES.some((option) => option.id === voice)) throw new Error(`supertonic_voice_unknown:${voice}`);
     let style = styles.get(voice);
     if (!style) {
       style = readJson(deps, SUPERTONIC_PATHS.voice(voice)).then((json) => {

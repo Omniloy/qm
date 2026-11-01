@@ -127,8 +127,21 @@ export type SpeechWorkerOut =
 export const TTS_ENGINE_IDS = ["supertonic-3"] as const;
 export type TtsEngineId = (typeof TTS_ENGINE_IDS)[number];
 
-export const SUPERTONIC_VOICES = ["F1", "F2", "F3", "F4", "F5", "M1", "M2", "M3", "M4", "M5"] as const;
-export type SupertonicVoice = (typeof SUPERTONIC_VOICES)[number];
+export const VOICE_GENDERS = ["female", "male"] as const;
+export type VoiceGender = (typeof VOICE_GENDERS)[number];
+
+export interface TtsVoice {
+  readonly id: string;
+  readonly gender: VoiceGender;
+  readonly languages: readonly VoiceLanguage[];
+  readonly labels: Readonly<Record<VoiceLanguage, string>>;
+}
+
+export interface VoiceChoice {
+  id: string;
+  label: string;
+  gender: VoiceGender;
+}
 
 export interface TtsRequest {
   text: string;
@@ -141,7 +154,7 @@ export interface TtsRequest {
 export interface TtsEngine {
   readonly id: TtsEngineId;
   readonly sampleRate: number;
-  readonly voices: readonly string[];
+  readonly voices: readonly TtsVoice[];
   readonly backend: ExecutionBackend;
   synthesize(request: TtsRequest, signal?: AbortSignal): Promise<Float32Array>;
   dispose(): Promise<void>;
@@ -220,8 +233,16 @@ export interface ModelProgress {
 
 type VoiceReplyPurpose = "reply" | "announce";
 
-type VoiceToolName =
-  "delegate_task" | "check_tasks" | "task_result" | "approve_task" | "reject_task" | "stop_task" | "open_task";
+export type VoiceToolName =
+  | "delegate_task"
+  | "check_tasks"
+  | "task_result"
+  | "approve_task"
+  | "reject_task"
+  | "stop_task"
+  | "open_task"
+  | "set_language"
+  | "set_voice";
 
 interface VoiceToolArgs {
   delegate_task: { instruction: string; title: string };
@@ -231,6 +252,8 @@ interface VoiceToolArgs {
   reject_task: { taskRef: string };
   stop_task: { taskRef: string };
   open_task: { taskRef: string };
+  set_language: { language: VoiceLanguage };
+  set_voice: { voice?: string; gender?: VoiceGender; next?: true };
 }
 
 export type VoiceToolCall = {
@@ -258,7 +281,7 @@ export interface VoiceReplyRequest {
   language: VoiceLanguage;
   messages: VoiceMessage[];
   tools: boolean;
-  context?: { runningTasks: VoiceTaskSummary[] };
+  context?: { runningTasks: VoiceTaskSummary[]; voices?: VoiceChoice[]; voice?: string };
 }
 
 export type VoiceReplyErrorReason =
@@ -291,7 +314,7 @@ export interface VoiceSettings {
   wakePhrase: string;
   language: VoiceLanguage;
   announceScope: AnnounceScope;
-  voice: SupertonicVoice;
+  voice: string;
   ttsEngine: TtsEngineId;
 }
 
@@ -316,6 +339,8 @@ export interface VoiceCaptions {
 export interface VoiceStageView {
   state: VoiceState;
   language: VoiceLanguage;
+  voice: string;
+  voices: readonly VoiceChoice[];
   muted: boolean;
   status: string;
   captions: VoiceCaptions;
@@ -326,5 +351,7 @@ export interface VoiceStageHandlers {
   onOrbPress(): void;
   onToggleMute(): void;
   onTypeInstead(text: string): void;
+  onLanguage(language: VoiceLanguage): void;
+  onVoice(voice: string): void;
   onClose(): void;
 }

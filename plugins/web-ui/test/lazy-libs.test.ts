@@ -63,8 +63,8 @@ test("only the voice assistant chunk imports onnxruntime-web or vad-web", () => 
   assert.deepEqual(ortImporters.sort(), ["voice-assistant/speech.worker.ts", "voice-assistant/tts.worker.ts"]);
 });
 
-test("the app reaches the voice assistant lazily and statically loads only its settings and protocol", () => {
-  const allowed = new Set(["protocol.ts", "settings-store.ts"]);
+test("the app reaches the voice assistant lazily and statically loads only its settings, protocol and voice catalog", () => {
+  const allowed = new Set(["protocol.ts", "settings-store.ts", "voices.ts"]);
   for (const { file, text } of appSources) {
     if (file.startsWith("voice-assistant/")) continue;
     for (const match of text.matchAll(/^import[^;]*?from "\.\/voice-assistant\/([^"]+)"/gm))

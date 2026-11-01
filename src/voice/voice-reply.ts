@@ -15,8 +15,11 @@ const VOICE_TOOL_NAMES = [
   "reject_task",
   "stop_task",
   "open_task",
+  "set_language",
+  "set_voice",
 ] as const;
 const TASK_STATES = ["working", "awaiting_approval", "idle"] as const;
+const VOICE_GENDERS = ["female", "male"] as const;
 
 const VOICE_MAX_MESSAGES = 32;
 const VOICE_MAX_CONTENT_CHARS = 4_000;
@@ -24,6 +27,9 @@ const VOICE_MAX_RUNNING_TASKS = 20;
 export const VOICE_MAX_OUTPUT_TOKENS = 300;
 const MAX_REF_CHARS = 512;
 const MAX_TOOL_ARGS_CHARS = 8_000;
+const MAX_VOICES = 32;
+const MAX_VOICE_LABEL_CHARS = 60;
+const VOICE_ID = /^[A-Za-z0-9_.-]{1,32}$/;
 
 type VoiceLanguage = (typeof VOICE_LANGUAGES)[number];
 type VoiceToolName = (typeof VOICE_TOOL_NAMES)[number];
@@ -34,12 +40,20 @@ interface VoiceTaskSummary {
   state: (typeof TASK_STATES)[number];
 }
 
+interface VoiceOption {
+  id: string;
+  label: string;
+  gender: (typeof VOICE_GENDERS)[number];
+}
+
 export interface VoiceReplyRequest {
   purpose: (typeof VOICE_REPLY_PURPOSES)[number];
   language: VoiceLanguage;
   messages: HarnessVoiceMessage[];
   tools: boolean;
   runningTasks: VoiceTaskSummary[];
+  voices: VoiceOption[];
+  voice: string | null;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -87,6 +101,24 @@ function parseTask(value: unknown): VoiceTaskSummary | null {
   return oneOf(TASK_STATES, value.state) ? { taskRef: value.taskRef, title: value.title, state: value.state } : null;
 }
 
+function parseVoiceOption(value: unknown): VoiceOption | null {
+  if (!isRecord(value) || typeof value.id !== "string" || !VOICE_ID.test(value.id)) return null;
+  if (!boundedText(value.label, MAX_VOICE_LABEL_CHARS) || !value.label.trim()) return null;
+  return oneOf(VOICE_GENDERS, value.gender) ? { id: value.id, label: value.label, gender: value.gender } : null;
+}
+
+function parseVoices(context: Record<string, unknown>): { voices: VoiceOption[]; voice: string | null } | null {
+  const raw = context.voices ?? [];
+  if (!Array.isArray(raw) || raw.length > MAX_VOICES) return null;
+  const voices = raw.map(parseVoiceOption);
+  if (voices.some((voice) => voice === null)) return null;
+  const options = voices as VoiceOption[];
+  if (new Set(options.map((voice) => voice.id)).size !== options.length) return null;
+  if (context.voice === undefined) return { voices: options, voice: null };
+  if (!options.some((voice) => voice.id === context.voice)) return null;
+  return { voices: options, voice: context.voice as string };
+}
+
 export function parseVoiceReplyRequest(body: unknown): VoiceReplyRequest | null {
   if (!isRecord(body)) return null;
   if (!oneOf(VOICE_REPLY_PURPOSES, body.purpose) || !oneOf(VOICE_LANGUAGES, body.language)) return null;
@@ -100,12 +132,15 @@ export function parseVoiceReplyRequest(body: unknown): VoiceReplyRequest | null 
   if (!Array.isArray(rawTasks) || rawTasks.length > VOICE_MAX_RUNNING_TASKS) return null;
   const runningTasks = rawTasks.map(parseTask);
   if (runningTasks.some((task) => task === null)) return null;
+  const voices = parseVoices(context);
+  if (!voices) return null;
   return {
     purpose: body.purpose,
     language: body.language,
     messages: messages as HarnessVoiceMessage[],
     tools: body.tools === true && body.purpose === "reply",
     runningTasks: runningTasks as VoiceTaskSummary[],
+    ...voices,
   };
 }
 
@@ -113,7 +148,7 @@ const TASK_REF = Type.Object({
   taskRef: Type.String({ description: "The taskRef of a task from the running task list." }),
 });
 
-export const VOICE_TOOLS: readonly HarnessVoiceTool[] = [
+const BASE_TOOLS: readonly HarnessVoiceTool[] = [
   {
     name: "delegate_task",
     description:
@@ -141,7 +176,30 @@ export const VOICE_TOOLS: readonly HarnessVoiceTool[] = [
   },
   { name: "stop_task", description: "Stop a running task.", parameters: TASK_REF },
   { name: "open_task", description: "Open a task's conversation on screen.", parameters: TASK_REF },
+  {
+    name: "set_language",
+    description: "Switch the language you listen and speak in. The app confirms out loud in the new language.",
+    parameters: Type.Object({ language: Type.Union(VOICE_LANGUAGES.map((language) => Type.Literal(language))) }),
+  },
 ];
+
+function setVoiceTool(voices: readonly VoiceOption[]): HarnessVoiceTool {
+  return {
+    name: "set_voice",
+    description:
+      "Change the voice you speak with. Pass exactly one of: voice (an id from the voice list), gender, or next to move to the next voice. The app confirms out loud in the new voice.",
+    parameters: Type.Object({
+      voice: Type.Optional(Type.Union(voices.map((voice) => Type.Literal(voice.id)))),
+      gender: Type.Optional(Type.Union(VOICE_GENDERS.map((gender) => Type.Literal(gender)))),
+      next: Type.Optional(Type.Literal(true)),
+    }),
+  };
+}
+
+export function voiceTools(request: VoiceReplyRequest): readonly HarnessVoiceTool[] {
+  if (!request.tools) return [];
+  return request.voices.length ? [...BASE_TOOLS, setVoiceTool(request.voices)] : BASE_TOOLS;
+}
 
 const PROMPTS: Record<
   VoiceLanguage,
@@ -152,6 +210,7 @@ const PROMPTS: Record<
     announce: string;
     tasks: string;
     noTasks: string;
+    voices: (current: string) => string;
     states: Record<VoiceTaskSummary["state"], string>;
   }
 > = {
@@ -164,7 +223,9 @@ const PROMPTS: Record<
     ].join("\n"),
     tools: [
       "Para cualquier cosa que requiera trabajo real, como buscar, redactar, programar, leer el correo o actuar en otros sistemas, usa delegate_task con una instrucción completa y autosuficiente, y di en una frase que te pones con ello.",
-      "Gestiona las tareas con check_tasks, task_result, approve_task, reject_task, stop_task y open_task. El taskRef sale siempre de la lista de tareas.",
+      "Gestiona las tareas con task_result, approve_task, reject_task, stop_task y open_task. El taskRef sale siempre de la lista de tareas.",
+      "La lista de tareas de abajo está al día: responde con ella a las preguntas sobre su estado. Usa check_tasks solo si necesitas algo que no está en la lista, y task_result para leer un resultado completo.",
+      "Si el usuario pide hablar en otro idioma, usa set_language. Si pide otra voz, usa set_voice con voice, gender o next. Al llamar a set_language o set_voice no escribas nada: la app lo confirma.",
       "No apruebes ni rechaces nada sin que el usuario lo haya pedido de forma explícita.",
     ].join("\n"),
     noTools: "Ahora no puedes iniciar ni gestionar tareas; responde solo con lo que sabes.",
@@ -175,6 +236,7 @@ const PROMPTS: Record<
     ].join("\n"),
     tasks: "Tareas del usuario:",
     noTasks: "El usuario no tiene tareas en curso.",
+    voices: (current) => `Voces (actual: ${current}):`,
     states: { working: "en curso", awaiting_approval: "espera aprobación", idle: "terminada" },
   },
   en: {
@@ -186,7 +248,9 @@ const PROMPTS: Record<
     ].join("\n"),
     tools: [
       "For anything that needs real work, such as searching, writing, coding, reading mail or acting in other systems, call delegate_task with a complete, self-contained instruction, and say in one sentence that you are on it.",
-      "Manage tasks with check_tasks, task_result, approve_task, reject_task, stop_task and open_task. The taskRef always comes from the task list.",
+      "Manage tasks with task_result, approve_task, reject_task, stop_task and open_task. The taskRef always comes from the task list.",
+      "The task list below is current: answer questions about task status from it. Call check_tasks only when you need something the list does not have, and task_result to read a full result.",
+      "If the user asks to speak another language, call set_language. If they ask for another voice, call set_voice with voice, gender or next. When you call set_language or set_voice, write nothing: the app confirms it.",
       "Never approve or reject anything unless the user explicitly asked for it.",
     ].join("\n"),
     noTools: "You cannot start or manage tasks right now; answer only from what you know.",
@@ -197,6 +261,7 @@ const PROMPTS: Record<
     ].join("\n"),
     tasks: "The user's tasks:",
     noTasks: "The user has no running tasks.",
+    voices: (current) => `Voices (current: ${current}):`,
     states: { working: "running", awaiting_approval: "awaiting approval", idle: "finished" },
   },
 };
@@ -212,7 +277,14 @@ export function voiceSystemPrompt(request: VoiceReplyRequest): string {
         ),
       ].join("\n")
     : copy.noTasks;
-  return [copy.reply, request.tools ? copy.tools : copy.noTools, tasks].join("\n\n");
+  const sections = [copy.reply, request.tools ? copy.tools : copy.noTools, tasks];
+  if (request.tools && request.voices.length) {
+    const current = request.voices.find((voice) => voice.id === request.voice)?.id ?? "-";
+    sections.push(
+      `${copy.voices(current)} ${request.voices.map((voice) => `${voice.id}=${JSON.stringify(voice.label)}`).join(", ")}`,
+    );
+  }
+  return sections.join("\n\n");
 }
 
 function withSubscriptionTwin(candidate: HarnessVoiceCandidate): HarnessVoiceCandidate[] {
