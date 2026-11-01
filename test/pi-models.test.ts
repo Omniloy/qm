@@ -22,6 +22,8 @@ import {
   modelIdReserved,
   selectableBaseModels,
   DEFAULT_WEBUI_MODEL_IDS,
+  FAST_MODE_MODEL_IDS,
+  voiceModelFor,
 } from "../src/model/pi-models.ts";
 
 test("every selectable base model resolves against the pi-ai registry", () => {
@@ -73,7 +75,7 @@ test("pi is offered OpenAI, the Claude harness is offered Anthropic, and neither
     assert.equal(modelSelectableForHarness(claudeModel, "pi"), false, `${claudeModel} must not be offered for pi`);
     assert.equal(modelSelectableForHarness(claudeModel, "claude"), true, `${claudeModel} belongs to claude`);
   }
-  for (const openaiModel of ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna"]) {
+  for (const openaiModel of ["gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna"]) {
     assert.equal(modelSelectableForHarness(openaiModel, "pi"), true, `${openaiModel} must be offered for pi`);
     assert.equal(modelSelectableForHarness(openaiModel, "claude"), false, `${openaiModel} is not a claude model`);
   }
@@ -139,6 +141,7 @@ test("the curated catalog contains only current model families", () => {
       "claude-sonnet-5-5",
       "claude-haiku-4-5",
       "gpt-6.1-sol",
+      "gpt-6.1-terra",
       "gpt-6-astra",
       "gpt-6-luna",
       "openrouter/auto",
@@ -162,6 +165,43 @@ test("the curated catalog contains only current model families", () => {
     cacheWrite: 0.125,
     tiers: [{ inputTokensAbove: 272_000, input: 0.2, output: 0.75, cacheRead: 0.02, cacheWrite: 0.25 }],
   });
+});
+
+test("GPT-6.1 Terra is priced, sized and fast-mode capable like the rest of the GPT-6 family", () => {
+  const terra = getRequiredModel("gpt-6.1-terra");
+  assert.equal(terra.provider, "openai");
+  assert.equal(terra.api, "openai-responses");
+  assert.equal(terra.contextWindow, 1_050_000);
+  assert.equal(terra.maxTokens, 128_000);
+  assert.deepEqual(terra.cost, {
+    input: 1,
+    output: 5,
+    cacheRead: 0.05,
+    cacheWrite: 1.25,
+    tiers: [{ inputTokensAbove: 272_000, input: 2, output: 7.5, cacheRead: 0.1, cacheWrite: 2.5 }],
+  });
+  assert.equal(terra.thinkingLevelMap?.off, "none");
+  assert.equal(terra.thinkingLevelMap?.max, "max");
+  assert.equal(modelSupportsFastMode("gpt-6.1-terra"), true);
+  assert.ok(FAST_MODE_MODEL_IDS.includes("gpt-6.1-terra"));
+  assert.ok(DEFAULT_WEBUI_MODEL_IDS.includes("gpt-6.1-terra"));
+});
+
+test("the ChatGPT-subscription Terra keeps its namespaced identity", () => {
+  const subscription = getRequiredModel("codex/gpt-6.1-terra");
+  assert.equal(subscription.id, "codex/gpt-6.1-terra");
+  assert.equal(subscription.provider, "openai-codex");
+  assert.equal(subscription.api, "openai-codex-responses");
+});
+
+test("the voice model follows the provider of the default model", () => {
+  assert.equal(voiceModelFor("gpt-6.1-sol"), "gpt-6.1-terra");
+  assert.equal(voiceModelFor("gpt-6-astra"), "gpt-6.1-terra");
+  assert.equal(voiceModelFor("codex/gpt-6.1-sol"), "codex/gpt-6.1-terra");
+  assert.equal(voiceModelFor("claude-opus-5-5"), "claude-sonnet-5-5");
+  assert.equal(voiceModelFor("claude-haiku-4-5"), "claude-sonnet-5-5");
+  assert.equal(voiceModelFor("openrouter/auto"), undefined);
+  assert.equal(voiceModelFor("not-a-model"), undefined);
 });
 
 test("retired model ids resolve to their successors and stay out of every catalog", () => {

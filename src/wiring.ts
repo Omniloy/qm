@@ -150,7 +150,7 @@ import { createAuditLog, type AuditLog } from "./audit/audit-log.ts";
 import { createPostgresAuditLog } from "./admin/postgres-audit-log.ts";
 import { createRateLimiter, type RateLimiter } from "./ratelimit/rate-limiter.ts";
 import { createPostgresRateLimiter } from "./ratelimit/postgres-rate-limiter.ts";
-import { createBudgetTracker, estimateCostUsd } from "./ratelimit/budget.ts";
+import { createBudgetTracker, estimateCostUsd, type BudgetTracker } from "./ratelimit/budget.ts";
 import {
   sweepScreeningReports,
   type ScreeningHoldCount,
@@ -562,6 +562,8 @@ export interface BuiltApp {
   oauthFlows: OAuthFlowStore;
   secretDrops: SecretDropStore;
   modelGateway: ModelGateway;
+  budget: BudgetTracker;
+  harness: Harness;
   modelCredentials: ModelCredentialStore;
   harnessAuth: HarnessAuthStore;
   browserProviders: readonly BrowserProviderSpec[];
@@ -3070,6 +3072,8 @@ export function buildApp(
     oauthFlows,
     secretDrops,
     modelGateway,
+    budget,
+    harness,
     modelCredentials,
     harnessAuth,
     browserProviders,
@@ -3231,6 +3235,9 @@ export function serverDeps(
       ? { inviteMailer: createResendMailer(config.resendApiKey, config.emailFrom) }
       : {}),
     rateLimiter: built.rateLimiter,
+    budget: built.budget,
+    modelGateway: built.modelGateway,
+    streamVoiceReply: built.harness.models.streamVoiceReply,
     acl: built.acl,
     credentialUsage: built.credentialUsage,
     deviceFlowCutover: built.deviceFlowCutover,

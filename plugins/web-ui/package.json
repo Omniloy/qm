@@ -21,6 +21,7 @@
     "@earendil-works/pi-ai": "0.77.0",
     "@earendil-works/pi-web-ui": "0.75.3",
     "@mariozechner/mini-lit": "^0.2.0",
+    "@ricky0123/vad-web": "0.0.31",
     "@sentry/browser": "10.75.0",
     "@sentry/node": "10.75.0",
     "@tanstack/ai": "0.54.0",
@@ -35,6 +36,7 @@
     "marked": "^18.0.5",
     "mermaid": "^12.0.0",
     "morphdom": "2.7.8",
+    "onnxruntime-web": "1.31.1",
     "posthog-js": "1.433.10"
   },
   "devDependencies": {
@@ -51,6 +53,9 @@
     },
     "@mariozechner/mini-lit": {
       "marked": "^18.0.5"
+    },
+    "@ricky0123/vad-web": {
+      "onnxruntime-web": "$onnxruntime-web"
     }
   }
 }

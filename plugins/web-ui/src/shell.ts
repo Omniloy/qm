@@ -19,6 +19,7 @@ import {
   LogOut,
   Menu,
   MessageSquare,
+  Mic,
   PanelLeft,
   Plus,
   Repeat,
@@ -113,10 +114,83 @@ import { contextsState, ensureContexts, renderContexts, resetContextsState, reso
 import { appState, can, canView, isView, type AuthMode, type Me, type View } from "./shell-state";
 import { trapDialogFocus } from "./dialog-focus";
 import { activeSessionForDocumentTitle, updateDocumentTitle } from "./document-title";
+import { VOICE_PERMISSION } from "./voice-assistant/protocol.ts";
+import {
+  currentVoiceSettings,
+  loadVoiceSettings,
+  onVoiceSettingsChange,
+  resetVoiceSettings,
+} from "./voice-assistant/settings-store.ts";
 export { appState, can, type Me, type View } from "./shell-state";
 
 let userMenuOpen = false;
 let footerEl: HTMLElement | null = null;
+let voiceActive = false;
+let voiceModule: Promise<typeof import("./voice-assistant/index.ts")> | null = null;
+
+function voiceAssistant(): Promise<typeof import("./voice-assistant/index.ts")> {
+  voiceModule ??= import("./voice-assistant/index.ts");
+  return voiceModule;
+}
+
+const VOICE_TOGGLE_COPY = {
+  es: { label: "Asistente de voz", on: "Encender el asistente de voz", off: "Apagar el asistente de voz" },
+  en: { label: "Voice assistant", on: "Turn on the voice assistant", off: "Turn off the voice assistant" },
+} as const;
+
+function voiceToggle(): TemplateResult {
+  const copy = VOICE_TOGGLE_COPY[currentVoiceSettings().language];
+  return html`<button
+    class="icon-btn subtle voice-toggle ${voiceActive ? "active" : ""}"
+    type="button"
+    aria-label=${copy.label}
+    aria-pressed=${voiceActive ? "true" : "false"}
+    ${tip(voiceActive ? copy.off : copy.on)}
+    @click=${() => void toggleVoiceAssistant()}
+  >
+    ${icon(Mic, 17)}
+  </button>`;
+}
+
+function voiceAvailable(): boolean {
+  return can(VOICE_PERMISSION) && currentVoiceSettings().enabled;
+}
+
+async function syncVoiceAssistant(autoStart: boolean): Promise<void> {
+  renderSidebarFooter();
+  if (!voiceAvailable()) {
+    if (voiceModule) (await voiceModule).unmountVoiceAssistant();
+    return;
+  }
+  const voice = await voiceAssistant();
+  if (!voiceAvailable()) return;
+  await voice.mountVoiceAssistant({
+    autoStart,
+    onActiveChange: (active) => {
+      voiceActive = active;
+      renderSidebarFooter();
+    },
+  });
+}
+
+function bootVoiceAssistant(): void {
+  if (!can(VOICE_PERMISSION)) return;
+  void loadVoiceSettings()
+    .then(() => syncVoiceAssistant(true))
+    .catch((error: unknown) => swallow("web-ui: voice assistant", error));
+}
+
+onVoiceSettingsChange(() => {
+  if (appState.me) void syncVoiceAssistant(false).catch((error: unknown) => swallow("web-ui: voice assistant", error));
+});
+
+async function toggleVoiceAssistant(): Promise<void> {
+  try {
+    await (await voiceAssistant()).toggleVoice();
+  } catch (error) {
+    swallow("web-ui: voice assistant", error);
+  }
+}
 
 applyTheme();
 watchSystemTheme();
@@ -247,6 +321,9 @@ export async function signOut(): Promise<void> {
     }
   }
   appState.me = null;
+  if (voiceModule) (await voiceModule).unmountVoiceAssistant();
+  voiceActive = false;
+  resetVoiceSettings();
   closeBrowse();
   resetInboxState();
   clearAllDrafts();
@@ -586,6 +663,7 @@ export function renderSidebarFooter(): void {
             : nothing
         }
       </div>
+      ${voiceAvailable() ? voiceToggle() : nothing}
       ${
         can("admin")
           ? html`<a class="icon-btn subtle" href=${ADMIN_HOME_URL} aria-label="Admin" ${tip("Admin")}>
@@ -1087,6 +1165,7 @@ export async function boot(): Promise<void> {
   shellMounted = true;
   ensureDeliveryStream();
   warmDeferredChunks();
+  bootVoiceAssistant();
   void refreshInbox({ silent: true });
   const connectedProvider = params.get("status") === "connected" ? params.get("connector") : null;
   if (connectedProvider) markConnectorConnected(connectedProvider);

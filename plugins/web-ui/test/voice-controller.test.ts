@@ -1,0 +1,470 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  ANNOUNCE_QUIET_MS,
+  SPEAKING_VAD,
+  createVoiceController,
+  spokenChars,
+  windowMessages,
+  type Port,
+  type VoiceControllerDeps,
+} from "../src/voice-assistant/controller.ts";
+import { VoiceReplyError } from "../src/voice-assistant/llm.ts";
+import {
+  DEFAULT_VOICE_SETTINGS,
+  IDLE_TO_SLEEP_MS,
+  VOICE_MAX_MESSAGES,
+  VOICE_MAX_TOOL_HOPS,
+  type PlaybackWorkletIn,
+  type PlaybackWorkletOut,
+  type SpeechWorkerIn,
+  type SpeechWorkerOut,
+  type TtsWorkerIn,
+  type TtsWorkerOut,
+  type VoiceMessage,
+  type VoiceReplyFrame,
+  type VoiceReplyRequest,
+  type VoiceSettings,
+  type VoiceStageView,
+  type VoiceToolCall,
+} from "../src/voice-assistant/protocol.ts";
+import { stepsForChunk } from "../src/voice-assistant/text-chunker.ts";
+
+interface FakePort<In, Out> extends Port<In, Out> {
+  sent: In[];
+  emit(message: Out): void;
+}
+
+function fakePort<In, Out>(): FakePort<In, Out> {
+  const handlers = new Set<(message: Out) => void>();
+  const sent: In[] = [];
+  return {
+    sent,
+    post: (message) => void sent.push(message),
+    listen(handler) {
+      handlers.add(handler);
+      return () => handlers.delete(handler);
+    },
+    emit(message) {
+      for (const handler of handlers) handler(message);
+    },
+  };
+}
+
+function fakeClock() {
+  let time = 1_000_000;
+  let seq = 0;
+  const pending = new Map<number, { at: number; fn: () => void }>();
+  return {
+    now: () => time,
+    timers: {
+      set(fn: () => void, ms: number) {
+        const id = ++seq;
+        pending.set(id, { at: time + ms, fn });
+        return id;
+      },
+      clear(handle: unknown) {
+        pending.delete(handle as number);
+      },
+    },
+    advance(ms: number) {
+      const until = time + ms;
+      for (;;) {
+        const next = [...pending.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+        if (!next || next[1].at > until) break;
+        pending.delete(next[0]);
+        time = next[1].at;
+        next[1].fn();
+      }
+      time = until;
+    },
+  };
+}
+
+interface Script {
+  frames: VoiceReplyFrame[];
+  hold?: Promise<void>;
+}
+
+function setup(scripts: Script[] = [], settings: Partial<VoiceSettings> = {}) {
+  const speech = fakePort<SpeechWorkerIn, SpeechWorkerOut>();
+  const tts = fakePort<TtsWorkerIn, TtsWorkerOut>();
+  const playback = fakePort<PlaybackWorkletIn, PlaybackWorkletOut>();
+  const clock = fakeClock();
+  const views: VoiceStageView[] = [];
+  const chimes: string[] = [];
+  const requests: VoiceReplyRequest[] = [];
+  const signals: AbortSignal[] = [];
+  const tools: VoiceToolCall[] = [];
+  const fatal: string[] = [];
+  const muted: boolean[] = [];
+  const deps: VoiceControllerDeps = {
+    speech,
+    tts,
+    playback,
+    settings: () => ({ ...DEFAULT_VOICE_SETTINGS, enabled: true, ...settings }),
+    async *reply(request, signal) {
+      requests.push(structuredClone(request));
+      signals.push(signal);
+      const script = scripts.shift() ?? { frames: [{ type: "done" }] };
+      for (const frame of script.frames) {
+        if (script.hold && frame.type === "done") await script.hold;
+        if (signal.aborted) throw new DOMException("aborted", "AbortError");
+        yield frame;
+      }
+    },
+    async runTool(call) {
+      tools.push(call);
+      return { content: JSON.stringify({ ok: true, name: call.name }) };
+    },
+    runningTasks: () => [{ taskRef: "web:u:1", title: "Informe", state: "working" }],
+    chime: (kind) => void chimes.push(kind),
+    setMuted: (value) => void muted.push(value),
+    render: (view) => void views.push(view),
+    onFatal: (message) => void fatal.push(message),
+    now: clock.now,
+    timers: clock.timers,
+  };
+  const controller = createVoiceController(deps);
+  const ready = () => {
+    speech.emit({ type: "ready", backend: "webgpu", asrVariant: "q4f16" });
+    tts.emit({ type: "ready", engine: "supertonic-3", backend: "webgpu", sampleRate: 44_100 });
+  };
+  const view = () => views.at(-1)!;
+  const modes = () => speech.sent.filter((m) => m.type === "mode").map((m) => (m as { mode: string }).mode);
+  const speaks = () => tts.sent.filter((m): m is Extract<TtsWorkerIn, { type: "speak" }> => m.type === "speak");
+  const transcript = (text: string, purpose: "wake" | "utterance" = "utterance", segmentId = 1) =>
+    speech.emit({ type: "transcript", segmentId, purpose, text, language: "es", ms: 100 });
+  const pcmFor = (index: number, samples = 44_100) => {
+    const speak = speaks()[index]!;
+    tts.emit({
+      type: "pcm",
+      utteranceId: speak.utteranceId,
+      chunkIndex: speak.chunkIndex,
+      pcm: new Float32Array(samples),
+      sampleRate: 44_100,
+      chars: speak.text.length,
+    });
+  };
+  return {
+    controller,
+    speech,
+    tts,
+    playback,
+    clock,
+    views,
+    view,
+    chimes,
+    requests,
+    signals,
+    tools,
+    fatal,
+    muted,
+    ready,
+    modes,
+    speaks,
+    transcript,
+    pcmFor,
+  };
+}
+
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+test("the controller arms until both workers are ready, then sleeps waiting for the wake phrase", () => {
+  const t = setup();
+  assert.equal(t.controller.state, "arming");
+  t.speech.emit({ type: "loading", stage: "asr" });
+  assert.equal(t.view().status, "Cargando el reconocimiento de voz");
+  t.speech.emit({ type: "ready", backend: "webgpu", asrVariant: "q4f16" });
+  assert.equal(t.controller.state, "arming");
+  t.tts.emit({ type: "ready", engine: "supertonic-3", backend: "webgpu", sampleRate: 44_100 });
+  assert.equal(t.controller.state, "sleeping");
+  assert.deepEqual(t.modes(), ["sleeping"]);
+  assert.equal(t.view().status, "Di «Oye Omni»");
+  assert.equal(t.view().language, "es");
+});
+
+test("a matching wake transcript chimes and listens; anything else keeps sleeping", () => {
+  const t = setup();
+  t.ready();
+  t.transcript("hoy hace calor", "wake");
+  assert.equal(t.controller.state, "sleeping");
+  t.transcript("Oye Omni", "wake");
+  assert.equal(t.controller.state, "listening");
+  assert.deepEqual(t.chimes, ["wake"]);
+  assert.deepEqual(t.modes(), ["sleeping", "awake"]);
+});
+
+test("a custom wake phrase from settings is the one that wakes", () => {
+  const t = setup([], { wakePhrase: "Hola Lucía" });
+  t.ready();
+  t.transcript("Oye Omni", "wake");
+  assert.equal(t.controller.state, "sleeping");
+  t.transcript("hola lucía", "wake");
+  assert.equal(t.controller.state, "listening");
+});
+
+test("the words after the wake phrase become the first turn, streamed into speech and played to the end", async () => {
+  const t = setup([
+    {
+      frames: [
+        { type: "delta", text: "Tienes una tarea en curso, " },
+        { type: "delta", text: "el informe. Te aviso cuando acabe." },
+        { type: "done", model: "gpt-6.1-terra" },
+      ],
+    },
+  ]);
+  t.ready();
+  t.transcript("Oye Omni, ¿qué tareas tengo?", "wake");
+  await flush();
+  assert.equal(t.requests.length, 1);
+  const request = t.requests[0]!;
+  assert.equal(request.purpose, "reply");
+  assert.equal(request.tools, true);
+  assert.deepEqual(request.messages, [{ role: "user", content: "¿qué tareas tengo?" }]);
+  assert.deepEqual(request.context?.runningTasks, [{ taskRef: "web:u:1", title: "Informe", state: "working" }]);
+  const speaks = t.speaks();
+  assert.ok(speaks.length >= 2);
+  speaks.forEach((speak, i) => {
+    assert.equal(speak.chunkIndex, i);
+    assert.equal(speak.steps, stepsForChunk(i));
+    assert.equal(speak.voice, "F1");
+    assert.equal(speak.language, "es");
+  });
+  assert.equal(t.controller.state, "thinking");
+  t.pcmFor(0);
+  assert.equal(t.controller.state, "speaking");
+  assert.deepEqual(t.speech.sent.at(-1), { type: "config", vad: SPEAKING_VAD });
+  const push = t.playback.sent[0] as Extract<PlaybackWorkletIn, { type: "push" }>;
+  assert.equal(push.type, "push");
+  assert.equal(push.sampleRate, 44_100);
+  for (let i = 1; i < speaks.length; i++) t.pcmFor(i);
+  assert.deepEqual(t.playback.sent.at(-1), { type: "end", utteranceId: speaks[0]!.utteranceId });
+  t.playback.emit({ type: "progress", utteranceId: speaks[0]!.utteranceId, playedSamples: 22_050, sampleRate: 44_100 });
+  const halfway = t.view().captions.agent!;
+  assert.equal(halfway.text, "Tienes una tarea en curso, el informe. Te aviso cuando acabe.");
+  assert.ok(halfway.spokenChars > 0 && halfway.spokenChars < halfway.text.length);
+  t.playback.emit({ type: "drained", utteranceId: speaks[0]!.utteranceId });
+  assert.equal(t.controller.state, "listening");
+  assert.equal(t.view().captions.agent!.spokenChars, halfway.text.length);
+  t.clock.advance(IDLE_TO_SLEEP_MS);
+  assert.equal(t.controller.state, "sleeping");
+});
+
+test("speech during a reply barges in: the request is aborted, synthesis cancelled and playback flushed", async () => {
+  let release!: () => void;
+  const hold = new Promise<void>((resolve) => (release = resolve));
+  const t = setup([
+    {
+      frames: [{ type: "delta", text: "Claro que sí, ahora mismo te lo cuento. Dame un segundo." }, { type: "done" }],
+      hold,
+    },
+  ]);
+  t.ready();
+  t.controller.press();
+  t.transcript("cuéntame algo");
+  await flush();
+  t.pcmFor(0);
+  assert.equal(t.controller.state, "speaking");
+  const utteranceId = t.speaks()[0]!.utteranceId;
+  t.speech.emit({ type: "speech-start" });
+  assert.equal(t.controller.state, "listening");
+  assert.equal(t.signals[0]!.aborted, true);
+  assert.ok(t.tts.sent.some((m) => m.type === "cancel" && m.utteranceId === utteranceId));
+  assert.deepEqual(t.playback.sent.at(-1), { type: "flush" });
+  release();
+  await flush();
+  assert.equal(t.controller.state, "listening");
+  t.playback.emit({ type: "drained", utteranceId });
+  assert.equal(t.controller.state, "listening");
+});
+
+test("tool calls run and their results go back in a follow-up request", async () => {
+  const t = setup([
+    {
+      frames: [
+        { type: "delta", text: "Me pongo con ello." },
+        {
+          type: "tool_call",
+          id: "c1",
+          name: "delegate_task",
+          args: { instruction: "Resume el último correo", title: "Resumen" },
+        },
+        { type: "done" },
+      ],
+    },
+    { frames: [{ type: "delta", text: "Hecho, ya está en marcha." }, { type: "done" }] },
+  ]);
+  t.ready();
+  t.controller.type("resume el último correo");
+  await flush();
+  await flush();
+  assert.equal(t.tools.length, 1);
+  assert.equal(t.tools[0]!.name, "delegate_task");
+  assert.equal(t.requests.length, 2);
+  const messages = t.requests[1]!.messages;
+  assert.deepEqual(messages.slice(1), [
+    {
+      role: "assistant",
+      content: "Me pongo con ello.",
+      toolCalls: [
+        { id: "c1", name: "delegate_task", args: { instruction: "Resume el último correo", title: "Resumen" } },
+      ],
+    },
+    {
+      role: "tool",
+      toolCallId: "c1",
+      name: "delegate_task",
+      content: JSON.stringify({ ok: true, name: "delegate_task" }),
+    },
+  ]);
+});
+
+test("follow-up hops stop after the limit even when the model keeps calling tools", async () => {
+  const looping: Script = {
+    frames: [{ type: "tool_call", id: "c", name: "check_tasks", args: {} }, { type: "done" }],
+  };
+  const t = setup(Array.from({ length: 10 }, () => structuredClone(looping)));
+  t.ready();
+  t.controller.type("¿qué hay?");
+  for (let i = 0; i < 12; i++) await flush();
+  assert.equal(t.requests.length, 1 + VOICE_MAX_TOOL_HOPS);
+  assert.equal(t.tools.length, 1 + VOICE_MAX_TOOL_HOPS);
+  assert.equal(t.controller.state, "listening");
+});
+
+test("a reply error chimes, shows why, and goes back to listening", async () => {
+  const t = setup([{ frames: [{ type: "error", reason: "voice_model_unsupported" }] }]);
+  t.ready();
+  t.controller.type("hola");
+  await flush();
+  assert.equal(t.controller.state, "listening");
+  assert.deepEqual(t.chimes, ["error"]);
+  assert.equal(t.view().status, "Tu modelo no admite el asistente de voz.");
+});
+
+test("a rejected request surfaces the server's reason", async () => {
+  const t = setup();
+  const failing = createVoiceController({
+    speech: t.speech,
+    tts: t.tts,
+    playback: t.playback,
+    settings: () => ({ ...DEFAULT_VOICE_SETTINGS, language: "en" }),
+    reply: () => ({
+      [Symbol.asyncIterator]: () => ({ next: () => Promise.reject(new VoiceReplyError("over_budget", 429)) }),
+    }),
+    runTool: async () => ({ content: "{}" }),
+    runningTasks: () => [],
+    chime: () => undefined,
+    setMuted: () => undefined,
+    render: (view) => void t.views.push(view),
+    onFatal: () => undefined,
+    now: t.clock.now,
+    timers: t.clock.timers,
+  });
+  t.ready();
+  failing.type("hello");
+  await flush();
+  assert.equal(t.view().status, "You have reached your spending limit.");
+});
+
+test("announcements wait until the conversation is idle and quiet, then play with a chime", async () => {
+  let release!: () => void;
+  const hold = new Promise<void>((resolve) => (release = resolve));
+  const t = setup([{ frames: [{ type: "delta", text: "Un momento." }, { type: "done" }], hold }]);
+  t.ready();
+  t.controller.type("espera");
+  await flush();
+  t.controller.announce("Listo: Informe. Ya tienes el resumen.");
+  assert.ok(!t.chimes.includes("announce"), "never talks over a reply in progress");
+  release();
+  await flush();
+  t.pcmFor(0);
+  t.playback.emit({ type: "drained", utteranceId: t.speaks()[0]!.utteranceId });
+  assert.equal(t.controller.state, "listening");
+  assert.ok(!t.chimes.includes("announce"), "leaves the user a moment to answer the reply");
+  t.clock.advance(ANNOUNCE_QUIET_MS - 1);
+  t.speech.emit({ type: "speech-start" });
+  t.speech.emit({ type: "speech-misfire" });
+  t.clock.advance(ANNOUNCE_QUIET_MS - 1);
+  assert.ok(!t.chimes.includes("announce"), "waits for a quiet stretch after speech");
+  t.clock.advance(1);
+  assert.deepEqual(t.chimes, ["announce"]);
+  assert.equal(t.view().announcement, "Listo: Informe. Ya tienes el resumen.");
+  const speak = t.speaks().at(-1)!;
+  assert.match(speak.text, /Listo: Informe/);
+});
+
+test("announcements play straight away while sleeping and leave a listening window", () => {
+  const t = setup();
+  t.ready();
+  t.controller.announce("Listo: Informe.");
+  assert.deepEqual(t.chimes, ["announce"]);
+  t.pcmFor(0);
+  assert.equal(t.controller.state, "speaking");
+  t.playback.emit({ type: "drained", utteranceId: t.speaks()[0]!.utteranceId });
+  assert.equal(t.controller.state, "listening");
+});
+
+test("muting pauses speech detection and unmuting restores it", () => {
+  const t = setup();
+  t.ready();
+  t.controller.toggleMute();
+  assert.equal(t.controller.muted, true);
+  assert.deepEqual(t.muted, [false, true]);
+  assert.equal(t.modes().at(-1), "paused");
+  assert.equal(t.view().status, "Micrófono apagado");
+  t.transcript("Oye Omni", "wake");
+  assert.equal(t.controller.state, "sleeping");
+  t.controller.toggleMute();
+  assert.equal(t.modes().at(-1), "sleeping");
+});
+
+test("pressing the orb wakes, ends a spoken turn, or interrupts", async () => {
+  const t = setup();
+  t.ready();
+  t.controller.press();
+  assert.equal(t.controller.state, "listening");
+  t.speech.emit({ type: "speech-start" });
+  t.controller.press();
+  assert.deepEqual(t.speech.sent.at(-1), { type: "end-segment" });
+  t.speech.emit({ type: "speech-end", segmentId: 4, durationMs: 900, purpose: "utterance" });
+  t.clock.advance(IDLE_TO_SLEEP_MS * 2);
+  assert.equal(t.controller.state, "listening", "never sleeps while a transcript is pending");
+  t.transcript("", "utterance", 4);
+  t.controller.press();
+  assert.equal(t.controller.state, "sleeping");
+});
+
+test("a fatal worker error reports a readable reason", () => {
+  const t = setup();
+  t.speech.emit({ type: "error", stage: "asr", reason: "webgpu_unavailable", fatal: true });
+  assert.deepEqual(t.fatal, ["Este navegador no admite WebGPU, que el asistente de voz necesita."]);
+});
+
+test("the message window stays within the limit and always opens on a user turn", () => {
+  const history: VoiceMessage[] = [];
+  for (let i = 0; i < VOICE_MAX_MESSAGES; i++) {
+    history.push({ role: "user", content: `q${i}` });
+    history.push({ role: "assistant", content: `a${i}` });
+  }
+  history.push({ role: "assistant", content: "extra" });
+  const windowed = windowMessages(history);
+  assert.ok(windowed.length <= VOICE_MAX_MESSAGES);
+  assert.equal(windowed[0]!.role, "user");
+  assert.equal(windowed.at(-1)!.content, "extra");
+  assert.deepEqual(windowMessages([{ role: "assistant", content: "solo" }]), []);
+});
+
+test("spoken characters follow playback through each chunk", () => {
+  const spans = [
+    { start: 0, end: 10, samples: 100 },
+    { start: 11, end: 31, samples: 200 },
+  ];
+  assert.equal(spokenChars(spans, 0), 0);
+  assert.equal(spokenChars(spans, 50), 5);
+  assert.equal(spokenChars(spans, 100), 10);
+  assert.equal(spokenChars(spans, 200), 21);
+  assert.equal(spokenChars(spans, 1_000), 31);
+  assert.equal(spokenChars([{ start: 0, end: 10, samples: 0 }], 500), 0);
+});

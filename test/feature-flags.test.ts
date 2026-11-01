@@ -57,3 +57,13 @@ test("retired feature records are not offered as configurable flags", async () =
     ["inbox_loops"],
   );
 });
+
+test("the voice assistant defaults off and is enabled per person or for the whole org", async () => {
+  const store = createFeatureFlagStore(createMemoryMap<FeatureFlagRecord>());
+  assert.equal(await store.enabled("voice_assistant", "personal:U1"), false);
+  await store.setEnabled("voice_assistant", "personal:U1", true, "admin");
+  assert.equal(await store.enabled("voice_assistant", "personal:U1"), true);
+  assert.equal(await store.enabled("voice_assistant", "personal:U2"), false);
+  await store.setEnabled("voice_assistant", "org:default-org", true, "admin");
+  assert.equal(await store.enabled("voice_assistant", "personal:U2"), true);
+});

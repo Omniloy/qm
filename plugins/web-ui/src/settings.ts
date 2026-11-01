@@ -9,6 +9,8 @@ import { ADMIN_HOME_URL, appState, can, signOut } from "./shell";
 import { sessionsState, setWebOnly } from "./sessions";
 import { errMessage } from "../../chassis/src/errors";
 import { importTheme, isPalette, themeCss, themeTokens, type Palette } from "./theme-import";
+import { VOICE_PERMISSION } from "./voice-assistant/protocol.ts";
+import { voiceSettingsRows } from "./voice-settings.ts";
 
 export type ThemeChoice = "light" | "dark" | "system" | "custom";
 
@@ -448,8 +450,9 @@ function settingsPane(): TemplateResult {
       <h1 class="pane-title">Settings</h1>
     </div>
     <div class="settings-group">
-      ${aiAccountsRow()} ${themeRow()} ${sidebarSurfaceRow()} ${can("admin") ? adminRow() : nothing} ${desktopRow()}
-      ${accountRow()}
+      ${aiAccountsRow()} ${themeRow()} ${sidebarSurfaceRow()}
+      ${can(VOICE_PERMISSION) ? voiceSettingsRows(drawSettings) : nothing} ${can("admin") ? adminRow() : nothing}
+      ${desktopRow()} ${accountRow()}
       <div class="settings-row settings-slack-account">
         <qm-slack-account .user=${`${appState.me?.org}:${appState.me?.user}`}></qm-slack-account>
       </div>

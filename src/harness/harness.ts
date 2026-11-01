@@ -23,6 +23,7 @@ export type { GapWork } from "../sessions/session-store.ts";
 import type { OverheardEntryPayload } from "./replay.ts";
 import type { GoalRecord } from "./goal.ts";
 import type { ProviderKeys } from "./pi-harness.ts";
+import type { TSchema } from "typebox";
 import type { ToolContext } from "../tools/primitives.ts";
 import type { SecurityScreenVerdict, ToolResultScreen, ToolResultScreenInput } from "../security/security-posture.ts";
 
@@ -198,6 +199,53 @@ export interface HarnessCompactInput {
   recordModelCall(rec: { model: string; inputTokens: number; entryCount: number }): void;
 }
 
+export interface HarnessVoiceCandidate {
+  modelId: string;
+  reasoning: "none" | "lowest";
+  providerKeys?: ProviderKeys;
+}
+
+interface HarnessVoiceToolCall {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+}
+
+export type HarnessVoiceMessage =
+  | { role: "user"; content: string }
+  | { role: "assistant"; content: string; toolCalls?: readonly HarnessVoiceToolCall[] }
+  | { role: "tool"; toolCallId: string; name: string; content: string; isError?: boolean };
+
+export interface HarnessVoiceTool {
+  name: string;
+  description: string;
+  parameters: TSchema;
+}
+
+export interface HarnessVoiceReplyInput {
+  candidates: readonly HarnessVoiceCandidate[];
+  systemPrompt: string;
+  messages: readonly HarnessVoiceMessage[];
+  tools: readonly HarnessVoiceTool[];
+  maxTokens: number;
+  signal: AbortSignal;
+}
+
+export type HarnessVoiceReplyEvent =
+  | { type: "unsupported" }
+  | { type: "start"; modelId: string }
+  | { type: "delta"; text: string }
+  | ({ type: "tool_call" } & HarnessVoiceToolCall)
+  | {
+      type: "end";
+      modelId: string;
+      outcome: "done" | "error" | "aborted";
+      usage: LlmCallUsage | null;
+      ttftMs: number | null;
+      durationMs: number;
+      error?: string;
+    };
+
 interface HarnessTurnController {
   runTurn(input: HarnessTurnInput): Promise<HarnessTurnResult>;
   close?(): Promise<void> | void;
@@ -214,6 +262,7 @@ export interface HarnessModelUtilities {
   pickAckEmoji?(text: string, candidates: readonly string[]): Promise<string | undefined>;
   generateTitle?(transcript: string): Promise<string | undefined>;
   summarizeApproval?(command: string, reason: string, purpose?: string): Promise<string | undefined>;
+  streamVoiceReply?(input: HarnessVoiceReplyInput): AsyncIterable<HarnessVoiceReplyEvent>;
 }
 
 type HarnessControlTransport = "mock" | "in-process" | "sdk" | "http" | "json-rpc" | "api";
@@ -272,6 +321,9 @@ export function defineHarness(
     ...(implementation.generateTitle ? { generateTitle: implementation.generateTitle.bind(implementation) } : {}),
     ...(implementation.summarizeApproval
       ? { summarizeApproval: implementation.summarizeApproval.bind(implementation) }
+      : {}),
+    ...(implementation.streamVoiceReply
+      ? { streamVoiceReply: implementation.streamVoiceReply.bind(implementation) }
       : {}),
   };
   return { profile, turns, models, tools };

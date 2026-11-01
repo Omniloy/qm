@@ -1,0 +1,261 @@
+import assert from "node:assert/strict";
+import { registerHooks } from "node:module";
+import test from "node:test";
+import { JSDOM, VirtualConsole } from "jsdom";
+import type { VoiceStageHandlers, VoiceStageView } from "../src/voice-assistant/protocol.ts";
+
+registerHooks({
+  load(url, context, nextLoad) {
+    if (url.endsWith(".css")) return { format: "module", source: "", shortCircuit: true };
+    return nextLoad(url, context);
+  },
+});
+
+const dom = new JSDOM("<!doctype html><html><body></body></html>", {
+  url: "http://localhost/",
+  pretendToBeVisual: true,
+  virtualConsole: new VirtualConsole(),
+});
+const win = dom.window;
+const globals = {
+  window: win,
+  document: win.document,
+  HTMLElement: win.HTMLElement,
+  HTMLButtonElement: win.HTMLButtonElement,
+  Node: win.Node,
+  Event: win.Event,
+  CustomEvent: win.CustomEvent,
+  KeyboardEvent: win.KeyboardEvent,
+  MutationObserver: win.MutationObserver,
+  customElements: win.customElements,
+  requestAnimationFrame: win.requestAnimationFrame.bind(win),
+  cancelAnimationFrame: win.cancelAnimationFrame.bind(win),
+  matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
+};
+for (const [key, value] of Object.entries(globals))
+  Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+
+const { karaokeWords, mountVoiceStage } = await import("../src/voice-assistant/voice-stage.ts");
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 40));
+
+function view(over: Partial<VoiceStageView> = {}): VoiceStageView {
+  return {
+    state: "sleeping",
+    language: "es",
+    muted: false,
+    status: "",
+    captions: { user: null, agent: null },
+    announcement: "",
+    ...over,
+  };
+}
+
+function setup() {
+  const calls: string[] = [];
+  const typed: string[] = [];
+  const handlers: VoiceStageHandlers = {
+    onOrbPress: () => calls.push("orb"),
+    onToggleMute: () => calls.push("mute"),
+    onTypeInstead: (text) => typed.push(text),
+    onClose: () => calls.push("close"),
+  };
+  const host = document.createElement("div");
+  document.body.append(host);
+  const stage = mountVoiceStage(host, handlers);
+  return { host, stage, calls, typed };
+}
+
+function key(k: string, target: EventTarget = document.body) {
+  target.dispatchEvent(new win.KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true }));
+}
+
+test("karaoke reveals whole words up to the spoken character, one sentence at a time", () => {
+  const text = "Hola, Enrique. Tu tarea terminó.";
+  assert.deepEqual(karaokeWords(text, 0), [
+    { text: "Hola,", on: false },
+    { text: "Enrique.", on: false },
+  ]);
+  assert.deepEqual(
+    karaokeWords(text, 6).map((w) => w.on),
+    [true, false],
+  );
+  assert.deepEqual(
+    karaokeWords(text, 16).map((w) => [w.text, w.on]),
+    [
+      ["Hola,", true],
+      ["Enrique.", true],
+      ["Tu", false],
+      ["tarea", false],
+      ["terminó.", false],
+    ],
+  );
+  assert.ok(karaokeWords(text, 999).every((w) => w.on));
+  assert.deepEqual(karaokeWords("", 3), []);
+});
+
+test("nothing renders while voice is off and the stage is closed", async () => {
+  const { host, stage } = setup();
+  stage.update(view({ state: "off" }));
+  await settle();
+  assert.equal(host.querySelector("qm-voice-orb"), null);
+  assert.ok(host.querySelector(".voice-announcer"), "the live region stays mounted");
+  stage.destroy();
+});
+
+test("a closed stage shows the compact dock orb as a real labelled button", async () => {
+  const { host, stage, calls } = setup();
+  stage.update(view({ state: "sleeping" }));
+  await settle();
+  const orb = host.querySelector(".voice-dock-orb qm-voice-orb");
+  assert.ok(orb);
+  assert.equal(orb.getAttribute("size"), "dock");
+  assert.equal(orb.getAttribute("status"), "connected");
+  const button = orb.querySelector("button")!;
+  assert.equal(button.getAttribute("type"), "button");
+  assert.equal(button.getAttribute("aria-label"), "Abrir asistente de voz");
+  assert.equal(button.getAttribute("aria-pressed"), "false");
+  assert.ok(button.querySelector(".qm-voice-orb-still"), "without WebGL2 the orb is a still gradient disc");
+  button.click();
+  await settle();
+  assert.equal(stage.isOpen, true, "pressing the dock orb opens the stage");
+  assert.deepEqual(calls, []);
+  stage.destroy();
+});
+
+test("the open stage renders orb, status, aria-hidden captions, live announcer and dock", async () => {
+  const { host, stage, calls } = setup();
+  stage.open();
+  stage.update(
+    view({
+      state: "speaking",
+      status: "Micrófono apagado",
+      muted: true,
+      announcement: "Tu tarea ha terminado.",
+      captions: {
+        user: { text: "¿Qué tal va la tarea?", final: true },
+        agent: { text: "Ya ha terminado. Todo correcto.", spokenChars: 8 },
+      },
+    }),
+  );
+  await settle();
+  const dialog = host.querySelector(".voice-stage")!;
+  assert.equal(dialog.getAttribute("role"), "dialog");
+  assert.equal(dialog.getAttribute("aria-modal"), "true");
+  assert.equal(dialog.getAttribute("aria-label"), "Asistente de voz");
+  const orb = dialog.querySelector("qm-voice-orb")!;
+  assert.equal(orb.getAttribute("size"), "stage");
+  assert.equal(orb.getAttribute("mode"), "speaking");
+  assert.ok(orb.hasAttribute("muted"));
+  const orbButton = orb.querySelector("button")!;
+  assert.equal(orbButton.getAttribute("aria-label"), "Interrumpir");
+  assert.equal(orbButton.getAttribute("aria-pressed"), "true");
+  assert.equal(dialog.querySelector(".voice-status")!.textContent, "Micrófono apagado");
+  assert.equal(dialog.querySelector(".voice-region")!.getAttribute("aria-hidden"), "true");
+  assert.equal(dialog.querySelector(".voice-caption-user")!.textContent, "¿Qué tal va la tarea?");
+  const words = [...dialog.querySelectorAll(".voice-word")];
+  assert.deepEqual(
+    words.map((w) => [w.textContent!.trim(), w.classList.contains("is-on")]),
+    [
+      ["Ya", true],
+      ["ha", true],
+      ["terminado.", false],
+    ],
+  );
+  const live = host.querySelector(".voice-announcer")!;
+  assert.equal(live.getAttribute("aria-live"), "polite");
+  assert.equal(live.textContent, "Tu tarea ha terminado.");
+  const mute = dialog.querySelector<HTMLButtonElement>(".voice-mute-toggle")!;
+  assert.equal(mute.getAttribute("aria-pressed"), "true");
+  assert.equal(mute.getAttribute("aria-label"), "Silenciar micrófono");
+  assert.ok(mute.querySelector("svg"), "dock buttons carry lucide icons");
+  mute.click();
+  orbButton.click();
+  dialog.querySelector<HTMLButtonElement>(".voice-close")!.click();
+  assert.deepEqual(calls, ["mute", "orb", "close"]);
+  assert.equal(stage.isOpen, false);
+  await settle();
+  assert.ok(host.querySelector(".voice-dock-orb qm-voice-orb"), "closing falls back to the dock orb");
+  stage.destroy();
+});
+
+test("partial user captions shimmer and a replaced reply recedes on its own layer", async () => {
+  const { host, stage } = setup();
+  stage.open();
+  stage.update(view({ state: "speaking", captions: { user: null, agent: { text: "Primera.", spokenChars: 8 } } }));
+  stage.update(view({ state: "listening", captions: { user: { text: "y aho", final: false }, agent: null } }));
+  await settle();
+  assert.ok(host.querySelector(".voice-caption-user.is-partial"));
+  assert.equal(host.querySelector(".voice-caption-agent.is-past")?.textContent, "Primera.");
+  stage.update(view({ state: "speaking", captions: { user: null, agent: { text: "Segunda", spokenChars: 0 } } }));
+  stage.update(
+    view({ state: "speaking", captions: { user: null, agent: { text: "Segunda parte.", spokenChars: 3 } } }),
+  );
+  await settle();
+  assert.equal(
+    host.querySelector(".voice-caption-agent.is-past")?.textContent,
+    "Primera.",
+    "a growing reply is not a new one",
+  );
+  stage.destroy();
+});
+
+test("keyboard: M mutes, Space presses the orb, Escape closes; typing is left alone", async () => {
+  const { host, stage, calls } = setup();
+  stage.update(view());
+  stage.open();
+  await settle();
+  key("m");
+  key(" ");
+  assert.deepEqual(calls, ["mute", "orb"]);
+  host.querySelector<HTMLButtonElement>(".voice-type-toggle")!.click();
+  await settle();
+  const input = host.querySelector<HTMLInputElement>(".voice-type-input")!;
+  key("m", input);
+  key(" ", input);
+  assert.deepEqual(calls, ["mute", "orb"], "shortcuts never fire while typing");
+  key("Escape", input);
+  await settle();
+  assert.equal(host.querySelector(".voice-type-input"), null, "Escape first leaves the type-instead field");
+  assert.equal(stage.isOpen, true);
+  key("Escape");
+  assert.equal(stage.isOpen, false);
+  assert.deepEqual(calls, ["mute", "orb", "close"]);
+  key("m");
+  assert.deepEqual(calls, ["mute", "orb", "close"], "shortcuts are inactive once the stage is closed");
+  stage.destroy();
+});
+
+test("type instead submits trimmed text and returns to the dock buttons", async () => {
+  const { host, stage, typed } = setup();
+  stage.update(view());
+  stage.open();
+  await settle();
+  host.querySelector<HTMLButtonElement>(".voice-type-toggle")!.click();
+  await settle();
+  const input = host.querySelector<HTMLInputElement>(".voice-type-input")!;
+  const send = host.querySelector<HTMLButtonElement>(".voice-dock-button.is-send")!;
+  assert.equal(send.disabled, true);
+  input.value = "  abre la última tarea  ";
+  input.dispatchEvent(new win.Event("input", { bubbles: true }));
+  await settle();
+  assert.equal(send.disabled, false);
+  host.querySelector("form")!.dispatchEvent(new win.Event("submit", { bubbles: true, cancelable: true }));
+  await settle();
+  assert.deepEqual(typed, ["abre la última tarea"]);
+  assert.equal(host.querySelector(".voice-type-input"), null);
+  assert.ok(host.querySelector(".voice-mute-toggle"));
+  stage.destroy();
+});
+
+test("labels follow the language setting", async () => {
+  const { host, stage } = setup();
+  stage.update(view({ state: "listening", language: "en" }));
+  stage.open();
+  await settle();
+  assert.equal(host.querySelector(".voice-stage")!.getAttribute("aria-label"), "Voice assistant");
+  assert.equal(host.querySelector(".voice-stage-orb button")!.getAttribute("aria-label"), "Stop talking");
+  assert.equal(host.querySelector(".voice-type-toggle")!.getAttribute("aria-label"), "Type instead");
+  stage.destroy();
+  assert.equal(host.querySelector(".voice-announcer"), null, "destroy clears the host");
+});

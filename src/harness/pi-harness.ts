@@ -15,14 +15,17 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   calculateCost,
+  getSupportedThinkingLevels,
   InMemoryCredentialStore,
   type Api,
+  type AssistantMessage,
   type Context,
   type Model,
   type ModelThinkingLevel,
   type ModelsApiStreamOptions,
   type ModelsSimpleStreamOptions,
   type ProviderHeaders,
+  type ThinkingLevel,
   type Usage,
 } from "@earendil-works/pi-ai";
 import { baseModelProviders, CONFIG_DEFAULTS, type Config } from "../config.ts";
@@ -81,6 +84,9 @@ import {
   type HarnessDetectResult,
   type HarnessTurnInput,
   type HarnessTurnResult,
+  type HarnessVoiceCandidate,
+  type HarnessVoiceReplyEvent,
+  type HarnessVoiceReplyInput,
   type GapWork,
 } from "./harness.ts";
 import { coreToolOptions, createAgentTools, pauseStampAfterToolCall, type ToolContextRef } from "./agent-tools.ts";
@@ -1503,12 +1509,7 @@ export function applyTurnEffort(session: AgentSession, level?: string): void {
   session.setThinkingLevel(providerLevel as ModelThinkingLevel);
 }
 
-export function applyReasoningMode<T>(payload: T, model: Model<Api>, level?: string): T {
-  if (level !== "adaptive" && level !== "default") return payload;
-  if (level === "adaptive" ? !modelSupportsAdaptiveThinking(model) : !modelSupportsProviderDefault(model))
-    throw new NonRetryableTurnError(`${level} reasoning is not supported by ${model.id}`);
-  if (!payload || typeof payload !== "object") return payload;
-  const body = payload as Record<string, unknown>;
+function stripReasoningFields(body: Record<string, unknown>): void {
   delete body.thinking;
   delete body.reasoning;
   delete body.reasoning_effort;
@@ -1518,6 +1519,120 @@ export function applyReasoningMode<T>(payload: T, model: Model<Api>, level?: str
     if (Object.keys(outputConfig).length) body.output_config = outputConfig;
     else delete body.output_config;
   }
+}
+
+export function applyNoReasoning<T>(payload: T, model: Pick<Model<Api>, "api" | "reasoning" | "compat">): T {
+  if (!payload || typeof payload !== "object" || !model.reasoning) return payload;
+  const body = payload as Record<string, unknown>;
+  if (model.api === "openai-codex-responses") {
+    stripReasoningFields(body);
+    body.reasoning = { effort: "none" };
+  } else if (modelSupportsAdaptiveThinking(model)) {
+    stripReasoningFields(body);
+    body.thinking = { type: "between_tools" };
+  }
+  return payload;
+}
+
+function lowestReasoningLevel(model: Model<Api>): ThinkingLevel | undefined {
+  const level = getSupportedThinkingLevels(model)[0];
+  return level && level !== "off" ? level : undefined;
+}
+
+function voiceContext(model: Model<Api>, input: HarnessVoiceReplyInput): Context {
+  const timestamp = Date.now();
+  return {
+    systemPrompt: input.systemPrompt,
+    messages: input.messages.map((message): Context["messages"][number] => {
+      if (message.role === "user") return { role: "user", content: message.content, timestamp };
+      if (message.role === "tool")
+        return {
+          role: "toolResult",
+          toolCallId: message.toolCallId,
+          toolName: message.name,
+          content: [{ type: "text", text: message.content }],
+          isError: message.isError === true,
+          timestamp,
+        };
+      const toolCalls = message.toolCalls ?? [];
+      return {
+        role: "assistant",
+        content: [
+          ...(message.content ? [{ type: "text" as const, text: message.content }] : []),
+          ...toolCalls.map((call) => ({
+            type: "toolCall" as const,
+            id: call.id,
+            name: call.name,
+            arguments: call.args,
+          })),
+        ],
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        usage: zeroUsage(),
+        stopReason: toolCalls.length ? "toolUse" : "stop",
+        timestamp,
+      };
+    }),
+    ...(input.tools.length
+      ? { tools: input.tools.map(({ name, description, parameters }) => ({ name, description, parameters })) }
+      : {}),
+  };
+}
+
+async function* streamVoiceReplyOn(
+  runtime: ModelRuntime,
+  model: Model<Api>,
+  reasoning: HarnessVoiceCandidate["reasoning"],
+  input: HarnessVoiceReplyInput,
+): AsyncGenerator<HarnessVoiceReplyEvent> {
+  const started = Date.now();
+  let firstAt: number | undefined;
+  let final: AssistantMessage | undefined;
+  let failure: string | undefined;
+  const level = reasoning === "lowest" ? lowestReasoningLevel(model) : undefined;
+  try {
+    const stream = runtime.streamSimple(model, voiceContext(model, input), {
+      maxTokens: Math.min(input.maxTokens, model.maxTokens),
+      signal: input.signal,
+      ...(level ? { reasoning: level } : {}),
+      ...(reasoning === "none" ? { onPayload: (payload: unknown) => applyNoReasoning(payload, model) } : {}),
+    });
+    for await (const event of stream) {
+      if (event.type === "text_delta") {
+        firstAt ??= Date.now();
+        yield { type: "delta", text: event.delta };
+      } else if (event.type === "toolcall_end") {
+        firstAt ??= Date.now();
+        yield { type: "tool_call", id: event.toolCall.id, name: event.toolCall.name, args: event.toolCall.arguments };
+      } else if (event.type === "done") final = event.message;
+      else if (event.type === "error") final = event.error;
+    }
+  } catch (err) {
+    failure = errMessage(err);
+  }
+  let outcome: "done" | "error" | "aborted" = "done";
+  if (input.signal.aborted || final?.stopReason === "aborted") outcome = "aborted";
+  else if (failure !== undefined || !final || final.stopReason === "error") outcome = "error";
+  const error = failure ?? final?.errorMessage;
+  yield {
+    type: "end",
+    modelId: model.id,
+    outcome,
+    usage: piUsageToCallUsage(final?.usage, model, false),
+    ttftMs: firstAt !== undefined ? firstAt - started : null,
+    durationMs: Date.now() - started,
+    ...(outcome === "error" && error ? { error } : {}),
+  };
+}
+
+export function applyReasoningMode<T>(payload: T, model: Model<Api>, level?: string): T {
+  if (level !== "adaptive" && level !== "default") return payload;
+  if (level === "adaptive" ? !modelSupportsAdaptiveThinking(model) : !modelSupportsProviderDefault(model))
+    throw new NonRetryableTurnError(`${level} reasoning is not supported by ${model.id}`);
+  if (!payload || typeof payload !== "object") return payload;
+  const body = payload as Record<string, unknown>;
+  stripReasoningFields(body);
   if (model.reasoning && ["openai-responses", "openai-codex-responses"].includes(model.api))
     body.include = [...new Set([...(Array.isArray(body.include) ? body.include : []), "reasoning.encrypted_content"])];
   if (level === "adaptive") body.thinking = { type: "adaptive", display: "summarized" };
@@ -2629,6 +2744,25 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         )?.trim();
         if (!out || out === "NONE") return undefined;
         return out.replace(/^["']|["']$/g, "").slice(0, 300);
+      },
+
+      async *streamVoiceReply(input: HarnessVoiceReplyInput): AsyncGenerator<HarnessVoiceReplyEvent> {
+        const companyKeys = await resolveProviderKeys();
+        const pick = input.candidates
+          .map((candidate) => ({ candidate, model: resolveModel(candidate.modelId, !candidate.providerKeys) }))
+          .find(({ candidate, model }) =>
+            model && candidate.providerKeys
+              ? Boolean(candidate.providerKeys[String(model.provider)])
+              : Boolean(model && keyForModel(companyKeys, model)),
+          );
+        if (!pick?.model) {
+          yield { type: "unsupported" };
+          return;
+        }
+        yield { type: "start", modelId: pick.candidate.modelId };
+        const personal = pick.candidate.providerKeys;
+        const runtime = await buildModelRuntime(personal ?? companyKeys, personal ? undefined : modelGateway);
+        yield* streamVoiceReplyOn(runtime, pick.model, pick.candidate.reasoning, input);
       },
     },
   );

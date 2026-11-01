@@ -4,6 +4,9 @@ import { flushErrorReporting, reportBackendError } from "../../chassis/src/error
 import { appEditSlug } from "../src/app-edit.ts";
 import { composioCallbackUrl } from "./composio-return.ts";
 import { sharedSessionHtml } from "./shared-session.ts";
+import { voiceAccessPath, voiceAssistantRoutes } from "./voice-assistant.ts";
+import { VOICE_PERMISSION } from "../src/voice-assistant/protocol.ts";
+import { VOICE_MODEL_FILES_BY_KEY } from "../src/voice-assistant/models.ts";
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Readable } from "node:stream";
@@ -78,6 +81,15 @@ export function isLoopsUser(principalId: string, configuredUsers = process.env.L
 async function hasInboxLoopPreview(user: string): Promise<boolean> {
   try {
     const response = await coreFetch("GET", `/v1/inbox/access?principalId=${encodeURIComponent(user)}`, "", 2_000);
+    return response.status === 200 && JSON.parse(response.text).enabled === true;
+  } catch {
+    return false;
+  }
+}
+
+async function hasVoiceAssistant(user: string): Promise<boolean> {
+  try {
+    const response = await coreFetch("GET", voiceAccessPath(user), "", 2_000);
     return response.status === 200 && JSON.parse(response.text).enabled === true;
   } catch {
     return false;
@@ -218,6 +230,7 @@ const SPA_CSP = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
+  "media-src 'self' blob:",
   `connect-src 'self'${analyticsConfig ? ` ${analyticsConfig.host}` : ""}${browserErrorOrigin ? ` ${browserErrorOrigin}` : ""}`,
   "frame-src 'self' data: https:",
   "worker-src 'self' blob:",
@@ -652,6 +665,26 @@ async function coreFetchCap(
     redirect: "manual",
   });
   return { status: r.status, text: await r.text() };
+}
+
+function coreStream(
+  method: HttpMethod,
+  pathWithQuery: string,
+  rawBody: string,
+  signal: AbortSignal,
+): Promise<Response> {
+  const path = withSourceAuthNonce(pathWithQuery, CORE_SIGNING_SECRET);
+  const portalTok = portalTokenStore.getStore();
+  return fetch(`${CORE}${path}`, {
+    method,
+    headers: {
+      ...signedHeaders(CORE_SIGNING_SECRET, method, path, rawBody),
+      ...(portalTok ? { [PORTAL_IDENTITY_HEADER]: portalTok } : {}),
+    },
+    ...(rawBody ? { body: rawBody } : {}),
+    signal,
+    redirect: "manual",
+  });
 }
 
 async function relayCore(res: ServerResponse, method: HttpMethod, pathWithQuery: string, rawBody = ""): Promise<void> {
@@ -1166,6 +1199,12 @@ function memoryQuery({ url, user }: WebCtx): string {
 }
 
 const apiRoutes: readonly WebRoute[] = [
+  ...voiceAssistantRoutes({
+    models: VOICE_MODEL_FILES_BY_KEY,
+    coreFetch,
+    coreStream,
+    readJson: (req, res) => readJson(req, res, false),
+  }),
   {
     method: "GET",
     path: "/api/files/by-name/content",
@@ -1371,6 +1410,7 @@ const apiRoutes: readonly WebRoute[] = [
     handle: async (c) => {
       const { req, res, user } = c;
       res.setHeader("set-cookie", sessionCookie(user));
+      const voiceAssistant = hasVoiceAssistant(user);
       const [allPermissions, workspaceUrl, authStatus, activityConfig, companyBranding] = await Promise.all([
         userPermissions(),
         slackWorkspaceUrl(),
@@ -1394,6 +1434,7 @@ const apiRoutes: readonly WebRoute[] = [
         if (isLoopsUser(user)) permissions.push("loops");
         if (isInboxUser(user)) permissions.push("inbox");
       }
+      if (await voiceAssistant) permissions.push(VOICE_PERMISSION);
       return json(res, 200, {
         user,
         org: ORG,
@@ -2974,17 +3015,8 @@ const apiRoutes: readonly WebRoute[] = [
       const id = c.params.id!;
       const controller = new AbortController();
       res.on("close", () => controller.abort());
-      const path = withSourceAuthNonce(`/v1/runs/${encodeURIComponent(id)}/events`, CORE_SIGNING_SECRET);
-      const portalTok = portalTokenStore.getStore();
       try {
-        const upstream = await fetch(`${CORE}${path}`, {
-          headers: {
-            ...signedHeaders(CORE_SIGNING_SECRET, "GET", path, ""),
-            ...(portalTok ? { [PORTAL_IDENTITY_HEADER]: portalTok } : {}),
-          },
-          signal: controller.signal,
-          redirect: "manual",
-        });
+        const upstream = await coreStream("GET", `/v1/runs/${encodeURIComponent(id)}/events`, "", controller.signal);
         if (controller.signal.aborted) return;
         if (!upstream.ok || !upstream.body) {
           json(res, upstream.status, { error: "stream_unavailable" });

@@ -2,7 +2,7 @@ import type { DurableMap } from "./persistence/durable-map.ts";
 import { orgId as configOrgId } from "./config.ts";
 import { scopeId, type ScopeId } from "./types.ts";
 
-export const FEATURE_NAMES = ["persistent_subagents", "responsive_spine", "inbox_loops"] as const;
+export const FEATURE_NAMES = ["persistent_subagents", "responsive_spine", "inbox_loops", "voice_assistant"] as const;
 export type FeatureName = (typeof FEATURE_NAMES)[number];
 
 export interface FeatureFlagRecord {

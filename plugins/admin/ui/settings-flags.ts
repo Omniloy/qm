@@ -135,6 +135,7 @@ function template() {
           >
             <option value="persistent_subagents">Persistent subagents</option>
             <option value="inbox_loops">Inbox Loops</option>
+            <option value="voice_assistant">Voice assistant</option>
           </select></label
         >
         <div>

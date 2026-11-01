@@ -1163,6 +1163,30 @@ a.chat-row-open {
 .settings-row-error {
   color: var(--destructive, #c0392b);
 }
+.settings-voice-input {
+  min-width: 180px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 13px;
+}
+.settings-voice-input:focus-visible {
+  outline: 2px solid var(--ring, var(--brand-accent, #0783f0));
+  outline-offset: 2px;
+}
+.voice-models-progress {
+  display: block;
+  width: min(320px, 100%);
+  height: 6px;
+  margin-top: 8px;
+  accent-color: var(--brand-accent, #0783f0);
+}
+.icon-btn.voice-toggle.active {
+  color: var(--brand-accent, #0783f0);
+}
 .theme-swatches {
   display: inline-flex;
   gap: 2px;

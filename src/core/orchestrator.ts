@@ -196,6 +196,7 @@ import type { ProviderKeys } from "../harness/pi-harness.ts";
 import type { CodexTurnAuth } from "../harness/harness.ts";
 import {
   loadPersonalModelAccess,
+  piRoutingAuth,
   routePersonalModelAccess,
   servedByUnavailableFallback,
 } from "./individual-auth-routing.ts";
@@ -3451,28 +3452,18 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             const routed = routePersonalModelAccess(access, routeModel, routeHarness);
             const missingCredential = servedByUnavailableFallback(access, routeModel, routeHarness);
             const routing = routed === "org" ? null : routed;
-            if (routing?.kind === "apikey") {
+            const piAuth = await piRoutingAuth(routing, userCredStore, actor.id);
+            if (piAuth) {
               userHarnessOverride = "pi";
-              userProviderKeys = { [routing.provider]: routing.apiKey };
-              userModelOverride = routing.model;
+              userProviderKeys = piAuth.providerKeys;
+              userModelOverride = piAuth.model;
+            } else if (piAuth === null) {
+              refreshFailed = true;
             } else if (routing?.kind === "oauth" && routing.provider === "anthropic" && anthCred?.oauth) {
               const derived = await userCredStore.derivedOAuth(actor.id, "anthropic");
               refreshFailed = !derived;
               if (derived) {
                 claudeOauthToken = derived.accessToken;
-                userHarnessOverride = routing.harness;
-                userModelOverride = routing.model;
-              }
-            } else if (
-              routing?.kind === "oauth" &&
-              routing.provider === "openai" &&
-              routing.harness === "pi" &&
-              oaiCred?.oauth
-            ) {
-              const derived = await userCredStore.derivedOAuth(actor.id, "openai");
-              refreshFailed = !derived;
-              if (derived) {
-                userProviderKeys = { [CODEX_SUBSCRIPTION_PROVIDER]: derived.accessToken };
                 userHarnessOverride = routing.harness;
                 userModelOverride = routing.model;
               }

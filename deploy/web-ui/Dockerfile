@@ -18,6 +18,7 @@ RUN npm ci --omit=dev && rm package-lock.json \
   && rm -rf /root/.npm /tmp/node-compile-cache
 COPY plugins/web-ui/server ./server
 COPY plugins/web-ui/src/app-edit.ts ./src/app-edit.ts
+COPY plugins/web-ui/src/voice-assistant ./src/voice-assistant
 COPY plugins/admin/package.json plugins/admin/package-lock.json /admin/
 RUN npm ci --prefix /admin --omit=dev && rm -rf /root/.npm /tmp/node-compile-cache
 COPY plugins/admin/src /admin/src
