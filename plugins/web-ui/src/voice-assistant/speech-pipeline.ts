@@ -46,6 +46,7 @@ export interface SpeechPipeline {
   setMode(mode: SpeechMode): void;
   configure(update: { language?: VoiceLanguage; vad?: Partial<VadOptions> }): void;
   endSegment(): void;
+  retranscribe(segmentId: number): void;
   settled(): Promise<void>;
 }
 
@@ -64,6 +65,7 @@ export function createSpeechPipeline(deps: SpeechPipelineDeps): SpeechPipeline {
   let vadFailing = false;
   let frames: Promise<void> = Promise.resolve();
   let transcriptions: Promise<void> = Promise.resolve();
+  let lastWake: { id: number; audio: Float32Array } | null = null;
 
   const transcribe = (id: number, purpose: SpeechPurpose, audio: Float32Array) => {
     const request: AsrRequest = {
@@ -75,6 +77,7 @@ export function createSpeechPipeline(deps: SpeechPipelineDeps): SpeechPipeline {
       const started = now();
       try {
         const result = await deps.transcribe(input, request);
+        const truncated = input.length < audio.length || result.tokens >= request.maxNewTokens;
         post({
           type: "transcript",
           segmentId: id,
@@ -82,9 +85,11 @@ export function createSpeechPipeline(deps: SpeechPipelineDeps): SpeechPipeline {
           text: result.text.trim(),
           language: request.language,
           ms: Math.round(now() - started),
+          ...(purpose === "wake" && truncated ? { truncated: true } : {}),
         });
       } catch (error) {
         post({ type: "error", stage: "asr", reason: errMessage(error), fatal: false });
+        post({ type: "transcript", segmentId: id, purpose, text: "", language: request.language, ms: 0 });
       }
     });
   };
@@ -98,6 +103,7 @@ export function createSpeechPipeline(deps: SpeechPipelineDeps): SpeechPipeline {
       const id = ++segmentId;
       const durationMs = Math.round((event.audio.length * 1000) / SPEECH_SAMPLE_RATE);
       post({ type: "speech-end", segmentId: id, durationMs, purpose });
+      if (purpose === "wake") lastWake = { id, audio: event.audio };
       transcribe(id, purpose, event.audio);
     }
   };
@@ -137,6 +143,11 @@ export function createSpeechPipeline(deps: SpeechPipelineDeps): SpeechPipeline {
       enqueue(() => {
         vad.endSegment(handle);
       });
+    },
+    retranscribe(id) {
+      const audio = lastWake?.id === id ? lastWake.audio : new Float32Array(0);
+      lastWake = null;
+      transcribe(id, "utterance", audio);
     },
     async settled() {
       let pending: [Promise<void>, Promise<void>] | null = null;

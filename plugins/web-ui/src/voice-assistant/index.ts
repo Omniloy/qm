@@ -32,7 +32,7 @@ import {
   type VoiceStageView,
 } from "./protocol.ts";
 import { currentVoiceSettings, onVoiceSettingsChange, storeVoiceMuted, storedVoiceMuted } from "./settings-store.ts";
-import { runVoiceTool, taskSummaries, type TaskTail, type VoiceToolDeps } from "./tools.ts";
+import { isVoiceThread, runVoiceTool, taskSummaries, type TaskTail, type VoiceToolDeps } from "./tools.ts";
 import { mountVoiceStage, type VoiceStage } from "./voice-stage.ts";
 import { asrVariantFor } from "./asr/models.ts";
 import { TTS_MODEL_FILES } from "./tts/models.ts";
@@ -73,7 +73,6 @@ let starting: AbortController | null = null;
 let stopSettings: (() => void) | null = null;
 let releaseLock: (() => void) | null = null;
 let idleView: VoiceStageView | null = null;
-const voiceThreads = new Map<string, string>();
 
 function offView(status = ""): VoiceStageView {
   return {
@@ -118,23 +117,28 @@ function locks(): LockManager | null {
   return (navigator as Navigator & { locks?: LockManager }).locks ?? null;
 }
 
-function acquireLeadership(takeover: boolean): Promise<boolean> {
+function acquireLeadership(takeover: boolean): Promise<(() => void) | null> {
   const manager = locks();
-  if (!manager) return Promise.resolve(true);
+  if (!manager) return Promise.resolve(() => undefined);
   return new Promise((resolve) => {
     void manager
       .request(VOICE_CHANNEL_NAME, takeover ? { steal: true } : { ifAvailable: true }, (lock) => {
         if (!lock) {
-          resolve(false);
+          resolve(null);
           return;
         }
-        resolve(true);
-        return new Promise<void>((release) => {
-          releaseLock = release;
-        });
+        return new Promise<void>((release) => resolve(release));
       })
-      .catch(() => resolve(false));
+      .catch(() => resolve(null));
   });
+}
+
+async function microphoneGranted(): Promise<boolean> {
+  try {
+    return (await navigator.permissions.query({ name: "microphone" as PermissionName })).state === "granted";
+  } catch {
+    return false;
+  }
 }
 
 function dropLeadership(): void {
@@ -181,8 +185,7 @@ function toolDeps(user: string): VoiceToolDeps {
     activeRun: async (threadRef) => (await activeRunForThread(threadRef)).runId,
     abortRun: abortRunById,
     open: openTask,
-    delegated: (threadRef, title) => {
-      voiceThreads.set(threadRef, title);
+    delegated: () => {
       void refreshSessions({ silent: true }).catch((error: unknown) => swallow("voice: refresh sessions", error));
     },
     newId: mintSendKey,
@@ -233,6 +236,7 @@ export function stopVoice(status = ""): void {
   if (current) teardown(current);
   dropLeadership();
   showIdle(status);
+  if (status) stage?.open();
   options?.onActiveChange(false);
 }
 
@@ -247,6 +251,7 @@ export async function startVoice(takeover = true): Promise<void> {
   const workers: Worker[] = [];
   try {
     const gpu = await detectGpu();
+    if (abort.signal.aborted) return;
     if (!gpu.webgpu) {
       if (takeover) stage.open();
       showIdle(copy().webgpu);
@@ -254,15 +259,20 @@ export async function startVoice(takeover = true): Promise<void> {
       return;
     }
     const files = voiceModelFiles(gpu);
-    if (!takeover && (await missingModelFiles(files)).length > 0) {
+    const quiet = !takeover && ((await missingModelFiles(files)).length > 0 || !(await microphoneGranted()));
+    if (abort.signal.aborted) return;
+    if (quiet) {
       starting = null;
       return;
     }
     if (takeover) channel?.postMessage({ type: "takeover" });
-    if (!(await acquireLeadership(takeover)) || abort.signal.aborted) {
+    const release = await acquireLeadership(takeover);
+    if (!release || abort.signal.aborted) {
+      release?.();
       if (starting === abort) starting = null;
       return;
     }
+    releaseLock = release;
     graph = await createAudioGraph();
     if (abort.signal.aborted) throw new DOMException("aborted", "AbortError");
     const audio = graph;
@@ -293,7 +303,7 @@ export async function startVoice(takeover = true): Promise<void> {
     const announcer = createAnnouncer({
       scope: () => currentVoiceSettings().announceScope,
       language: () => currentVoiceSettings().language,
-      isVoiceThread: (threadRef) => voiceThreads.has(threadRef),
+      isVoiceThread: (threadRef) => isVoiceThread(user, threadRef),
       foregroundThread,
       sessions: sessionsNow,
       tail: taskTail,
@@ -442,5 +452,4 @@ export function unmountVoiceAssistant(): void {
   host = null;
   options = null;
   idleView = null;
-  voiceThreads.clear();
 }

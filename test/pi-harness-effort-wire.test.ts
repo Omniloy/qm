@@ -294,6 +294,85 @@ test("voice replies turn reasoning off for Terra, run the fallback at its lowest
   assert.deepEqual(unservable, [{ type: "unsupported" }]);
 });
 
+test("a voice model the endpoint rejects falls back to the user's default model before anything is spoken", async (t) => {
+  const models: unknown[] = [];
+  const server = createServer(async (req, res) => {
+    let raw = "";
+    for await (const chunk of req) raw += String(chunk);
+    const body = JSON.parse(raw) as Record<string, unknown>;
+    models.push(body.model);
+    if (body.model === "gpt-6.1-terra") {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "model not served", type: "invalid_request_error" } }));
+      return;
+    }
+    const message = {
+      id: "msg_sol",
+      type: "message",
+      role: "assistant",
+      status: "completed",
+      content: [{ type: "output_text", text: "Hola.", annotations: [] }],
+    };
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    for (const event of [
+      { type: "response.created", response: { id: "resp_sol", status: "in_progress", output: [] } },
+      { type: "response.output_item.added", output_index: 0, item: { ...message, content: [] } },
+      {
+        type: "response.content_part.added",
+        output_index: 0,
+        content_index: 0,
+        part: { type: "output_text", text: "", annotations: [] },
+      },
+      { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "Hola." },
+      { type: "response.output_item.done", output_index: 0, item: message },
+      {
+        type: "response.completed",
+        response: {
+          id: "resp_sol",
+          status: "completed",
+          output: [message],
+          usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+        },
+      },
+    ])
+      res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+    res.end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>((resolve, reject) => server.close((e) => (e ? reject(e) : resolve()))));
+  const address = server.address();
+  assert(address && typeof address !== "string");
+  const harness = createPiHarness({
+    modelGateway: {
+      url: `http://127.0.0.1:${address.port}`,
+      apiKey: "test-key",
+      apiKeyHeader: "api-key",
+      models: { "gpt-6.1-terra": "gpt-6.1-terra", "gpt-6.1-sol": "gpt-6.1-sol" },
+    },
+  });
+  const events = await collect(
+    harness.models.streamVoiceReply!({
+      candidates: [
+        { modelId: "gpt-6.1-terra", reasoning: "none" },
+        { modelId: "gpt-6.1-sol", reasoning: "lowest" },
+      ],
+      systemPrompt: "Speak briefly.",
+      messages: [{ role: "user", content: "hola" }],
+      tools: [],
+      maxTokens: 300,
+      signal: AbortSignal.timeout(10_000),
+    }),
+  );
+  assert.deepEqual(models, ["gpt-6.1-terra", "gpt-6.1-sol"]);
+  assert.deepEqual(
+    events.filter((event) => event.type === "start" || event.type === "delta").map((e) => e.type),
+    ["start", "delta"],
+  );
+  const end = events.at(-1);
+  assert.equal(end?.type === "end" ? end.outcome : undefined, "done");
+  assert.equal(end?.type === "end" ? end.modelId : undefined, "gpt-6.1-sol");
+});
+
 test("voice replies on Sonnet 5.5 switch thinking to between_tools and survive the thinking-binding pass", async (t) => {
   const bodies: Array<Record<string, unknown>> = [];
   const server = createServer(async (req, res) => {

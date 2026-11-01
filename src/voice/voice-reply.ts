@@ -129,8 +129,16 @@ export const VOICE_TOOLS: readonly HarnessVoiceTool[] = [
     parameters: Type.Object({}),
   },
   { name: "task_result", description: "Read the latest result of a task.", parameters: TASK_REF },
-  { name: "approve_task", description: "Approve the action a task is waiting on.", parameters: TASK_REF },
-  { name: "reject_task", description: "Reject the action a task is waiting on.", parameters: TASK_REF },
+  {
+    name: "approve_task",
+    description: "Approve the action a task is waiting on. The app reads it back and waits for the user's yes.",
+    parameters: TASK_REF,
+  },
+  {
+    name: "reject_task",
+    description: "Reject the action a task is waiting on. The app reads it back and waits for the user's yes.",
+    parameters: TASK_REF,
+  },
   { name: "stop_task", description: "Stop a running task.", parameters: TASK_REF },
   { name: "open_task", description: "Open a task's conversation on screen.", parameters: TASK_REF },
 ];

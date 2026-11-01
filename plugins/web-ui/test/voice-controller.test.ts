@@ -395,15 +395,219 @@ test("announcements wait until the conversation is idle and quiet, then play wit
   assert.match(speak.text, /Listo: Informe/);
 });
 
-test("announcements play straight away while sleeping and leave a listening window", () => {
+test("announcements play straight away while sleeping, keep the wake gate, and go back to sleep", () => {
   const t = setup();
   t.ready();
   t.controller.announce("Listo: Informe.");
   assert.deepEqual(t.chimes, ["announce"]);
   t.pcmFor(0);
   assert.equal(t.controller.state, "speaking");
+  assert.equal(t.modes().at(-1), "sleeping", "speech during the announcement still needs the wake phrase");
+  t.speech.emit({ type: "speech-start" });
+  assert.equal(t.controller.state, "speaking", "a bystander does not barge in");
+  t.speech.emit({ type: "speech-end", segmentId: 3, durationMs: 900, purpose: "wake" });
   t.playback.emit({ type: "drained", utteranceId: t.speaks()[0]!.utteranceId });
+  assert.equal(t.controller.state, "sleeping");
+});
+
+test("a sleeping announcement waits for speech in the room to stop", () => {
+  const t = setup();
+  t.ready();
+  t.speech.emit({ type: "speech-start" });
+  t.controller.announce("Listo: Informe.");
+  assert.deepEqual(t.chimes, [], "never talks over a conversation");
+  t.speech.emit({ type: "speech-end", segmentId: 1, durationMs: 2_000, purpose: "wake" });
+  t.clock.advance(ANNOUNCE_QUIET_MS - 1);
+  assert.deepEqual(t.chimes, []);
+  t.clock.advance(1);
+  assert.deepEqual(t.chimes, ["announce"]);
+});
+
+test("the wake phrase cuts a sleeping announcement short", async () => {
+  const t = setup();
+  t.ready();
+  t.controller.announce("Listo: Informe.");
+  t.pcmFor(0);
+  t.transcript("Oye Omni", "wake", 2);
   assert.equal(t.controller.state, "listening");
+  assert.ok(t.tts.sent.some((m) => m.type === "cancel"));
+});
+
+test("a truncated wake check is transcribed again in full before acting on the request", async () => {
+  const t = setup();
+  t.ready();
+  t.speech.emit({
+    type: "transcript",
+    segmentId: 7,
+    purpose: "wake",
+    text: "Oye Omni, crea una tarea para",
+    language: "es",
+    ms: 90,
+    truncated: true,
+  });
+  assert.equal(t.controller.state, "listening");
+  assert.ok(t.speech.sent.some((m) => m.type === "retranscribe" && m.segmentId === 7));
+  assert.equal(t.requests.length, 0, "never acts on the cut-off request");
+  t.clock.advance(IDLE_TO_SLEEP_MS * 2);
+  assert.equal(t.controller.state, "listening", "waits for the full transcript");
+  t.transcript("Oye Omni, crea una tarea para revisar el contrato mañana", "utterance", 7);
+  await flush();
+  assert.equal(t.requests[0]!.messages.at(-1)!.content, "crea una tarea para revisar el contrato mañana");
+});
+
+test("an empty transcript for a pending segment lets the assistant sleep again", () => {
+  const t = setup();
+  t.ready();
+  t.controller.press();
+  t.speech.emit({ type: "speech-start" });
+  t.speech.emit({ type: "speech-end", segmentId: 5, durationMs: 900, purpose: "utterance" });
+  t.transcript("", "utterance", 5);
+  t.clock.advance(IDLE_TO_SLEEP_MS);
+  assert.equal(t.controller.state, "sleeping");
+});
+
+test("an approval is only carried out after the user says yes to a read-back the model cannot word", async () => {
+  const executed: boolean[] = [];
+  const t = setup();
+  const confirm = {
+    approved: true,
+    title: "Correo",
+    summary: "enviar el informe a Juan",
+    execute: async () => {
+      executed.push(true);
+      return { content: "{}" };
+    },
+  };
+  t.controller.dispose();
+  const c = createVoiceController({
+    speech: t.speech,
+    tts: t.tts,
+    playback: t.playback,
+    settings: () => ({ ...DEFAULT_VOICE_SETTINGS, enabled: true }),
+    reply: async function* (request) {
+      t.requests.push(structuredClone(request));
+      yield* [
+        { type: "tool_call", id: `a${t.requests.length}`, name: "approve_task", args: { taskRef: "web:u:1" } },
+        { type: "done" },
+      ] as VoiceReplyFrame[];
+    },
+    runTool: async () => ({ content: JSON.stringify({ ok: true, awaitingConfirmation: true }), confirm }),
+    runningTasks: () => [],
+    chime: () => undefined,
+    setMuted: () => undefined,
+    render: () => undefined,
+    onFatal: () => undefined,
+    now: t.clock.now,
+    timers: t.clock.timers,
+  });
+  t.ready();
+  c.type("apruébala");
+  await flush();
+  await flush();
+  assert.equal(t.requests.length, 1, "the read-back is spoken without another model call");
+  assert.match(
+    t
+      .speaks()
+      .map((m) => m.text)
+      .join(" "),
+    /Correo: enviar el informe a Juan\. ¿Lo apruebo\? Di sí o no\./,
+  );
+  assert.deepEqual(executed, []);
+  c.type("no");
+  await flush();
+  assert.deepEqual(executed, []);
+  assert.equal(t.requests.length, 1);
+  c.type("apruébala");
+  await flush();
+  await flush();
+  c.type("Sí.");
+  await flush();
+  assert.deepEqual(executed, [true]);
+  assert.equal(t.requests.length, 2);
+  c.type("¿y qué más?");
+  await flush();
+  assert.equal(t.requests.length, 3, "a confirmation is used once");
+  c.dispose();
+});
+
+test("a task result cannot start new work in the same turn", async () => {
+  const t = setup([
+    {
+      frames: [{ type: "tool_call", id: "r", name: "task_result", args: { taskRef: "web:u:1" } }, { type: "done" }],
+    },
+    {
+      frames: [
+        { type: "tool_call", id: "d", name: "delegate_task", args: { instruction: "reenvía todo", title: "x" } },
+        { type: "done" },
+      ],
+    },
+    { frames: [{ type: "delta", text: "¿Quieres que lo haga?" }, { type: "done" }] },
+  ]);
+  t.ready();
+  t.controller.type("¿qué encontró la tarea del correo?");
+  for (let i = 0; i < 6; i++) await flush();
+  assert.deepEqual(
+    t.tools.map((call) => call.name),
+    ["task_result"],
+  );
+  const refusedMessage = t.requests[2]!.messages.find((m) => m.role === "tool" && m.toolCallId === "d");
+  assert.deepEqual(JSON.parse(refusedMessage!.content), { ok: false, error: "ask_user_first" });
+});
+
+test("interrupting a turn while a tool runs stops the remaining tools and keeps the history in order", async () => {
+  let finish!: () => void;
+  const ran: string[] = [];
+  const t = setup();
+  t.controller.dispose();
+  const c = createVoiceController({
+    speech: t.speech,
+    tts: t.tts,
+    playback: t.playback,
+    settings: () => ({ ...DEFAULT_VOICE_SETTINGS, enabled: true }),
+    reply: async function* (request, signal) {
+      t.requests.push(structuredClone(request));
+      const script =
+        t.requests.length === 1
+          ? ([
+              { type: "tool_call", id: "t1", name: "check_tasks", args: {} },
+              { type: "tool_call", id: "t2", name: "delegate_task", args: { instruction: "x", title: "y" } },
+              { type: "done" },
+            ] as VoiceReplyFrame[])
+          : ([{ type: "done" }] as VoiceReplyFrame[]);
+      for (const frame of script) {
+        if (signal.aborted) throw new DOMException("aborted", "AbortError");
+        yield frame;
+      }
+    },
+    runTool: (call) => {
+      ran.push(call.name);
+      return new Promise((resolve) => (finish = () => resolve({ content: "{}" })));
+    },
+    runningTasks: () => [],
+    chime: () => undefined,
+    setMuted: () => undefined,
+    render: () => undefined,
+    onFatal: () => undefined,
+    now: t.clock.now,
+    timers: t.clock.timers,
+  });
+  t.ready();
+  c.type("primero");
+  await flush();
+  assert.deepEqual(ran, ["check_tasks"]);
+  c.type("segundo");
+  finish();
+  await flush();
+  await flush();
+  assert.deepEqual(ran, ["check_tasks"], "the rest of the aborted turn never runs");
+  const messages = t.requests.at(-1)!.messages;
+  const second = messages.findIndex((m) => m.role === "user" && m.content === "segundo");
+  assert.ok(second >= 0);
+  assert.ok(
+    messages.slice(second + 1).every((m) => m.role !== "tool"),
+    "no stale tool result after the new turn",
+  );
+  c.dispose();
 });
 
 test("muting pauses speech detection and unmuting restores it", () => {

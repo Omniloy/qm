@@ -1,4 +1,4 @@
-import { fetchUiState, putUiState } from "../core-bridge.ts";
+import { fetchUiState, putUiState, type UiStateRecord } from "../core-bridge.ts";
 import {
   ANNOUNCE_SCOPES,
   DEFAULT_VOICE_SETTINGS,
@@ -11,6 +11,7 @@ import {
 } from "./protocol.ts";
 
 export const WAKE_PHRASE_MAX_CHARS = 60;
+const SAVE_ATTEMPTS = 3;
 
 type Listener = (settings: VoiceSettings) => void;
 
@@ -47,41 +48,34 @@ export function currentVoiceSettings(): VoiceSettings {
   return current;
 }
 
+function adopt(record: UiStateRecord): VoiceSettings {
+  if (record.updatedAt > updatedAt) {
+    current = parseVoiceSettings(record.value);
+    updatedAt = record.updatedAt;
+  }
+  return current;
+}
+
 export function loadVoiceSettings(): Promise<VoiceSettings> {
-  loading ??= fetchUiState(VOICE_SETTINGS_UI_STATE_KEY).then(
-    (record) => {
-      if (record.updatedAt > updatedAt) {
-        current = parseVoiceSettings(record.value);
-        updatedAt = record.updatedAt;
-      }
-      return current;
-    },
-    (error: unknown) => {
-      loading = null;
-      throw error;
-    },
-  );
+  loading ??= fetchUiState(VOICE_SETTINGS_UI_STATE_KEY).then(adopt, (error: unknown) => {
+    loading = null;
+    throw error;
+  });
   return loading;
 }
 
 export async function saveVoiceSettings(patch: Partial<VoiceSettings>): Promise<VoiceSettings> {
-  const previous = current;
-  const previousAt = updatedAt;
-  current = parseVoiceSettings({ ...current, ...patch });
-  updatedAt = Math.max(Date.now(), updatedAt + 1);
-  const saved = current;
-  for (const listener of listeners) listener(saved);
-  try {
-    await putUiState(VOICE_SETTINGS_UI_STATE_KEY, saved, updatedAt);
-  } catch (error) {
-    if (current === saved) {
-      current = previous;
-      updatedAt = previousAt;
-      for (const listener of listeners) listener(previous);
-    }
-    throw error;
+  for (let attempt = 0; attempt < SAVE_ATTEMPTS; attempt++) {
+    const next = parseVoiceSettings({ ...adopt(await fetchUiState(VOICE_SETTINGS_UI_STATE_KEY)), ...patch });
+    const at = Math.max(Date.now(), updatedAt + 1);
+    const result = (await putUiState(VOICE_SETTINGS_UI_STATE_KEY, next, at)) as { ok?: unknown } | null;
+    if (result?.ok === false) continue;
+    current = next;
+    updatedAt = at;
+    for (const listener of listeners) listener(next);
+    return next;
   }
-  return saved;
+  throw new Error("voice_settings_conflict");
 }
 
 export function onVoiceSettingsChange(listener: Listener): () => void {

@@ -193,9 +193,10 @@ export async function createSupertonic(deps: SupertonicDeps): Promise<TtsEngine>
 
   const synthesize = async (request: TtsRequest, signal?: AbortSignal): Promise<Float32Array> => {
     signal?.throwIfAborted();
+    if (request.text.length > SUPERTONIC_MAX_CHARS)
+      throw new RangeError(`supertonic_text_too_long:${request.text.length}`);
     const normalized = normalizeSpeechText(request.text, request.language);
     if (!/[\p{L}\p{N}]/u.test(normalized)) return new Float32Array(0);
-    if (normalized.length > SUPERTONIC_MAX_CHARS) throw new RangeError(`supertonic_text_too_long:${normalized.length}`);
     const input = wrapLanguage(normalized, request.language);
     const style = await styleFor(request.voice);
     const totalStep = clampSteps(request.steps);

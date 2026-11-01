@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { CoreSession } from "../src/core-bridge.ts";
+import type { CoreSession, PendingApproval } from "../src/core-bridge.ts";
 import { VoiceReplyError, parseSseEvent, streamVoiceReply } from "../src/voice-assistant/llm.ts";
 import type { VoiceReplyFrame, VoiceReplyRequest } from "../src/voice-assistant/protocol.ts";
-import { runVoiceTool, taskSummaries, type VoiceToolDeps } from "../src/voice-assistant/tools.ts";
+import { isVoiceThread, runVoiceTool, taskSummaries, type VoiceToolDeps } from "../src/voice-assistant/tools.ts";
 
 const REQUEST: VoiceReplyRequest = {
   purpose: "reply",
@@ -103,7 +103,7 @@ function deps(sessions: CoreSession[], over: Partial<VoiceToolDeps> = {}) {
     activeRun: async () => "run-7",
     abortRun: async (runId) => void log.push(`abort:${runId}`),
     open: (s) => void log.push(`open:${s.threadRef}`),
-    delegated: (threadRef, title) => void log.push(`delegated:${threadRef}:${title}`),
+    delegated: () => void log.push("delegated"),
     newId: (() => {
       let n = 0;
       return () => `id${++n}`;
@@ -121,14 +121,14 @@ test("delegate_task starts a real agent turn on a new web thread of the user", a
   );
   assert.deepEqual(JSON.parse(outcome.content), {
     ok: true,
-    taskRef: "web:ana@example.com:id1",
+    taskRef: "web:ana@example.com:voice:id1",
     title: "Resumen",
     state: "working",
   });
-  assert.deepEqual(log, [
-    "turn:web:ana@example.com:id1:Resume el correo:id2",
-    "delegated:web:ana@example.com:id1:Resumen",
-  ]);
+  assert.deepEqual(log, ["turn:web:ana@example.com:voice:id1:Resume el correo:id2", "delegated"]);
+  assert.ok(isVoiceThread("ana@example.com", "web:ana@example.com:voice:id1"));
+  assert.ok(!isVoiceThread("ana@example.com", "web:ana@example.com:id1"));
+  assert.ok(!isVoiceThread("ana@example.com", "web:bob@example.com:voice:id1"));
 });
 
 test("task tools resolve the taskRef against the user's sessions", async () => {
@@ -142,14 +142,43 @@ test("task tools resolve the taskRef against the user's sessions", async () => {
   );
   assert.equal(result.result, "Tres conclusiones.");
   assert.equal(result.state, "working");
-  await runVoiceTool({ id: "c", name: "approve_task", args: { taskRef: "web:ana:2" } }, d);
-  await runVoiceTool({ id: "c", name: "reject_task", args: { taskRef: "web:ana:2" } }, d);
+  const approve = await runVoiceTool({ id: "c", name: "approve_task", args: { taskRef: "web:ana:2" } }, d);
+  const reject = await runVoiceTool({ id: "c", name: "reject_task", args: { taskRef: "web:ana:2" } }, d);
+  assert.deepEqual(log, [], "approvals wait for the user's spoken confirmation");
+  assert.equal(JSON.parse(approve.content).awaitingConfirmation, true);
+  assert.deepEqual(
+    { approved: approve.confirm?.approved, title: approve.confirm?.title, summary: approve.confirm?.summary },
+    { approved: true, title: "Untitled", summary: "send_mail" },
+  );
+  assert.equal(reject.confirm?.approved, false);
+  await approve.confirm!.execute();
+  await reject.confirm!.execute();
   await runVoiceTool({ id: "c", name: "stop_task", args: { taskRef: "web:ana:1" } }, d);
   await runVoiceTool({ id: "c", name: "open_task", args: { taskRef: "web:ana:1" } }, d);
   assert.deepEqual(log, ["approval:req-9:true", "approval:req-9:false", "abort:run-7", "open:web:ana:1"]);
   const missing = await runVoiceTool({ id: "c", name: "open_task", args: { taskRef: "web:ana:404" } }, d);
   assert.equal(missing.isError, true);
   assert.equal(JSON.parse(missing.content).error, "task_not_found");
+});
+
+test("a confirmed approval resolves only the approval that was read back, and security holds stay on screen", async () => {
+  let pending: PendingApproval[] = [{ requestId: "req-1", command: "read_calendar" }];
+  const { deps: d, log } = deps([session("web:ana:2", { awaitingInput: true })], { approvals: async () => pending });
+  const asked = await runVoiceTool({ id: "c", name: "approve_task", args: { taskRef: "web:ana:2" } }, d);
+  pending = [{ requestId: "req-2", command: "send_mail" }];
+  const changed = await asked.confirm!.execute();
+  assert.deepEqual(JSON.parse(changed.content), { ok: false, error: "approval_changed" });
+  assert.deepEqual(log, []);
+  pending = [
+    {
+      requestId: "req-3",
+      command: "x",
+      securityHoldView: {} as NonNullable<PendingApproval["securityHoldView"]>,
+    },
+  ];
+  const held = await runVoiceTool({ id: "c", name: "approve_task", args: { taskRef: "web:ana:2" } }, d);
+  assert.deepEqual(JSON.parse(held.content), { ok: false, error: "security_hold_open_task" });
+  assert.equal(held.confirm, undefined);
 });
 
 test("tool failures come back as errors the model can read", async () => {

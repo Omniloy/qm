@@ -307,7 +307,9 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
     html`<div class="voice-stage" role="dialog" aria-modal="true" aria-label=${copy.dialog} tabindex="-1">
       <div class="voice-stage-center">
         <div class="voice-stage-orb">${orbTemplate("stage")}</div>
-        <p class="voice-status" data-empty=${view.status ? "false" : "true"}>${view.status}</p>
+        <p class="voice-status" role="status" aria-live="polite" data-empty=${view.status ? "false" : "true"}>
+          ${view.status}
+        </p>
         ${captionsTemplate()}
       </div>
       ${dockTemplate()}

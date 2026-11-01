@@ -46,6 +46,8 @@ async function reply(ctx: ApiCtx): Promise<void> {
   if (!request) return sendJson(res, 400, { error: "invalid_request" });
   const stream = deps.streamVoiceReply;
   if (!stream) return sendJson(res, 409, { error: "voice_model_unsupported" });
+  const rate = await deps.rateLimiter?.check(`voice:${principalId}`);
+  if (rate && !rate.allowed) return sendJson(res, 429, { error: "rate_limited" });
   if (deps.budget && !(await deps.budget.check(principalId)).allowed)
     return sendJson(res, 429, { error: "over_budget" });
   const candidates = await voiceCandidates(deps, principalId);
@@ -66,15 +68,7 @@ async function reply(ctx: ApiCtx): Promise<void> {
   try {
     const first = await events.next();
     if (first.done || first.value.type !== "start") return sendJson(res, 409, { error: "voice_model_unsupported" });
-    const modelId = first.value.modelId;
     const inputTokens = countTokens(systemPrompt) + countTokens(JSON.stringify(request.messages));
-    deps.modelGateway?.recordCall({
-      at: Date.now(),
-      scopeLabel: scope,
-      model: modelId,
-      inputTokens,
-      entryCount: request.messages.length,
-    });
     void deps.budget?.record(principalId, estimateCostUsd(inputTokens));
     res.writeHead(200, {
       "content-type": "text/event-stream; charset=utf-8",
@@ -97,6 +91,13 @@ async function reply(ctx: ApiCtx): Promise<void> {
     } catch (err) {
       swallow("voice: reply stream", err);
     }
+    deps.modelGateway?.recordCall({
+      at: Date.now(),
+      scopeLabel: scope,
+      model: end?.modelId ?? first.value.modelId,
+      inputTokens,
+      entryCount: request.messages.length,
+    });
     await recordVoiceUsage(ctx, principalId, end);
     if (!end || end.outcome === "error") send({ type: "error", reason: "upstream_error" });
     else if (end.outcome === "aborted") send({ type: "error", reason: "aborted" });

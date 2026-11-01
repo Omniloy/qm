@@ -2748,21 +2748,34 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
 
       async *streamVoiceReply(input: HarnessVoiceReplyInput): AsyncGenerator<HarnessVoiceReplyEvent> {
         const companyKeys = await resolveProviderKeys();
-        const pick = input.candidates
-          .map((candidate) => ({ candidate, model: resolveModel(candidate.modelId, !candidate.providerKeys) }))
-          .find(({ candidate, model }) =>
+        const picks = input.candidates.flatMap((candidate) => {
+          const model = resolveModel(candidate.modelId, !candidate.providerKeys);
+          const servable =
             model && candidate.providerKeys
               ? Boolean(candidate.providerKeys[String(model.provider)])
-              : Boolean(model && keyForModel(companyKeys, model)),
-          );
-        if (!pick?.model) {
+              : Boolean(model && keyForModel(companyKeys, model));
+          return model && servable ? [{ candidate, model }] : [];
+        });
+        if (!picks.length) {
           yield { type: "unsupported" };
           return;
         }
-        yield { type: "start", modelId: pick.candidate.modelId };
-        const personal = pick.candidate.providerKeys;
-        const runtime = await buildModelRuntime(personal ?? companyKeys, personal ? undefined : modelGateway);
-        yield* streamVoiceReplyOn(runtime, pick.model, pick.candidate.reasoning, input);
+        yield { type: "start", modelId: picks[0]!.candidate.modelId };
+        for (const [index, pick] of picks.entries()) {
+          const personal = pick.candidate.providerKeys;
+          const runtime = await buildModelRuntime(personal ?? companyKeys, personal ? undefined : modelGateway);
+          let streamed = false;
+          let retry = false;
+          for await (const event of streamVoiceReplyOn(runtime, pick.model, pick.candidate.reasoning, input)) {
+            if (event.type === "end" && event.outcome === "error" && !streamed && index < picks.length - 1) {
+              retry = true;
+              break;
+            }
+            if (event.type === "delta" || event.type === "tool_call") streamed = true;
+            yield event;
+          }
+          if (!retry) return;
+        }
       },
     },
   );

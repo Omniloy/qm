@@ -260,6 +260,19 @@ test("synthesis rejects over-long chunks, skips unspeakable text and unknown voi
   assert.equal(fake.runs.length, 0);
 });
 
+test("a chunk within the raw limit still speaks when normalization makes it longer", async () => {
+  const fake = fakeOrt();
+  const engine = await createSupertonic({
+    ort: fake.ort,
+    executionProviders: ["wasm"],
+    backend: "wasm",
+    readFile: readFake,
+  });
+  const text = "Información sobre la canción ".repeat(20).slice(0, SUPERTONIC_MAX_CHARS);
+  const pcm = await engine.synthesize({ text, language: "es", voice: "F1", steps: 2 });
+  assert.ok(pcm.length > 0);
+});
+
 test("an aborted signal stops synthesis before the next model run", async () => {
   const fake = fakeOrt();
   const engine = await createSupertonic({

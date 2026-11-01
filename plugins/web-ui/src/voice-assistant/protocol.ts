@@ -104,6 +104,7 @@ export type SpeechWorkerIn =
   | { type: "mode"; mode: SpeechMode }
   | { type: "config"; language?: VoiceLanguage; vad?: Partial<VadOptions> }
   | { type: "end-segment" }
+  | { type: "retranscribe"; segmentId: number }
   | { type: "dispose" };
 
 export type SpeechWorkerOut =
@@ -112,7 +113,15 @@ export type SpeechWorkerOut =
   | { type: "speech-start" }
   | { type: "speech-misfire" }
   | { type: "speech-end"; segmentId: number; durationMs: number; purpose: SpeechPurpose }
-  | { type: "transcript"; segmentId: number; purpose: SpeechPurpose; text: string; language: VoiceLanguage; ms: number }
+  | {
+      type: "transcript";
+      segmentId: number;
+      purpose: SpeechPurpose;
+      text: string;
+      language: VoiceLanguage;
+      ms: number;
+      truncated?: boolean;
+    }
   | { type: "error"; stage: "vad" | "asr" | "frames"; reason: string; fatal: boolean };
 
 export const TTS_ENGINE_IDS = ["supertonic-3"] as const;
@@ -253,7 +262,13 @@ export interface VoiceReplyRequest {
 }
 
 export type VoiceReplyErrorReason =
-  "feature_disabled" | "voice_model_unsupported" | "invalid_request" | "over_budget" | "upstream_error" | "aborted";
+  | "feature_disabled"
+  | "voice_model_unsupported"
+  | "invalid_request"
+  | "over_budget"
+  | "rate_limited"
+  | "upstream_error"
+  | "aborted";
 
 interface VoiceReplyUsage {
   input: number;

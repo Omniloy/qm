@@ -20,6 +20,7 @@ const KNOWN_REASONS: ReadonlySet<string> = new Set<VoiceReplyErrorReason>([
   "voice_model_unsupported",
   "invalid_request",
   "over_budget",
+  "rate_limited",
   "upstream_error",
   "aborted",
 ]);

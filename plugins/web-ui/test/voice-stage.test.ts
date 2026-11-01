@@ -150,7 +150,9 @@ test("the open stage renders orb, status, aria-hidden captions, live announcer a
   const orbButton = orb.querySelector("button")!;
   assert.equal(orbButton.getAttribute("aria-label"), "Interrumpir");
   assert.equal(orbButton.getAttribute("aria-pressed"), "true");
-  assert.equal(dialog.querySelector(".voice-status")!.textContent, "Micrófono apagado");
+  const status = dialog.querySelector(".voice-status")!;
+  assert.equal(status.textContent?.trim(), "Micrófono apagado");
+  assert.equal(status.getAttribute("role"), "status");
   assert.equal(dialog.querySelector(".voice-region")!.getAttribute("aria-hidden"), "true");
   assert.equal(dialog.querySelector(".voice-caption-user")!.textContent, "¿Qué tal va la tarea?");
   const words = [...dialog.querySelectorAll(".voice-word")];

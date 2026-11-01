@@ -118,7 +118,28 @@ test("while sleeping, segments are wake checks capped at the wake window", async
   assert.ok(end?.type === "speech-end" && end.purpose === "wake" && end.durationMs > WAKE_SEGMENT_MAX_MS);
   assert.equal(asrCalls[0].samples, (WAKE_SEGMENT_MAX_MS * SPEECH_SAMPLE_RATE) / 1000);
   assert.equal(asrCalls[0].request.maxNewTokens, WAKE_MAX_NEW_TOKENS);
-  assert.ok(posted.some((m) => m.type === "transcript" && m.purpose === "wake"));
+  const wake = posted.find((m) => m.type === "transcript" && m.purpose === "wake");
+  assert.ok(wake?.type === "transcript" && wake.truncated === true);
+  pipeline.retranscribe(end.segmentId);
+  await pipeline.settled();
+  assert.ok(asrCalls[1].samples > asrCalls[0].samples);
+  assert.equal(asrCalls[1].request.maxNewTokens, UTTERANCE_MAX_NEW_TOKENS);
+  const full = posted.at(-1);
+  assert.ok(full?.type === "transcript" && full.purpose === "utterance" && full.segmentId === end.segmentId);
+});
+
+test("a short wake check is not truncated, and retranscribing an unknown segment answers with nothing", async () => {
+  const { pipeline, posted, asrCalls, feed } = setup({ mode: "sleeping" });
+  feed(SPEECH, framesFor(800));
+  feed(SILENCE, framesFor(DEFAULT_VAD_OPTIONS.redemptionMs) + 1);
+  await pipeline.settled();
+  const wake = posted.find((m) => m.type === "transcript" && m.purpose === "wake");
+  assert.ok(wake?.type === "transcript" && wake.truncated === undefined);
+  pipeline.retranscribe(99);
+  await pipeline.settled();
+  assert.equal(asrCalls.at(-1)!.samples, 0);
+  const none = posted.at(-1);
+  assert.ok(none?.type === "transcript" && none.segmentId === 99 && none.purpose === "utterance");
 });
 
 test("paused ignores frames and resets the vad", async () => {
@@ -203,7 +224,10 @@ test("asr and vad failures surface as non-fatal errors without stopping the pipe
   feed(SPEECH, framesFor(500));
   pipeline.endSegment();
   await pipeline.settled();
-  assert.deepEqual(posted.at(-1), { type: "error", stage: "asr", reason: "decoder exploded", fatal: false });
+  assert.deepEqual(posted.slice(-2), [
+    { type: "error", stage: "asr", reason: "decoder exploded", fatal: false },
+    { type: "transcript", segmentId: 1, purpose: "utterance", text: "", language: "es", ms: 0 },
+  ]);
   fail = false;
   feed(SPEECH, framesFor(500));
   pipeline.endSegment();

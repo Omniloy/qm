@@ -21,6 +21,7 @@ for (const [key, value] of Object.entries({
 
 const stored = new Map<string, { value: unknown; updatedAt: number }>();
 const puts: Array<{ key: string; value: Record<string, unknown> }> = [];
+let refuseNext = 0;
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = new URL(String(input), "http://localhost/");
   if (url.pathname === "/api/ui-state" && (init?.method ?? "GET") === "GET") {
@@ -29,9 +30,14 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   }
   if (url.pathname === "/api/ui-state" && init?.method === "PUT") {
     const body = JSON.parse(String(init.body)) as { key: string; value: Record<string, unknown>; updatedAt: number };
+    const existing = stored.get(body.key);
+    if (refuseNext > 0 || (existing && existing.updatedAt > body.updatedAt)) {
+      refuseNext = Math.max(0, refuseNext - 1);
+      return new Response(JSON.stringify({ ok: false, updatedAt: existing?.updatedAt ?? 0 }), { status: 200 });
+    }
     puts.push({ key: body.key, value: body.value });
     stored.set(body.key, { value: body.value, updatedAt: body.updatedAt });
-    return new Response("{}", { status: 200 });
+    return new Response(JSON.stringify({ ok: true, updatedAt: body.updatedAt }), { status: 200 });
   }
   return new Response("{}", { status: 404 });
 }) as typeof fetch;
@@ -164,6 +170,29 @@ test("turning it off persists and hides the details", async () => {
   await settle();
   assert.equal(puts.at(-1)!.value.enabled, false);
   assert.equal(host.querySelector(".voice-wake-input"), null);
+});
+
+test("a save merges its change over what another tab stored meanwhile", async () => {
+  const record = stored.get("voice-assistant")!;
+  stored.set("voice-assistant", {
+    value: { ...(record.value as Record<string, unknown>), wakePhrase: "Hola Omni" },
+    updatedAt: record.updatedAt + 1,
+  });
+  await store.saveVoiceSettings({ voice: "F2" });
+  const saved = stored.get("voice-assistant")!.value as Record<string, unknown>;
+  assert.equal(saved.wakePhrase, "Hola Omni");
+  assert.equal(saved.voice, "F2");
+  assert.equal(store.currentVoiceSettings().wakePhrase, "Hola Omni");
+});
+
+test("a refused save retries over the stored value and gives up after repeated refusals", async () => {
+  refuseNext = 1;
+  await store.saveVoiceSettings({ voice: "M1" });
+  assert.equal((stored.get("voice-assistant")!.value as Record<string, unknown>).voice, "M1");
+  refuseNext = 10;
+  await assert.rejects(store.saveVoiceSettings({ voice: "M2" }), /voice_settings_conflict/);
+  refuseNext = 0;
+  assert.equal(store.currentVoiceSettings().voice, "M1");
 });
 
 test("sizes read in the voice language", () => {

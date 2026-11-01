@@ -285,6 +285,28 @@ test("an exhausted budget refuses the voice reply", async () => {
   }
 });
 
+test("an exhausted voice rate limit refuses the reply before the budget or the model", async () => {
+  const keys: string[] = [];
+  const srv = await start({
+    rateLimiter: {
+      check: async (key) => {
+        keys.push(key);
+        return { allowed: false, retryAfterMs: 60_000 };
+      },
+    },
+  });
+  try {
+    const res = await post(srv.base, userTurn("hola"));
+    assert.equal(res.status, 429);
+    assert.deepEqual(await res.json(), { error: "rate_limited" });
+    assert.deepEqual(keys, ["voice:U1"]);
+    assert.equal(srv.inputs.length, 0);
+    assert.equal(srv.spent.length, 0);
+  } finally {
+    await srv.close();
+  }
+});
+
 test("a client disconnect aborts the model call", async () => {
   const srv = await start();
   try {

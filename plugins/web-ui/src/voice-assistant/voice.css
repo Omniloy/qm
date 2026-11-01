@@ -80,7 +80,8 @@ qm-voice-orb[size="dock"] {
 }
 
 .qm-voice-orb-button:focus-visible {
-  outline: none;
+  outline: 2px solid var(--om-senal);
+  outline-offset: 2px;
 }
 
 .qm-voice-orb-button::after {
@@ -122,16 +123,11 @@ qm-voice-orb[size="dock"] {
   );
 }
 
-.qm-voice-orb-button:has(.qm-voice-orb-still):focus-visible {
-  outline: 2px solid var(--om-senal);
-  outline-offset: 2px;
-}
-
 .voice-dock-orb {
   position: fixed;
   right: max(20px, env(safe-area-inset-right));
-  bottom: max(20px, env(safe-area-inset-bottom));
-  z-index: 900;
+  bottom: calc(max(20px, env(safe-area-inset-bottom)) + 128px);
+  z-index: 20;
 }
 
 .voice-stage {

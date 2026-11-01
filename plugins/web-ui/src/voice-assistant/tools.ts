@@ -1,9 +1,17 @@
 import { SUBAGENT_THREAD_PREFIX, type CoreSession, type PendingApproval } from "../core-bridge.ts";
 import { VOICE_MAX_RUNNING_TASKS, type VoiceTaskSummary, type VoiceToolCall } from "./protocol.ts";
 
+export interface VoiceConfirmation {
+  approved: boolean;
+  title: string;
+  summary: string;
+  execute(): Promise<VoiceToolOutcome>;
+}
+
 export interface VoiceToolOutcome {
   content: string;
   isError?: boolean;
+  confirm?: VoiceConfirmation;
 }
 
 export interface TaskTail {
@@ -25,11 +33,20 @@ export interface VoiceToolDeps {
   activeRun(threadRef: string): Promise<string | null>;
   abortRun(runId: string): Promise<void>;
   open(session: CoreSession): void;
-  delegated(threadRef: string, title: string): void;
+  delegated(): void;
   newId(): string;
 }
 
 const RESULT_CHARS = 2_500;
+const CONFIRM_SUMMARY_CHARS = 200;
+
+function voiceThreadRef(user: string, id: string): string {
+  return `web:${user}:voice:${id}`;
+}
+
+export function isVoiceThread(user: string, threadRef: string): boolean {
+  return threadRef.startsWith(voiceThreadRef(user, ""));
+}
 
 export function taskState(session: Pick<CoreSession, "working" | "awaitingInput">): VoiceTaskSummary["state"] {
   if (session.awaitingInput) return "awaiting_approval";
@@ -62,6 +79,10 @@ function fail(error: string): VoiceToolOutcome {
   return { content: JSON.stringify({ ok: false, error }), isError: true };
 }
 
+function failed(error: unknown): VoiceToolOutcome {
+  return fail(error instanceof Error ? error.message.slice(0, 200) : "tool_failed");
+}
+
 async function findTask(deps: VoiceToolDeps, taskRef: string): Promise<CoreSession | null> {
   const sessions = await deps.sessions();
   return sessions.find((session) => session.threadRef === taskRef || session.id === taskRef) ?? null;
@@ -70,10 +91,28 @@ async function findTask(deps: VoiceToolDeps, taskRef: string): Promise<CoreSessi
 async function decide(deps: VoiceToolDeps, taskRef: string, approved: boolean): Promise<VoiceToolOutcome> {
   const session = await findTask(deps, taskRef);
   if (!session?.id) return fail("task_not_found");
-  const [pending] = await deps.approvals(session.id);
+  const sessionId = session.id;
+  const [pending] = await deps.approvals(sessionId);
   if (!pending) return fail("nothing_to_approve");
-  await deps.resolveApproval({ requestId: pending.requestId, approved });
-  return ok({ taskRef: session.threadRef, approved });
+  if (pending.securityHoldView) return fail("security_hold_open_task");
+  return {
+    ...ok({ taskRef: session.threadRef, awaitingConfirmation: true }),
+    confirm: {
+      approved,
+      title: taskTitle(session),
+      summary: (pending.summary ?? pending.purpose ?? pending.command).trim().slice(0, CONFIRM_SUMMARY_CHARS),
+      async execute() {
+        try {
+          const current = await deps.approvals(sessionId);
+          if (!current.some((approval) => approval.requestId === pending.requestId)) return fail("approval_changed");
+          await deps.resolveApproval({ requestId: pending.requestId, approved });
+          return ok({ taskRef: session.threadRef, approved });
+        } catch (error) {
+          return failed(error);
+        }
+      },
+    },
+  };
 }
 
 export async function runVoiceTool(call: VoiceToolCall, deps: VoiceToolDeps): Promise<VoiceToolOutcome> {
@@ -83,10 +122,10 @@ export async function runVoiceTool(call: VoiceToolCall, deps: VoiceToolDeps): Pr
         const instruction = String(call.args.instruction ?? "").trim();
         if (!instruction) return fail("empty_instruction");
         const title = String(call.args.title ?? "").trim() || instruction.slice(0, 60);
-        const threadRef = `web:${deps.user}:${deps.newId()}`;
+        const threadRef = voiceThreadRef(deps.user, deps.newId());
         const submit = await deps.startTurn({ text: instruction, threadRef, idempotencyKey: deps.newId() });
         if (!submit.runId && submit.status !== "pending_approval") return fail("not_started");
-        deps.delegated(threadRef, title);
+        deps.delegated();
         return ok({
           taskRef: threadRef,
           title,
@@ -126,7 +165,7 @@ export async function runVoiceTool(call: VoiceToolCall, deps: VoiceToolDeps): Pr
       }
     }
   } catch (error) {
-    return fail(error instanceof Error ? error.message.slice(0, 200) : "tool_failed");
+    return failed(error);
   }
   return fail("unknown_tool");
 }

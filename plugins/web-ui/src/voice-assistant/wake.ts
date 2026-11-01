@@ -24,6 +24,32 @@ interface Candidate {
 
 const NO_MATCH: WakeMatch = { matched: false, score: 0, remainder: "" };
 
+const CONFIRMATION_YES = new Set([
+  "si",
+  "si si",
+  "si por favor",
+  "si hazlo",
+  "si adelante",
+  "si confirmo",
+  "vale",
+  "confirmo",
+  "adelante",
+  "hazlo",
+  "claro",
+  "de acuerdo",
+  "yes",
+  "yes please",
+  "yeah",
+  "yep",
+  "sure",
+  "ok",
+  "okay",
+  "confirm",
+  "do it",
+  "go ahead",
+]);
+const CONFIRMATION_NO = new Set(["no", "no gracias", "no lo hagas", "cancela", "nope", "no thanks", "cancel", "don t"]);
+
 export function normalizeSpeech(text: string): string {
   return text
     .normalize("NFD")
@@ -144,4 +170,10 @@ export function matchWake(transcript: string, phrase: string): WakeMatch {
 function remainderAfter(transcript: string, end: number): string {
   const rest = transcript.slice(end).replace(LEADING_SEPARATORS, "").trim();
   return /[\p{L}\p{N}]/u.test(rest) ? rest : "";
+}
+
+export function confirmationAnswer(text: string): "yes" | "no" | null {
+  const said = normalizeSpeech(text);
+  if (CONFIRMATION_YES.has(said)) return "yes";
+  return CONFIRMATION_NO.has(said) ? "no" : null;
 }

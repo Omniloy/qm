@@ -145,6 +145,9 @@ addEventListener("message", (event: MessageEvent<SpeechWorkerIn>) => {
     case "end-segment":
       pipeline?.endSegment();
       return;
+    case "retranscribe":
+      pipeline?.retranscribe(message.segmentId);
+      return;
     case "dispose":
       void dispose();
       return;

@@ -27,8 +27,8 @@ import {
   type VoiceToolCall,
 } from "./protocol.ts";
 import { createTextChunker, stepsForChunk, type TextChunker } from "./text-chunker.ts";
-import type { VoiceToolOutcome } from "./tools.ts";
-import { matchWake } from "./wake.ts";
+import type { VoiceConfirmation, VoiceToolOutcome } from "./tools.ts";
+import { confirmationAnswer, matchWake } from "./wake.ts";
 
 export interface Port<In, Out> {
   post(message: In, transfer?: Transferable[]): void;
@@ -90,10 +90,17 @@ const COPY = {
     webgpu: "Este navegador no admite WebGPU, que el asistente de voz necesita.",
     fatal: "No se ha podido iniciar el asistente de voz.",
     voiceTts: "No se ha podido cargar la voz.",
+    confirm: (c: VoiceConfirmation) =>
+      `${c.title}${c.summary ? `: ${c.summary}` : ""}. ¿${c.approved ? "Lo apruebo" : "Lo rechazo"}? Di sí o no.`,
+    approved: "Aprobado.",
+    rejected: "Rechazado.",
+    declined: "Vale, no hago nada.",
+    confirmFailed: "No he podido hacerlo. Ábrela en pantalla.",
     errors: {
       feature_disabled: "El asistente de voz no está activado para tu cuenta.",
       voice_model_unsupported: "Tu modelo no admite el asistente de voz.",
       over_budget: "Has alcanzado el límite de gasto.",
+      rate_limited: "Demasiadas peticiones seguidas. Espera un momento.",
       invalid_request: "No he podido procesar eso.",
       upstream_error: "No he podido responder. Inténtalo de nuevo.",
       aborted: "No he podido responder. Inténtalo de nuevo.",
@@ -110,10 +117,17 @@ const COPY = {
     webgpu: "This browser does not support WebGPU, which the voice assistant needs.",
     fatal: "The voice assistant could not start.",
     voiceTts: "The voice could not be loaded.",
+    confirm: (c: VoiceConfirmation) =>
+      `${c.title}${c.summary ? `: ${c.summary}` : ""}. ${c.approved ? "Approve it" : "Reject it"}? Say yes or no.`,
+    approved: "Approved.",
+    rejected: "Rejected.",
+    declined: "Okay, I won't do anything.",
+    confirmFailed: "I could not do that. Open the task on screen.",
     errors: {
       feature_disabled: "The voice assistant is not turned on for your account.",
       voice_model_unsupported: "Your model does not support the voice assistant.",
       over_budget: "You have reached your spending limit.",
+      rate_limited: "Too many requests in a row. Please wait a moment.",
       invalid_request: "I could not process that.",
       upstream_error: "I could not answer. Please try again.",
       aborted: "I could not answer. Please try again.",
@@ -143,6 +157,7 @@ interface Utterance {
   llmDone: boolean;
   ended: boolean;
   played: number;
+  resume: VoiceState;
 }
 
 const defaultTimers: Timers = {
@@ -177,6 +192,10 @@ export function spokenChars(spans: readonly Span[], played: number): number {
   return spoken;
 }
 
+function refused(error: string): VoiceToolOutcome {
+  return { content: JSON.stringify({ ok: false, error }), isError: true };
+}
+
 function isAbort(error: unknown): boolean {
   return error instanceof DOMException
     ? error.name === "AbortError"
@@ -190,6 +209,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
   const history: VoiceMessage[] = [];
   const announcements: string[] = [];
   const pendingSegments = new Set<number>();
+  const rewoken = new Set<number>();
 
   let state: VoiceState = "arming";
   let muted = deps.muted === true;
@@ -209,6 +229,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
   let turn: AbortController | null = null;
   let utteranceSeq = 0;
   let disposed = false;
+  let confirmation: VoiceConfirmation | null = null;
 
   const copy = () => COPY[deps.settings().language];
 
@@ -234,7 +255,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
 
   const desiredMode = (): SpeechMode => {
     if (muted || state === "off" || state === "arming") return "paused";
-    return state === "sleeping" ? "sleeping" : "awake";
+    return state === "sleeping" || utterance?.resume === "sleeping" ? "sleeping" : "awake";
   };
 
   const syncMode = () => {
@@ -268,7 +289,10 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
   const setState = (next: VoiceState) => {
     if (disposed) return;
     state = next;
-    if (next === "sleeping") errorStatus = "";
+    if (next === "sleeping") {
+      errorStatus = "";
+      confirmation = null;
+    }
     syncMode();
     if (state === "listening") armIdle();
     else clearIdle();
@@ -277,15 +301,15 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
   };
 
   const canAnnounce = (): boolean => {
-    if (utterance || turn) return false;
+    if (utterance || turn || speechActive) return false;
     if (state === "sleeping") return true;
-    return state === "listening" && !speechActive && pendingSegments.size === 0;
+    return state === "listening" && pendingSegments.size === 0;
   };
 
   function drainAnnouncements(): void {
     if (disposed || announcements.length === 0 || !canAnnounce()) return;
     const quietFor = now() - lastSpeechAt;
-    if (state === "listening" && quietFor < ANNOUNCE_QUIET_MS) {
+    if (quietFor < ANNOUNCE_QUIET_MS) {
       if (quietTimer === null)
         quietTimer = timers.set(() => {
           quietTimer = null;
@@ -299,13 +323,13 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
     errorStatus = "";
     captions = { user: null, agent: { text: "", spokenChars: 0 } };
     history.push({ role: "assistant", content: clip(text) });
-    const spoken = beginUtterance();
+    const spoken = beginUtterance(state);
     feed(spoken, text);
     finishText(spoken);
     render();
   }
 
-  const beginUtterance = (): Utterance => {
+  const beginUtterance = (resume: VoiceState = "listening"): Utterance => {
     const created: Utterance = {
       id: `u${++utteranceSeq}`,
       chunker: createTextChunker(),
@@ -318,6 +342,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
       llmDone: false,
       ended: false,
       played: 0,
+      resume,
     };
     utterance = created;
     return created;
@@ -367,7 +392,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
     lastSpeechAt = now();
     if (captions.agent)
       captions = { ...captions, agent: { ...captions.agent, spokenChars: captions.agent.text.length } };
-    setState("listening");
+    setState(target.resume);
   };
 
   function maybeEnd(target: Utterance): void {
@@ -406,54 +431,88 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
     context: { runningTasks: deps.runningTasks() },
   });
 
+  const settle = async (pending: VoiceConfirmation, yes: boolean, controller: AbortController, spoken: Utterance) => {
+    const words = copy();
+    let reply: string = words.declined;
+    if (yes)
+      reply = (await pending.execute()).isError
+        ? words.confirmFailed
+        : words[pending.approved ? "approved" : "rejected"];
+    if (controller.signal.aborted) return;
+    history.push({ role: "assistant", content: reply });
+    feed(spoken, reply);
+  };
+
+  const converse = async (controller: AbortController, spoken: Utterance) => {
+    let readResult = false;
+    for (let hop = 0; ; hop++) {
+      const calls: VoiceToolCall[] = [];
+      let said = "";
+      try {
+        for await (const frame of deps.reply(requestFor(), controller.signal)) {
+          if (controller.signal.aborted) break;
+          if (frame.type === "delta") {
+            said += frame.text;
+            feed(spoken, frame.text);
+          } else if (frame.type === "tool_call") {
+            calls.push({ id: frame.id, name: frame.name, args: frame.args } as VoiceToolCall);
+          } else if (frame.type === "error") {
+            throw new VoiceReplyError(frame.reason);
+          } else {
+            break;
+          }
+        }
+      } finally {
+        if (controller.signal.aborted && said && turn === null)
+          history.push({ role: "assistant", content: clip(said) });
+      }
+      if (controller.signal.aborted) return;
+      history.push({ role: "assistant", content: clip(said), ...(calls.length ? { toolCalls: calls } : {}) });
+      if (calls.length === 0) return;
+      flushText(spoken);
+      let ask = "";
+      for (const call of calls) {
+        const blocked = ask ? "awaiting_confirmation" : call.name === "delegate_task" && readResult && "ask_user_first";
+        const outcome = blocked ? refused(blocked) : await deps.runTool(call);
+        if (controller.signal.aborted) return;
+        if (call.name === "task_result") readResult = true;
+        if (outcome.confirm) {
+          confirmation = outcome.confirm;
+          ask = copy().confirm(outcome.confirm);
+        }
+        history.push({
+          role: "tool",
+          toolCallId: call.id,
+          name: call.name,
+          content: clip(outcome.content),
+          ...(outcome.isError ? { isError: true } : {}),
+        });
+      }
+      if (ask) {
+        history.push({ role: "assistant", content: ask });
+        feed(spoken, ask);
+        return;
+      }
+      if (hop >= VOICE_MAX_TOOL_HOPS) return;
+    }
+  };
+
   const respond = async (text: string) => {
     silence();
     const controller = new AbortController();
     turn = controller;
+    const awaiting = confirmation;
+    confirmation = null;
     errorStatus = "";
     announcement = "";
     history.push({ role: "user", content: clip(text) });
     captions = { user: { text, final: true }, agent: null };
     setState("thinking");
     const spoken = beginUtterance();
+    const answer = awaiting ? confirmationAnswer(text) : null;
     try {
-      for (let hop = 0; ; hop++) {
-        const calls: VoiceToolCall[] = [];
-        let said = "";
-        try {
-          for await (const frame of deps.reply(requestFor(), controller.signal)) {
-            if (controller.signal.aborted) break;
-            if (frame.type === "delta") {
-              said += frame.text;
-              feed(spoken, frame.text);
-            } else if (frame.type === "tool_call") {
-              calls.push({ id: frame.id, name: frame.name, args: frame.args } as VoiceToolCall);
-            } else if (frame.type === "error") {
-              throw new VoiceReplyError(frame.reason);
-            } else {
-              break;
-            }
-          }
-        } finally {
-          if (controller.signal.aborted && said) history.push({ role: "assistant", content: clip(said) });
-        }
-        if (controller.signal.aborted) return;
-        history.push({ role: "assistant", content: clip(said), ...(calls.length ? { toolCalls: calls } : {}) });
-        if (calls.length === 0) break;
-        flushText(spoken);
-        for (const call of calls) {
-          const outcome = await deps.runTool(call);
-          history.push({
-            role: "tool",
-            toolCallId: call.id,
-            name: call.name,
-            content: clip(outcome.content),
-            ...(outcome.isError ? { isError: true } : {}),
-          });
-        }
-        if (controller.signal.aborted) return;
-        if (hop >= VOICE_MAX_TOOL_HOPS) break;
-      }
+      if (awaiting && answer) await settle(awaiting, answer === "yes", controller, spoken);
+      else await converse(controller, spoken);
     } catch (error) {
       if (controller.signal.aborted || isAbort(error)) return;
       fail(error);
@@ -481,8 +540,8 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
         return;
       case "speech-start":
         lastSpeechAt = now();
-        if (state === "sleeping") return;
         speechActive = true;
+        if (desiredMode() === "sleeping") return;
         if (state === "thinking" || state === "speaking") interrupt();
         clearIdle();
         captions = { user: { text: "", final: false }, agent: captions.agent };
@@ -505,6 +564,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
           pendingSegments.add(message.segmentId);
           clearIdle();
         }
+        drainAnnouncements();
         return;
       case "transcript":
         handleTranscript(message);
@@ -516,18 +576,28 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
   };
 
   const handleTranscript = (message: Extract<SpeechWorkerOut, { type: "transcript" }>) => {
+    const phrase = deps.settings().wakePhrase;
     if (message.purpose === "wake") {
-      if (state !== "sleeping" || muted) return;
-      const wake = matchWake(message.text, deps.settings().wakePhrase);
+      if (desiredMode() !== "sleeping") return;
+      const wake = matchWake(message.text, phrase);
       if (!wake.matched) return;
+      silence();
       deps.chime("wake");
-      if (wake.remainder) void respond(wake.remainder);
+      if (message.truncated) {
+        rewoken.add(message.segmentId);
+        pendingSegments.add(message.segmentId);
+        deps.speech.post({ type: "retranscribe", segmentId: message.segmentId });
+        setState("listening");
+      } else if (wake.remainder) void respond(wake.remainder);
       else setState("listening");
       return;
     }
     pendingSegments.delete(message.segmentId);
+    const afterWake = rewoken.delete(message.segmentId);
     if (state === "off" || state === "arming") return;
-    const text = message.text.trim();
+    const heard = message.text.trim();
+    const woken = afterWake ? matchWake(heard, phrase) : null;
+    const text = woken?.matched ? woken.remainder : heard;
     if (!text) {
       if (state === "listening") {
         captions = { ...captions, user: null };
@@ -635,6 +705,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
       clearIdle();
       if (quietTimer !== null) timers.clear(quietTimer);
       quietTimer = null;
+      confirmation = null;
       for (const stop of unlisten) stop();
       state = "off";
       disposed = true;
