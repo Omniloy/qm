@@ -73,7 +73,7 @@ export interface VoiceController {
 }
 
 export const ANNOUNCE_QUIET_MS = 1_500;
-export const THINKING_CHIME_MS = 1_200;
+export const THINKING_CHIME_MS = 2_500;
 
 const READ_TOOLS: ReadonlySet<VoiceToolName> = new Set(["check_tasks", "task_result"]);
 const SETTING_TOOLS: ReadonlySet<VoiceToolName> = new Set(["set_language", "set_voice"]);
@@ -445,7 +445,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
     clearThinking();
     thinkingTimer = timers.set(() => {
       thinkingTimer = null;
-      if (turn === controller && state === "thinking") deps.chime("thinking");
+      if (turn === controller && state === "thinking" && !utterance?.text) deps.chime("thinking");
     }, THINKING_CHIME_MS);
   };
 

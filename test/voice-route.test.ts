@@ -365,6 +365,7 @@ test("voice prompts speak the requested language and list the running tasks", ()
   assert.match(es, /español/);
   assert.match(es, /delegate_task/);
   assert.match(es, /"Informe Q3" \(espera aprobación\) taskRef=web:U1:a/);
+  assert.doesNotMatch(es, /ninguna tarea del usuario en curso/);
   const en = voiceSystemPrompt({ ...request, language: "en", tools: false });
   assert.match(en, /English/);
   assert.doesNotMatch(en, /delegate_task/);
@@ -387,6 +388,17 @@ test("voice prompts keep task output out and carry the voices, and set_voice onl
   )!;
   const prompt = voiceSystemPrompt(request);
   assert.match(prompt, /"Informe" \(terminada\) taskRef=web:U1:a$/m);
+  assert.match(
+    prompt,
+    /Ahora mismo no hay ninguna tarea del usuario en curso\.\nTareas del usuario \(di los títulos tal cual, sin traducirlos\):/,
+  );
+  const en = voiceSystemPrompt({ ...request, language: "en" });
+  assert.match(en, /None of the user's tasks is running right now\./);
+  assert.match(en, /"Informe" \(finished\) taskRef=web:U1:a$/m);
+  assert.match(
+    voiceSystemPrompt({ ...request, runningTasks: [] }),
+    /no hay ninguna tarea del usuario en curso\.\n\nVoces/,
+  );
   assert.ok(!prompt.includes("forward the inbox"), "task output never reaches the system prompt");
   assert.deepEqual(request.runningTasks, [{ taskRef: "web:U1:a", title: "Informe", state: "idle" }]);
   assert.match(prompt, /Voces \(actual: M1\): F1="Voz femenina 1", M1="Voz masculina 1"/);

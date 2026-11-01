@@ -24,8 +24,8 @@ export const ORB_INPUTS_BY_STATE: Readonly<Record<VoiceState, Readonly<Omit<OrbI
 export const SPEECH_SAMPLE_RATE = 16_000;
 export const SPEECH_FRAME_SAMPLES = 512;
 export const SPEECH_FRAME_MS = 32;
-export const WAKE_SEGMENT_MAX_MS = 2_500;
-export const WAKE_MAX_NEW_TOKENS = 10;
+export const WAKE_SEGMENT_MAX_MS = 5_000;
+export const WAKE_MAX_NEW_TOKENS = 32;
 export const UTTERANCE_MAX_NEW_TOKENS = 200;
 export const IDLE_TO_SLEEP_MS = 8_000;
 

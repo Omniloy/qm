@@ -111,7 +111,7 @@ test("a blip shorter than minSpeech is a misfire and is never transcribed", asyn
 
 test("while sleeping, segments are wake checks capped at the wake window", async () => {
   const { pipeline, posted, asrCalls, feed } = setup({ mode: "sleeping" });
-  feed(SPEECH, framesFor(4_000));
+  feed(SPEECH, framesFor(WAKE_SEGMENT_MAX_MS + 1_500));
   feed(SILENCE, framesFor(DEFAULT_VAD_OPTIONS.redemptionMs) + 1);
   await pipeline.settled();
   const end = posted.find((m) => m.type === "speech-end");
@@ -140,6 +140,22 @@ test("a short wake check is not truncated, and retranscribing an unknown segment
   assert.equal(asrCalls.at(-1)!.samples, 0);
   const none = posted.at(-1);
   assert.ok(none?.type === "transcript" && none.segmentId === 99 && none.purpose === "utterance");
+});
+
+test("a wake check that fills its token budget is truncated unless it ends a sentence", async () => {
+  const texts = ["Oye Omni, ¿qué tareas tengo en curso?", "Oye Omni, crea una tarea que diga"];
+  for (const [index, text] of texts.entries()) {
+    const { pipeline, posted, feed } = setup({
+      mode: "sleeping",
+      transcribe: async () => ({ text, tokens: WAKE_MAX_NEW_TOKENS, audioMs: 0, encodeMs: 0, decodeMs: 0 }),
+    });
+    feed(SPEECH, framesFor(2_500));
+    feed(SILENCE, framesFor(DEFAULT_VAD_OPTIONS.redemptionMs) + 1);
+    await pipeline.settled();
+    const wake = posted.find((m) => m.type === "transcript" && m.purpose === "wake");
+    assert.ok(wake?.type === "transcript" && wake.text === text);
+    assert.equal(wake.truncated, index === 0 ? undefined : true);
+  }
 });
 
 test("paused ignores frames and resets the vad", async () => {

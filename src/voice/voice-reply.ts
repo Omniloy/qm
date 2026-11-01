@@ -234,8 +234,8 @@ const PROMPTS: Record<
       "Escribe en español una o dos frases, como mucho 160 caracteres, sin markdown.",
       "Si terminó, empieza con «Listo:» y el título, y resume el resultado. Si espera aprobación, di que necesita la aprobación del usuario y para qué. Si falló, di que no se pudo terminar.",
     ].join("\n"),
-    tasks: "Tareas del usuario:",
-    noTasks: "El usuario no tiene tareas en curso.",
+    tasks: "Tareas del usuario (di los títulos tal cual, sin traducirlos):",
+    noTasks: "Ahora mismo no hay ninguna tarea del usuario en curso.",
     voices: (current) => `Voces (actual: ${current}):`,
     states: { working: "en curso", awaiting_approval: "espera aprobación", idle: "terminada" },
   },
@@ -259,8 +259,8 @@ const PROMPTS: Record<
       "Write one or two sentences in English, at most 160 characters, with no markdown.",
       "If it finished, start with “Done:” and the title, then summarise the result. If it awaits approval, say it needs the user's approval and what for. If it failed, say it could not be finished.",
     ].join("\n"),
-    tasks: "The user's tasks:",
-    noTasks: "The user has no running tasks.",
+    tasks: "The user's tasks (say the titles as written, without translating them):",
+    noTasks: "None of the user's tasks is running right now.",
     voices: (current) => `Voices (current: ${current}):`,
     states: { working: "running", awaiting_approval: "awaiting approval", idle: "finished" },
   },
@@ -269,14 +269,13 @@ const PROMPTS: Record<
 export function voiceSystemPrompt(request: VoiceReplyRequest): string {
   const copy = PROMPTS[request.language];
   if (request.purpose === "announce") return copy.announce;
-  const tasks = request.runningTasks.length
-    ? [
-        copy.tasks,
-        ...request.runningTasks.map(
-          (task) => `- ${JSON.stringify(task.title)} (${copy.states[task.state]}) taskRef=${task.taskRef}`,
-        ),
-      ].join("\n")
-    : copy.noTasks;
+  const tasks = [
+    ...(request.runningTasks.some((task) => task.state !== "idle") ? [] : [copy.noTasks]),
+    ...(request.runningTasks.length ? [copy.tasks] : []),
+    ...request.runningTasks.map(
+      (task) => `- ${JSON.stringify(task.title)} (${copy.states[task.state]}) taskRef=${task.taskRef}`,
+    ),
+  ].join("\n");
   const sections = [copy.reply, request.tools ? copy.tools : copy.noTools, tasks];
   if (request.tools && request.voices.length) {
     const current = request.voices.find((voice) => voice.id === request.voice)?.id ?? "-";

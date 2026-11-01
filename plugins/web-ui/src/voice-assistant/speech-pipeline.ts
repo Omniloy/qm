@@ -50,6 +50,8 @@ export interface SpeechPipeline {
   settled(): Promise<void>;
 }
 
+const SENTENCE_END = /[.?!…。？！]["»”)]*$/u;
+
 const WAKE_SEGMENT_SAMPLES = (WAKE_SEGMENT_MAX_MS * SPEECH_SAMPLE_RATE) / 1000;
 
 function wakeSegment(audio: Float32Array): Float32Array {
@@ -77,12 +79,14 @@ export function createSpeechPipeline(deps: SpeechPipelineDeps): SpeechPipeline {
       const started = now();
       try {
         const result = await deps.transcribe(input, request);
-        const truncated = input.length < audio.length || result.tokens >= request.maxNewTokens;
+        const text = result.text.trim();
+        const truncated =
+          input.length < audio.length || (result.tokens >= request.maxNewTokens && !SENTENCE_END.test(text));
         post({
           type: "transcript",
           segmentId: id,
           purpose,
-          text: result.text.trim(),
+          text,
           language: request.language,
           ms: Math.round(now() - started),
           ...(purpose === "wake" && truncated ? { truncated: true } : {}),

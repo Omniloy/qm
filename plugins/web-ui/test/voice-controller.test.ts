@@ -558,13 +558,11 @@ test("an error on the hop after a delegation keeps the started task in the histo
   assert.ok(messages.some((m) => m.role === "tool" && m.toolCallId === "d1"));
 });
 
-test("a soft thinking chime plays only when no audio has started after a while", async () => {
+test("a soft thinking chime plays only when no reply has started after a while", async () => {
   let release!: () => void;
   const t = setup([
-    {
-      frames: [{ type: "delta", text: "Un momento, lo compruebo." }, { type: "done" }],
-      hold: new Promise((r) => (release = r)),
-    },
+    { frames: [{ type: "done" }], hold: new Promise((r) => (release = r)) },
+    { frames: [{ type: "delta", text: "Un momento, lo compruebo." }, { type: "done" }] },
   ]);
   t.ready();
   t.controller.type("¿qué hay?");
@@ -580,6 +578,22 @@ test("a soft thinking chime plays only when no audio has started after a while",
   t.pcmFor(t.speaks().length - 1);
   t.clock.advance(THINKING_CHIME_MS);
   assert.deepEqual(t.chimes, ["thinking"]);
+});
+
+test("the thinking chime stays silent once the reply text has started", async () => {
+  let release!: () => void;
+  const t = setup([
+    {
+      frames: [{ type: "delta", text: "Un momento" }, { type: "done" }],
+      hold: new Promise((r) => (release = r)),
+    },
+  ]);
+  t.ready();
+  t.controller.type("¿qué hay?");
+  await flush();
+  t.clock.advance(THINKING_CHIME_MS);
+  assert.deepEqual(t.chimes, []);
+  release();
 });
 
 test("follow-up hops stop after the limit even when the model keeps calling tools", async () => {
