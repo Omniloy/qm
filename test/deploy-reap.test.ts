@@ -16,8 +16,8 @@ function svc(managedScaleToZero: boolean) {
   let refuse = false;
   const provider: DeployProvider = {
     profile: { managedScaleToZero },
-    apply: async () => {
-      if (refuse) throw new Error("the entrypoint exited");
+    apply: async (_d, version) => {
+      if (refuse || version.entrypoint === "broken") throw new Error("the entrypoint exited");
       applies++;
       return { host: "127.0.0.1", port: 5000 };
     },
@@ -149,4 +149,24 @@ test("a stopped app starts again on its next visit, but an archived one stays do
   await h.deploy.archiveDeployment(d.id);
   assert.deepEqual(await h.deploy.reachDeployment(d.id, "U1"), { status: "not_found" });
   assert.equal((await h.deployStore.get(d.id))!.status, "archived");
+});
+
+test("a stopped app whose last redeploy failed wakes on the version that was running", async () => {
+  const h = svc(false);
+  const d = await h.deploy.deploy({
+    ownerScopeId: scopeId("personal", "U1"),
+    createdBy: "U1",
+    entrypoint: "good",
+    files: [],
+  });
+  await assert.rejects(() => h.deploy.redeploy(d.id, { entrypoint: "broken", files: [] }), /exited/);
+  const failed = (await h.deployStore.get(d.id))!;
+  assert.equal(failed.currentVersion, 2);
+  assert.equal(failed.appliedVersion, 1);
+  assert.equal(await h.deploy.stopDeployment(d.id, "admin"), true);
+
+  assert.equal((await h.deploy.reachDeployment(d.id, "U1")).status, "ok");
+  const woken = (await h.deployStore.get(d.id))!;
+  assert.equal(woken.status, "running");
+  assert.equal(woken.appliedVersion, 1);
 });

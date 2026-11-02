@@ -2922,7 +2922,6 @@ export function buildApp(
       );
   const snapshotGcSweeper = createSweeper(() => app.sweepDeploymentSnapshots(), 3_600_000, {
     label: "deployment-snapshot-gc",
-    immediate: true,
   });
   const diskMeasureSweeper = createSweeper(
     () => leaderLease.hold("disk:measure", () => disk.measure()),

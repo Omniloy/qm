@@ -203,7 +203,7 @@ export class DiskView {
 
   deleteApp(app: any) {
     const ok = globalThis.confirm(
-      `Delete the app "${this.appName(app)}" (${fmtBytes(app.totalBytes)}) and all its copies? This cannot be undone.`,
+      `Delete the app "${this.appName(app)}" (${fmtBytes(app.totalBytes)}) with its stored data, source history and all its copies? This cannot be undone.`,
     );
     if (!ok) return;
     return this.mutate("DELETE", `/api/disk/apps/${encodeURIComponent(app.id)}`);

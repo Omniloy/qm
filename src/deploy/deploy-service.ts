@@ -341,8 +341,9 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
       if (!d) throw new Error(`unknown deployment: ${id}`);
       if (d.status === "running") return d;
       if (d.status !== from) throw new Error(`deployment is not ${from}: ${id}`);
-      const version = currentVersionOf(d);
-      if (!version) throw new Error(`no such version ${d.currentVersion}`);
+      const want = from === "stopped" ? (d.appliedVersion ?? d.currentVersion) : d.currentVersion;
+      const version = d.versions.find((v) => v.version === want);
+      if (!version) throw new Error(`no such version ${want}`);
       try {
         const endpoint = await applyVersion(id, version, d.appliedVersion);
         await markVersionRunning(id, version.version, endpoint);
