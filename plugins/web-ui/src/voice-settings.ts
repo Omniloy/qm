@@ -34,6 +34,7 @@ export interface VoiceModelsApi {
     totalBytes: number;
     missingBytes: number;
     asrEngine: AsrEngineId;
+    ttsEngine: TtsEngineId;
   }>;
   downloadVoiceModels(
     files: readonly ModelFile[],
@@ -55,6 +56,7 @@ interface ModelState {
   progress: number;
   error: string;
   asrEngine: AsrEngineId | null;
+  ttsEngine: TtsEngineId | null;
 }
 
 const COPY = {
@@ -100,7 +102,7 @@ const COPY = {
       AsrEngineId,
       string
     >,
-    asrFallback: (wanted: string, used: string) => `${wanted} no está disponible en este dispositivo; se usa ${used}.`,
+    fallback: (wanted: string, used: string) => `${wanted} no está disponible ahora mismo; se usa ${used}.`,
     saveFailed: "No se han podido guardar los ajustes de voz.",
   },
   en: {
@@ -146,15 +148,19 @@ const COPY = {
       AsrEngineId,
       string
     >,
-    asrFallback: (wanted: string, used: string) =>
-      `${wanted} is not available on this device; ${used} is used instead.`,
+    fallback: (wanted: string, used: string) => `${wanted} is not available right now; ${used} is used instead.`,
     saveFailed: "Couldn't save the voice settings.",
   },
 } as const;
 
 const LANGUAGE_NAMES: Record<VoiceLanguage, string> = { es: "Español", en: "English" };
 
-const ASR_NAMES: Record<AsrEngineId, string> = { "phonon-2.5": "Phonon 2.5", "qwen3-asr-0.6b": "Qwen3-ASR 0.6B" };
+const ENGINE_NAMES: Record<AsrEngineId | TtsEngineId, string> = {
+  "phonon-2.5": "Phonon 2.5",
+  "qwen3-asr-0.6b": "Qwen3-ASR 0.6B",
+  "phonon-40m": "Phonon 40M",
+  "supertonic-3": "Supertonic 3",
+};
 
 const models: ModelState = {
   phase: "unknown",
@@ -164,6 +170,7 @@ const models: ModelState = {
   progress: 0,
   error: "",
   asrEngine: null,
+  ttsEngine: null,
 };
 let download: AbortController | null = null;
 let settingsError = "";
@@ -197,6 +204,7 @@ async function checkModels(api: () => Promise<VoiceModelsApi>, redraw: () => voi
     models.totalBytes = status.totalBytes;
     models.missingBytes = status.missingBytes;
     models.asrEngine = status.asrEngine;
+    models.ttsEngine = status.ttsEngine;
     models.phase = status.missingBytes > 0 ? "missing" : "ready";
     if (!status.gpu.webgpu) models.phase = "unsupported";
     models.error = "";
@@ -323,6 +331,14 @@ function choice<T extends string>(
         </button>`,
     )}
   </div>`;
+}
+
+function fallbackNote<T extends AsrEngineId | TtsEngineId>(
+  copy: (typeof COPY)[VoiceLanguage],
+  wanted: T,
+  used: T | null,
+): string | null {
+  return used && used !== wanted ? copy.fallback(ENGINE_NAMES[wanted], ENGINE_NAMES[used]) : null;
 }
 
 function settingRow(title: string, note: string | null, control: TemplateResult): TemplateResult {
@@ -565,7 +581,7 @@ export function voiceSettingsRows(
             )}
             ${settingRow(
               copy.tts,
-              null,
+              fallbackNote(copy, settings.ttsEngine, models.ttsEngine),
               engineSelect(
                 "voice-tts-select",
                 copy.tts,
@@ -577,9 +593,7 @@ export function voiceSettingsRows(
             )}
             ${settingRow(
               copy.asr,
-              models.asrEngine && models.asrEngine !== settings.asrEngine
-                ? copy.asrFallback(ASR_NAMES[settings.asrEngine], ASR_NAMES[models.asrEngine])
-                : null,
+              fallbackNote(copy, settings.asrEngine, models.asrEngine),
               engineSelect(
                 "voice-asr-select",
                 copy.asr,

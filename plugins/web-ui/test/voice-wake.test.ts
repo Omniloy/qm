@@ -78,6 +78,16 @@ test("Phonon-2.5 renderings of the default phrase wake", () => {
   assert.deepEqual(wake("Oye omi, qué tal.", OMNI), [true, "qué tal."]);
   assert.deepEqual(wake("Hoy Omni", OMNI), [true, ""]);
   assert.deepEqual(wake("Hej ommi!", OMNI), [true, ""]);
+  assert.deepEqual(wake("Oj omni.", OMNI), [true, ""]);
+  assert.deepEqual(wake("Oje omni, ¿cuántas tareas tengo?", OMNI), [true, "¿cuántas tareas tengo?"]);
+  assert.deepEqual(wake("Odje omni!", OMNI), [true, ""]);
+  assert.deepEqual(wake("Ojomni, qué hora es", OMNI), [true, "qué hora es"]);
+  assert.deepEqual(wake("Ojelmný", OMNI), [true, ""]);
+});
+
+test("Spanish words spelled with j do not wake", () => {
+  for (const text of ["Ojalá llueva", "jamón ibérico", "Dejé el coche", "ojo", "joya", "viaje"])
+    assert.deepEqual(wake(text, OMNI), [false, ""], text);
 });
 
 test("the default phrase does not wake on unrelated speech", () => {

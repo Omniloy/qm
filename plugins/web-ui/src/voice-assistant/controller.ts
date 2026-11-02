@@ -119,7 +119,7 @@ const COPY = {
     acks: {
       delegate_task: () => "Me pongo con ello.",
       set_language: () => "Vale, ahora hablo en español.",
-      set_voice: (voice: string) => `Vale, ahora hablo con la ${voice.toLowerCase()}.`,
+      set_voice: (voice: string) => `Vale, ahora te habla ${voice}.`,
       stop_task: () => "Tarea detenida.",
       open_task: () => "Te la abro.",
     },

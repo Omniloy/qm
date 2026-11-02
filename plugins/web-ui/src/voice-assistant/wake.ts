@@ -67,6 +67,7 @@ function phonetic(word: string): string {
     .replace(/[cs]h/g, "x")
     .replace(/qu/g, "k")
     .replace(/ll/g, "y")
+    .replace(/d?j/g, "y")
     .replace(/mn/g, "m")
     .replace(/c(?=[eiy])/g, "s")
     .replace(/c/g, "k")
@@ -145,6 +146,9 @@ export function matchWake(transcript: string, phrase: string): WakeMatch {
     if (after.consumed > 0) {
       candidates.push({ score: Math.min(greeting, after.score), consumed: configuredGreeting.length + after.consumed });
     }
+  }
+  for (const greeting of [configuredGreeting.join(""), ...variants]) {
+    if (greeting) candidates.push({ score: similarity(tokens[0].phonetic, greeting + name), consumed: 1 });
   }
   if (tokens.length > 1) {
     const greeting = greetingScore(tokens[0], variants);

@@ -65,6 +65,7 @@ const statusFor: VoiceSettings[] = [];
 let missing = FILES[0]!.bytes + FILES[1]!.bytes;
 let finishDownload: (() => void) | null = null;
 let failDownload: string | null = null;
+let gatedMissing = false;
 const api = async () => ({
   voiceModelStatus: async (settings: VoiceSettings) => {
     statusFor.push(settings);
@@ -74,6 +75,7 @@ const api = async () => ({
       totalBytes: 1_300_000_000,
       missingBytes: missing,
       asrEngine: "qwen3-asr-0.6b" as const,
+      ttsEngine: settings.ttsEngine === "phonon-40m" && gatedMissing ? ("supertonic-3" as const) : settings.ttsEngine,
     };
   },
   downloadVoiceModels: (files: readonly ModelFile[], onProgress: (fraction: number) => void) => {
@@ -140,7 +142,7 @@ test("turning it on saves the setting, downloads with progress and then starts t
   await settle();
   assert.deepEqual(calls, ["download:2", "start"]);
   assert.match(host.textContent ?? "", /Descargados en este dispositivo \(1,3 GB\)/);
-  assert.match(host.textContent ?? "", /Phonon 2\.5 no está disponible en este dispositivo; se usa Qwen3-ASR 0\.6B\./);
+  assert.match(host.textContent ?? "", /Phonon 2\.5 no está disponible ahora mismo; se usa Qwen3-ASR 0\.6B\./);
 });
 
 test("the wake phrase, language, announce scope and voice persist to ui-state", async () => {
@@ -219,10 +221,7 @@ test("the microphone mode, push-to-talk style and engines persist, and engines r
   await settle();
   assert.equal(puts.at(-1)!.value.ttsEngine, "supertonic-3");
   assert.equal(statusFor.at(-1)!.ttsEngine, "supertonic-3");
-  assert.match(
-    host.textContent ?? "",
-    /Phonon 2\.5 is not available on this device; Qwen3-ASR 0\.6B is used instead\./,
-  );
+  assert.match(host.textContent ?? "", /Phonon 2\.5 is not available right now; Qwen3-ASR 0\.6B is used instead\./);
   const asr = host.querySelector<HTMLSelectElement>(".voice-asr-select select")!;
   asr.value = "qwen3-asr-0.6b";
   asr.dispatchEvent(new win.Event("change"));
@@ -252,6 +251,20 @@ test("a gated model the server cannot fetch explains the missing token", async (
   await settle();
   failDownload = null;
   assert.match(host.textContent ?? "", /Ask for HF_TOKEN to be configured/);
+});
+
+test("a server without gated access says which speech engine is used instead", async () => {
+  gatedMissing = true;
+  const tts = host.querySelector<HTMLSelectElement>(".voice-tts-select select")!;
+  tts.value = "phonon-40m";
+  tts.dispatchEvent(new win.Event("change"));
+  await settle();
+  gatedMissing = false;
+  assert.match(host.textContent ?? "", /Phonon 40M is not available right now; Supertonic 3 is used instead\./);
+  tts.value = "supertonic-3";
+  tts.dispatchEvent(new win.Event("change"));
+  await settle();
+  assert.doesNotMatch(host.textContent ?? "", /Phonon 40M is not available/);
 });
 
 test("turning it off persists and hides the details", async () => {

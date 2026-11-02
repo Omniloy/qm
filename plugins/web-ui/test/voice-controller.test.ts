@@ -425,6 +425,44 @@ test("switching language or voice is confirmed in the new language and voice, in
   c.dispose();
 });
 
+test("a Spanish voice switch names the new Phonon voice as written", async () => {
+  let settings: VoiceSettings = { ...DEFAULT_VOICE_SETTINGS, enabled: true };
+  const t = setup([]);
+  t.controller.dispose();
+  const speaks: Array<Extract<TtsWorkerIn, { type: "speak" }>> = [];
+  const c = createVoiceController({
+    speech: t.speech,
+    tts: { post: (m) => void (m.type === "speak" && speaks.push(m)), listen: t.tts.listen },
+    playback: t.playback,
+    settings: () => settings,
+    reply: async function* () {
+      yield* [
+        { type: "tool_call", id: "v", name: "set_voice", args: { voice: "KJpIQlbYrZPA4aLq" } },
+        { type: "done" },
+      ] satisfies VoiceReplyFrame[];
+    },
+    runTool: async () => {
+      settings = { ...settings, voice: "KJpIQlbYrZPA4aLq" };
+      return { content: JSON.stringify({ ok: true }) };
+    },
+    runningTasks: () => [],
+    chime: () => undefined,
+    setMuted: () => undefined,
+    render: () => undefined,
+    onFatal: () => undefined,
+    now: t.clock.now,
+    timers: t.clock.timers,
+  });
+  t.ready();
+  c.type("cambia a una voz mexicana");
+  for (let i = 0; i < 4; i++) await flush();
+  assert.deepEqual(
+    speaks.map((s) => [s.text, s.voice]),
+    [["Vale, ahora te habla Azucena (México).", "KJpIQlbYrZPA4aLq"]],
+  );
+  c.dispose();
+});
+
 test("a failed action goes back to the model so it can explain", async () => {
   const t = setup([
     { frames: [{ type: "tool_call", id: "s", name: "stop_task", args: { taskRef: "web:u:1" } }, { type: "done" }] },
