@@ -1,9 +1,10 @@
-import { SUBAGENT_THREAD_PREFIX, type CoreSession, type PendingApproval } from "../core-bridge.ts";
+import { SUBAGENT_THREAD_PREFIX, type CoreSession, type PendingApproval, type SignalOutcome } from "../core-bridge.ts";
 import {
   VOICE_GENDERS,
   VOICE_LANGUAGES,
   VOICE_MAX_RUNNING_TASKS,
   type VoiceActivity,
+  type VoiceLanguage,
   type VoicePreferences,
   type VoiceSettings,
   type VoiceTaskSummary,
@@ -11,10 +12,16 @@ import {
 } from "./protocol.ts";
 import { pickVoice, voiceLabel } from "./voices.ts";
 
+export interface HeldOutput {
+  source: string;
+  category: string;
+}
+
 export interface VoiceConfirmation {
   approved: boolean;
   title: string;
   summary: string;
+  hold?: HeldOutput;
   execute(): Promise<VoiceToolOutcome>;
 }
 
@@ -46,9 +53,10 @@ export interface VoiceToolDeps {
   }>;
   tail(sessionId: string): Promise<TaskTail>;
   approvals(sessionId: string): Promise<PendingApproval[]>;
-  resolveApproval(decision: { requestId: string; approved: boolean }): Promise<unknown>;
+  resolveApproval(decision: { requestId: string; approved: boolean; scope?: "once" }): Promise<unknown>;
   activeRun(threadRef: string): Promise<string | null>;
   abortRun(runId: string): Promise<void>;
+  steer(runId: string, queuedRunId: string, threadRef: string, text: string): Promise<SignalOutcome>;
   open(session: CoreSession): void;
   delegated(threadRef: string, title: string): void;
   newId(): string;
@@ -66,9 +74,50 @@ export function isVoiceThread(user: string, threadRef: string): boolean {
   return threadRef.startsWith(voiceThreadRef(user, ""));
 }
 
-export function taskState(session: Pick<CoreSession, "working" | "awaitingInput">): VoiceTaskSummary["state"] {
-  if (session.awaitingInput) return "awaiting_approval";
+export function taskState(
+  session: Pick<CoreSession, "working" | "awaitingInput" | "securityHeld">,
+): VoiceTaskSummary["state"] {
+  if (session.awaitingInput) return session.securityHeld ? "held" : "awaiting_approval";
   return session.working ? "working" : "idle";
+}
+
+const HOLD_CATEGORIES: Record<VoiceLanguage, Record<string, string>> = {
+  es: {
+    instruction_override: "anulación de instrucciones",
+    credential_request: "petición de credenciales",
+    data_exfiltration: "exfiltración de datos",
+    security_weakening: "debilitar la seguridad",
+    hidden_behavior: "comportamiento oculto",
+    other: "instrucciones no fiables",
+  },
+  en: {},
+};
+
+export function heldOutput(pending: PendingApproval | undefined, language: VoiceLanguage): HeldOutput | null {
+  const view = pending?.securityHoldView;
+  if (!view) return null;
+  const category = (view.category && HOLD_CATEGORIES[language][view.category]) || view.categoryLabel.toLowerCase();
+  return { source: view.held, category };
+}
+
+export function heldSubagents(sessions: readonly CoreSession[]): Map<string, CoreSession> {
+  const byId = new Map(sessions.map((session) => [session.id, session]));
+  const held = new Map<string, CoreSession>();
+  for (const session of sessions) {
+    if (!session.threadRef.startsWith(SUBAGENT_THREAD_PREFIX) || taskState(session) !== "held") continue;
+    let root = session;
+    for (let hops = 0; hops < sessions.length && root.threadRef.startsWith(SUBAGENT_THREAD_PREFIX); hops++) {
+      const parent = root.parentSessionId ? byId.get(root.parentSessionId) : undefined;
+      if (!parent) break;
+      root = parent;
+    }
+    if (root !== session && !held.has(root.id)) held.set(root.id, session);
+  }
+  return held;
+}
+
+export function leadingApproval(approvals: readonly PendingApproval[]): PendingApproval | undefined {
+  return approvals.find((approval) => approval.securityHoldView) ?? approvals[0];
 }
 
 export function taskTitle(session: Pick<CoreSession, "title" | "channelName">): string {
@@ -81,8 +130,9 @@ export function taskSummaries(
   unlisted: ReadonlyMap<string, VoiceTaskSummary["state"]> = new Map(),
   limit = VOICE_MAX_RUNNING_TASKS,
 ): VoiceTaskSummary[] {
-  const rank = { awaiting_approval: 0, working: 1, idle: 2 } as const;
+  const rank = { awaiting_approval: 0, held: 0, working: 1, idle: 2 } as const;
   const listed = new Set(sessions.map((session) => session.threadRef));
+  const heldBelow = heldSubagents(sessions);
   const starting = [...unlisted]
     .filter(([threadRef, state]) => state !== "idle" && !listed.has(threadRef))
     .map(([threadRef, state]) => ({
@@ -96,7 +146,7 @@ export function taskSummaries(
     .map((session) => ({
       taskRef: session.threadRef,
       title: titles.get(session.threadRef) || taskTitle(session),
-      state: taskState(session),
+      state: heldBelow.has(session.id) ? ("held" as const) : taskState(session),
       at: session.lastActivityAt ?? session.createdAt,
     }));
   return [...starting, ...known]
@@ -126,28 +176,43 @@ async function findTask(deps: VoiceToolDeps, taskRef: string): Promise<CoreSessi
   return sessions.find((session) => session.threadRef === taskRef || session.id === taskRef) ?? null;
 }
 
+async function heldTarget(deps: VoiceToolDeps, session: CoreSession): Promise<CoreSession> {
+  return heldSubagents(await deps.sessions()).get(session.id) ?? session;
+}
+
 async function decide(deps: VoiceToolDeps, taskRef: string, approved: boolean): Promise<VoiceToolOutcome> {
   const session = await findTask(deps, taskRef);
   if (!session?.id) return fail("task_not_found");
-  const sessionId = session.id;
-  const [pending] = await deps.approvals(sessionId);
+  const sessionId = (await heldTarget(deps, session)).id;
+  const pending = leadingApproval(await deps.approvals(sessionId));
   if (!pending) return fail("nothing_to_approve");
-  if (pending.securityHoldView) return fail("security_hold_open_task");
+  const hold = heldOutput(pending, deps.settings().language);
+  const title = titleOf(deps, session);
+  const activity = (): VoiceActivity | undefined => {
+    if (hold) return { kind: approved ? "allowed" : "kept_blocked", title, taskRef: session.threadRef };
+    return approved ? { kind: "approved", title, taskRef: session.threadRef } : undefined;
+  };
   return {
-    ...ok({ taskRef: session.threadRef, awaitingConfirmation: true }),
+    ...ok({ taskRef: session.threadRef, awaitingConfirmation: true, ...(hold ? { hold } : {}) }),
     confirm: {
       approved,
-      title: titleOf(deps, session),
-      summary: (pending.summary ?? pending.purpose ?? pending.command).trim().slice(0, CONFIRM_SUMMARY_CHARS),
+      title,
+      summary: hold
+        ? hold.category
+        : (pending.summary ?? pending.purpose ?? pending.command).trim().slice(0, CONFIRM_SUMMARY_CHARS),
+      ...(hold ? { hold } : {}),
       async execute() {
         try {
           const current = await deps.approvals(sessionId);
           if (!current.some((approval) => approval.requestId === pending.requestId)) return fail("approval_changed");
-          await deps.resolveApproval({ requestId: pending.requestId, approved });
+          await deps.resolveApproval({
+            requestId: pending.requestId,
+            approved,
+            ...(hold && approved ? { scope: "once" } : {}),
+          });
           const done = ok({ taskRef: session.threadRef, approved });
-          return approved
-            ? { ...done, activity: { kind: "approved", title: titleOf(deps, session), taskRef: session.threadRef } }
-            : done;
+          const did = activity();
+          return did ? { ...done, activity: did } : done;
         } catch (error) {
           return failed(error);
         }
@@ -167,6 +232,21 @@ function voiceRequest(
   if ((VOICE_GENDERS as readonly unknown[]).includes(args.gender))
     return { gender: args.gender as (typeof VOICE_GENDERS)[number] };
   return args.next === true ? { next: true } : null;
+}
+
+async function delivery(
+  deps: VoiceToolDeps,
+  threadRef: string,
+  queuedRunId: string,
+  text: string,
+  when: "now" | "after_run",
+): Promise<"steered" | "queued" | "sent"> {
+  const live = await deps.activeRun(threadRef);
+  if (!live || live === queuedRunId) return "sent";
+  if (when === "after_run") return "queued";
+  const outcome = await deps.steer(live, queuedRunId, threadRef, text);
+  if (outcome.ok) return "steered";
+  return outcome.replayed || outcome.reason === "queued_started" ? "sent" : "queued";
 }
 
 export async function runVoiceTool(call: VoiceToolCall, deps: VoiceToolDeps): Promise<VoiceToolOutcome> {
@@ -198,13 +278,21 @@ export async function runVoiceTool(call: VoiceToolCall, deps: VoiceToolDeps): Pr
         const session = await findTask(deps, call.args.taskRef);
         if (!session) return fail("task_not_found");
         if (!session.id) return ok({ taskRef: call.args.taskRef, state: "working", result: "" });
-        const tail = await deps.tail(session.id);
+        const target = await heldTarget(deps, session);
+        const state = target === session ? taskState(session) : "held";
+        const [tail, hold] = await Promise.all([
+          deps.tail(session.id),
+          state === "held"
+            ? deps.approvals(target.id).then((list) => heldOutput(leadingApproval(list), deps.settings().language))
+            : null,
+        ]);
         return ok({
           taskRef: session.threadRef,
           title: deps.titles.get(session.threadRef) || tail.title || taskTitle(session),
-          state: taskState(session),
+          state,
           failed: tail.failed,
           result: tail.reply.slice(0, RESULT_CHARS),
+          ...(hold ? { hold } : {}),
         });
       }
       case "approve_task":
@@ -222,12 +310,17 @@ export async function runVoiceTool(call: VoiceToolCall, deps: VoiceToolDeps): Pr
           .trim()
           .slice(0, TASK_MESSAGE_CHARS);
         if (!text) return fail("empty_message");
+        const when = call.args.when;
+        if (when !== "now" && when !== "after_run") return fail("invalid_when");
         const session = await findTask(deps, call.args.taskRef);
         if (!session) return fail("task_not_found");
         const submit = await deps.startTurn({ text, threadRef: session.threadRef, idempotencyKey: deps.newId() });
-        if (!submit.runId && submit.status !== "pending_approval") return fail("not_sent");
+        if (submit.status === "pending_approval")
+          return fail(taskState(session) === "held" ? "held_by_security" : "awaiting_approval");
+        if (!submit.runId) return fail("not_sent");
+        const status = submit.steered ? "steered" : await delivery(deps, session.threadRef, submit.runId, text, when);
         return {
-          ...ok({ taskRef: session.threadRef, status: submit.steered ? "queued" : "sent" }),
+          ...ok({ taskRef: session.threadRef, status }),
           activity: { kind: "message_sent", title: titleOf(deps, session), taskRef: session.threadRef },
         };
       }

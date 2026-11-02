@@ -78,7 +78,7 @@ import {
   type PrincipalLinkService,
 } from "./identity/principal-links.ts";
 import type { SlackAccountLink, ComposioReturn } from "./api/routes/composio.ts";
-import { installPrincipalLinks } from "./directory/person.ts";
+import { installPrincipalLinks, samePerson } from "./directory/person.ts";
 import type { ExternalMember } from "./identity/external-members.ts";
 import { createResendMailer } from "./admin/invite-email.ts";
 import {
@@ -2519,15 +2519,19 @@ export function buildApp(
     void (async () => {
       const uuid = (await sessions.getByThread(run.sessionId))?.id;
       const rows = uuid ? await approvals.entries() : [];
-      const awaiting = rows.some(
+      const blocking = rows.filter(
         ([, r]) => r.sessionId === uuid && r.blocksInput !== false && actorAssertionActive(identity, r.request?.actor),
       );
       const participants = uuid ? await sessions.participantsOf(uuid) : [];
+      const heldFor = participants.filter((participant) =>
+        blocking.some(([, r]) => r.securityHold && samePerson(r.request?.actor.externalId, participant)),
+      );
       if (await runs.activeForThread(run.sessionId)) return;
       sessionStateBus.emit({
         threadRef: run.sessionId,
         ...(uuid ? { sessionId: uuid } : {}),
-        state: awaiting ? "awaiting_approval" : "idle",
+        state: blocking.length ? "awaiting_approval" : "idle",
+        ...(heldFor.length ? { heldFor } : {}),
         at: run.finishedAt ?? Date.now(),
         ...(participants.length ? { participants } : {}),
       });

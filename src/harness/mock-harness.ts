@@ -439,6 +439,7 @@ export function createMockHarness(): Harness {
               scopeLabel: turn.scopeLabel,
             });
             await screen.hold?.();
+            pausedOnApproval = true;
             reply = stub;
           } else {
             await turn.emit({ type: "tool_result", payload: result, scopeLabel: turn.scopeLabel });
@@ -953,14 +954,12 @@ export function createMockHarness(): Harness {
           }),
           { cacheRead: 0, cacheWrite: 0, uncachedInput: 0 },
         );
-        const base = collected.length
-          ? {
-              reply,
-              pendingApprovals: collected,
-              ...(pausedOnApproval ? { pausedOnApproval: true as const } : {}),
-              modelCalls,
-            }
-          : { reply, modelCalls };
+        const base = {
+          reply,
+          ...(collected.length ? { pendingApprovals: collected } : {}),
+          ...(pausedOnApproval ? { pausedOnApproval: true as const } : {}),
+          modelCalls,
+        };
         if (muteReply) base.reply = "";
         return { ...base, ...(silent ? { silent: true as const } : {}), cacheUsage };
       },

@@ -14,6 +14,8 @@ const VOICE_ACTIVITY_KINDS = [
   "memory_saved",
   "memory_compacted",
   "approved",
+  "allowed",
+  "kept_blocked",
 ] as const;
 type VoiceActivityKind = (typeof VOICE_ACTIVITY_KINDS)[number];
 

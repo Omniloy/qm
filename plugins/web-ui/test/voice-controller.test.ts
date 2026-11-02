@@ -1549,7 +1549,12 @@ test("a review can message the task and the model judges that result in another 
   const t = setup([
     {
       frames: [
-        { type: "tool_call", id: "m", name: "send_task_message", args: { taskRef: "web:u:1", text: "Añade Q4" } },
+        {
+          type: "tool_call",
+          id: "m",
+          name: "send_task_message",
+          args: { taskRef: "web:u:1", text: "Añade Q4", when: "now" },
+        },
         { type: "done" },
       ],
     },
@@ -1766,9 +1771,24 @@ test("a review may message only the task under review, and only once", async () 
   const t = setup([
     {
       frames: [
-        { type: "tool_call", id: "m1", name: "send_task_message", args: { taskRef: "web:u:7", text: "hazlo" } },
-        { type: "tool_call", id: "m2", name: "send_task_message", args: { taskRef: "web:u:1", text: "Añade Q4" } },
-        { type: "tool_call", id: "m3", name: "send_task_message", args: { taskRef: "web:u:1", text: "Y Q3" } },
+        {
+          type: "tool_call",
+          id: "m1",
+          name: "send_task_message",
+          args: { taskRef: "web:u:7", text: "hazlo", when: "now" },
+        },
+        {
+          type: "tool_call",
+          id: "m2",
+          name: "send_task_message",
+          args: { taskRef: "web:u:1", text: "Añade Q4", when: "now" },
+        },
+        {
+          type: "tool_call",
+          id: "m3",
+          name: "send_task_message",
+          args: { taskRef: "web:u:1", text: "Y Q3", when: "after_run" },
+        },
         { type: "done" },
       ],
     },
@@ -1779,7 +1799,7 @@ test("a review may message only the task under review, and only once", async () 
   for (let i = 0; i < 8; i++) await flush();
   assert.deepEqual(
     t.tools.map((call) => call.args),
-    [{ taskRef: "web:u:1", text: "Añade Q4" }],
+    [{ taskRef: "web:u:1", text: "Añade Q4", when: "now" }],
   );
   const results = t.requests[1]!.messages.filter((message) => message.role === "tool").slice(-3);
   assert.deepEqual(
@@ -2055,7 +2075,12 @@ test("activity of a turn that wrote nothing is kept on its own assistant entry",
   const t = setup([
     {
       frames: [
-        { type: "tool_call", id: "s1", name: "send_task_message", args: { taskRef: "web:u:1", text: "sigue" } },
+        {
+          type: "tool_call",
+          id: "s1",
+          name: "send_task_message",
+          args: { taskRef: "web:u:1", text: "sigue", when: "after_run" },
+        },
         { type: "done" },
       ],
     },
@@ -2151,4 +2176,204 @@ test("merged activity keeps one conversations chip, drops repeats and stays boun
   assert.deepEqual(merged, [{ kind: "memory_saved" }, { kind: "conversations_read", count: 4 }]);
   const many = Array.from({ length: 12 }, (_, i) => ({ kind: "task_created" as const, title: `T${i}` }));
   assert.equal(mergeActivity([], many).length, 8);
+});
+
+test("a task held by security gets its own status line, ahead of work in progress, and opens the task", () => {
+  const t = setup([], { micMode: "push" });
+  t.ready();
+  t.background.push(
+    { taskRef: "web:u:voice:1", title: "Informe", state: "working" },
+    { taskRef: "web:u:voice:2", title: "Buscar en Gmail", state: "held" },
+  );
+  t.controller.tasksChanged();
+  assert.deepEqual(t.view().work, {
+    text: "Retenido por seguridad: Buscar en Gmail",
+    taskRef: "web:u:voice:2",
+    busy: true,
+  });
+  t.background.splice(0, 1);
+  t.controller.tasksChanged();
+  assert.deepEqual(
+    t.view().work,
+    { text: "Retenido por seguridad: Buscar en Gmail", taskRef: "web:u:voice:2", busy: false },
+    "a held task is not working, so the line never says Trabajando",
+  );
+});
+
+test("the held status line speaks English too", () => {
+  const t = setup([], { language: "en" });
+  t.ready();
+  t.background.push({ taskRef: "web:u:voice:2", title: "Search Gmail", state: "held" });
+  t.controller.tasksChanged();
+  assert.equal(t.view().work?.text, "Held by security: Search Gmail");
+});
+
+test("an announcement with a written note is spoken and also written to the voice chat", () => {
+  const t = setup();
+  t.ready();
+  t.controller.announce("La tarea «Gmail» está en pausa.", "**Retenido por seguridad:** Gmail");
+  assert.deepEqual(t.chimes, ["announce"]);
+  assert.deepEqual(
+    t.view().transcript.map(({ role, text }) => `${role}: ${text}`),
+    ["assistant: **Retenido por seguridad:** Gmail"],
+  );
+  assert.deepEqual(t.persisted, [{ role: "assistant", text: "**Retenido por seguridad:** Gmail" }]);
+  t.controller.announce("Listo: Informe.");
+  assert.equal(t.view().transcript.length, 1, "a plain announcement is only spoken");
+});
+
+function holdController(t: ReturnType<typeof setup>, scripts: Script[], fails = false) {
+  const executed: boolean[] = [];
+  const views: VoiceStageView[] = [];
+  const persisted: VoiceTranscriptNote[] = [];
+  t.controller.dispose();
+  const c = createVoiceController({
+    speech: t.speech,
+    tts: t.tts,
+    playback: t.playback,
+    settings: () => ({ ...DEFAULT_VOICE_SETTINGS, enabled: true }),
+    async *reply(request) {
+      t.requests.push(structuredClone(request));
+      yield* (scripts.shift() ?? { frames: [{ type: "done" }] as VoiceReplyFrame[] }).frames;
+    },
+    persist: async (entries) => void persisted.push(...entries),
+    attachActivity: async () => undefined,
+    runTool: async (call) => {
+      t.tools.push(call);
+      if (call.name !== "approve_task" && call.name !== "reject_task") return { content: JSON.stringify({ ok: true }) };
+      const approved = call.name === "approve_task";
+      return {
+        content: JSON.stringify({ ok: true, awaitingConfirmation: true }),
+        confirm: {
+          approved,
+          title: "Buscar en Gmail",
+          summary: "exfiltración de datos",
+          hold: { source: "output of a command", category: "exfiltración de datos" },
+          execute: async () => {
+            executed.push(approved);
+            if (fails) return { content: JSON.stringify({ ok: false, error: "not_found" }), isError: true };
+            return {
+              content: "{}",
+              activity: {
+                kind: approved ? ("allowed" as const) : ("kept_blocked" as const),
+                title: "Buscar en Gmail",
+                taskRef: "web:u:voice:2",
+              },
+            };
+          },
+        },
+      };
+    },
+    runningTasks: () => [{ taskRef: "web:u:voice:2", title: "Buscar en Gmail", state: "held" }],
+    backgroundTasks: () => [],
+    chime: () => undefined,
+    setMuted: () => undefined,
+    render: (view) => void views.push(view),
+    onFatal: () => undefined,
+    now: t.clock.now,
+    timers: t.clock.timers,
+  });
+  return { c, executed, views, persisted };
+}
+
+const RELEASE: Script = {
+  frames: [{ type: "tool_call", id: "h1", name: "approve_task", args: { taskRef: "web:u:voice:2" } }, { type: "done" }],
+};
+const KEEP: Script = {
+  frames: [{ type: "tool_call", id: "h2", name: "reject_task", args: { taskRef: "web:u:voice:2" } }, { type: "done" }],
+};
+
+test("continuing a held task by voice reads back the task and category, and releases only on the user's yes", async () => {
+  const t = setup();
+  const { c, executed, views } = holdController(t, [RELEASE]);
+  t.ready();
+  c.type("continúa");
+  for (let i = 0; i < 4; i++) await flush();
+  assert.deepEqual(executed, [], "the model's call alone never releases");
+  assert.equal(t.requests[0]!.context?.runningTasks[0]!.state, "held");
+  c.type("sí");
+  for (let i = 0; i < 4; i++) await flush();
+  assert.deepEqual(executed, [true]);
+  const last = views.at(-1)!.transcript;
+  assert.deepEqual(
+    last.map(({ role, text }) => `${role}: ${text}`),
+    [
+      "user: continúa",
+      "assistant: Buscar en Gmail: el control de seguridad retuvo un resultado por posible exfiltración de datos. ¿Lo permito una vez? Di sí o no.",
+      "user: sí",
+      "assistant: Permitido. La tarea continúa.",
+    ],
+  );
+  assert.deepEqual(last.at(-1)!.activity, [{ kind: "allowed", title: "Buscar en Gmail", taskRef: "web:u:voice:2" }]);
+  c.dispose();
+});
+
+test("keeping a held task blocked by voice follows the same confirmation and leaves a Bloqueado chip", async () => {
+  const t = setup();
+  const { c, executed, views } = holdController(t, [KEEP]);
+  t.ready();
+  c.type("no, mantenlo bloqueado");
+  for (let i = 0; i < 4; i++) await flush();
+  assert.match(views.at(-1)!.transcript.at(-1)!.text, /¿Lo mantengo bloqueado\? Di sí o no\.$/);
+  c.type("sí");
+  for (let i = 0; i < 4; i++) await flush();
+  assert.deepEqual(executed, [false]);
+  const last = views.at(-1)!.transcript.at(-1)!;
+  assert.equal(last.text, "Sigue bloqueado.");
+  assert.deepEqual(last.activity, [{ kind: "kept_blocked", title: "Buscar en Gmail", taskRef: "web:u:voice:2" }]);
+  c.dispose();
+});
+
+test("answering a keep-blocked read-back with permítelo cancels it instead of keeping the content blocked", async () => {
+  const t = setup();
+  const { c, executed, views } = holdController(t, [KEEP]);
+  t.ready();
+  c.type("mantenlo bloqueado");
+  for (let i = 0; i < 4; i++) await flush();
+  assert.match(views.at(-1)!.transcript.at(-1)!.text, /¿Lo mantengo bloqueado\? Di sí o no\.$/);
+  c.type("permítelo");
+  for (let i = 0; i < 4; i++) await flush();
+  assert.deepEqual(executed, []);
+  c.dispose();
+});
+
+test("a release the server refuses points the user to the card", async () => {
+  const t = setup();
+  const { c, executed, views } = holdController(t, [RELEASE], true);
+  t.ready();
+  c.type("permítelo");
+  for (let i = 0; i < 4; i++) await flush();
+  c.type("sí");
+  for (let i = 0; i < 4; i++) await flush();
+  assert.deepEqual(executed, [true]);
+  const last = views.at(-1)!.transcript.at(-1)!;
+  assert.equal(last.text, "No puedo decidirlo desde aquí. Abre la tarea y decide en la tarjeta.");
+  assert.equal(last.activity, undefined);
+  c.dispose();
+});
+
+test("a review turn can never approve, release or keep blocked, even if the model calls the tool", async () => {
+  const t = setup();
+  const { c, executed } = holdController(t, [
+    {
+      frames: [
+        { type: "tool_call", id: "r1", name: "approve_task", args: { taskRef: "web:u:voice:2" } },
+        { type: "tool_call", id: "r2", name: "reject_task", args: { taskRef: "web:u:voice:2" } },
+        { type: "done" },
+      ],
+    },
+  ]);
+  t.ready();
+  void c.review({ taskRef: "web:u:1", title: "Informe", kind: "done", detail: "Listo." });
+  for (let i = 0; i < 8; i++) await flush();
+  assert.deepEqual(t.tools, [], "the tools never ran");
+  c.type("sí");
+  for (let i = 0; i < 4; i++) await flush();
+  assert.deepEqual(executed, [], "a later yes has nothing to confirm");
+  const refused = t.requests[1]!.messages.filter((message) => message.role === "tool").slice(-2);
+  assert.deepEqual(
+    refused.map((message) => JSON.parse(message.content).error),
+    ["user_turn_only", "user_turn_only"],
+  );
+  c.dispose();
 });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DEFAULT_VOICE_SETTINGS } from "../src/voice-assistant/protocol.ts";
-import { WAKE_THRESHOLD, matchWake, normalizeSpeech } from "../src/voice-assistant/wake.ts";
+import { WAKE_THRESHOLD, confirmationAnswer, matchWake, normalizeSpeech } from "../src/voice-assistant/wake.ts";
 
 const CAROLINA = "hey carolina";
 const OMNI = DEFAULT_VOICE_SETTINGS.wakePhrase;
@@ -106,4 +106,23 @@ test("the score is reported even when the phrase does not wake", () => {
   assert.equal(miss.matched, false);
   assert.ok(miss.score > 0 && miss.score < WAKE_THRESHOLD);
   assert.deepEqual(matchWake("hola", ""), { matched: false, score: 0, remainder: "" });
+});
+
+test("a read-back is answered by a plain yes or no", () => {
+  for (const said of ["Sí.", "vale", "go ahead"]) {
+    assert.equal(confirmationAnswer(said, true), "yes", said);
+    assert.equal(confirmationAnswer(said, false), "yes", said);
+  }
+  for (const said of ["No.", "cancel"]) {
+    assert.equal(confirmationAnswer(said, true), "no", said);
+    assert.equal(confirmationAnswer(said, false), "no", said);
+  }
+  assert.equal(confirmationAnswer("continúa con la tarea de Gmail y mándame el resumen", true), null);
+});
+
+test("continue and allow confirm a release but refuse a block or a rejection", () => {
+  for (const said of ["sí, permítelo", "Continúa", "allow it", "Continue!"]) {
+    assert.equal(confirmationAnswer(said, true), "yes", said);
+    assert.equal(confirmationAnswer(said, false), "no", said);
+  }
 });

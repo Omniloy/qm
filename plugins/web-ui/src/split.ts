@@ -76,6 +76,7 @@ import {
   sessionsState,
   sessionTitle,
   archiveSessionById,
+  awaitingMark,
   syncWorkingPulse,
 } from "./sessions";
 import { conversationBackground, type RowIndicators } from "./session-list";
@@ -1225,7 +1226,7 @@ class PaneTab implements ITabRenderer {
     render(
       html`
         ${working ? html`<span class="working-mark" ${ref(syncWorkingPulse)}>${workingWave()}</span>` : nothing}
-        ${awaiting ? html`<span class="awaiting-dot" aria-label="Waiting for your reply"></span>` : nothing}
+        ${awaiting ? awaitingMark(Boolean(paneSession(panel)?.securityHeld)) : nothing}
         ${
           background
             ? html`<span class="bg-chip" aria-label=${background.label} ${tip(background.label)}

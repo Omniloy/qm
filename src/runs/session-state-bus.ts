@@ -8,6 +8,7 @@ export interface SessionStateEvent {
   participants?: string[];
   participantsShed?: boolean;
   state: SessionState;
+  heldFor?: string[];
   at: number;
 }
 

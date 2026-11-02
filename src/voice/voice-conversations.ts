@@ -28,7 +28,8 @@ const clipped = (text: string, max: number): string =>
 const conversationTitle = (session: Pick<Session, "title" | "channelName">): string =>
   clipped((session.title ?? session.channelName ?? "").trim(), TITLE_MAX_CHARS);
 
-const conversationState = (session: Session): "working" | "awaiting_input" | "idle" => {
+const conversationState = (session: Session): "working" | "held_by_security" | "awaiting_input" | "idle" => {
+  if (session.awaitingInput && session.securityHeld) return "held_by_security";
   if (session.awaitingInput) return "awaiting_input";
   return session.working ? "working" : "idle";
 };

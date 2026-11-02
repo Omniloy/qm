@@ -48,6 +48,15 @@ const CONFIRMATION_YES = new Set([
   "do it",
   "go ahead",
 ]);
+const CONFIRMATION_RELEASE = new Set([
+  "permitelo",
+  "si permitelo",
+  "continua",
+  "si continua",
+  "allow it",
+  "yes allow it",
+  "continue",
+]);
 const CONFIRMATION_NO = new Set(["no", "no gracias", "no lo hagas", "cancela", "nope", "no thanks", "cancel", "don t"]);
 
 export function normalizeSpeech(text: string): string {
@@ -182,8 +191,9 @@ function remainderAfter(transcript: string, end: number): string {
   return /[\p{L}\p{N}]/u.test(rest) ? rest : "";
 }
 
-export function confirmationAnswer(text: string): "yes" | "no" | null {
+export function confirmationAnswer(text: string, releasing: boolean): "yes" | "no" | null {
   const said = normalizeSpeech(text);
   if (CONFIRMATION_YES.has(said)) return "yes";
+  if (CONFIRMATION_RELEASE.has(said)) return releasing ? "yes" : "no";
   return CONFIRMATION_NO.has(said) ? "no" : null;
 }

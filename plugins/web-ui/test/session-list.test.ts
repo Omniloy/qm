@@ -207,6 +207,27 @@ test("applySessionState: awaiting_approval swaps the working dot for the amber d
   assert.equal(out[0]!.awaitingInput, true);
 });
 
+test("applySessionState: a security hold marks the row held and not working, and clears with the next state", () => {
+  const list = [{ ...saved("1", "web:u:x"), working: true }];
+  const { list: held } = applySessionState(list, {
+    threadRef: "web:u:x",
+    state: "awaiting_approval",
+    securityHeld: true,
+  });
+  assert.equal(held[0]!.working, false);
+  assert.equal(held[0]!.awaitingInput, true);
+  assert.equal(held[0]!.securityHeld, true);
+  assert.deepEqual(
+    { working: rowIndicators(held[0]!, null).working, held: rowIndicators(held[0]!, null).held },
+    { working: false, held: true },
+  );
+  const { list: resumed } = applySessionState(held, { threadRef: "web:u:x", state: "working" });
+  assert.equal(resumed[0]!.securityHeld, false);
+  assert.equal(rowIndicators(resumed[0]!, null).held, false);
+  const { list: approval } = applySessionState(list, { threadRef: "web:u:x", state: "awaiting_approval" });
+  assert.equal(rowIndicators(approval[0]!, null).held, false, "an ordinary approval keeps the amber dot");
+});
+
 test("applySessionState: idle clears both dots", () => {
   const list = [{ ...saved("1", "web:u:x"), working: true, awaitingInput: true }];
   const { list: out } = applySessionState(list, { threadRef: "web:u:x", state: "idle" });

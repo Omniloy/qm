@@ -139,6 +139,7 @@ export interface CoreSession {
   lastActivityAt?: number;
   working?: boolean;
   awaitingInput?: boolean;
+  securityHeld?: boolean;
   backgroundJobs?: number;
   watches?: number;
   crons?: number;
@@ -439,6 +440,7 @@ export interface SecurityHoldView {
   title: string;
   held: string;
   subject?: string;
+  category?: string;
   categoryLabel: string;
   explanation: string;
   facts: Array<{ label: string; value: string }>;
@@ -866,8 +868,17 @@ export async function signalLiveRun(
   context: SteerContext,
   queuedRunId?: string,
 ): Promise<SignalOutcome> {
-  const run = slot.runId !== null ? { runId: slot.runId } : null;
-  if (!run) throw new Error("No active run to signal.");
+  if (slot.runId === null) throw new Error("No active run to signal.");
+  return signalRun(slot.runId, kind, text, context, queuedRunId);
+}
+
+export async function signalRun(
+  runId: string,
+  kind: "abort" | "steer",
+  text: string | undefined,
+  context: SteerContext,
+  queuedRunId?: string,
+): Promise<SignalOutcome> {
   const steerContext =
     kind === "steer" && context.threadRef
       ? {
@@ -877,7 +888,7 @@ export async function signalLiveRun(
         }
       : {};
   try {
-    await api(runPath(run.runId, "/signal"), {
+    await api(runPath(runId, "/signal"), {
       method: "POST",
       signal: kind === "abort" ? AbortSignal.timeout(RUN_REQUEST_TIMEOUT_MS) : undefined,
       body: JSON.stringify({
@@ -1482,6 +1493,7 @@ export interface SessionStateEvent {
   threadRef: string;
   sessionId?: string;
   state: "working" | "awaiting_approval" | "idle" | "metadata";
+  securityHeld?: boolean;
   at: number;
 }
 

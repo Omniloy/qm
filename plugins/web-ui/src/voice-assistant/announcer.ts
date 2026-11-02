@@ -1,4 +1,9 @@
-import { SUBAGENT_THREAD_PREFIX, type CoreSession, type SessionStateEvent } from "../core-bridge.ts";
+import {
+  SUBAGENT_THREAD_PREFIX,
+  type CoreSession,
+  type PendingApproval,
+  type SessionStateEvent,
+} from "../core-bridge.ts";
 import {
   VOICE_MAX_CONTENT_CHARS,
   VOICE_MAX_FOLLOWUPS_PER_TASK,
@@ -8,11 +13,11 @@ import {
   type VoiceReplyRequest,
 } from "./protocol.ts";
 import { withoutClosingPunctuation } from "./text-chunker.ts";
-import { taskState, taskTitle, type TaskTail } from "./tools.ts";
+import { heldOutput, heldSubagents, taskState, taskTitle, type HeldOutput, type TaskTail } from "./tools.ts";
 
 type TaskState = ReturnType<typeof taskState>;
 
-export type AnnouncementKind = "done" | "failed" | "approval";
+export type AnnouncementKind = "done" | "failed" | "approval" | "held";
 
 export interface Announcement {
   threadRef: string;
@@ -20,12 +25,13 @@ export interface Announcement {
   title: string;
   text: string;
   detail: string;
+  written?: string;
 }
 
 export interface TaskUpdate {
   taskRef: string;
   title: string;
-  kind: AnnouncementKind;
+  kind: ReviewedKind;
   detail: string;
 }
 
@@ -38,7 +44,7 @@ export interface AnnouncerDeps {
   foregroundThread(): string | null;
   sessions(): Promise<CoreSession[]>;
   tail(sessionId: string): Promise<TaskTail>;
-  pendingApproval(sessionId: string): Promise<string>;
+  pendingApproval(sessionId: string): Promise<PendingApproval | undefined>;
   summarize(request: VoiceReplyRequest, signal: AbortSignal): AsyncIterable<VoiceReplyFrame>;
   review(update: TaskUpdate): Promise<ReviewOutcome>;
   title?(threadRef: string): string | undefined;
@@ -54,7 +60,9 @@ export interface Announcer {
   dispose(): void;
 }
 
-const STATE_LABELS: Record<VoiceLanguage, Record<AnnouncementKind, string>> = {
+type ReviewedKind = Exclude<AnnouncementKind, "held">;
+
+const STATE_LABELS: Record<VoiceLanguage, Record<ReviewedKind, string>> = {
   es: { done: "terminada", failed: "no se pudo terminar", approval: "espera aprobación" },
   en: { done: "finished", failed: "could not be finished", approval: "awaiting approval" },
 };
@@ -62,19 +70,41 @@ const STATE_LABELS: Record<VoiceLanguage, Record<AnnouncementKind, string>> = {
 export function fallbackAnnouncement(kind: AnnouncementKind, task: string, language: VoiceLanguage): string {
   const title = withoutClosingPunctuation(task);
   if (language === "en") {
+    if (kind === "held")
+      return `The task “${title}” is paused: the security screen held back a result. Open it to decide, or tell me to continue.`;
     if (kind === "approval") return `${title} needs your approval.`;
     return kind === "failed" ? `Could not finish: ${title}.` : `Done: ${title}.`;
   }
+  if (kind === "held")
+    return `La tarea «${title}» está en pausa: el control de seguridad retuvo un resultado. Ábrela para decidir, o dime que continúe.`;
   if (kind === "approval") return `${title} necesita tu aprobación.`;
   return kind === "failed" ? `No se pudo terminar: ${title}.` : `Listo: ${title}.`;
 }
 
-function announcePrompt(
-  kind: AnnouncementKind,
-  title: string,
-  detail: string,
-  language: VoiceLanguage,
-): VoiceReplyRequest {
+function heldNote(task: string, hold: HeldOutput | null, language: VoiceLanguage): string {
+  const title = withoutClosingPunctuation(task);
+  if (language === "en")
+    return [
+      `**Held by security:** ${title}`,
+      hold
+        ? `The security screen held back ${hold.source} (${hold.category}).`
+        : "The security screen held back a result.",
+      "Open the task to decide, or tell me to continue or to keep it blocked.",
+    ].join("\n\n");
+  return [
+    `**Retenido por seguridad:** ${title}`,
+    hold
+      ? `El control de seguridad retuvo un resultado (${hold.category}).`
+      : "El control de seguridad retuvo un resultado.",
+    "Abre la tarea para decidir, o dime que continúe o que lo mantenga bloqueado.",
+  ].join("\n\n");
+}
+
+function heldState(event: Pick<SessionStateEvent, "state" | "securityHeld">): TaskState | "metadata" {
+  return event.state === "awaiting_approval" && event.securityHeld ? "held" : event.state;
+}
+
+function announcePrompt(kind: ReviewedKind, title: string, detail: string, language: VoiceLanguage): VoiceReplyRequest {
   const head =
     language === "en"
       ? `Task: ${title}\nState: ${STATE_LABELS.en[kind]}\n\n`
@@ -116,11 +146,32 @@ export function createAnnouncer(deps: AnnouncerDeps): Announcer {
     const id = sessionId ?? session?.id;
     if (!id || disposed) return;
     const tail = await deps.tail(id).catch((): TaskTail => ({ title: null, reply: "", failed: false }));
-    let kind: AnnouncementKind = tail.failed ? "failed" : "done";
-    if (next === "awaiting_approval") kind = "approval";
     const title = deps.title?.(threadRef)?.trim() || tail.title?.trim() || (session ? taskTitle(session) : "");
     const language = deps.language();
-    const detail = kind === "approval" ? await deps.pendingApproval(id).catch(() => "") : tail.reply;
+    const below = heldSubagents(sessions).get(id);
+    const pending =
+      next === "awaiting_approval" || next === "held" || below
+        ? await deps.pendingApproval(below?.id ?? id).catch(() => undefined)
+        : undefined;
+    const hold = heldOutput(pending, language);
+    if (next === "held" || below || hold) {
+      followUps.set(threadRef, VOICE_MAX_FOLLOWUPS_PER_TASK);
+      release();
+      if (disposed) return;
+      deps.deliver({
+        threadRef,
+        kind: "held",
+        title,
+        text: fallbackAnnouncement("held", title, language),
+        detail: "",
+        written: heldNote(title, hold, language),
+      });
+      return;
+    }
+    let kind: ReviewedKind = tail.failed ? "failed" : "done";
+    if (next === "awaiting_approval") kind = "approval";
+    const asked = pending ? (pending.summary ?? pending.purpose ?? pending.command) : "";
+    const detail = kind === "approval" ? asked : tail.reply;
     release();
     const reviewed = followUps.get(threadRef) ?? 0;
     if (reviewed < VOICE_MAX_FOLLOWUPS_PER_TASK) {
@@ -144,7 +195,7 @@ export function createAnnouncer(deps: AnnouncerDeps): Announcer {
   ) => {
     if (disposed || threadRef.startsWith(SUBAGENT_THREAD_PREFIX)) return;
     const finished = previous === "working" && next === "idle";
-    const blocked = next === "awaiting_approval" && previous !== undefined && previous !== "awaiting_approval";
+    const blocked = (next === "awaiting_approval" || next === "held") && previous !== undefined && previous !== next;
     if (!finished && !blocked) return;
     if (deps.scope() === "voice" && !deps.isVoiceThread(threadRef)) return;
     if (deps.foregroundThread() === threadRef) return;
@@ -161,8 +212,13 @@ export function createAnnouncer(deps: AnnouncerDeps): Announcer {
       .finally(release);
   };
 
+  const track = (threadRef: string, next: TaskState) => {
+    states.set(threadRef, next);
+    if (next === "held") followUps.set(threadRef, VOICE_MAX_FOLLOWUPS_PER_TASK);
+  };
+
   const seed = (sessions: readonly CoreSession[]) => {
-    for (const session of sessions) states.set(session.threadRef, taskState(session));
+    for (const session of sessions) track(session.threadRef, taskState(session));
   };
 
   return {
@@ -170,17 +226,18 @@ export function createAnnouncer(deps: AnnouncerDeps): Announcer {
       seed(await deps.sessions());
     },
     handle(event) {
-      if (event.state === "metadata") return;
+      const next = heldState(event);
+      if (next === "metadata") return;
       const previous = states.get(event.threadRef);
-      states.set(event.threadRef, event.state);
-      consider(event.threadRef, event.sessionId, previous, event.state);
+      track(event.threadRef, next);
+      consider(event.threadRef, event.sessionId, previous, next);
     },
     async resync() {
       const sessions = await deps.sessions();
       for (const session of sessions) {
         const previous = states.get(session.threadRef);
         const next = taskState(session);
-        states.set(session.threadRef, next);
+        track(session.threadRef, next);
         if (previous !== next) consider(session.threadRef, session.id || undefined, previous, next);
       }
     },

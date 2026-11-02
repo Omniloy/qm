@@ -8,6 +8,7 @@ import {
   fetchTranscript,
   mintSendKey,
   resolveApproval,
+  signalRun,
   type CoreSession,
 } from "../core-bridge.ts";
 import { mainConversation, onSessionState, onSessionStateResync } from "../conversations.ts";
@@ -32,6 +33,7 @@ import {
   DEFAULT_VAD_OPTIONS,
   DEFAULT_VOICE_ORG_CONFIG,
   VOICE_CHANNEL_NAME,
+  VOICE_MAX_RUNNING_TASKS,
   modelFileKey,
   unavailableModelKey,
   type AsrEngineId,
@@ -58,7 +60,14 @@ import {
   storeVoiceMuted,
   storedVoiceMuted,
 } from "./settings-store.ts";
-import { isVoiceThread, runVoiceTool, taskSummaries, type TaskTail, type VoiceToolDeps } from "./tools.ts";
+import {
+  isVoiceThread,
+  leadingApproval,
+  runVoiceTool,
+  taskSummaries,
+  type TaskTail,
+  type VoiceToolDeps,
+} from "./tools.ts";
 import { languageForVoice, pickerVoices } from "./voice-picker.ts";
 import { handlesSpace, mountVoiceStage, type VoiceStage } from "./voice-stage.ts";
 import { onFirstActivation } from "./activation.ts";
@@ -334,6 +343,7 @@ function toolDeps(user: string, titles: Map<string, string>): VoiceToolDeps {
     resolveApproval: (decision) => resolveApproval(decision),
     activeRun: async (threadRef) => (await activeRunForThread(threadRef)).runId,
     abortRun: abortRunById,
+    steer: (runId, queuedRunId, threadRef, text) => signalRun(runId, "steer", text, { threadRef }, queuedRunId),
     open: openTask,
     delegated: (threadRef, title) => {
       titles.set(threadRef, title);
@@ -482,11 +492,14 @@ export async function startVoice(takeover = true): Promise<void> {
       runTool: (call) => runVoiceTool(call, deps),
       runningTasks: () => taskSummaries(sessionsState.list, titles, startingTasks(user)),
       backgroundTasks: () =>
-        taskSummaries(
-          sessionsState.list.filter((candidate) => isVoiceThread(user, candidate.threadRef)),
-          titles,
-          startingTasks(user),
-        ).filter((task) => task.state !== "idle"),
+        taskSummaries(sessionsState.list, titles, startingTasks(user), Number.POSITIVE_INFINITY)
+          .filter(
+            (task) =>
+              task.state !== "idle" &&
+              (isVoiceThread(user, task.taskRef) ||
+                (runtimeSettings().announceScope === "all" && task.state === "held")),
+          )
+          .slice(0, VOICE_MAX_RUNNING_TASKS),
       chime: (kind) => playChime(audio.context, audio.output, kind),
       setMuted: (muted) => audio.setMuted(muted),
       onMutedChange: storeVoiceMuted,
@@ -505,10 +518,7 @@ export async function startVoice(takeover = true): Promise<void> {
       foregroundThread,
       sessions: sessionsNow,
       tail: taskTail,
-      pendingApproval: async (sessionId) => {
-        const [pending] = (await fetchSessionApprovals(sessionId))?.approvals ?? [];
-        return pending ? (pending.summary ?? pending.purpose ?? pending.command) : "";
-      },
+      pendingApproval: async (sessionId) => leadingApproval((await fetchSessionApprovals(sessionId))?.approvals ?? []),
       summarize: streamVoiceReply,
       review: (update) => {
         notifyHidden({
@@ -523,7 +533,7 @@ export async function startVoice(takeover = true): Promise<void> {
       title: (threadRef) => titles.get(threadRef),
       deliver: (announcement) => {
         notifyHidden(announcement);
-        controller.announce(announcement.text);
+        controller.announce(announcement.text, announcement.written);
       },
     });
     session = {
