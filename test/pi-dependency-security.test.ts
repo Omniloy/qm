@@ -45,16 +45,16 @@ test("Pi and MCP security overrides are materialized by the root lockfile", () =
 
   assert.equal(pi?.resolved, piCodingAgentTarball);
 
-  assert.deepEqual(lockedVersions(packages, "brace-expansion"), ["5.0.9"]);
-  assert.deepEqual(lockedVersions(packages, "fast-uri").sort(), ["3.1.7", "4.1.4"]);
-  assert.deepEqual(lockedVersions(packages, "hono"), ["4.13.5"]);
+  assert.deepEqual(lockedVersions(packages, "brace-expansion").sort(), ["5.0.12", "5.0.9"]);
+  assert.deepEqual(lockedVersions(packages, "fast-uri").sort(), ["3.1.9", "4.2.3"]);
+  assert.deepEqual(lockedVersions(packages, "hono"), ["4.13.14"]);
   assert.deepEqual(lockedVersions(packages, "protobufjs"), ["7.6.5"]);
-  assert.deepEqual(lockedVersions(packages, "undici"), ["8.9.0"]);
-  assert.deepEqual(lockedVersions(packages, "@hono/node-server"), ["2.0.10"]);
+  assert.deepEqual(lockedVersions(packages, "undici").sort(), ["8.12.3", "8.9.0"]);
+  assert.deepEqual(lockedVersions(packages, "@hono/node-server"), ["2.1.5"]);
   assert.equal(dependencyVersion(minimatchManifest, "brace-expansion"), "5.0.9");
   assert.equal(dependencyVersion(piManifest, "undici"), "8.9.0");
   assert.equal(dependencyVersion(piManifest, "protobufjs"), "7.6.5");
-  assert.equal(installedVersion("@hono/node-server"), "2.0.10");
+  assert.equal(installedVersion("@hono/node-server"), "2.1.5");
   assert.match(
     readFileSync(new URL("../node_modules/@earendil-works/pi-coding-agent/LICENSE", import.meta.url), "utf8"),
     /Copyright \(c\) 2025 Mario Zechner/,
