@@ -186,6 +186,23 @@ export const MODEL_REGISTRY: readonly ModelEntry[] = [
     },
   },
   {
+    id: "gpt-6.1-terra",
+    buttonLabel: "6.1 Terra",
+    name: "GPT-6.1 Terra",
+    fastMode: true,
+    webui: true,
+    base: true,
+    clone: {
+      ...GPT_6_CLONE,
+      thinkingLevelMap: { max: "max" },
+      input: 1,
+      output: 5,
+      cacheRead: 0.05,
+      cacheWrite: 1.25,
+      tiers: [{ inputTokensAbove: 272_000, input: 2, output: 7.5, cacheRead: 0.1, cacheWrite: 2.5 }],
+    },
+  },
+  {
     id: "gpt-6-astra",
     buttonLabel: "Astra",
     name: "GPT-6 Astra",
@@ -488,6 +505,16 @@ export function resolveModel(id: string, useOrgEndpoints = true): PiModel | unde
 export function auxiliaryModelForProvider(provider: string): string | undefined {
   return [...MODEL_REGISTRY, ...overlays.values()].find((m) => m.auxiliary && resolveModel(m.id)?.provider === provider)
     ?.id;
+}
+
+const VOICE_MODEL_IDS = { openai: "gpt-6.1-terra", anthropic: "claude-sonnet-5-5" } as const;
+
+export function voiceModelFor(defaultModelId: string): string | undefined {
+  const provider = resolveModel(defaultModelId)?.provider;
+  if (provider === CODEX_SUBSCRIPTION_PROVIDER) return codexSubscriptionModelId(VOICE_MODEL_IDS.openai);
+  if (provider === "openai") return VOICE_MODEL_IDS.openai;
+  if (provider === "anthropic") return VOICE_MODEL_IDS.anthropic;
+  return undefined;
 }
 
 export function auxiliaryModelFor(baseModelId: string): string {

@@ -15,14 +15,17 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   calculateCost,
+  getSupportedThinkingLevels,
   InMemoryCredentialStore,
   type Api,
+  type AssistantMessage,
   type Context,
   type Model,
   type ModelThinkingLevel,
   type ModelsApiStreamOptions,
   type ModelsSimpleStreamOptions,
   type ProviderHeaders,
+  type ThinkingLevel,
   type Usage,
 } from "@earendil-works/pi-ai";
 import { baseModelProviders, CONFIG_DEFAULTS, type Config } from "../config.ts";
@@ -81,6 +84,9 @@ import {
   type HarnessDetectResult,
   type HarnessTurnInput,
   type HarnessTurnResult,
+  type HarnessVoiceCandidate,
+  type HarnessVoiceReplyEvent,
+  type HarnessVoiceReplyInput,
   type GapWork,
 } from "./harness.ts";
 import { coreToolOptions, createAgentTools, pauseStampAfterToolCall, type ToolContextRef } from "./agent-tools.ts";
@@ -130,6 +136,7 @@ export interface PiHarnessOptions {
   openrouterApiKey?: string;
   modelGateway?: ModelGatewayTransportConfig;
   resolveProviderKeys?: () => Promise<ProviderKeys>;
+  resolveSubscriptionToken?: () => Promise<string | undefined>;
   tempDirPrefix?: string;
   captureRequests?: boolean;
   systemCacheSplit?: boolean;
@@ -1503,12 +1510,7 @@ export function applyTurnEffort(session: AgentSession, level?: string): void {
   session.setThinkingLevel(providerLevel as ModelThinkingLevel);
 }
 
-export function applyReasoningMode<T>(payload: T, model: Model<Api>, level?: string): T {
-  if (level !== "adaptive" && level !== "default") return payload;
-  if (level === "adaptive" ? !modelSupportsAdaptiveThinking(model) : !modelSupportsProviderDefault(model))
-    throw new NonRetryableTurnError(`${level} reasoning is not supported by ${model.id}`);
-  if (!payload || typeof payload !== "object") return payload;
-  const body = payload as Record<string, unknown>;
+function stripReasoningFields(body: Record<string, unknown>): void {
   delete body.thinking;
   delete body.reasoning;
   delete body.reasoning_effort;
@@ -1518,6 +1520,120 @@ export function applyReasoningMode<T>(payload: T, model: Model<Api>, level?: str
     if (Object.keys(outputConfig).length) body.output_config = outputConfig;
     else delete body.output_config;
   }
+}
+
+export function applyNoReasoning<T>(payload: T, model: Pick<Model<Api>, "api" | "reasoning" | "compat">): T {
+  if (!payload || typeof payload !== "object" || !model.reasoning) return payload;
+  const body = payload as Record<string, unknown>;
+  if (model.api === "openai-codex-responses") {
+    stripReasoningFields(body);
+    body.reasoning = { effort: "none" };
+  } else if (modelSupportsAdaptiveThinking(model)) {
+    stripReasoningFields(body);
+    body.thinking = { type: "between_tools" };
+  }
+  return payload;
+}
+
+function lowestReasoningLevel(model: Model<Api>): ThinkingLevel | undefined {
+  const level = getSupportedThinkingLevels(model)[0];
+  return level && level !== "off" ? level : undefined;
+}
+
+function voiceContext(model: Model<Api>, input: HarnessVoiceReplyInput): Context {
+  const timestamp = Date.now();
+  return {
+    systemPrompt: input.systemPrompt,
+    messages: input.messages.map((message): Context["messages"][number] => {
+      if (message.role === "user") return { role: "user", content: message.content, timestamp };
+      if (message.role === "tool")
+        return {
+          role: "toolResult",
+          toolCallId: message.toolCallId,
+          toolName: message.name,
+          content: [{ type: "text", text: message.content }],
+          isError: message.isError === true,
+          timestamp,
+        };
+      const toolCalls = message.toolCalls ?? [];
+      return {
+        role: "assistant",
+        content: [
+          ...(message.content ? [{ type: "text" as const, text: message.content }] : []),
+          ...toolCalls.map((call) => ({
+            type: "toolCall" as const,
+            id: call.id,
+            name: call.name,
+            arguments: call.args,
+          })),
+        ],
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        usage: zeroUsage(),
+        stopReason: toolCalls.length ? "toolUse" : "stop",
+        timestamp,
+      };
+    }),
+    ...(input.tools.length
+      ? { tools: input.tools.map(({ name, description, parameters }) => ({ name, description, parameters })) }
+      : {}),
+  };
+}
+
+async function* streamVoiceReplyOn(
+  runtime: ModelRuntime,
+  model: Model<Api>,
+  reasoning: HarnessVoiceCandidate["reasoning"],
+  input: HarnessVoiceReplyInput,
+): AsyncGenerator<HarnessVoiceReplyEvent> {
+  const started = Date.now();
+  let firstAt: number | undefined;
+  let final: AssistantMessage | undefined;
+  let failure: string | undefined;
+  const level = reasoning === "lowest" ? lowestReasoningLevel(model) : undefined;
+  try {
+    const stream = runtime.streamSimple(model, voiceContext(model, input), {
+      maxTokens: Math.min(input.maxTokens, model.maxTokens),
+      signal: input.signal,
+      ...(level ? { reasoning: level } : {}),
+      ...(reasoning === "none" ? { onPayload: (payload: unknown) => applyNoReasoning(payload, model) } : {}),
+    });
+    for await (const event of stream) {
+      if (event.type === "text_delta") {
+        firstAt ??= Date.now();
+        yield { type: "delta", text: event.delta };
+      } else if (event.type === "toolcall_end") {
+        firstAt ??= Date.now();
+        yield { type: "tool_call", id: event.toolCall.id, name: event.toolCall.name, args: event.toolCall.arguments };
+      } else if (event.type === "done") final = event.message;
+      else if (event.type === "error") final = event.error;
+    }
+  } catch (err) {
+    failure = errMessage(err);
+  }
+  let outcome: "done" | "error" | "aborted" = "done";
+  if (input.signal.aborted || final?.stopReason === "aborted") outcome = "aborted";
+  else if (failure !== undefined || !final || final.stopReason === "error") outcome = "error";
+  const error = failure ?? final?.errorMessage;
+  yield {
+    type: "end",
+    modelId: model.id,
+    outcome,
+    usage: piUsageToCallUsage(final?.usage, model, false),
+    ttftMs: firstAt !== undefined ? firstAt - started : null,
+    durationMs: Date.now() - started,
+    ...(outcome === "error" && error ? { error } : {}),
+  };
+}
+
+export function applyReasoningMode<T>(payload: T, model: Model<Api>, level?: string): T {
+  if (level !== "adaptive" && level !== "default") return payload;
+  if (level === "adaptive" ? !modelSupportsAdaptiveThinking(model) : !modelSupportsProviderDefault(model))
+    throw new NonRetryableTurnError(`${level} reasoning is not supported by ${model.id}`);
+  if (!payload || typeof payload !== "object") return payload;
+  const body = payload as Record<string, unknown>;
+  stripReasoningFields(body);
   if (model.reasoning && ["openai-responses", "openai-codex-responses"].includes(model.api))
     body.include = [...new Set([...(Array.isArray(body.include) ? body.include : []), "reasoning.encrypted_content"])];
   if (level === "adaptive") body.thinking = { type: "adaptive", display: "summarized" };
@@ -1549,10 +1665,13 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         ...(opts?.openaiApiKey ? { openai: opts.openaiApiKey } : {}),
         ...(opts?.openrouterApiKey ? { openrouter: opts.openrouterApiKey } : {}),
       };
-  const resolveProviderKeys = async (): Promise<ProviderKeys> => ({
-    ...configuredProviderKeys,
-    ...(await opts?.resolveProviderKeys?.()),
-  });
+  const resolveProviderKeys = async (...models: Array<Model<Api> | undefined>): Promise<ProviderKeys> => {
+    const keys = { ...configuredProviderKeys, ...(await opts?.resolveProviderKeys?.()) };
+    if (keys[CODEX_SUBSCRIPTION_PROVIDER] || !models.some((m) => m?.provider === CODEX_SUBSCRIPTION_PROVIDER))
+      return keys;
+    const token = await opts?.resolveSubscriptionToken?.();
+    return token ? { ...keys, [CODEX_SUBSCRIPTION_PROVIDER]: token } : keys;
+  };
   const modelGateway = opts?.modelGateway;
   const keyForModel = (keys: ProviderKeys, model: Model<Api>): string | undefined =>
     modelGatewayRequest(modelGateway, model)?.apiKey ?? keys[String(model.provider)];
@@ -1617,7 +1736,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
     const composedPrompt = systemPrompt + (seedPlan === "preamble" ? replayPreamble(history) : "");
 
     const modelRuntime = await buildModelRuntime(
-      turnProviderKeys ?? (await resolveProviderKeys()),
+      turnProviderKeys ?? (await resolveProviderKeys(model)),
       turnProviderKeys ? undefined : modelGateway,
       systemCacheSplit ? "long" : undefined,
     );
@@ -2482,7 +2601,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         try {
           const modelId = detectModelId();
           const model = getRequiredModel(modelId);
-          const providerKeys = await resolveProviderKeys();
+          const providerKeys = await resolveProviderKeys(model);
           if (!keyForModel(providerKeys, model)) return { respond: true };
           const detectSystemPrompt = buildDetectionPrompt(detect.reactionGuidance);
           const prompt = renderDetectPrompt(detect);
@@ -2503,7 +2622,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
       async compactHistory(input: HarnessCompactInput): Promise<string> {
         const compactModelId = resolveModelId();
         const model = getRequiredModel(compactModelId);
-        const providerKeys = await resolveProviderKeys();
+        const providerKeys = await resolveProviderKeys(model);
         const runtime = await buildModelRuntime(providerKeys, modelGateway);
         return summarizeHistory(input.history, model, (summaryModel, context, options) => {
           input.recordModelCall({
@@ -2522,14 +2641,14 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
 
       async oneShot(systemPrompt: string, prompt: string): Promise<string | undefined> {
         const model = getRequiredModel(resolveModelId());
-        const providerKeys = await resolveProviderKeys();
+        const providerKeys = await resolveProviderKeys(model);
         if (!keyForModel(providerKeys, model)) return undefined;
         return oneShot("pi-oneshot", model, providerKeys, systemPrompt, prompt, { modelGateway });
       },
 
       async judge(systemPrompt: string, prompt: string, signal?: AbortSignal): Promise<string | undefined> {
         const model = getRequiredModel(judgeModelId());
-        const providerKeys = await resolveProviderKeys();
+        const providerKeys = await resolveProviderKeys(model);
         if (!keyForModel(providerKeys, model)) return undefined;
         return oneShot("pi-judge", model, providerKeys, systemPrompt, prompt, {
           modelGateway,
@@ -2549,7 +2668,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         try {
           const modelId = configuredScreenModel ?? detectModelId();
           const model = getRequiredModel(modelId);
-          const providerKeys = await resolveProviderKeys();
+          const providerKeys = await resolveProviderKeys(model);
           if (!keyForModel(providerKeys, model)) return undefined;
           recordModelCall({
             model: modelId,
@@ -2581,7 +2700,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         if (!ackModelId) return undefined;
         try {
           const model = getRequiredModel(ackModelId);
-          const providerKeys = await resolveProviderKeys();
+          const providerKeys = await resolveProviderKeys(model);
           const apiKey = keyForModel(providerKeys, model);
           if (!apiKey) return undefined;
           const prompt = `Candidates: ${candidates.join(", ")}\n\nMessage: ${text.slice(0, 2000)}`;
@@ -2597,7 +2716,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
       async generateTitle(transcript: string): Promise<string | undefined> {
         if (!transcript.trim()) return undefined;
         const model = getRequiredModel(titleModelId());
-        const providerKeys = await resolveProviderKeys();
+        const providerKeys = await resolveProviderKeys(model);
         if (!keyForModel(providerKeys, model)) return undefined;
         const out = await oneShot(
           "pi-title",
@@ -2613,7 +2732,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
       async summarizeApproval(command: string, reason: string, purpose?: string): Promise<string | undefined> {
         if (!command.trim()) return undefined;
         const model = getRequiredModel(titleModelId());
-        const providerKeys = await resolveProviderKeys();
+        const providerKeys = await resolveProviderKeys(model);
         if (!keyForModel(providerKeys, model)) return undefined;
         const prompt = [
           `Policy flagged this as: ${reason}`,
@@ -2629,6 +2748,43 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         )?.trim();
         if (!out || out === "NONE") return undefined;
         return out.replace(/^["']|["']$/g, "").slice(0, 300);
+      },
+
+      async *streamVoiceReply(input: HarnessVoiceReplyInput): AsyncGenerator<HarnessVoiceReplyEvent> {
+        const resolved = input.candidates.map((candidate) => ({
+          candidate,
+          model: resolveModel(candidate.modelId, !candidate.providerKeys),
+        }));
+        const companyKeys = await resolveProviderKeys(
+          ...resolved.flatMap(({ candidate, model }) => (candidate.providerKeys ? [] : [model])),
+        );
+        const picks = resolved.flatMap(({ candidate, model }) => {
+          const servable =
+            model && candidate.providerKeys
+              ? Boolean(candidate.providerKeys[String(model.provider)])
+              : Boolean(model && keyForModel(companyKeys, model));
+          return model && servable ? [{ candidate, model }] : [];
+        });
+        if (!picks.length) {
+          yield { type: "unsupported" };
+          return;
+        }
+        yield { type: "start", modelId: picks[0]!.candidate.modelId };
+        for (const [index, pick] of picks.entries()) {
+          const personal = pick.candidate.providerKeys;
+          const runtime = await buildModelRuntime(personal ?? companyKeys, personal ? undefined : modelGateway);
+          let streamed = false;
+          let retry = false;
+          for await (const event of streamVoiceReplyOn(runtime, pick.model, pick.candidate.reasoning, input)) {
+            if (event.type === "end" && event.outcome === "error" && !streamed && index < picks.length - 1) {
+              retry = true;
+              break;
+            }
+            if (event.type === "delta" || event.type === "tool_call") streamed = true;
+            yield event;
+          }
+          if (!retry) return;
+        }
       },
     },
   );

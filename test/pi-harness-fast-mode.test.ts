@@ -49,7 +49,7 @@ test('applyFastSpeed injects service_tier:"priority" for OpenAI-API models', () 
 });
 
 test("modelSupportsFastMode covers the GPT-6 family (priority tier)", () => {
-  for (const id of ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-luna"]) {
+  for (const id of ["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-luna"]) {
     assert.equal(modelSupportsFastMode(id), true, id);
   }
 });

@@ -84,6 +84,7 @@ test("the harness router mirrors for foreign adapters and leaves native-tape ada
   const adapterFor = (id: string, capabilities: string[]) =>
     ({
       profile: { id, capabilities: new Set(capabilities) },
+      models: {},
       turns: {
         async runTurn(input: HarnessTurnInput) {
           await input.emit({ type: "user", payload: { text: "hi" }, scopeLabel: scope });

@@ -1,7 +1,7 @@
 import { createChatSurface } from "./chat";
 import { createComposerSurface } from "./composer";
 import { densityTierFor, type DensityTier } from "./density";
-import { subscribeDeliveries } from "./core-bridge";
+import { subscribeDeliveries, type SessionStateEvent } from "./core-bridge";
 import { applySessionState } from "./session-list";
 import { refreshSessions, renderList, sessionsState } from "./sessions";
 import { appState } from "./shell-state";
@@ -77,6 +77,19 @@ export function onInboxResync(fn: () => void): void {
   inboxResyncHandler = fn;
 }
 
+const sessionStateListeners = new Set<(event: SessionStateEvent) => void>();
+const sessionStateResyncListeners = new Set<() => void>();
+
+export function onSessionState(listener: (event: SessionStateEvent) => void): () => void {
+  sessionStateListeners.add(listener);
+  return () => sessionStateListeners.delete(listener);
+}
+
+export function onSessionStateResync(listener: () => void): () => void {
+  sessionStateResyncListeners.add(listener);
+  return () => sessionStateResyncListeners.delete(listener);
+}
+
 let deliveryStreamOpen = false;
 
 export function ensureDeliveryStream(): void {
@@ -88,6 +101,7 @@ export function ensureDeliveryStream(): void {
       for (const conv of live) conv.onDelivery(threadRef);
     },
     (event) => {
+      for (const listener of sessionStateListeners) listener(event);
       if (event.state === "metadata") {
         void refreshSessions({ silent: true });
         return;
@@ -104,7 +118,10 @@ export function ensureDeliveryStream(): void {
       if (event.state === "working") for (const conv of live) conv.resumeIfIdle();
       else for (const conv of live) conv.onDelivery(event.threadRef);
     },
-    () => void refreshSessions({ silent: true }),
+    () => {
+      void refreshSessions({ silent: true });
+      for (const listener of sessionStateResyncListeners) listener();
+    },
     (event) => inboxItemHandler?.(event),
     () => inboxResyncHandler?.(),
   );

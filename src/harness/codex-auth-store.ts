@@ -1,6 +1,8 @@
 import { CODEX_OAUTH_ISSUER, asObject, codexOAuthJwtAccountId, type JsonObject } from "./codex-auth-file.ts";
-import { codexOAuthRefreshToken, readCodexOAuthAuthFile, sanitizedCodexOAuthAuth } from "./codex-auth-file.ts";
+import { codexOAuthAccessToken, codexOAuthRefreshToken, readCodexOAuthAuthFile } from "./codex-auth-file.ts";
+import { sanitizedCodexOAuthAuth } from "./codex-auth-file.ts";
 import type { CredentialFile, Keychain } from "../credentials/keychain.ts";
+import type { AdvisoryLock } from "../persistence/advisory-lock.ts";
 import { swallow } from "../util/errors.ts";
 import { acquireCodexOAuthAuthLock, writeCodexOAuthAuthFile } from "./codex-auth.ts";
 
@@ -27,6 +29,8 @@ const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 
 /** Refresh when the access token has less than this long to live. */
 const REFRESH_SKEW_MS = 5 * 60_000;
+const REFRESH_TIMEOUT_MS = 15_000;
+const REFRESH_RETRY_MS = 60_000;
 
 const CODEX_AUTH_FILE_PATHS = [".codex/auth.json", "codex/auth.json"];
 
@@ -42,7 +46,7 @@ function jwtExpiryMs(token: unknown): number | undefined {
 
 /** Epoch ms when this auth's access token expires, if it carries an exp claim. */
 export function codexOAuthAccessTokenExpiresAt(auth: JsonObject | null): number | undefined {
-  return jwtExpiryMs(asObject(auth?.tokens)?.access_token);
+  return jwtExpiryMs(codexOAuthAccessToken(auth));
 }
 
 /** Validate an already-parsed auth.json value the same way readCodexOAuthAuthFile validates a file. */
@@ -114,6 +118,7 @@ async function refreshCodexOAuth(auth: JsonObject, fetchImpl: typeof fetch): Pro
       refresh_token: refreshToken,
       scope: "openid profile email",
     }),
+    signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS),
   });
   if (!response.ok) throw new Error(`Codex OAuth refresh failed: HTTP ${response.status}`);
   const body = asObject(await response.json().catch(() => null));
@@ -140,12 +145,31 @@ function authNeedsRefresh(auth: JsonObject, now: number): boolean {
   return typeof expiresAt === "number" && expiresAt - now < REFRESH_SKEW_MS;
 }
 
+function centralRefresh(label: string, now: () => number) {
+  let inFlight: Promise<JsonObject | null> | null = null;
+  let retryAt = 0;
+  return async (rotate: () => Promise<JsonObject | null>): Promise<JsonObject | null> => {
+    if (now() < retryAt) return null;
+    inFlight ??= rotate().finally(() => {
+      inFlight = null;
+    });
+    try {
+      return await inFlight;
+    } catch (error) {
+      retryAt = now() + REFRESH_RETRY_MS;
+      swallow(label, error);
+      return null;
+    }
+  };
+}
+
 interface KeychainCodexAuthStoreDeps {
   keychain: Keychain;
   /** Keychain credential id of the user's Codex ChatGPT login (a file credential holding auth.json). */
   credentialId: string;
   fetchImpl?: typeof fetch;
   now?: () => number;
+  lock?: AdvisoryLock;
 }
 
 function codexAuthFromFiles(files: CredentialFile[]): { path: string; auth: JsonObject } | null {
@@ -172,7 +196,7 @@ function codexAuthFromFiles(files: CredentialFile[]): { path: string; auth: Json
 export function keychainCodexAuthStore(deps: KeychainCodexAuthStoreDeps): CodexAuthStore {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const now = deps.now ?? Date.now;
-  let refreshing: Promise<JsonObject | null> | null = null;
+  const refresh = centralRefresh("codex: central oauth refresh", now);
 
   const readCurrent = async (): Promise<{
     ownerId: string;
@@ -214,23 +238,18 @@ export function keychainCodexAuthStore(deps: KeychainCodexAuthStoreDeps): CodexA
       const current = await readCurrent();
       if (!current) return null;
       if (!authNeedsRefresh(current.auth, now())) return current.auth;
-      // Single refresh in flight per store; concurrent loads share it.
-      refreshing ??= (async () => {
-        try {
-          const next = await refreshCodexOAuth(current.auth, fetchImpl);
-          if (!next) return null;
-          await persist(current, codexOAuthRefreshToken(current.auth), next);
-          return next;
-        } finally {
-          refreshing = null;
-        }
-      })();
-      try {
-        const refreshed = await refreshing;
-        if (refreshed) return refreshed;
-      } catch (error) {
-        swallow("codex: central oauth refresh", error);
-      }
+      const rotate = async () => {
+        const latest = await readCurrent();
+        if (!latest || !authNeedsRefresh(latest.auth, now())) return latest?.auth ?? null;
+        const next = await refreshCodexOAuth(latest.auth, fetchImpl);
+        if (!next) return null;
+        await persist(latest, codexOAuthRefreshToken(latest.auth), next);
+        return next;
+      };
+      const refreshed = await refresh(() =>
+        deps.lock ? deps.lock.withLock(`codex-oauth-refresh:${deps.credentialId}`, rotate) : rotate(),
+      );
+      if (refreshed) return refreshed;
       // A stale access token is still worth handing out: the provider decides.
       return (await readCurrent())?.auth ?? current.auth;
     },
@@ -248,37 +267,27 @@ export function fileCodexAuthStore(
   fetchImpl: typeof fetch = fetch,
   now: () => number = Date.now,
 ): CodexAuthStore {
-  let refreshing: Promise<JsonObject | null> | null = null;
+  const refresh = centralRefresh("codex: file oauth refresh", now);
   return {
     description: `auth file ${path}`,
     async load(): Promise<JsonObject | null> {
       const current = readCodexOAuthAuthFile(path);
       if (!current) return null;
       if (!authNeedsRefresh(current, now())) return current;
-      refreshing ??= (async () => {
+      const refreshed = await refresh(async () => {
+        const next = await refreshCodexOAuth(current, fetchImpl);
+        if (!next) return null;
+        const lock = await acquireCodexOAuthAuthLock(path, undefined, 10_000, 25);
         try {
-          const next = await refreshCodexOAuth(current, fetchImpl);
-          if (!next) return null;
-          const lock = await acquireCodexOAuthAuthLock(path, undefined, 10_000, 25);
-          try {
-            const latest = readCodexOAuthAuthFile(path);
-            // Compare-and-set: refuse if another process rotated first.
-            if (!latest || codexOAuthRefreshToken(latest) !== codexOAuthRefreshToken(current)) return latest;
-            writeCodexOAuthAuthFile(path, next);
-          } finally {
-            await lock.release();
-          }
-          return next;
+          const latest = readCodexOAuthAuthFile(path);
+          if (!latest || codexOAuthRefreshToken(latest) !== codexOAuthRefreshToken(current)) return latest;
+          writeCodexOAuthAuthFile(path, next);
         } finally {
-          refreshing = null;
+          await lock.release();
         }
-      })();
-      try {
-        const refreshed = await refreshing;
-        if (refreshed) return refreshed;
-      } catch (error) {
-        swallow("codex: file oauth refresh", error);
-      }
+        return next;
+      });
+      if (refreshed) return refreshed;
       return readCodexOAuthAuthFile(path) ?? current;
     },
   };

@@ -5,6 +5,8 @@ import {
   type HarnessDetectResult,
   type HarnessTurnInput,
   type HarnessTurnResult,
+  type HarnessVoiceReplyEvent,
+  type HarnessVoiceReplyInput,
 } from "./harness.ts";
 import { classifyScopeLabel } from "../classify/scope-classifier.ts";
 import { NonRetryableTurnError, TitleRejected } from "../core/turn-error.ts";
@@ -1084,6 +1086,58 @@ export function createMockHarness(): Harness {
         if (command.includes("!summary-hang")) return new Promise(() => {});
         if (command.includes("!summary-none")) return Promise.resolve(undefined);
         return Promise.resolve(`In plain English: ${command.split("\n")[0]!.slice(0, 80)} (${reason}).`);
+      },
+
+      async *streamVoiceReply(input: HarnessVoiceReplyInput): AsyncGenerator<HarnessVoiceReplyEvent> {
+        const lastUser = [...input.messages].reverse().find((message) => message.role === "user")?.content ?? "";
+        const candidate = input.candidates[0];
+        if (!candidate || lastUser.includes("!voice-unsupported")) {
+          yield { type: "unsupported" };
+          return;
+        }
+        const started = Date.now();
+        yield { type: "start", modelId: candidate.modelId };
+        const end = (outcome: "done" | "error" | "aborted", output: number): HarnessVoiceReplyEvent => ({
+          type: "end",
+          modelId: candidate.modelId,
+          outcome,
+          usage: {
+            input: countTokens(input.systemPrompt + JSON.stringify(input.messages)),
+            output,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: output,
+            costUsd: 0.0005,
+          },
+          ttftMs: 1,
+          durationMs: Date.now() - started,
+          ...(outcome === "error" ? { error: "mock voice failure" } : {}),
+        });
+        if (lastUser.includes("!voice-hang")) {
+          yield { type: "delta", text: "Un momento" };
+          await new Promise<void>((resolve) => {
+            if (input.signal.aborted) resolve();
+            else input.signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+          yield end("aborted", 2);
+          return;
+        }
+        if (lastUser.includes("!voice-error")) {
+          yield end("error", 0);
+          return;
+        }
+        if (lastUser.includes("!voice-tool") && input.tools.some((tool) => tool.name === "delegate_task")) {
+          yield {
+            type: "tool_call",
+            id: "voice-call-1",
+            name: "delegate_task",
+            args: { instruction: lastUser.replace("!voice-tool", "").trim(), title: "Voice task" },
+          };
+          yield end("done", 5);
+          return;
+        }
+        for (const text of ["Vale, ", lastUser.trim() || "sin texto", "."]) yield { type: "delta", text };
+        yield end("done", 3);
       },
     },
   );

@@ -71,6 +71,11 @@ export default defineConfig({
       { find: /^highlight\.js\/lib\/languages\/.*$/, replacement: here("src/hljs-lang-stub.ts") },
     ],
   },
+  optimizeDeps: {
+    exclude: ["onnxruntime-web", "phonon-tts"],
+    include: ["@ricky0123/vad-web/dist/frame-processor.js", "@ricky0123/vad-web/dist/models/silero.js"],
+  },
+  worker: { format: "es" },
   build: {
     outDir: "dist-web",
     rollupOptions: { input: { main: here("index.html"), shared: here("shared.html") } },

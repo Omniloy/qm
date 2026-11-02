@@ -14,6 +14,7 @@ import { scopeId } from "../src/types.ts";
 import { isUnclassifiedWrite } from "../src/api/user-scoped-routes.ts";
 import { signedHeaders } from "../plugins/chassis/src/core-client.ts";
 import { authBrokerRoutes } from "../src/api/routes/auth-broker.ts";
+import { voiceRoutes } from "../src/api/routes/voice.ts";
 
 const SOURCE = "shared-source-auth-secret-for-tests-0001";
 const CAP = "core-only-capability-secret-for-tests-01";
@@ -173,6 +174,27 @@ describe("user-scoped routes require a portal-verified actor when enforcement is
       { "x-portal-identity": await token("U1") },
     );
     assert.equal(r.status, 403, "restoring another person's memory must not pass on a bare valid actor");
+  });
+
+  it("voice routes bind the asserted principal to the portal actor", async () => {
+    const alice = await token("U1");
+    assert.equal((await fetch(`${base}/v1/voice/access?principalId=U1`)).status, 401);
+    assert.equal(
+      (await fetch(`${base}/v1/voice/access?principalId=U2`, { headers: { "x-portal-identity": alice } })).status,
+      403,
+    );
+    const mine = await fetch(`${base}/v1/voice/access?principalId=U1`, { headers: { "x-portal-identity": alice } });
+    assert.equal(mine.status, 200);
+    assert.deepEqual(await mine.json(), { enabled: false });
+    const turn = { purpose: "reply", language: "es", messages: [{ role: "user", content: "hola" }], tools: false };
+    assert.equal((await post("/v1/voice/reply", { ...turn, principalId: "U1" })).status, 401);
+    assert.equal(
+      (await post("/v1/voice/reply", { ...turn, principalId: "U2" }, { "x-portal-identity": alice })).status,
+      403,
+    );
+    const own = await post("/v1/voice/reply", { ...turn, principalId: "U1" }, { "x-portal-identity": alice });
+    assert.equal(own.status, 403);
+    assert.deepEqual(await own.json(), { error: "feature_disabled" });
   });
 
   it("directory resolve requires a portal actor even though it names no identity field", async () => {
@@ -407,7 +429,7 @@ describe("user-scoped routes require a portal-verified actor when enforcement is
 
 describe("service-to-service writes are classified", () => {
   it("every auth:source write route is classified, so production gating cannot demand a portal identity from a plugin", () => {
-    const unclassified = authBrokerRoutes
+    const unclassified = [...authBrokerRoutes, ...voiceRoutes]
       .filter((route) => "path" in route && route.auth === "source")
       .map((route) => route as { method: string; path: string })
       .filter((route) => isUnclassifiedWrite(route.method, route.path))

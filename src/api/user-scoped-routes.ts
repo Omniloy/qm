@@ -21,6 +21,8 @@ const USER_SCOPED: Rule[] = [
   pat("GET", "/v1/inbox", { in: "query", name: "principalId" }),
   pat("GET", "/v1/inbox/access", { in: "query", name: "principalId" }),
   pat("PUT", "/v1/inbox", { in: "query", name: "principalId" }),
+  pat("GET", "/v1/voice/access", { in: "query", name: "principalId" }),
+  pat("POST", "/v1/voice/reply", { in: "body", name: "principalId" }),
   pat("GET", "/v1/loops/:id/ingestion", { in: "query", name: "principalId" }),
   pat("POST", "/v1/loops/:id/ingestion", { in: "query", name: "principalId" }),
   pat("PATCH", "/v1/loops/:id/ingestion/:sourceId", { in: "query", name: "principalId" }),

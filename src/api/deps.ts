@@ -1,6 +1,9 @@
 import type { ConnectorAppPrefs } from "../connectors/connector-apps.ts";
 import type { CodexProxy } from "../model/codex-proxy.ts";
 import type { HarnessAuthStore } from "../credentials/harness-auth-store.ts";
+import type { HarnessModelUtilities } from "../harness/harness.ts";
+import type { BudgetTracker } from "../ratelimit/budget.ts";
+import type { ModelGateway } from "../model/model-gateway.ts";
 import type { BrowserProviderSpec } from "../connectors/browser-providers.ts";
 import type { RelayHub } from "../browser-relay/relay.ts";
 import type { ExternalSlackPolicies } from "../resolution/external-slack.ts";
@@ -163,6 +166,9 @@ export interface ServerDeps {
   emailAuthDomain?: string;
   slackAllowFrom?: readonly string[];
   rateLimiter?: RateLimiter;
+  budget?: BudgetTracker;
+  modelGateway?: ModelGateway;
+  streamVoiceReply?: HarnessModelUtilities["streamVoiceReply"];
   sessions?: SessionStore;
   driveMounts?: {
     store: MountStore;

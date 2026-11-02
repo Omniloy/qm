@@ -258,10 +258,12 @@ export function createHarnessRouter(
   fastModeAllowed: (actorId: string | undefined) => Promise<boolean> = async () => true,
 ): Harness {
   const lastHarness = new Map<string, HarnessId>();
+  const streamVoiceReply = utility.models.streamVoiceReply ?? adapters.get("pi")?.models.streamVoiceReply;
   return {
     profile: utility.profile,
     models: {
       ...utility.models,
+      ...(streamVoiceReply ? { streamVoiceReply } : {}),
       async screenSecurity(input) {
         const adapter = input.harnessId && isHarnessId(input.harnessId) ? adapters.get(input.harnessId) : utility;
         return adapter?.models.screenSecurity?.(input);

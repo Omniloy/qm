@@ -12,6 +12,7 @@ import {
   type ModelProvider,
 } from "../model/pi-models.ts";
 import type { UserModelCredential, UserModelCredentialStore } from "../model/user-model-credential-store.ts";
+import type { ProviderKeys } from "../harness/pi-harness.ts";
 import {
   DEFAULT_MODEL_ACCOUNT_MODES,
   PERSONAL_MODEL_PROVIDERS,
@@ -76,6 +77,19 @@ export async function loadPersonalModelAccess(
     orgServed: served(reachable),
     strictOrgServed: served(ownProviders),
   };
+}
+
+export async function piRoutingAuth(
+  routing: IndividualAuthRouting,
+  store: Pick<UserModelCredentialStore, "derivedOAuth">,
+  actorId: string,
+): Promise<{ providerKeys: ProviderKeys; model: string | undefined } | null | undefined> {
+  if (routing?.kind === "apikey") return { providerKeys: { [routing.provider]: routing.apiKey }, model: routing.model };
+  if (routing?.kind !== "oauth" || routing.provider !== "openai" || routing.harness !== "pi") return undefined;
+  const derived = await store.derivedOAuth(actorId, "openai");
+  return derived
+    ? { providerKeys: { [CODEX_SUBSCRIPTION_PROVIDER]: derived.accessToken }, model: routing.model }
+    : null;
 }
 
 export function servedByUnavailableFallback(

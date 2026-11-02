@@ -150,7 +150,7 @@ import { createAuditLog, type AuditLog } from "./audit/audit-log.ts";
 import { createPostgresAuditLog } from "./admin/postgres-audit-log.ts";
 import { createRateLimiter, type RateLimiter } from "./ratelimit/rate-limiter.ts";
 import { createPostgresRateLimiter } from "./ratelimit/postgres-rate-limiter.ts";
-import { createBudgetTracker, estimateCostUsd } from "./ratelimit/budget.ts";
+import { createBudgetTracker, estimateCostUsd, type BudgetTracker } from "./ratelimit/budget.ts";
 import {
   sweepScreeningReports,
   type ScreeningHoldCount,
@@ -353,7 +353,8 @@ import type { SessionStore } from "./sessions/session-store.ts";
 import { createMockHarness } from "./harness/mock-harness.ts";
 import { createOpenCodeHarness, openCodeHarnessConfigOptions } from "./harness/opencode-harness.ts";
 import { createCodexHarness, codexHarnessConfigOptions } from "./harness/codex-harness.ts";
-import { keychainCodexAuthStore } from "./harness/codex-auth-store.ts";
+import { fileCodexAuthStore, keychainCodexAuthStore } from "./harness/codex-auth-store.ts";
+import { codexOAuthAccessToken } from "./harness/codex-auth-file.ts";
 import { keychainHarnessAuthEnv } from "./credentials/harness-auth-env.ts";
 import { probeClaudeSubscription } from "./credentials/claude-subscription-probe.ts";
 import { createClaudeHarness, claudeHarnessConfigOptions } from "./harness/claude-harness.ts";
@@ -562,6 +563,8 @@ export interface BuiltApp {
   oauthFlows: OAuthFlowStore;
   secretDrops: SecretDropStore;
   modelGateway: ModelGateway;
+  budget: BudgetTracker;
+  harness: Harness;
   modelCredentials: ModelCredentialStore;
   harnessAuth: HarnessAuthStore;
   browserProviders: readonly BrowserProviderSpec[];
@@ -1482,6 +1485,14 @@ export function buildApp(
     await refreshCustomProviders();
     await modelRegistry.refresh();
   };
+  const orgCodexFileStore = config.codexAuthFile ? fileCodexAuthStore(config.codexAuthFile) : undefined;
+  const orgCodexAuthStore =
+    config.codexAuthCredential && keychain
+      ? keychainCodexAuthStore({ keychain, credentialId: config.codexAuthCredential, lock: advisoryLock })
+      : orgCodexFileStore;
+  const orgCodexAccessToken = async (): Promise<string | undefined> =>
+    codexOAuthAccessToken(await orgCodexAuthStore?.load().catch(swallowAs("model: org codex sign-in", null))) ??
+    (config.codexProcessEnv.CODEX_ACCESS_TOKEN || undefined);
   const resolveModelProviderKeys = async () => {
     await refreshModels();
     const [anthropic, openai, openrouter, enabledCustom] = await Promise.all([
@@ -1566,6 +1577,7 @@ export function buildApp(
         modelGateway: gatewayTransport,
         resolveBaseModelId: () => orgBaseModelId() ?? defaultForHarness("pi"),
         resolveProviderKeys: resolveModelProviderKeys,
+        resolveSubscriptionToken: orgCodexAccessToken,
         signals: runSignals,
       }),
     ],
@@ -1599,13 +1611,7 @@ export function buildApp(
       "codex",
       createCodexHarness({
         ...codexHarnessConfigOptions(config),
-        // Keychain custody: the subscription login lives encrypted in its
-        // owner's keychain; core refreshes it centrally and hands the harness
-        // ephemeral derived material. The credential can be (re)registered at
-        // runtime — resolution happens on every load.
-        ...(config.codexAuthCredential && keychain
-          ? { authStore: keychainCodexAuthStore({ keychain, credentialId: config.codexAuthCredential }) }
-          : {}),
+        ...(orgCodexAuthStore ? { authStore: orgCodexAuthStore } : {}),
         signals: runSignals,
         tasks,
       }),
@@ -3070,6 +3076,8 @@ export function buildApp(
     oauthFlows,
     secretDrops,
     modelGateway,
+    budget,
+    harness,
     modelCredentials,
     harnessAuth,
     browserProviders,
@@ -3231,6 +3239,9 @@ export function serverDeps(
       ? { inviteMailer: createResendMailer(config.resendApiKey, config.emailFrom) }
       : {}),
     rateLimiter: built.rateLimiter,
+    budget: built.budget,
+    modelGateway: built.modelGateway,
+    streamVoiceReply: built.harness.models.streamVoiceReply,
     acl: built.acl,
     credentialUsage: built.credentialUsage,
     deviceFlowCutover: built.deviceFlowCutover,
