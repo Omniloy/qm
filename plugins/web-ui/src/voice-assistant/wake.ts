@@ -68,7 +68,6 @@ function phonetic(word: string): string {
     .replace(/qu/g, "k")
     .replace(/ll/g, "y")
     .replace(/d?j/g, "y")
-    .replace(/mn/g, "m")
     .replace(/c(?=[eiy])/g, "s")
     .replace(/c/g, "k")
     .replace(/h/g, "")
@@ -93,6 +92,10 @@ function editDistance(a: string, b: string): number {
   return previous[b.length];
 }
 
+function blended(word: string): string {
+  return word.replace(/mn/g, "m");
+}
+
 function similarity(a: string, b: string): number {
   const longest = Math.max(a.length, b.length);
   if (longest === 0) return 0;
@@ -114,7 +117,8 @@ function bestName(tokens: readonly Token[], start: number, name: string): Candid
   let joined = "";
   for (let n = 1; n <= MAX_NAME_TOKENS && start + n <= tokens.length; n++) {
     joined += tokens[start + n - 1].text;
-    const score = similarity(phonetic(joined), name);
+    const said = phonetic(joined);
+    const score = n === 1 ? similarity(blended(said), blended(name)) : similarity(said, name);
     if (score > best.score) best = { score, consumed: n };
   }
   return best;
@@ -148,7 +152,8 @@ export function matchWake(transcript: string, phrase: string): WakeMatch {
     }
   }
   for (const greeting of [configuredGreeting.join(""), ...variants]) {
-    if (greeting) candidates.push({ score: similarity(tokens[0].phonetic, greeting + name), consumed: 1 });
+    if (greeting)
+      candidates.push({ score: similarity(blended(tokens[0].phonetic), blended(greeting + name)), consumed: 1 });
   }
   if (tokens.length > 1) {
     const greeting = greetingScore(tokens[0], variants);

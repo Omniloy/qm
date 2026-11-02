@@ -127,6 +127,10 @@ export function voicesFor(engine: TtsEngineId, language: VoiceLanguage): TtsVoic
   return ALL_VOICES.filter((voice) => voice.engine === engine && voice.languages.includes(language));
 }
 
+export function knownVoice(language: VoiceLanguage, voice: unknown): voice is string {
+  return ALL_VOICES.some((option) => option.id === voice && option.languages.includes(language));
+}
+
 export function supportedVoice(engine: TtsEngineId, language: VoiceLanguage, voice: unknown): string {
   if (voicesFor(engine, language).some((option) => option.id === voice)) return voice as string;
   const gender = ALL_VOICES.find((option) => option.id === voice)?.gender ?? "female";

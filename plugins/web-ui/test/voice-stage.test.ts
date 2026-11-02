@@ -392,8 +392,11 @@ test("the dock switches between open mic and push to talk", async () => {
     ],
   );
   radios[0]!.click();
+  radios[1]!.focus();
   radios[1]!.click();
   assert.deepEqual(calls, ["mic:push"]);
+  await settle();
+  assert.equal(document.activeElement, host.querySelector(".voice-stage-orb .qm-voice-orb-button"));
   stage.destroy();
 });
 

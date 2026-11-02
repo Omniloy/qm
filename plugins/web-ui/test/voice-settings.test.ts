@@ -297,6 +297,17 @@ test("a refused save retries over the stored value and gives up after repeated r
   assert.equal(store.currentVoiceSettings().voice, "M1");
 });
 
+test("saves land in the order they were made even when an earlier one waits on a download", async () => {
+  let finishFirst: () => void = () => undefined;
+  const first = store.saveVoiceSettings({ voice: "M2" }, () => new Promise<void>((resolve) => (finishFirst = resolve)));
+  const second = store.saveVoiceSettings({ voice: "F3" });
+  await settle();
+  finishFirst();
+  await Promise.all([first, second]);
+  assert.equal((stored.get("voice-assistant")!.value as Record<string, unknown>).voice, "F3");
+  assert.equal(store.currentVoiceSettings().voice, "F3");
+});
+
 test("sizes read in the voice language", () => {
   assert.equal(formatBytes(1_287_000_000, "es"), "1,3 GB");
   assert.equal(formatBytes(1_287_000_000, "en"), "1.3 GB");

@@ -944,7 +944,10 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
     },
     applySettings() {
       deps.speech.post({ type: "config", language: deps.settings().language });
-      if (!pushMode() && pttActive) dropHold();
+      if (!pushMode() && pttActive) {
+        dropHold();
+        armIdle();
+      }
       if (pushMode() && state === "listening" && !pttActive) {
         setState("sleeping");
         return;

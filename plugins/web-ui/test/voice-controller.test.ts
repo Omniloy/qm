@@ -1319,5 +1319,8 @@ test("push to talk is ignored in open mode or while muted, and switching modes r
   c.applySettings();
   assert.equal(views.at(-1)!.pttActive, false);
   assert.equal(t.modes().at(-1), "awake");
+  assert.equal(c.state, "listening");
+  t.clock.advance(IDLE_TO_SLEEP_MS);
+  assert.equal(c.state, "sleeping");
   c.dispose();
 });

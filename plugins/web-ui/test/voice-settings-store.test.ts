@@ -28,11 +28,12 @@ test("records saved before engines were selectable move to the Phonon defaults a
   });
   assert.equal(migrated.ttsEngine, "phonon-40m");
   assert.equal(migrated.asrEngine, "phonon-2.5");
-  assert.equal(migrated.voice, MARCOS);
+  assert.equal(runnableVoiceSettings(migrated, true).voice, MARCOS);
   assert.equal(migrated.micMode, "open");
   assert.equal(migrated.pttStyle, "hold");
   assert.equal(migrated.announceScope, "voice");
-  assert.equal(parseVoiceSettings({ language: "en", voice: "F4", ttsEngine: "supertonic-3" }).voice, HARPER);
+  const english = parseVoiceSettings({ language: "en", voice: "F4", ttsEngine: "supertonic-3" });
+  assert.equal(runnableVoiceSettings(english, true).voice, HARPER);
 });
 
 test("an explicit Supertonic choice keeps its preset voice", () => {
@@ -47,7 +48,19 @@ test("a Phonon voice is kept for its language and replaced by the same gender's 
   assert.equal(parseVoiceSettings({ ...base, language: "es", voice: REBECA }).voice, REBECA);
   assert.equal(parseVoiceSettings({ ...base, language: "en", voice: CELIA }).voice, HARPER);
   assert.equal(parseVoiceSettings({ ...base, language: "es", voice: "unknown" }).voice, CELIA);
-  assert.equal(parseVoiceSettings({ ...base, ttsEngine: "supertonic-3", voice: CELIA }).voice, "F1");
+});
+
+test("a voice of another engine is kept as the preference and each engine speaks its own match", () => {
+  const stored = parseVoiceSettings({ asrEngine: "phonon-2.5", ttsEngine: "phonon-40m", voice: "M3" });
+  assert.equal(stored.ttsEngine, "phonon-40m");
+  assert.equal(stored.voice, "M3");
+  assert.equal(runnableVoiceSettings(stored, false).voice, "M3");
+  assert.equal(runnableVoiceSettings(stored, false).ttsEngine, "supertonic-3");
+  assert.equal(runnableVoiceSettings(stored, true).voice, MARCOS);
+  assert.equal(runnableVoiceSettings(stored, true).ttsEngine, "phonon-40m");
+  const supertonic = parseVoiceSettings({ asrEngine: "qwen3-asr-0.6b", ttsEngine: "supertonic-3", voice: CELIA });
+  assert.equal(supertonic.voice, CELIA);
+  assert.equal(runnableVoiceSettings(supertonic, true).voice, "F1");
 });
 
 test("mic mode and push-to-talk style are read when valid", () => {

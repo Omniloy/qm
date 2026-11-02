@@ -16,6 +16,7 @@ import {
   type TtsEngineId,
   type VoiceLanguage,
   type VoiceSettings,
+  unavailableModelKey,
 } from "./voice-assistant/protocol.ts";
 import {
   WAKE_PHRASE_MAX_CHARS,
@@ -26,6 +27,7 @@ import {
   saveVoiceSettings,
 } from "./voice-assistant/settings-store.ts";
 import { ALL_VOICES_OPTION, languageForVoice, pickerVoices, voiceOptions } from "./voice-assistant/voice-picker.ts";
+import { supportedVoice } from "./voice-assistant/voices.ts";
 
 export interface VoiceModelsApi {
   voiceModelStatus(settings: VoiceSettings): Promise<{
@@ -217,7 +219,7 @@ async function checkModels(api: () => Promise<VoiceModelsApi>, redraw: () => voi
 
 function downloadError(message: string, copy: (typeof COPY)[VoiceLanguage]): string {
   if (message === "voice_storage_full") return copy.storage;
-  return /^model_download_failed:.*:503$/.test(message) ? copy.unavailable : message;
+  return unavailableModelKey(message) === null ? message : copy.unavailable;
 }
 
 async function downloadModels(
@@ -491,6 +493,7 @@ export function voiceSettingsRows(
   const language = settings.language;
   const copy = COPY[language];
   const voices = pickerVoices(settings);
+  const voice = supportedVoice(settings.ttsEngine, language, settings.voice);
   return html`
     <div class="settings-row voice-enable-row">
       <div class="settings-row-copy">
@@ -564,8 +567,8 @@ export function voiceSettingsRows(
               fieldSelect({
                 className: "voice-voice-select",
                 ariaLabel: copy.voice,
-                value: settings.voice,
-                options: voiceOptions(voices, { language, voice: settings.voice, showAll: allVoices }),
+                value: voice,
+                options: voiceOptions(voices, { language, voice, showAll: allVoices }),
                 onChange: (value) => {
                   if (value === ALL_VOICES_OPTION) {
                     allVoices = true;
@@ -573,7 +576,7 @@ export function voiceSettingsRows(
                     return;
                   }
                   allVoices = false;
-                  if (value !== settings.voice && voices.some((voice) => voice.id === value))
+                  if (value !== voice && voices.some((choice) => choice.id === value))
                     void save({ voice: value, language: languageForVoice(settings, value) }, redraw, api);
                   else redraw();
                 },

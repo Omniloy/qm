@@ -8,7 +8,7 @@ import {
   type VoiceReplyRequest,
   type VoiceSettings,
 } from "../src/voice-assistant/protocol.ts";
-import { parseVoiceSettings } from "../src/voice-assistant/settings-store.ts";
+import { parseVoiceSettings, runnableVoiceSettings } from "../src/voice-assistant/settings-store.ts";
 import { isVoiceThread, runVoiceTool, taskSummaries, type VoiceToolDeps } from "../src/voice-assistant/tools.ts";
 
 const REQUEST: VoiceReplyRequest = {
@@ -270,4 +270,23 @@ test("set_language and set_voice change the settings and validate their argument
       JSON.stringify(args),
     );
   assert.equal(log.length, 5, "invalid calls never touch the settings");
+});
+
+test("set_voice on the fallback engine picks from the voices the model was offered and keeps the chosen engine", async () => {
+  let stored: VoiceSettings = { ...DEFAULT_VOICE_SETTINGS, enabled: true };
+  const runtime = () => runnableVoiceSettings(stored, false);
+  const { deps: d } = deps([], {
+    settings: runtime,
+    saveSettings: async (patch) => {
+      stored = parseVoiceSettings({ ...stored, ...patch });
+      return runtime();
+    },
+  });
+  assert.equal(runtime().ttsEngine, "supertonic-3");
+  const named = await runVoiceTool({ id: "c", name: "set_voice", args: { voice: "M3" } }, d);
+  assert.deepEqual(JSON.parse(named.content), { ok: true, voice: "M3", label: "Voz masculina 3" });
+  const next = await runVoiceTool({ id: "c", name: "set_voice", args: { next: true } }, d);
+  assert.equal(JSON.parse(next.content).voice, "M4");
+  assert.equal(stored.ttsEngine, "phonon-40m");
+  assert.equal(runnableVoiceSettings(stored, true).ttsEngine, "phonon-40m");
 });

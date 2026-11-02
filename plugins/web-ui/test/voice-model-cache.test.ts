@@ -21,7 +21,7 @@ import {
   asrVariantFor,
 } from "../src/voice-assistant/asr/models.ts";
 import { VOICE_MODEL_FILES, VOICE_MODEL_FILES_BY_KEY } from "../src/voice-assistant/models.ts";
-import { ASR_VARIANTS, modelFileKey } from "../src/voice-assistant/protocol.ts";
+import { ASR_VARIANTS, modelFileKey, unavailableModelKey } from "../src/voice-assistant/protocol.ts";
 import type { ModelFile, ModelProgress } from "../src/voice-assistant/protocol.ts";
 
 class FakeCache {
@@ -147,6 +147,13 @@ test("an upstream error status throws model_download_failed", async () => {
   const file = fileFor("gone.bin", new Uint8Array(3));
   serve({}, 502);
   await assert.rejects(ensureModelFiles([file], { url: urlFor }), /model_download_failed:.*:502/);
+});
+
+test("only a 503 from the proxy marks a model unavailable, other statuses are ordinary failures", () => {
+  assert.equal(unavailableModelKey("model_download_failed:org/model@main/voice.bin:503"), "org/model@main/voice.bin");
+  for (const status of [401, 403, 429, 502, 504])
+    assert.equal(unavailableModelKey(`model_download_failed:org/model@main/voice.bin:${status}`), null, String(status));
+  assert.equal(unavailableModelKey("voice_storage_full"), null);
 });
 
 test("an aborted signal stops before downloading", async () => {

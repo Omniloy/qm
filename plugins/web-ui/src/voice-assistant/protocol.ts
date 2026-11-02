@@ -237,6 +237,10 @@ export function modelFileKey(file: Pick<ModelFile, "repo" | "revision" | "path">
   return `${file.repo}@${file.revision}/${file.path}`;
 }
 
+export function unavailableModelKey(message: string): string | null {
+  return /^model_download_failed:(.+):503$/.exec(message)?.[1] ?? null;
+}
+
 export interface ModelProgress {
   key: string;
   loaded: number;

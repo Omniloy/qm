@@ -96,6 +96,9 @@ test("the default phrase does not wake on unrelated speech", () => {
   assert.deepEqual(wake("le dije a omni que esperara", OMNI), [false, ""]);
   assert.deepEqual(wake("omnipresente", OMNI), [false, ""]);
   assert.deepEqual(wake("hoy hace calor", OMNI), [false, ""]);
+  assert.deepEqual(wake("Oh, mi madre", OMNI), [false, ""]);
+  assert.deepEqual(wake("oh mi dios", OMNI), [false, ""]);
+  assert.deepEqual(wake("o mi", OMNI), [false, ""]);
 });
 
 test("the score is reported even when the phrase does not wake", () => {

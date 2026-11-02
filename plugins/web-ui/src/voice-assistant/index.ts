@@ -31,6 +31,7 @@ import {
   DEFAULT_VAD_OPTIONS,
   VOICE_CHANNEL_NAME,
   modelFileKey,
+  unavailableModelKey,
   type AsrEngineId,
   type ModelFile,
   type PlaybackWorkletIn,
@@ -46,7 +47,6 @@ import {
 import {
   currentVoiceSettings,
   onVoiceSettingsChange,
-  parseVoiceSettings,
   saveVoiceSettings,
   storeVoiceMuted,
   storedVoiceMuted,
@@ -214,12 +214,8 @@ async function ensureVoiceFiles(chosen: VoiceSettings): Promise<void> {
 }
 
 async function saveSettings(patch: Partial<VoiceSettings>): Promise<VoiceSettings> {
-  const pinned =
-    patch.voice !== undefined && patch.ttsEngine === undefined
-      ? { ttsEngine: runtimeSettings().ttsEngine, ...patch }
-      : patch;
-  if (session) await ensureVoiceFiles(parseVoiceSettings({ ...currentVoiceSettings(), ...pinned }));
-  return saveVoiceSettings(pinned);
+  const saved = await saveVoiceSettings(patch, (next) => (session ? ensureVoiceFiles(next) : Promise.resolve()));
+  return effectiveVoiceSettings(saved, gatedModels);
 }
 
 function changeVoiceSettings(patch: Partial<VoiceSettings>): void {
@@ -264,7 +260,7 @@ function onVisibility(): void {
 function toolDeps(user: string, titles: Map<string, string>): VoiceToolDeps {
   return {
     user,
-    settings: currentVoiceSettings,
+    settings: runtimeSettings,
     saveSettings,
     sessions: sessionsNow,
     startTurn: (body) =>
@@ -324,7 +320,7 @@ function failedDownload(
   files: readonly ModelFile[],
   settings: VoiceSettings,
 ): AsrEngineId | TtsEngineId | null {
-  const key = /^model_download_failed:(.+):\d+$/.exec(errMessage(error))?.[1];
+  const key = unavailableModelKey(errMessage(error));
   const file = files.find((candidate) => modelFileKey(candidate) === key);
   if (!file) return null;
   return file.role === "asr" ? settings.asrEngine : settings.ttsEngine;

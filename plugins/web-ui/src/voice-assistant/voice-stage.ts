@@ -424,7 +424,9 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
             aria-checked=${view.micMode === mode ? "true" : "false"}
             data-value=${mode}
             @click=${() => {
-              if (mode !== view.micMode) handlers.onMicMode(mode);
+              if (mode === view.micMode) return;
+              handlers.onMicMode(mode);
+              focusOrb();
             }}
           >
             ${copy.modes[mode]}

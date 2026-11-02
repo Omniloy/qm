@@ -14,7 +14,7 @@ import {
   type VoiceSettings,
 } from "./protocol.ts";
 import { ttsEngineFiles } from "./tts/models.ts";
-import { supportedVoice } from "./voices.ts";
+import { knownVoice, supportedVoice } from "./voices.ts";
 
 export const WAKE_PHRASE_MAX_CHARS = 60;
 const SAVE_ATTEMPTS = 3;
@@ -24,6 +24,7 @@ type Listener = (settings: VoiceSettings) => void;
 let current: VoiceSettings = { ...DEFAULT_VOICE_SETTINGS };
 let updatedAt = 0;
 let loading: Promise<VoiceSettings> | null = null;
+let saving: Promise<unknown> = Promise.resolve();
 const listeners = new Set<Listener>();
 
 function member<T extends string>(values: readonly T[], value: unknown): value is T {
@@ -49,7 +50,9 @@ export function parseVoiceSettings(value: unknown): VoiceSettings {
     announceScope: member(ANNOUNCE_SCOPES, raw.announceScope)
       ? raw.announceScope
       : DEFAULT_VOICE_SETTINGS.announceScope,
-    voice: supportedVoice(ttsEngine, language, raw.voice ?? DEFAULT_VOICE_SETTINGS.voice),
+    voice: knownVoice(language, raw.voice)
+      ? raw.voice
+      : supportedVoice(ttsEngine, language, raw.voice ?? DEFAULT_VOICE_SETTINGS.voice),
     ttsEngine,
     asrEngine: member(ASR_ENGINE_IDS, raw.asrEngine) ? raw.asrEngine : DEFAULT_VOICE_SETTINGS.asrEngine,
     micMode: member(MIC_MODES, raw.micMode) ? raw.micMode : DEFAULT_VOICE_SETTINGS.micMode,
@@ -68,8 +71,9 @@ export function runnableVoiceSettings(
   const asrEngine = failed.has(settings.asrEngine) ? FALLBACK_ASR_ENGINE : settings.asrEngine;
   const gated = !gatedModels && ttsEngineFiles(settings.ttsEngine).some((file) => file.gated);
   const ttsEngine = gated || failed.has(settings.ttsEngine) ? FALLBACK_TTS_ENGINE : settings.ttsEngine;
-  if (asrEngine === settings.asrEngine && ttsEngine === settings.ttsEngine) return settings;
-  return { ...settings, asrEngine, ttsEngine, voice: supportedVoice(ttsEngine, settings.language, settings.voice) };
+  const voice = supportedVoice(ttsEngine, settings.language, settings.voice);
+  if (asrEngine === settings.asrEngine && ttsEngine === settings.ttsEngine && voice === settings.voice) return settings;
+  return { ...settings, asrEngine, ttsEngine, voice };
 }
 
 export function currentVoiceSettings(): VoiceSettings {
@@ -92,7 +96,19 @@ export function loadVoiceSettings(): Promise<VoiceSettings> {
   return loading;
 }
 
-export async function saveVoiceSettings(patch: Partial<VoiceSettings>): Promise<VoiceSettings> {
+export function saveVoiceSettings(
+  patch: Partial<VoiceSettings>,
+  prepare?: (next: VoiceSettings) => Promise<void>,
+): Promise<VoiceSettings> {
+  const saved = saving.then(async () => {
+    await prepare?.(parseVoiceSettings({ ...current, ...patch }));
+    return writeVoiceSettings(patch);
+  });
+  saving = saved.catch(() => undefined);
+  return saved;
+}
+
+async function writeVoiceSettings(patch: Partial<VoiceSettings>): Promise<VoiceSettings> {
   for (let attempt = 0; attempt < SAVE_ATTEMPTS; attempt++) {
     const next = parseVoiceSettings({ ...adopt(await fetchUiState(VOICE_SETTINGS_UI_STATE_KEY)), ...patch });
     const at = Math.max(Date.now(), updatedAt + 1);
