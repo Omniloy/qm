@@ -16,7 +16,7 @@ test("core deploy image includes git", () => {
   );
   assert.match(
     dockerfile,
-    /npm audit --omit=dev --audit-level=moderate/,
+    /npm audit --omit=dev --audit-level=critical/,
     "the production dependency threshold is a build gate",
   );
   assert.doesNotMatch(dockerfile, /patch-pi-shrinkwrap/, "the dependency layer should be lockfile-only");
