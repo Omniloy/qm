@@ -335,6 +335,7 @@ interface LocalSandboxEnv {
   coreContainer?: string;
   defaultTimeoutSec?: number;
   networkPool?: string;
+  dockerSocket?: string;
 }
 
 function localSandboxEnv(env: NodeJS.ProcessEnv): LocalSandboxEnv {
@@ -342,6 +343,7 @@ function localSandboxEnv(env: NodeJS.ProcessEnv): LocalSandboxEnv {
     ...(env.LOCAL_SANDBOX_IMAGE ? { image: env.LOCAL_SANDBOX_IMAGE } : {}),
     ...(env.LOCAL_SANDBOX_DOCKER_BIN ? { dockerBin: env.LOCAL_SANDBOX_DOCKER_BIN } : {}),
     ...(env.LOCAL_SANDBOX_NETWORK_POOL ? { networkPool: env.LOCAL_SANDBOX_NETWORK_POOL } : {}),
+    ...(env.DOCKER_HOST?.startsWith("unix://") ? { dockerSocket: env.DOCKER_HOST.slice("unix://".length) } : {}),
     ...(env.QM_CORE_CONTAINER ? { coreContainer: env.QM_CORE_CONTAINER } : {}),
     ...(numEnvStrict("LOCAL_SANDBOX_CPUS", env.LOCAL_SANDBOX_CPUS) !== undefined
       ? { cpus: numEnvStrict("LOCAL_SANDBOX_CPUS", env.LOCAL_SANDBOX_CPUS) }

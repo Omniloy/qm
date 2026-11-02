@@ -2,6 +2,7 @@ import type { Deployment, DeploymentVersion } from "./deploy-store.ts";
 import type { DeployApplyOptions, DeployEndpoint, DeployProvider } from "./deploy-provider.ts";
 import { spawnDockerExec, type DockerExec } from "../sandbox/docker-exec.ts";
 import { createDockerNetworkPool } from "../sandbox/docker-network-pool.ts";
+import { resolve } from "node:path";
 import { orgId } from "../config.ts";
 import { sleep } from "../util/async.ts";
 import { errMessage } from "../util/errors.ts";
@@ -16,6 +17,7 @@ const READY_POLL_MS = 250;
 const PROBE_TIMEOUT_MS = 1_500;
 const PROBE_CALL_TIMEOUT_MS = 3_000;
 const PORT_READ_ATTEMPTS = 3;
+const DESKTOP_HOST_MOUNT = /^\/host_mnt\//;
 const FAILURE_LOG_LINES = "40";
 const FAILURE_LOG_BYTES = 2_000;
 const APP_DATA_DIR = "/data";
@@ -265,6 +267,30 @@ export function createDockerDeployProvider(opts: DockerDeployProviderOptions = {
       liveEndpoints.delete(d.id);
       await dexec(["rm", "-f", name(d)]);
       await removeNetwork(network(d), d.ownerScopeId);
+    },
+
+    async destroyData(d: Deployment): Promise<void> {
+      const r = await dexec(["volume", "rm", dataVolume(d.id)]);
+      if (r.code !== 0 && !/no such volume/i.test(r.stderr))
+        throw new Error(`docker volume rm ${dataVolume(d.id)} failed: ${r.stderr.trim()}`);
+    },
+
+    async mountedDirs(): Promise<Set<string>> {
+      const listed = await dexec(["ps", "-a", "--filter", "name=agent-deploy-", "--format", "{{.ID}}"]);
+      if (listed.code !== 0) throw new Error(`docker ps failed: ${listed.stderr.trim()}`);
+      const ids = listed.stdout
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
+      const mounted = new Set<string>();
+      if (!ids.length) return mounted;
+      const inspected = await dexec(["inspect", "--format", '{{range .Mounts}}{{.Source}}{{"\\n"}}{{end}}', ...ids]);
+      if (inspected.code !== 0) throw new Error(`docker inspect failed: ${inspected.stderr.trim()}`);
+      for (const line of inspected.stdout.split("\n")) {
+        const source = line.trim();
+        if (source) mounted.add(resolve(source.replace(DESKTOP_HOST_MOUNT, "/")));
+      }
+      return mounted;
     },
 
     async resolveEndpoint(d: Deployment): Promise<DeployEndpoint | null> {

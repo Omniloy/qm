@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { JSDOM } from "jsdom";
-import { brandName, copyText } from "../src/ui.ts";
+import { brandName, copyText, formatBytes } from "../src/ui.ts";
 
 test("brand name defaults to QM", () => {
   const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document");
@@ -55,4 +55,11 @@ test("rapid copy feedback toggles a class and never rewrites the button markup",
     if (navigatorDescriptor) Object.defineProperty(globalThis, "navigator", navigatorDescriptor);
     else delete (globalThis as { navigator?: Navigator }).navigator;
   }
+});
+
+test("byte sizes scale up to gigabytes", () => {
+  assert.equal(formatBytes(512), "512 B");
+  assert.equal(formatBytes(150 * 1024), "150 KB");
+  assert.equal(formatBytes(148 * 1024 * 1024), "148.0 MB");
+  assert.equal(formatBytes(13.8 * 1024 * 1024 * 1024), "13.8 GB");
 });

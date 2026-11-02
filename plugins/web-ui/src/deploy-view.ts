@@ -1,8 +1,9 @@
-interface DeploymentVersionView {
+export interface DeploymentVersionView {
   version: number;
   createdAt: number;
   commit?: string;
   parentCommit?: string;
+  sizeBytes?: number;
 }
 
 export interface DeploymentView {
@@ -25,6 +26,8 @@ export interface DeploymentView {
   updatedAt?: number;
   lastAccessAt?: number;
   versions?: DeploymentVersionView[];
+  sizeBytes?: number;
+  maxVersions?: number;
 }
 
 export type DeploymentTab = "yours" | "shared" | "archived";
@@ -44,6 +47,18 @@ export function deploymentListRefreshCanRedraw(activeId?: string): boolean {
 
 export function deploymentCanManage(d: DeploymentView): boolean {
   return d.permission === "write";
+}
+
+export function deploymentVersionLive(d: DeploymentView, version: number): boolean {
+  return version === d.currentVersion || version === d.appliedVersion;
+}
+
+export function deploymentVersionDeletable(d: DeploymentView, version: number): boolean {
+  return deploymentCanManage(d) && !deploymentVersionLive(d, version);
+}
+
+export function deploymentCopiesLabel(count: number): string {
+  return count === 1 ? "1 copy" : `${count} copies`;
 }
 
 export function deploymentContextScope(d: DeploymentView): string | undefined {

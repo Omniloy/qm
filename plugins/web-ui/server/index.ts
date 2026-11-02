@@ -2709,6 +2709,18 @@ const apiRoutes: readonly WebRoute[] = [
     },
   },
   {
+    method: "DELETE",
+    path: "/api/deployments/:id/versions/:version",
+    handle: async (c) => {
+      const { res, user } = c;
+      const id = c.params.id!;
+      const version = c.params.version!;
+      if (!/^[1-9]\d*$/.test(version)) return json(res, 400, { error: "invalid_version" });
+      if (!(await gateManageDeployment(res, user, id))) return;
+      return relayCore(res, "DELETE", `/v1/deployments/${encodeURIComponent(id)}/versions/${version}`);
+    },
+  },
+  {
     method: "POST",
     path: "/api/deployments/:id/restore",
     handle: async (c) => {

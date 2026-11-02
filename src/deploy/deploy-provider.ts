@@ -24,6 +24,8 @@ export interface DeployProvider {
   apply(d: Deployment, version: DeploymentVersion, opts?: DeployApplyOptions): Promise<DeployEndpoint>;
   reconcile?(d: Deployment, version: DeploymentVersion, input: DeployReconcileInput): Promise<DeployEndpoint>;
   destroy(d: Deployment): Promise<void>;
+  destroyData?(d: Deployment): Promise<void>;
+  mountedDirs?(): Promise<Set<string>>;
   setAlwaysOn?(d: Deployment, alwaysOn: boolean): Promise<void>;
   resolveEndpoint?(d: Deployment, version: DeploymentVersion): Promise<DeployEndpoint | null>;
   invalidateEndpoint?(deploymentId: string): void;

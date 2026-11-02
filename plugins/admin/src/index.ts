@@ -314,11 +314,13 @@ const WRITES = new Map<string, string[]>([
   ["mcp-servers", ["PUT", "DELETE"]],
   ["screening-reports", ["POST"]],
   ["skill-trusts", ["POST", "DELETE"]],
+  ["disk", ["POST", "DELETE"]],
 ]);
 
 const READS = [
   "metrics",
   "spend",
+  "disk",
   "egress",
   "errors",
   "audit",

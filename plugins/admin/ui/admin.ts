@@ -17,6 +17,7 @@ export * as keychain from "./keychain.ts";
 export * as screening from "./screening.ts";
 export * as metrics from "./metrics.ts";
 export * as spend from "./spend.ts";
+export * as disk from "./disk.ts";
 export * as transcript from "./transcript.ts";
 export * as design from "./design.ts";
 export * as activity from "./activity.ts";

@@ -560,9 +560,10 @@ const FAMILIES: AgentApiFamily[] = [
       (m === "GET" && /^\/v1\/deployments\/[^/]+\/logs$/.test(p)) ||
       (m === "GET" && /^\/v1\/deployments\/[^/]+\/(git-url|share)$/.test(p)) ||
       (m === "POST" &&
-        /^\/v1\/deployments\/[^/]+\/(share|archive|restore|name|display-name|always-on|embed-ancestors)$/.test(p)),
+        /^\/v1\/deployments\/[^/]+\/(share|archive|restore|name|display-name|always-on|embed-ancestors)$/.test(p)) ||
+      (m === "DELETE" && /^\/v1\/deployments\/[^/]+\/versions\/[^/]+$/.test(p)),
     guidance:
-      'To see the published apps you can reach across scopes, GET /v1/deployments (each row carries your permission, the canonical app link `url`, and a clone/push gitUrl). Read what an app renders as the asking person with GET /v1/deployments/:id/fetch. A published app (`apps` action `publish`) is reachable only by its owner plus whoever the owner shares it with. For authenticated access, POST /v1/deployments/:id/share with `scope:"org"`, `recipient:"<name>"`, or an exact `email:"person@example.com"` with `access:"view"`; external email grants are view-only and send an invitation with the app link. Check `invitation.emailSent` and surface `emailProblem` if delivery fails. This does not make the recipient an instance member. To make the app reachable without sign-in, POST the same endpoint with `{public:true}`; `{public:false}` restricts it again. Public access is never the default and only the owner may change it. POST /v1/deployments/:id/embed-ancestors with `{embedAncestors:["https://tools.example.com", ...]}` lets those sites embed the app; pass `[]` to forbid embedding again. To rename, archive, restore, or change always-on behavior, use the corresponding endpoint.',
+      'To see the published apps you can reach across scopes, GET /v1/deployments (each row carries your permission, the canonical app link `url`, and a clone/push gitUrl). Read what an app renders as the asking person with GET /v1/deployments/:id/fetch. A published app (`apps` action `publish`) is reachable only by its owner plus whoever the owner shares it with. For authenticated access, POST /v1/deployments/:id/share with `scope:"org"`, `recipient:"<name>"`, or an exact `email:"person@example.com"` with `access:"view"`; external email grants are view-only and send an invitation with the app link. Check `invitation.emailSent` and surface `emailProblem` if delivery fails. This does not make the recipient an instance member. To make the app reachable without sign-in, POST the same endpoint with `{public:true}`; `{public:false}` restricts it again. Public access is never the default and only the owner may change it. POST /v1/deployments/:id/embed-ancestors with `{embedAncestors:["https://tools.example.com", ...]}` lets those sites embed the app; pass `[]` to forbid embedding again. To rename, archive, restore, or change always-on behavior, use the corresponding endpoint. Old copies are pruned automatically (newest 3 kept); DELETE /v1/deployments/:id/versions/:n removes one sooner.',
     routes: [
       {
         method: "GET",
@@ -636,6 +637,12 @@ const FAMILIES: AgentApiFamily[] = [
         method: "POST",
         path: "/v1/deployments/:id/restore",
         summary: "restore an archived app you manage by reapplying its current saved version",
+      },
+      {
+        method: "DELETE",
+        path: "/v1/deployments/:id/versions/:version",
+        summary:
+          "delete one saved copy (version) of an app you manage to free disk space — the live version cannot be deleted (409 version_live); returns {deleted, freedBytes}",
       },
     ],
   },
@@ -993,6 +1000,18 @@ const FAMILIES: AgentApiFamily[] = [
           "observability: audit log, error telemetry, turn metrics, outbound-destination log (logs: DM or effective Open sharing)",
       },
       { method: "GET", path: "/v1/admin/retention", summary: "org-wide usage and retention report" },
+      {
+        method: "GET",
+        path: "/v1/admin/disk",
+        summary:
+          "disk usage report: filesystem, components, apps with copies and sizes, sandboxes, files by scope; POST /v1/admin/disk/measure re-measures in the background",
+      },
+      {
+        method: "POST|DELETE",
+        path: "/v1/admin/disk/apps/:id[/stop|/versions/:version]",
+        summary:
+          "free disk: POST .../stop stops an app, DELETE .../apps/:id deletes an app and all its copies, DELETE .../versions/:version deletes one non-live copy; DELETE /v1/admin/disk/sandbox-containers/:name removes a stopped sandbox container (its home volume is kept)",
+      },
       {
         method: "GET",
         path: "/v1/admin/users",

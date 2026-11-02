@@ -2,7 +2,8 @@ import { notifyDeploymentShared } from "./share-notice.ts";
 import type { DeliveryStore } from "../delivery/delivery-store.ts";
 import { EMBED_ANCESTORS_HINT, parseEmbedAncestors } from "./embed-ancestors.ts";
 import { deploymentShareScope } from "./email-access.ts";
-import { mkdir, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join, dirname, resolve, relative, isAbsolute } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Grant, Permission, ScopeId } from "../types.ts";
@@ -27,6 +28,16 @@ import { createNoopLeaderLease, type LeaderLease } from "../persistence/leader-l
 import { createNoopAdvisoryLock, type AdvisoryLock } from "../persistence/advisory-lock.ts";
 import { createKeyedQueue } from "../util/async.ts";
 import { errMessage, reportFailure, swallow } from "../util/errors.ts";
+import { dirBytes } from "../util/disk-usage.ts";
+
+export const MAX_APP_VERSIONS = 3;
+const ORPHAN_MIN_AGE_MS = 3_600_000;
+const DAY_MS = 86_400_000;
+
+export function appIdleStopTtlMs(orgDays: number | null, envTtlMs: number | undefined): number | undefined {
+  if (orgDays) return orgDays * DAY_MS;
+  return envTtlMs && envTtlMs > 0 ? envTtlMs : undefined;
+}
 
 export interface DeployFile {
   path: string;
@@ -102,6 +113,10 @@ export interface DeployService {
   gitRepoPath(idOrName: string): Promise<string | null>;
   pushGit<T>(id: string, runReceivePack: () => Promise<{ result: T; ok: boolean }>): Promise<T>;
   reapIdleDeployments(ttlMs: number, now?: number): Promise<number>;
+  stopDeployment(id: string, actorId?: string): Promise<boolean>;
+  deleteDeployment(id: string, actorId?: string): Promise<boolean>;
+  deleteDeploymentVersion(id: string, version: number, actorId?: string): Promise<VersionDeleteResult>;
+  sweepDeploymentSnapshots(now?: number): Promise<SnapshotSweepResult>;
   deployOrUpdate(input: DeployOrUpdateInput): Promise<Deployment>;
   deploymentGrantees(idOrName: string): Promise<DeploymentGrantee[]>;
   canManageDeployment(idOrName: string, callerId: string, actingScopeId?: ScopeId): Promise<boolean>;
@@ -116,6 +131,15 @@ export interface DeployService {
     toScope: ScopeId,
     actor: { callerId: string; actingScopeId?: ScopeId },
   ): Promise<Deployment>;
+}
+
+export type VersionDeleteResult =
+  { status: "deleted"; freedBytes: number } | { status: "live" } | { status: "not_found" };
+
+export interface SnapshotSweepResult {
+  prunedVersions: number;
+  removedDirs: number;
+  freedBytes: number;
 }
 
 export interface DeploymentGrantee {
@@ -202,12 +226,9 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         allPaths,
       });
     } else {
-      let materialized = version;
-      if (version.commit) {
-        const files = await deps.deployStore.filesOf(id, version.version);
-        if (files == null) throw new Error(`cannot materialize deployment ${id} version ${version.version}`);
-        materialized = { ...version, snapshotDir: await snapshotFiles(deps.deployDir, files) };
-      }
+      const materialized = version.commit
+        ? { ...version, snapshotDir: await recordedSnapshot(id, version, version.commit) }
+        : version;
       endpoint = await deps.provider.apply(d, materialized, applyOpts);
     }
     if (alwaysOn !== undefined) await deps.deployStore.setAlwaysOn(id, alwaysOn);
@@ -216,6 +237,137 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
     }
     return endpoint;
   };
+
+  async function recordedSnapshot(id: string, version: DeploymentVersion, commit: string): Promise<string> {
+    const dir = version.snapshotDir;
+    if (dir && version.snapshotCommit === commit && existsSync(dir)) return dir;
+    const files = await deps.deployStore.filesOf(id, version.version);
+    if (files == null) throw new Error(`cannot materialize deployment ${id} version ${version.version}`);
+    const fresh = await snapshotFiles(deps.deployDir, files);
+    await deps.deployStore.setVersionSnapshot(id, version.version, {
+      snapshotDir: fresh,
+      snapshotCommit: commit,
+      sizeBytes: filesBytes(files),
+    });
+    return fresh;
+  }
+
+  async function removeDirs(candidates: string[]): Promise<{ removed: number; freedBytes: number }> {
+    const root = resolve(deps.deployDir);
+    const inside = [...new Set(candidates.filter(Boolean).map((c) => resolve(c)))].filter((dir) => {
+      const rel = relative(root, dir);
+      return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+    });
+    const none = { removed: 0, freedBytes: 0 };
+    if (!inside.length) return none;
+    let mounted: Set<string>;
+    try {
+      mounted = (await deps.provider.mountedDirs?.()) ?? new Set();
+    } catch (e) {
+      swallow("deploy: cannot list mounted app copies; nothing removed", e);
+      return none;
+    }
+    const referenced = new Set<string>();
+    for (const d of await deps.deployStore.list()) {
+      for (const v of d.versions) {
+        if (v.snapshotDir) referenced.add(resolve(v.snapshotDir));
+        if (v.homeDir) referenced.add(resolve(v.homeDir));
+      }
+    }
+    let removed = 0;
+    let freedBytes = 0;
+    for (const dir of inside) {
+      if (referenced.has(dir) || mounted.has(dir)) continue;
+      const bytes = (await dirBytes(dir)) ?? 0;
+      try {
+        await rm(dir, { recursive: true, force: true });
+        removed++;
+        freedBytes += bytes;
+      } catch (e) {
+        swallow(`deploy: remove app copy ${dir}`, e);
+      }
+    }
+    return { removed, freedBytes };
+  }
+
+  const versionDirs = (versions: DeploymentVersion[]): string[] =>
+    versions.flatMap((v) => [v.snapshotDir, v.homeDir ?? ""]);
+
+  async function pruneVersions(id: string): Promise<{ removed: number; freedBytes: number }> {
+    try {
+      const d = await deps.deployStore.get(id);
+      if (!d) return { removed: 0, freedBytes: 0 };
+      const keep = new Set(
+        d.versions
+          .map((v) => v.version)
+          .sort((a, b) => b - a)
+          .slice(0, MAX_APP_VERSIONS),
+      );
+      keep.add(d.currentVersion);
+      if (d.appliedVersion !== undefined) keep.add(d.appliedVersion);
+      const drop = d.versions.filter((v) => !keep.has(v.version)).map((v) => v.version);
+      if (!drop.length) return { removed: 0, freedBytes: 0 };
+      const removed = await deps.deployStore.deleteVersions(id, drop);
+      const { freedBytes } = await removeDirs(versionDirs(removed));
+      deps.auditLog.record({
+        at: Date.now(),
+        principalId: "system",
+        action: "deploy_versions_pruned",
+        resource: id,
+        scopeLabel: d.ownerScopeId,
+        detail: JSON.stringify({ versions: removed.map((v) => v.version), freedBytes }),
+      });
+      return { removed: removed.length, freedBytes };
+    } catch (e) {
+      swallow(`deploy: prune old copies of ${id}`, e);
+      return { removed: 0, freedBytes: 0 };
+    }
+  }
+
+  function stopRunning(id: string, spareAlwaysOn: boolean): Promise<Deployment | null> {
+    return withDeployLock(id, async () => {
+      const cur = await deps.deployStore.get(id);
+      if (!cur || cur.status !== "running" || (spareAlwaysOn && cur.alwaysOn)) return null;
+      await deps.provider.destroy(cur);
+      await deps.deployStore.setStatus(id, "stopped");
+      await deps.deployStore.setEndpoint(id, null);
+      return cur;
+    });
+  }
+
+  function startDeployment(id: string, from: "archived" | "stopped", actorId?: string): Promise<Deployment> {
+    return withDeployLock(id, async () => {
+      const d = await deps.deployStore.get(id);
+      if (!d) throw new Error(`unknown deployment: ${id}`);
+      if (d.status === "running") return d;
+      if (d.status !== from) throw new Error(`deployment is not ${from}: ${id}`);
+      const version = currentVersionOf(d);
+      if (!version) throw new Error(`no such version ${d.currentVersion}`);
+      try {
+        const endpoint = await applyVersion(id, version, d.appliedVersion);
+        await markVersionRunning(id, version.version, endpoint);
+      } catch (error) {
+        await deps.provider
+          .destroy(d)
+          .catch((cleanupError) => swallow(`deploy ${from} start runtime cleanup`, cleanupError));
+        await deps.deployStore
+          .setStatus(id, from)
+          .catch((cleanupError) => swallow(`deploy ${from} start status cleanup`, cleanupError));
+        await deps.deployStore
+          .setEndpoint(id, null)
+          .catch((cleanupError) => swallow(`deploy ${from} start endpoint cleanup`, cleanupError));
+        throw error;
+      }
+      deps.auditLog.record({
+        at: Date.now(),
+        principalId: actorId ?? d.createdBy,
+        action: from === "archived" ? "deploy_restore" : "deploy_wake",
+        resource: `${id}@v${version.version}`,
+        scopeLabel: d.ownerScopeId,
+      });
+      return (await deps.deployStore.get(id))!;
+    });
+  }
 
   const markVersionRunning = async (id: string, version: number, endpoint: DeployEndpoint): Promise<void> => {
     await deps.deployStore.setEndpoint(id, endpoint);
@@ -420,6 +572,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         createdBy: input.createdBy,
         entrypoint: input.entrypoint,
         snapshotDir,
+        sizeBytes: filesBytes(input.files),
         files: input.files,
         ...(homeDir ? { homeDir } : {}),
         ...(input.name !== undefined ? { name: input.name } : {}),
@@ -436,6 +589,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         throw e;
       }
       await markVersionRunning(d.id, d.versions[0]!.version, endpoint);
+      await pruneVersions(d.id);
       void deps.appPublished?.(input.createdBy, d.id, d.versions[0]!.version).catch(() => {});
       deps.auditLog.record({
         at: Date.now(),
@@ -460,6 +614,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         const v = await deps.deployStore.addVersion(id, {
           entrypoint: input.entrypoint,
           snapshotDir,
+          sizeBytes: filesBytes(input.files),
           files: input.files,
           ...(homeDir ? { homeDir } : {}),
           ...(env ? { env } : {}),
@@ -467,6 +622,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         });
         const endpoint = await applyVersion(id, v, before.appliedVersion ?? before.currentVersion, input.alwaysOn);
         await markVersionRunning(id, v.version, endpoint);
+        await pruneVersions(id);
         void deps.appPublished?.(before.createdBy, id, v.version).catch(() => {});
         deps.auditLog.record({
           at: Date.now(),
@@ -516,38 +672,8 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
       });
     },
 
-    async restoreDeployment(id, actorId) {
-      return withDeployLock(id, async () => {
-        const d = await deps.deployStore.get(id);
-        if (!d) throw new Error(`unknown deployment: ${id}`);
-        if (d.status === "running") return d;
-        if (d.status !== "archived") throw new Error(`deployment is not archived: ${id}`);
-        const version = currentVersionOf(d);
-        if (!version) throw new Error(`no such version ${d.currentVersion}`);
-        try {
-          const endpoint = await applyVersion(id, version, d.appliedVersion);
-          await markVersionRunning(id, version.version, endpoint);
-        } catch (error) {
-          await deps.provider
-            .destroy(d)
-            .catch((cleanupError) => swallow("deploy restore runtime cleanup", cleanupError));
-          await deps.deployStore
-            .setStatus(id, "archived")
-            .catch((cleanupError) => swallow("deploy restore status cleanup", cleanupError));
-          await deps.deployStore
-            .setEndpoint(id, null)
-            .catch((cleanupError) => swallow("deploy restore endpoint cleanup", cleanupError));
-          throw error;
-        }
-        deps.auditLog.record({
-          at: Date.now(),
-          principalId: actorId ?? d.createdBy,
-          action: "deploy_restore",
-          resource: `${id}@v${version.version}`,
-          scopeLabel: d.ownerScopeId,
-        });
-        return (await deps.deployStore.get(id))!;
-      });
+    restoreDeployment(id, actorId) {
+      return startDeployment(id, "archived", actorId);
     },
 
     async renameDeployment(id, name) {
@@ -658,9 +784,17 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
     },
 
     async reachDeployment(idOrName, principalId, opts = {}): Promise<Reach> {
-      const d = (await deps.deployStore.get(idOrName)) ?? (await deps.deployStore.getByName(idOrName));
-      if (!d || d.status !== "running" || d.endpoint == null) return { status: "not_found" };
-      if (!opts.bypassAcl && !(await reachAllowed(d, principalId))) return { status: "denied" };
+      const found = (await deps.deployStore.get(idOrName)) ?? (await deps.deployStore.getByName(idOrName));
+      if (!found || found.status === "archived") return { status: "not_found" };
+      if (!opts.bypassAcl && !(await reachAllowed(found, principalId))) return { status: "denied" };
+      const d =
+        found.status === "stopped" && found.appliedVersion !== undefined
+          ? await startDeployment(found.id, "stopped", principalId || undefined).catch((e) => {
+              console.error(`[deploy] ${found.id}: waking the stopped app failed:`, errMessage(e));
+              return null;
+            })
+          : found;
+      if (d?.status !== "running" || d.endpoint == null) return { status: "not_found" };
       const endpoint = await liveEndpoint(d);
       if (!endpoint) return { status: "not_found" };
       await deps.deployStore.touch(d.id, Date.now()).catch((e) => swallow("deploy reach touch", e));
@@ -698,6 +832,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
           if (!v) return result;
           const endpoint = await applyVersion(id, v, before.appliedVersion ?? before.currentVersion);
           await markVersionRunning(id, v.version, endpoint);
+          await pruneVersions(id);
           void deps.appPublished?.(before.createdBy, id, v.version).catch(() => {});
           deps.auditLog.record({
             at: Date.now(),
@@ -731,18 +866,107 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
           if (d.alwaysOn) continue;
           const last = d.lastAccessAt ?? d.versions[d.versions.length - 1]?.createdAt ?? 0;
           if (now - last < ttlMs) continue;
-          await withDeployLock(d.id, async () => {
-            const cur = await deps.deployStore.get(d.id);
-            if (!cur || cur.status !== "running" || cur.alwaysOn) return;
-            await deps.provider.destroy(cur);
-            await deps.deployStore.setStatus(d.id, "stopped");
-            await deps.deployStore.setEndpoint(d.id, null);
-            stopped++;
-          });
+          if (await stopRunning(d.id, true)) stopped++;
         }
         return stopped;
       });
       return result ?? 0;
+    },
+
+    async stopDeployment(id, actorId) {
+      const stopped = await stopRunning(id, false);
+      if (stopped && actorId)
+        deps.auditLog.record({
+          at: Date.now(),
+          principalId: actorId,
+          action: "deploy_stop",
+          resource: id,
+          scopeLabel: stopped.ownerScopeId,
+        });
+      return stopped !== null;
+    },
+
+    async deleteDeployment(id, actorId) {
+      const deleted = await withDeployLock(id, async () => {
+        const d = await deps.deployStore.get(id);
+        if (!d) return null;
+        await deps.provider.destroy(d);
+        await deps.provider.destroyData?.(d);
+        const ref = deploymentRef(d.id);
+        for (const g of await grantsOn(d)) {
+          await deps.acl
+            .revoke(d.ownerScopeId, ref, g.granteeScopeId, d.createdBy, d.createdBy)
+            .catch((e) => swallow(`deploy delete: revoke ${g.granteeScopeId}`, e));
+        }
+        await deps.deployStore.delete(d.id);
+        await removeDirs(versionDirs(d.versions));
+        return d;
+      });
+      if (!deleted) return false;
+      deps.provider.invalidateEndpoint?.(id);
+      if (actorId)
+        deps.auditLog.record({
+          at: Date.now(),
+          principalId: actorId,
+          action: "deploy_delete",
+          resource: id,
+          scopeLabel: deleted.ownerScopeId,
+        });
+      return true;
+    },
+
+    async deleteDeploymentVersion(id, version, actorId) {
+      return withDeployLock(id, async (): Promise<VersionDeleteResult> => {
+        const d = await deps.deployStore.get(id);
+        if (!d?.versions.some((v) => v.version === version)) return { status: "not_found" };
+        if (version === d.currentVersion || version === d.appliedVersion) return { status: "live" };
+        const removed = await deps.deployStore.deleteVersions(id, [version]);
+        const { freedBytes } = await removeDirs(versionDirs(removed));
+        if (actorId)
+          deps.auditLog.record({
+            at: Date.now(),
+            principalId: actorId,
+            action: "deploy_version_delete",
+            resource: `${id}@v${version}`,
+            scopeLabel: d.ownerScopeId,
+          });
+        return { status: "deleted", freedBytes };
+      });
+    },
+
+    async sweepDeploymentSnapshots(now = Date.now()) {
+      const result = await leaderLease.hold("deployments:snapshot-gc", async () => {
+        let prunedVersions = 0;
+        let freedBytes = 0;
+        for (const d of await deps.deployStore.list()) {
+          if (d.versions.length <= MAX_APP_VERSIONS) continue;
+          const pruned = await withDeployLock(d.id, () => pruneVersions(d.id));
+          prunedVersions += pruned.removed;
+          freedBytes += pruned.freedBytes;
+        }
+        for (const d of await deps.deployStore.list()) {
+          for (const v of d.versions) {
+            if (v.sizeBytes !== undefined || !v.snapshotDir || v.snapshotCommit !== v.commit) continue;
+            if (!existsSync(v.snapshotDir)) continue;
+            const bytes = await dirBytes(v.snapshotDir);
+            if (bytes === null) continue;
+            await withDeployLock(d.id, async () => {
+              const cur = await deps.deployStore.versionOf(d.id, v.version);
+              if (cur?.snapshotDir === v.snapshotDir && cur.sizeBytes === undefined)
+                await deps.deployStore.setVersionSnapshot(d.id, v.version, { sizeBytes: bytes });
+            }).catch((e) => swallow(`deploy: record copy size of ${d.id}@v${v.version}`, e));
+          }
+        }
+        const old: string[] = [];
+        for (const entry of await readdir(deps.deployDir).catch(() => [] as string[])) {
+          const path = join(deps.deployDir, entry);
+          const info = await stat(path).catch(() => null);
+          if (info?.isDirectory() && now - info.mtimeMs >= ORPHAN_MIN_AGE_MS) old.push(path);
+        }
+        const orphans = await removeDirs(old);
+        return { prunedVersions, removedDirs: orphans.removed, freedBytes: freedBytes + orphans.freedBytes };
+      });
+      return result ?? { prunedVersions: 0, removedDirs: 0, freedBytes: 0 };
     },
 
     async deployOrUpdate(input) {
@@ -948,6 +1172,13 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
 
 function endpointsEqual(a: DeployEndpoint, b: DeployEndpoint | null): boolean {
   return b != null && JSON.stringify(a) === JSON.stringify(b);
+}
+
+function filesBytes(files: DeployFile[]): number {
+  return files.reduce(
+    (sum, f) => sum + (typeof f.data === "string" ? Buffer.byteLength(f.data, "utf8") : f.data.byteLength),
+    0,
+  );
 }
 
 async function snapshotFiles(deployDir: string, files: DeployFile[]): Promise<string> {

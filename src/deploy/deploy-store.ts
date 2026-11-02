@@ -18,6 +18,8 @@ export interface DeploymentVersion {
   createdAt: number;
   entrypoint: string;
   snapshotDir: string;
+  snapshotCommit?: string;
+  sizeBytes?: number;
   homeDir?: string;
   image?: string;
   commit?: string;
@@ -118,6 +120,7 @@ export function currentVersionOf(d: Deployment | null): DeploymentVersion | unde
 interface VersionInput {
   entrypoint: string;
   snapshotDir: string;
+  sizeBytes?: number;
   homeDir?: string;
   env?: Record<string, string>;
   files?: DeployGitInputFile[];
@@ -141,6 +144,13 @@ export interface DeployStore {
   list(): Promise<Deployment[]>;
   setCurrentVersion(id: string, version: number): Promise<void>;
   setVersionImage(id: string, version: number, image: string): Promise<void>;
+  setVersionSnapshot(
+    id: string,
+    version: number,
+    snap: Partial<Pick<DeploymentVersion, "snapshotDir" | "snapshotCommit" | "sizeBytes">>,
+  ): Promise<void>;
+  deleteVersions(id: string, versions: number[]): Promise<DeploymentVersion[]>;
+  delete(id: string): Promise<void>;
   setStatus(id: string, status: DeploymentStatus): Promise<void>;
   setEndpoint(id: string, endpoint: DeployEndpoint | null): Promise<void>;
   setName(id: string, name: string): Promise<void>;
@@ -288,6 +298,10 @@ export function deployTouchDebounceMs(reapTtlMs?: number): number {
   return Math.min(TOUCH_DEBOUNCE_MS, Math.floor(reapTtlMs / 4));
 }
 
+function nextVersion(d: Deployment): number {
+  return Math.max(0, ...d.versions.map((v) => v.version)) + 1;
+}
+
 function isNameConflict(e: unknown): boolean {
   const err = e as { code?: string; constraint?: string } | null;
   return err?.code === "23505" && err?.constraint === NAME_INDEX;
@@ -331,6 +345,8 @@ export function createDeployStore(backing?: DurableMap<Deployment> | DeployStore
       createdAt: Date.now(),
       entrypoint: input.entrypoint,
       snapshotDir: input.snapshotDir,
+      ...(commit && input.snapshotDir ? { snapshotCommit: commit } : {}),
+      ...(input.sizeBytes !== undefined ? { sizeBytes: input.sizeBytes } : {}),
       ...(input.homeDir ? { homeDir: input.homeDir } : {}),
       ...(input.env ? { env: input.env } : {}),
       ...(commit ? { commit } : {}),
@@ -349,7 +365,7 @@ export function createDeployStore(backing?: DurableMap<Deployment> | DeployStore
 
   async function updateAppliedRef(deploymentId: string, version: DeploymentVersion): Promise<void> {
     if (version.commit) await git.setRefs(deploymentId, { [CURRENT_REF]: version.commit });
-    else await git.deleteRef(deploymentId, CURRENT_REF);
+    else await git.deleteRefs(deploymentId, [CURRENT_REF]);
   }
 
   return {
@@ -375,7 +391,7 @@ export function createDeployStore(backing?: DurableMap<Deployment> | DeployStore
     async addVersion(id, input) {
       const d = await backingMap.get(id);
       if (!d) throw new Error(`unknown deployment: ${id}`);
-      const version = d.versions.length + 1;
+      const version = nextVersion(d);
       const parentCommit = currentVersionOf(d)?.commit;
       const v = await makeVersion(id, version, input, parentCommit);
       d.versions.push(v);
@@ -389,12 +405,12 @@ export function createDeployStore(backing?: DurableMap<Deployment> | DeployStore
       if (!d) throw new Error(`unknown deployment: ${id}`);
       const current = currentVersionOf(d);
       if (current?.commit === commit) return null;
-      const version = d.versions.length + 1;
+      const version = nextVersion(d);
       const v: DeploymentVersion = {
         version,
         createdAt: Date.now(),
         entrypoint: current?.entrypoint ?? "",
-        snapshotDir: current?.snapshotDir ?? "/unused",
+        snapshotDir: "",
         ...(current?.homeDir ? { homeDir: current.homeDir } : {}),
         ...(current?.env ? { env: current.env } : {}),
         commit,
@@ -435,6 +451,39 @@ export function createDeployStore(backing?: DurableMap<Deployment> | DeployStore
       if (!v) throw new Error(`no such version ${version}`);
       v.image = image;
       await backingMap.put(id, d);
+    },
+    async setVersionSnapshot(id, version, snap) {
+      const d = await backingMap.get(id);
+      if (!d) return;
+      const v = d.versions.find((x) => x.version === version);
+      if (!v) throw new Error(`no such version ${version}`);
+      Object.assign(v, snap);
+      await backingMap.put(id, d);
+    },
+    async deleteVersions(id, versions) {
+      const d = await backingMap.get(id);
+      if (!d) return [];
+      const wanted = new Set(versions);
+      if (wanted.has(d.currentVersion) || (d.appliedVersion !== undefined && wanted.has(d.appliedVersion)))
+        throw new Error("cannot delete the live version");
+      const removed = d.versions.filter((v) => wanted.has(v.version));
+      if (!removed.length) return [];
+      d.versions = d.versions.filter((v) => !wanted.has(v.version));
+      await backingMap.put(id, d);
+      const surviving = new Set(d.versions.map((v) => v.commit).filter(Boolean));
+      const refs = removed
+        .filter((v) => v.commit)
+        .flatMap((v) => [
+          versionRef(v.version),
+          ...(surviving.has(v.commit) ? [] : [`refs/deploy-commits/${v.commit}`]),
+        ]);
+      await git.deleteRefs(id, [...new Set(refs)]);
+      return removed;
+    },
+    async delete(id) {
+      await backingMap.delete(id);
+      lastTouch.delete(id);
+      await git.deleteRepo(id);
     },
     async setStatus(id, status) {
       const d = await backingMap.get(id);

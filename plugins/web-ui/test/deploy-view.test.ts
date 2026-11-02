@@ -6,6 +6,7 @@ import {
   deploymentArchiveUndoAvailable,
   deploymentCanManage,
   deploymentContextScope,
+  deploymentCopiesLabel,
   deploymentInScope,
   deploymentListAfterRestoreRefresh,
   deploymentListRefreshCanRedraw,
@@ -17,6 +18,8 @@ import {
   deploymentTab,
   deploymentTabEmptyMessage,
   deploymentTitle,
+  deploymentVersionDeletable,
+  deploymentVersionLive,
   filterDeployments,
   friendlyPrincipal,
   type DeploymentView,
@@ -287,4 +290,23 @@ test("list refresh completion leaves a pending detail's loading state untouched"
   finish();
   await completion;
   assert.equal(state.detailLoading, true);
+});
+
+test("live copies are the current and applied versions, and only managers may delete the others", () => {
+  const d = deployment({ currentVersion: 5, appliedVersion: 4 });
+  assert.deepEqual(
+    [2, 3, 4, 5].map((version) => deploymentVersionLive(d, version)),
+    [false, false, true, true],
+  );
+  assert.deepEqual(
+    [2, 3, 4, 5].map((version) => deploymentVersionDeletable(d, version)),
+    [true, true, false, false],
+  );
+  assert.equal(deploymentVersionDeletable({ ...d, permission: "read" }, 2), false);
+  assert.equal(deploymentVersionDeletable({ ...d, appliedVersion: undefined }, 4), true);
+});
+
+test("copy counts read naturally", () => {
+  assert.equal(deploymentCopiesLabel(1), "1 copy");
+  assert.equal(deploymentCopiesLabel(3), "3 copies");
 });
