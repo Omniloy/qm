@@ -10,10 +10,13 @@ import {
   ORB_INPUTS_BY_STATE,
   VOICE_LANGUAGES,
   type MicMode,
+  type VoiceActivity,
+  type VoiceActivityKind,
   type VoiceLanguage,
   type VoiceStageHandlers,
   type VoiceStageView,
   type VoiceState,
+  type VoiceTranscriptEntry,
 } from "./protocol.ts";
 import { ALL_VOICES_OPTION, voiceOptions } from "./voice-picker.ts";
 import "./voice.css";
@@ -54,6 +57,9 @@ const COPY = {
     releaseToSend: "Suelta para enviar",
     tapToTalk: "Pulsa para hablar",
     tapToSend: "Pulsa para enviar",
+    recent: "Mensajes recientes con Omni",
+    openTask: "Abrir la tarea",
+    activity: "Lo que ha hecho Omni",
   },
   en: {
     dialog: "Voice assistant",
@@ -77,10 +83,36 @@ const COPY = {
     releaseToSend: "Release to send",
     tapToTalk: "Press to talk",
     tapToSend: "Press to send",
+    recent: "Recent messages with Omni",
+    openTask: "Open the task",
+    activity: "What Omni did",
   },
 } satisfies Record<VoiceLanguage, Record<string, string | Record<MicMode, string>>>;
 
 type Copy = (typeof COPY)[VoiceLanguage];
+
+const ACTIVITY_LABELS: Record<VoiceLanguage, Record<VoiceActivityKind, (activity: VoiceActivity) => string>> = {
+  es: {
+    task_created: (a) => `Tarea creada: ${a.title ?? ""}`,
+    message_sent: (a) => `Mensaje enviado a: ${a.title ?? ""}`,
+    conversations_read: (a) => `Conversaciones leídas (${a.count ?? 1})`,
+    memory_saved: () => "Memoria guardada",
+    memory_compacted: () => "Memoria compactada",
+    approved: (a) => `Aprobado: ${a.title ?? ""}`,
+  },
+  en: {
+    task_created: (a) => `Task created: ${a.title ?? ""}`,
+    message_sent: (a) => `Message sent to: ${a.title ?? ""}`,
+    conversations_read: (a) => `Conversations read (${a.count ?? 1})`,
+    memory_saved: () => "Memory saved",
+    memory_compacted: () => "Memory compacted",
+    approved: (a) => `Approved: ${a.title ?? ""}`,
+  },
+};
+
+export function activityLabel(activity: VoiceActivity, language: VoiceLanguage): string {
+  return ACTIVITY_LABELS[language][activity.kind](activity).trim().replace(/:$/, "");
+}
 
 const LANGUAGE_NAMES: Record<VoiceLanguage, string> = { es: "Español", en: "English" };
 
@@ -107,7 +139,21 @@ const EMPTY_VIEW: VoiceStageView = {
   transcript: [],
   awaitingUser: false,
   announcement: "",
+  work: null,
 };
+
+export const MINI_FRESH_MS = 6_000;
+export const MINI_HIDE_MS = 600;
+const MINI_FADE_MS = 600;
+const HOLDING_STATES: ReadonlySet<VoiceState> = new Set(["thinking", "speaking"]);
+const MINI_HISTORY = 30;
+const MINI_FRESH_SHOWN = 2;
+
+const plainText = (text: string): string =>
+  text
+    .replace(/[*_`#>|[\]]+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 
 function sentenceEnd(text: string, from: number): number {
   const re = /[.!?…]["')\]]*(\s|$)/g;
@@ -177,6 +223,13 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
   let destroyed = false;
   let allVoices = false;
   let holding = false;
+  let revealed = false;
+  let hideTimer: ReturnType<typeof setTimeout> | null = null;
+  let miniLive = "";
+  let fadeTimer: ReturnType<typeof setTimeout> | null = null;
+  let fading = false;
+  const seen = new Set<string>();
+  const fresh = new Set<string>();
 
   const stageRoot = () => host.querySelector<HTMLElement>(".voice-stage");
 
@@ -295,6 +348,154 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
     }
   };
 
+  const clearFade = () => {
+    if (fadeTimer !== null) clearTimeout(fadeTimer);
+    fadeTimer = null;
+    fading = false;
+  };
+
+  const forgetFresh = () => {
+    clearFade();
+    fresh.clear();
+  };
+
+  const scheduleFade = () => {
+    if (!fresh.size || HOLDING_STATES.has(view.state)) return clearFade();
+    if (fadeTimer !== null) return;
+    fadeTimer = setTimeout(() => {
+      fading = true;
+      paint();
+      fadeTimer = setTimeout(() => {
+        forgetFresh();
+        paint();
+      }, MINI_FADE_MS);
+    }, MINI_FRESH_MS - MINI_FADE_MS);
+  };
+
+  const noticeNew = (entries: readonly VoiceTranscriptEntry[]) => {
+    const now = Date.now();
+    for (const entry of entries) {
+      if (seen.has(entry.id)) continue;
+      seen.add(entry.id);
+      if (open || !entry.text || now - entry.at > MINI_FRESH_MS) continue;
+      clearFade();
+      fresh.add(entry.id);
+      miniLive = plainText(entry.text);
+    }
+    scheduleFade();
+  };
+
+  const clearHide = () => {
+    if (hideTimer !== null) clearTimeout(hideTimer);
+    hideTimer = null;
+  };
+
+  const reveal = () => {
+    clearHide();
+    if (revealed) return;
+    revealed = true;
+    paint();
+  };
+
+  const conceal = (delay: number) => {
+    clearHide();
+    if (!revealed) return;
+    hideTimer = setTimeout(() => {
+      hideTimer = null;
+      revealed = false;
+      paint();
+    }, delay);
+  };
+
+  const onMiniFocusOut = (e: FocusEvent) => {
+    const area = e.currentTarget as HTMLElement;
+    if (!(e.relatedTarget instanceof Node) || !area.contains(e.relatedTarget)) conceal(MINI_HIDE_MS);
+  };
+
+  const onMiniKeydown = (e: KeyboardEvent) => {
+    if (e.key !== "Escape" || !revealed) return;
+    e.preventDefault();
+    const area = e.currentTarget as HTMLElement;
+    if (area.querySelector(".voice-mini-log")?.contains(area.ownerDocument.activeElement))
+      area.querySelector<HTMLElement>(".qm-voice-orb-button")?.focus();
+    conceal(0);
+  };
+
+  const onMiniPointerLeave = (e: PointerEvent) => {
+    const area = e.currentTarget as HTMLElement;
+    if (!area.contains(area.ownerDocument.activeElement)) conceal(MINI_HIDE_MS);
+  };
+
+  const workTemplate = () => {
+    const work = view.work;
+    if (!work) return nothing;
+    const content = html`<span class="voice-work-dot" aria-hidden="true"></span
+      ><span class="voice-work-text">${work.text}</span>`;
+    const taskRef = work.taskRef;
+    return taskRef
+      ? html`<button
+          type="button"
+          class="voice-work"
+          data-busy=${work.busy ? "true" : "false"}
+          title=${copy.openTask}
+          @click=${() => handlers.onOpenTask(taskRef)}
+        >
+          ${content}
+        </button>`
+      : html`<span class="voice-work" data-busy=${work.busy ? "true" : "false"}>${content}</span>`;
+  };
+
+  const activityTemplate = (entry: VoiceTranscriptEntry) =>
+    entry.activity?.length
+      ? html`<div class="voice-activity" role="group" aria-label=${copy.activity}>
+          ${entry.activity.map(
+            (item) =>
+              html`<button
+                type="button"
+                class="voice-activity-chip"
+                data-kind=${item.kind}
+                @click=${() => handlers.onOpenActivity(item)}
+              >
+                <span class="voice-activity-text">${activityLabel(item, view.language)}</span>
+              </button>`,
+          )}
+        </div>`
+      : nothing;
+
+  const entryTemplate = (entry: VoiceTranscriptEntry, base: string, extra = "") => {
+    const className = `${base} ${base}-${entry.role}${extra}`;
+    if (entry.role === "user") return html`<p class=${className} dir="auto">${entry.text}</p>`;
+    const chips = base === "voice-entry" ? activityTemplate(entry) : nothing;
+    return html`<div class=${className}>${entry.text ? markdown(entry.text) : nothing}${chips}</div>`;
+  };
+
+  const miniTemplate = () => {
+    const written = view.transcript.filter((entry) => entry.text);
+    const entries = revealed
+      ? written.slice(-MINI_HISTORY)
+      : written.filter((entry) => fresh.has(entry.id)).slice(-MINI_FRESH_SHOWN);
+    return html`<div class="voice-mini" data-fading=${fading && !revealed ? "true" : "false"}>
+      ${
+        entries.length
+          ? html`<section
+              class="voice-mini-log"
+              aria-label=${copy.recent}
+              tabindex=${revealed ? "0" : "-1"}
+              aria-hidden=${revealed ? "false" : "true"}
+            >
+              <div class="voice-mini-flow">
+                ${repeat(
+                  entries,
+                  (entry) => entry.id,
+                  (entry) => entryTemplate(entry, "voice-mini-entry", fresh.has(entry.id) ? " is-fresh" : ""),
+                )}
+              </div>
+            </section>`
+          : nothing
+      }
+    </div>`;
+  };
+
   const orbTemplate = (size: "stage" | "dock") => {
     const inputs = ORB_INPUTS_BY_STATE[view.state];
     return html`<qm-voice-orb
@@ -302,6 +503,7 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
       .status=${inputs.status}
       .mode=${inputs.mode}
       .muted=${view.muted}
+      .working=${view.work?.busy === true}
       .label=${size === "dock" ? copy.openStage : orbLabel(view, copy)}
       .pressed=${size === "dock" ? false : orbPressed(view)}
       .holdToTalk=${size === "stage" && view.micMode === "push" && view.pttStyle === "hold" && view.state !== "off"}
@@ -336,10 +538,7 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
             ${repeat(
               view.transcript,
               (entry) => entry.id,
-              (entry) =>
-                entry.role === "assistant"
-                  ? html`<div class="voice-entry voice-entry-assistant">${markdown(entry.text)}</div>`
-                  : html`<p class="voice-entry voice-entry-user" dir="auto">${entry.text}</p>`,
+              (entry) => entryTemplate(entry, "voice-entry"),
             )}
           </div>
         </section>`
@@ -468,6 +667,7 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
       ${modeTemplate()}
       <div class="voice-stage-center">
         <div class="voice-stage-orb">${orbTemplate("stage")}</div>
+        <div class="voice-work-slot" role="status">${workTemplate()}</div>
         <p class="voice-status" role="status" aria-live="polite" data-empty=${view.status ? "false" : "true"}>
           ${view.status}
         </p>
@@ -479,7 +679,19 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
   const surfaceTemplate = () => {
     if (open) return stageTemplate();
     if (view.state === "off") return nothing;
-    return html`<div class="voice-dock-orb">${orbTemplate("dock")}</div>`;
+    return html`<div
+      class="voice-dock-orb"
+      data-revealed=${revealed ? "true" : "false"}
+      @pointerenter=${reveal}
+      @pointerleave=${onMiniPointerLeave}
+      @focusin=${reveal}
+      @focusout=${onMiniFocusOut}
+      @keydown=${onMiniKeydown}
+    >
+      ${orbTemplate("dock")}
+      <div class="voice-dock-work" role="status">${workTemplate()}</div>
+      ${miniTemplate()}
+    </div>`;
   };
 
   const paint = () => {
@@ -488,6 +700,7 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
       html`<div class="voice-host">
         ${surfaceTemplate()}
         <div class="voice-announcer" role="status" aria-live="polite" aria-atomic="true">${view.announcement}</div>
+        <div class="voice-announcer voice-mini-live" aria-live="polite" aria-atomic="true">${open ? "" : miniLive}</div>
       </div>`,
       host,
     );
@@ -504,6 +717,7 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
       const asked = next.awaitingUser && !view.awaitingUser && next.micMode === "off";
       view = next;
       copy = COPY[next.language];
+      noticeNew(next.transcript);
       if (typing && !TYPING_STATES.has(next.state)) {
         typing = false;
         draft = "";
@@ -514,6 +728,10 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
     open() {
       if (open || destroyed) return;
       open = true;
+      clearHide();
+      forgetFresh();
+      revealed = false;
+      miniLive = "";
       const active = document.activeElement;
       returnFocus = active instanceof HTMLElement && !host.contains(active) ? active : null;
       document.addEventListener("keydown", onKeydown);
@@ -537,6 +755,8 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
     },
     destroy() {
       document.removeEventListener("keydown", onKeydown);
+      clearHide();
+      forgetFresh();
       host.removeEventListener(ORB_PRESS_EVENT, onOrbPress);
       host.removeEventListener(ORB_HOLD_START_EVENT, onHoldStart);
       host.removeEventListener(ORB_HOLD_END_EVENT, onHoldEnd);

@@ -170,6 +170,10 @@ async function syncVoiceAssistant(autoStart: boolean): Promise<void> {
       voiceActive = active;
       renderSidebarFooter();
     },
+    openView: (view) => {
+      setScopedSession(null);
+      switchView(view);
+    },
   });
 }
 

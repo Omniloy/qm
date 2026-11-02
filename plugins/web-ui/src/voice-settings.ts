@@ -30,7 +30,6 @@ export interface VoiceModelsApi {
     missingBytes: number;
     asrEngine: AsrEngineId;
     ttsEngine: TtsEngineId;
-    configuredTtsEngine: TtsEngineId;
   }>;
   downloadVoiceModels(
     files: readonly ModelFile[],
@@ -52,7 +51,6 @@ interface ModelState {
   progress: number;
   error: string;
   ttsEngine: TtsEngineId | null;
-  configuredTtsEngine: TtsEngineId | null;
 }
 
 const COPY = {
@@ -83,8 +81,6 @@ const COPY = {
       MicMode,
       string
     >,
-    engine: (name: string) => `Motor de voz: ${name}.`,
-    fallback: (wanted: string, used: string) => `Motor de voz: ${used} (${wanted} no está disponible ahora mismo).`,
     saveFailed: "No se han podido guardar los ajustes de voz.",
   },
   en: {
@@ -111,18 +107,11 @@ const COPY = {
     micModeNote:
       "With the open mic, Omni waits for the wake phrase. Push to talk, or turn the mic off and type: Omni still answers out loud.",
     micModes: { open: "Open mic", push: "Push to talk", off: "Mic off" } satisfies Record<MicMode, string>,
-    engine: (name: string) => `Speech engine: ${name}.`,
-    fallback: (wanted: string, used: string) => `Speech engine: ${used} (${wanted} is not available right now).`,
     saveFailed: "Couldn't save the voice settings.",
   },
 } as const;
 
 const LANGUAGE_NAMES: Record<VoiceLanguage, string> = { es: "Español", en: "English" };
-
-const ENGINE_NAMES: Record<TtsEngineId, string> = {
-  "phonon-40m": "Phonon 40M",
-  "supertonic-3": "Supertonic 3",
-};
 
 const models: ModelState = {
   phase: "unknown",
@@ -132,7 +121,6 @@ const models: ModelState = {
   progress: 0,
   error: "",
   ttsEngine: null,
-  configuredTtsEngine: null,
 };
 let download: AbortController | null = null;
 let settingsError = "";
@@ -165,7 +153,6 @@ async function checkModels(api: () => Promise<VoiceModelsApi>, redraw: () => voi
     models.totalBytes = status.totalBytes;
     models.missingBytes = status.missingBytes;
     models.ttsEngine = status.ttsEngine;
-    models.configuredTtsEngine = status.configuredTtsEngine;
     models.phase = status.missingBytes > 0 ? "missing" : "ready";
     if (!status.gpu.webgpu) models.phase = "unsupported";
     models.error = "";
@@ -294,14 +281,6 @@ function choice<T extends string>(
   </div>`;
 }
 
-function engineNote(copy: (typeof COPY)[VoiceLanguage]): string | null {
-  const { ttsEngine: used, configuredTtsEngine: wanted } = models;
-  if (!used) return null;
-  return wanted && wanted !== used
-    ? copy.fallback(ENGINE_NAMES[wanted], ENGINE_NAMES[used])
-    : copy.engine(ENGINE_NAMES[used]);
-}
-
 function settingRow(title: string, note: string | null, control: TemplateResult): TemplateResult {
   return html`<div class="settings-row">
     <div class="settings-row-copy">
@@ -362,12 +341,10 @@ function modelsRow(
   };
   const note = notes[models.phase];
   const action = modelAction(copy, api, redraw);
-  const engine = engineNote(copy);
   return html`<div class="settings-row voice-models-row">
     <div class="settings-row-copy">
       <div class="settings-row-title">${copy.models}</div>
       <div class="settings-row-note">${note}</div>
-      ${engine ? html`<div class="settings-row-note voice-engine-note">${engine}</div>` : nothing}
       ${
         models.phase === "downloading"
           ? html`<progress

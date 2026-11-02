@@ -7,22 +7,39 @@ import { sendJson } from "../http.ts";
 import { audit, isObj, orgScope } from "./shared.ts";
 import type { HarnessVoiceMessage, HarnessVoiceReplyEvent } from "../../harness/harness.ts";
 import {
+  actedThisTurn,
+  announcesAction,
   parseVoiceReplyRequest,
   voiceCandidates,
+  voiceNotice,
   voiceSystemPrompt,
   VOICE_FACT_MAX_CHARS,
   VOICE_MAX_FACTS,
   VOICE_MAX_OUTPUT_TOKENS,
+  VOICE_READ_TOOL_NAMES,
   VOICE_WRITTEN_MAX_CHARS,
   voiceTools,
 } from "../../voice/voice-reply.ts";
+import {
+  readConversation,
+  recentConversations,
+  voiceUsageThread,
+  type VoiceToolResult,
+} from "../../voice/voice-conversations.ts";
 import { resolveVoiceOrgConfig } from "../../voice/voice-config.ts";
 import { voiceMemory, type VoiceMemory } from "../../voice/voice-memory.ts";
-import { appendVoiceTranscript, type VoiceTranscriptEntry } from "../../voice/voice-transcript.ts";
+import {
+  appendVoiceTranscript,
+  parseVoiceActivity,
+  addVoiceActivity,
+  type VoiceActivity,
+  type VoiceTranscriptEntry,
+  type VoiceTranscriptNote,
+} from "../../voice/voice-transcript.ts";
 import type { ApiCtx, Route } from "./route.ts";
 
-const VOICE_THREAD_PREFIX = "voice:";
-const VOICE_MAX_SERVER_HOPS = 2;
+const VOICE_MAX_SERVER_HOPS = 4;
+const ACTS_ON_READ = new Set(["delegate_task", "send_task_message"]);
 const VOICE_MAX_TRANSCRIPT_NOTES = 3;
 
 type VoiceEnd = Extract<HarnessVoiceReplyEvent, { type: "end" }>;
@@ -59,17 +76,19 @@ async function transcript(ctx: ApiCtx): Promise<void> {
   sendJson(ctx.res, 200, { entries });
 }
 
-type TranscriptNote = Pick<VoiceTranscriptEntry, "role" | "text">;
-
-function parseTranscriptNotes(value: unknown): TranscriptNote[] | null {
+function parseTranscriptNotes(value: unknown): VoiceTranscriptNote[] | null {
   if (!Array.isArray(value) || !value.length || value.length > VOICE_MAX_TRANSCRIPT_NOTES) return null;
-  const notes = value.map((note): TranscriptNote | null => {
+  const notes = value.map((note): VoiceTranscriptNote | null => {
     if (!isObj(note) || typeof note.text !== "string") return null;
     const role = note.role === "user" || note.role === "assistant" ? note.role : null;
     const text = note.text.trim();
-    return role && text && text.length <= VOICE_WRITTEN_MAX_CHARS ? { role, text } : null;
+    const activity = note.activity === undefined ? undefined : parseVoiceActivity(note.activity);
+    if (!role || activity === null || text.length > VOICE_WRITTEN_MAX_CHARS) return null;
+    if (activity && role !== "assistant") return null;
+    if (!text && !activity) return null;
+    return { role, text, ...(activity ? { activity } : {}) };
   });
-  return notes.every((note): note is TranscriptNote => note !== null) ? notes : null;
+  return notes.every((note): note is VoiceTranscriptNote => note !== null) ? notes : null;
 }
 
 async function appendTranscript(ctx: ApiCtx): Promise<void> {
@@ -83,6 +102,20 @@ async function appendTranscript(ctx: ApiCtx): Promise<void> {
   const entries: VoiceTranscriptEntry[] = [];
   for (const note of notes) entries.push(await appendVoiceTranscript(store, principalId, note));
   sendJson(ctx.res, 200, { entries });
+}
+
+async function updateActivity(ctx: ApiCtx): Promise<void> {
+  const body = isObj(ctx.body) ? ctx.body : {};
+  const principalId = voicePrincipal(ctx, body.principalId);
+  if (!principalId) return;
+  if (!(await voiceEnabled(ctx, principalId))) return sendJson(ctx.res, 403, { error: "feature_disabled" });
+  const entryId = typeof body.entryId === "string" ? body.entryId : "";
+  const activity = parseVoiceActivity(body.activity);
+  if (!entryId || !activity) return sendJson(ctx.res, 400, { error: "invalid_request" });
+  const store = ctx.deps.voiceTranscripts;
+  const entry = store ? await addVoiceActivity(store, principalId, entryId, activity) : null;
+  if (!entry) return sendJson(ctx.res, 404, { error: "not_found" });
+  sendJson(ctx.res, 200, { entry });
 }
 
 function unsaid(spoken: string, messages: readonly HarnessVoiceMessage[]): string {
@@ -103,24 +136,50 @@ async function admitHop(ctx: ApiCtx, principalId: string): Promise<"rate_limited
   return null;
 }
 
-async function recordTranscript(
-  ctx: ApiCtx,
-  principalId: string,
-  role: VoiceTranscriptEntry["role"],
-  text: string,
-): Promise<string> {
+async function recordTranscript(ctx: ApiCtx, principalId: string, note: VoiceTranscriptNote): Promise<string | null> {
   const store = ctx.deps.voiceTranscripts;
-  if (!store) return randomUUID();
+  if (!store) return null;
   try {
-    return (await appendVoiceTranscript(store, principalId, { role, text })).id;
+    return (await appendVoiceTranscript(store, principalId, note)).id;
   } catch (err) {
     swallow("voice: record transcript", err);
-    return randomUUID();
+    return null;
+  }
+}
+
+async function attachActivity(
+  ctx: ApiCtx,
+  principalId: string,
+  entryId: string,
+  activity: VoiceActivity,
+): Promise<boolean> {
+  const store = ctx.deps.voiceTranscripts;
+  if (!store) return false;
+  try {
+    return (await addVoiceActivity(store, principalId, entryId, [activity])) !== null;
+  } catch (err) {
+    swallow("voice: record activity", err);
+    return false;
   }
 }
 
 interface ServerToolState {
   compacted: boolean;
+  read: boolean;
+}
+
+const isReadTool = (name: string): name is (typeof VOICE_READ_TOOL_NAMES)[number] =>
+  (VOICE_READ_TOOL_NAMES as readonly string[]).includes(name);
+
+async function runReadTool(ctx: ApiCtx, principalId: string, call: VoiceCall): Promise<VoiceToolResult> {
+  try {
+    return call.name === "recent_conversations"
+      ? await recentConversations(ctx.app, principalId, call.args)
+      : await readConversation(ctx.app, principalId, call.args);
+  } catch (err) {
+    swallow(`voice: ${call.name}`, err);
+    return { content: JSON.stringify({ ok: false, error: "read_failed" }), isError: true };
+  }
 }
 
 function parseFacts(args: Record<string, unknown>): string[] | null {
@@ -136,10 +195,12 @@ async function runMemoryTool(
   memory: VoiceMemory,
   call: VoiceCall,
   state: ServerToolState,
-): Promise<{ content: string; isError?: true }> {
+): Promise<VoiceToolResult> {
   const { deps } = ctx;
   try {
     if (call.name === "remember") {
+      if (state.read)
+        return { content: "remember is unavailable after reading conversations in this turn", isError: true };
       const facts = parseFacts(call.args);
       if (!facts)
         return {
@@ -151,7 +212,7 @@ async function runMemoryTool(
         actorId: principalId,
       });
       audit(deps, { principalId, action: "memory.voice.capture", resource: "memory", scopeLabel: memory.write });
-      return { content: `saved ${added}` };
+      return { content: `saved ${added}`, ...(added > 0 ? { activity: { kind: "memory_saved" } } : {}) };
     }
     if (state.compacted) return { content: "already compacted in this turn" };
     if (deps.budget && !(await deps.budget.check(principalId)).allowed)
@@ -161,7 +222,7 @@ async function runMemoryTool(
     void deps.budget?.record(principalId, estimateCostUsd(countTokens(notebook)));
     await deps.memoryMaintain!(memory.write);
     audit(deps, { principalId, action: "memory.voice.compact", resource: "memory", scopeLabel: memory.write });
-    return { content: "compacted" };
+    return { content: "compacted", activity: { kind: "memory_compacted" } };
   } catch (err) {
     swallow(`voice: ${call.name}`, err);
     return { content: errMessage(err), isError: true };
@@ -232,22 +293,44 @@ async function reply(ctx: ApiCtx): Promise<void> {
   const lastMessage = request.messages.at(-1);
   const userRecorded =
     request.purpose === "reply" && lastMessage?.role === "user"
-      ? recordTranscript(ctx, principalId, "user", lastMessage.content)
+      ? recordTranscript(ctx, principalId, { role: "user", text: lastMessage.content })
       : undefined;
+  let entryId = request.entry;
+  let unattached: VoiceActivity[] = [];
   const written = async (markdown: string): Promise<void> => {
-    send({ type: "written", id: await recordTranscript(ctx, principalId, "assistant", markdown), markdown });
+    const activity = unattached;
+    const id = await recordTranscript(ctx, principalId, {
+      role: "assistant",
+      text: markdown,
+      ...(activity.length ? { activity } : {}),
+    });
+    if (id) {
+      entryId = id;
+      unattached = [];
+    }
+    send({ type: "written", id: id ?? randomUUID(), markdown });
+  };
+  const noteActivity = async (activity: VoiceActivity): Promise<void> => {
+    send({ type: "activity", activity });
+    if (!entryId || !(await attachActivity(ctx, principalId, entryId, activity))) unattached.push(activity);
   };
 
   let messages: readonly HarnessVoiceMessage[] = request.messages;
   let end: VoiceEnd | undefined;
   let spoken = "";
   let wrote = false;
+  let writtenThrough = 0;
   let acted = false;
+  let actedInTurn = actedThisTurn(request);
+  let checkedPromise = false;
   let question = "";
   const usage = { input: 0, output: 0 };
-  const toolState: ServerToolState = { compacted: false };
+  const toolState: ServerToolState = { compacted: false, read: false };
+  const opened = new Set<string>();
+  let serverHops = 0;
+  let lastHop = false;
   try {
-    for (let serverHops = 0; hop; serverHops++) {
+    while (hop) {
       let text = "";
       const calls: VoiceCall[] = [];
       end = undefined;
@@ -281,8 +364,10 @@ async function reply(ctx: ApiCtx): Promise<void> {
       spoken += text;
       if (end?.outcome !== "done") break;
       const results: HarnessVoiceMessage[] = [];
-      let memoryRan = false;
+      let serverRan = false;
       let hopForwarded = false;
+      let hopWritten = "";
+      const hopOpened: string[] = [];
       for (const call of calls) {
         const result = (content: string, isError?: true): void => {
           results.push({
@@ -293,8 +378,11 @@ async function reply(ctx: ApiCtx): Promise<void> {
             ...(isError ? { isError } : {}),
           });
         };
-        if (!offered.has(call.name)) result("this tool is not available here", true);
-        else if (call.name === "write_message") {
+        if (!offered.has(call.name)) {
+          result("this tool is not available here", true);
+          continue;
+        }
+        if (call.name === "write_message") {
           const markdown = typeof call.args.markdown === "string" ? call.args.markdown.trim() : "";
           if (!markdown || markdown.length > VOICE_WRITTEN_MAX_CHARS) {
             result(`markdown must be 1-${VOICE_WRITTEN_MAX_CHARS} characters`, true);
@@ -302,11 +390,26 @@ async function reply(ctx: ApiCtx): Promise<void> {
           }
           await written(markdown);
           wrote = true;
+          writtenThrough = spoken.length;
+          hopWritten += `${markdown}\n`;
           result("shown");
-        } else if (call.name === "remember" || call.name === "compact_memory") {
-          memoryRan = true;
+          continue;
+        }
+        actedInTurn = true;
+        if (call.name === "remember" || call.name === "compact_memory") {
+          serverRan = true;
           const outcome = await runMemoryTool(ctx, principalId, memory!, call, toolState);
           result(outcome.content, outcome.isError);
+          if (outcome.activity) await noteActivity(outcome.activity);
+        } else if (isReadTool(call.name)) {
+          serverRan = true;
+          toolState.read = true;
+          const outcome = await runReadTool(ctx, principalId, call);
+          result(outcome.content, outcome.isError);
+          if (call.name === "read_conversation") hopOpened.push(...(outcome.conversations ?? []));
+        } else if (toolState.read && ACTS_ON_READ.has(call.name)) {
+          serverRan = true;
+          result(JSON.stringify({ ok: false, error: "ask_user_first" }), true);
         } else {
           send({ type: "tool_call", id: call.id, name: call.name, args: call.args });
           hopForwarded = true;
@@ -314,23 +417,36 @@ async function reply(ctx: ApiCtx): Promise<void> {
           else if (typeof call.args.question === "string") question = call.args.question.trim();
         }
       }
-      if (!memoryRan || hopForwarded || serverHops >= VOICE_MAX_SERVER_HOPS || controller.signal.aborted) break;
-      if (await admitHop(ctx, principalId)) break;
+      const promiseUnkept =
+        !serverRan && !actedInTurn && !checkedPromise && tools.length > 0 && announcesAction(`${text}\n${hopWritten}`);
+      if (promiseUnkept) checkedPromise = true;
+      if (lastHop || hopForwarded || (!serverRan && !promiseUnkept)) break;
+      if (serverRan) serverHops++;
+      lastHop = serverHops >= VOICE_MAX_SERVER_HOPS;
+      if (controller.signal.aborted || (await admitHop(ctx, principalId))) break;
+      for (const id of hopOpened) opened.add(id);
       messages = [
         ...messages,
-        { role: "assistant", content: text.trim(), toolCalls: calls.map(({ id, name, args }) => ({ id, name, args })) },
+        {
+          role: "assistant",
+          content: text.trim(),
+          ...(calls.length ? { toolCalls: calls.map(({ id, name, args }) => ({ id, name, args })) } : {}),
+        },
         ...results,
+        ...(promiseUnkept ? [voiceNotice(request.language, "promiseCheck")] : []),
+        ...(lastHop ? [voiceNotice(request.language, "answerNow")] : []),
       ];
       hop = await openHop(messages);
       if (!hop) end = undefined;
     }
+    const read = conversationsRead(opened);
+    if (read) await noteActivity(read);
+    const fallback = wrote ? spoken.slice(writtenThrough).trim() : unsaid(spoken, request.messages) || question;
+    if (end?.outcome === "done" && request.purpose !== "announce" && !acted && fallback) await written(fallback);
+    if (unattached.length) await written("");
     if (!end || end.outcome === "error") send({ type: "error", reason: "upstream_error" });
     else if (end.outcome === "aborted") send({ type: "error", reason: "aborted" });
-    else {
-      const fallback = unsaid(spoken, request.messages) || question;
-      if (request.purpose !== "announce" && !wrote && !acted && fallback) await written(fallback);
-      send({ type: "done", model: end.modelId, ...(end.usage ? { usage } : {}) });
-    }
+    else send({ type: "done", model: end.modelId, ...(end.usage ? { usage } : {}) });
     await userRecorded;
     res.end();
   } finally {
@@ -338,18 +454,18 @@ async function reply(ctx: ApiCtx): Promise<void> {
   }
 }
 
+function conversationsRead(ids: ReadonlySet<string>): VoiceActivity | null {
+  if (!ids.size) return null;
+  const [only] = ids;
+  return { kind: "conversations_read", count: ids.size, ...(ids.size === 1 && only ? { taskRef: only } : {}) };
+}
+
 async function recordVoiceUsage(ctx: ApiCtx, principalId: string, end: VoiceEnd | undefined): Promise<void> {
   const sessions = ctx.deps.sessions;
   if (!sessions || !end?.usage) return;
   const scope = scopeId("personal", principalId);
   try {
-    const session = await sessions.getOrCreateByThread(
-      `${VOICE_THREAD_PREFIX}${principalId}`,
-      "dm",
-      scope,
-      undefined,
-      "web",
-    );
+    const session = await sessions.getOrCreateByThread(voiceUsageThread(principalId), "dm", scope, undefined, "web");
     await sessions.recordLlmRequest(session.id, {
       turnSeq: null,
       step: 0,
@@ -369,5 +485,6 @@ export const voiceRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/voice/access", auth: "source", handle: access },
   { method: "GET", path: "/v1/voice/transcript", auth: "source", handle: transcript },
   { method: "POST", path: "/v1/voice/transcript", auth: "source", handle: appendTranscript },
+  { method: "POST", path: "/v1/voice/transcript/activity", auth: "source", handle: updateActivity },
   { method: "POST", path: "/v1/voice/reply", auth: "source", handle: reply },
 ];

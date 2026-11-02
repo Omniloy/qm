@@ -1,6 +1,8 @@
 import type { ScopeId, SessionEntry } from "../types.ts";
 import {
   appendEntryOutsideTurn,
+  entrySecurityTainted,
+  isHiddenEntry,
   type Lease,
   type SessionStore,
   type TranscriptAppendSessions,
@@ -78,11 +80,9 @@ function findOriginal(entries: readonly SessionEntry[], ts: string): OriginalMes
       text?: unknown;
       name?: unknown;
       sourceRole?: unknown;
-      hidden?: unknown;
-      securityTainted?: unknown;
     } | null;
     if (p?.ts !== ts) continue;
-    if (p.hidden === true || p.securityTainted === true) return null;
+    if (isHiddenEntry(e) || entrySecurityTainted(e)) return null;
     found = {
       text: typeof p.text === "string" ? p.text : "",
       ...(p.sourceRole === "agent" ? { sourceRole: "agent" as const } : {}),

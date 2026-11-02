@@ -60,6 +60,12 @@ const core = createServer(async (req, res) => {
     const enabled = url.searchParams.get("principalId") === "alice";
     return void res.end(JSON.stringify(enabled ? { enabled, config: ORG_CONFIG } : { enabled }));
   }
+  if (req.method === "POST" && path === "/v1/voice/transcript/activity") {
+    const body = JSON.parse(await readRaw(req)) as Record<string, unknown>;
+    transcriptAppends.push({ path, ...body });
+    res.writeHead(200, { "content-type": "application/json" });
+    return void res.end(JSON.stringify({ entry: { id: body.entryId } }));
+  }
   if (req.method === "POST" && path === "/v1/voice/transcript") {
     const body = JSON.parse(await readRaw(req)) as Record<string, unknown>;
     transcriptAppends.push(body);
@@ -307,6 +313,23 @@ test("transcript notes are appended for the signed-in user only", async () => {
   const before = transcriptAppends.length;
   assert.equal((await fetch(`${base}/api/voice/transcript`, { method: "POST", body: "{}" })).status, 401);
   assert.equal(transcriptAppends.length, before);
+});
+
+test("activity for a transcript entry is relayed for the signed-in user with only the entry and items", async () => {
+  const activity = [{ kind: "task_created", title: "Informe", taskRef: "web:alice:voice:1" }];
+  const saved = await fetch(`${base}/api/voice/transcript/activity`, {
+    method: "POST",
+    headers: identity("alice"),
+    body: JSON.stringify({ principalId: "mallory", entryId: "e1", activity, extra: true }),
+  });
+  assert.equal(saved.status, 200);
+  assert.deepEqual(transcriptAppends.at(-1), {
+    path: "/v1/voice/transcript/activity",
+    entryId: "e1",
+    activity,
+    principalId: "alice",
+  });
+  assert.equal((await fetch(`${base}/api/voice/transcript/activity`, { method: "POST", body: "{}" })).status, 401);
 });
 
 test("voice access tells the browser whether gated models can be served", async () => {

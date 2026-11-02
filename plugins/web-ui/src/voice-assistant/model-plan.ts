@@ -28,7 +28,6 @@ export interface VoiceModelStatus {
   missingBytes: number;
   asrEngine: AsrEngineId;
   ttsEngine: TtsEngineId;
-  configuredTtsEngine: TtsEngineId;
 }
 
 const failedEngines = new Set<AsrEngineId | TtsEngineId>();
@@ -102,7 +101,6 @@ export async function voiceModelStatus(preferences: VoicePreferences): Promise<V
     missingBytes: totalBytes(missing),
     asrEngine: settings.asrEngine,
     ttsEngine: settings.ttsEngine,
-    configuredTtsEngine: current.config.ttsEngine,
   };
 }
 

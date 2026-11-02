@@ -688,6 +688,10 @@ export function isOverheardEntry(e: Pick<SessionEntry, "type" | "payload">): boo
   return e.type === "user" && (e.payload as { overheard?: unknown } | null)?.overheard === true;
 }
 
+export function isHiddenEntry(e: Pick<SessionEntry, "type" | "payload">): boolean {
+  return e.type === "user" && (e.payload as { hidden?: unknown } | null)?.hidden === true;
+}
+
 export function entryDeliveryKey(entry: Pick<SessionEntry, "payload">): string | undefined {
   const key = (entry.payload as { deliveryKey?: unknown } | null)?.deliveryKey;
   return typeof key === "string" ? key : undefined;

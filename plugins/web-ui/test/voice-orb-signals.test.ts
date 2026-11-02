@@ -11,6 +11,7 @@ function input(over: Partial<SignalInput> = {}): SignalInput {
     status: "connected",
     mode: "idle",
     muted: false,
+    working: false,
     input: 0,
     output: 0,
     hover: false,
@@ -49,6 +50,7 @@ test("the motion budget keeps the design's constants", () => {
     scaleSpeak: 0.025,
     thinkRotation: 0.12,
     ringSeconds: 0.9,
+    workOrbit: 1.8,
   });
 });
 
@@ -164,4 +166,23 @@ test("the dark flag is passed straight through to the frame", () => {
   assert.equal(signals.frame.dark, true);
   signals.step(DT, input({ dark: false }));
   assert.equal(signals.frame.dark, false);
+});
+
+test("working while resting circles an arc around the orb, gives way to speech and stands still under reduced motion", () => {
+  const signals = new OrbSignals();
+  const resting = run(signals, 2, forState("sleeping", { working: true }));
+  assert.ok(resting.work > 0.95);
+  const orbit = resting.orbit;
+  run(signals, 0.5, forState("listening", { working: true }));
+  assert.ok(signals.frame.work > 0.95, "listening keeps the working arc");
+  assert.notEqual(signals.frame.orbit, orbit, "the arc travels around the rim");
+  run(signals, 2, forState("speaking", { working: true }));
+  assert.ok(signals.frame.work < 0.05, "speech owns the orb while it plays");
+  run(signals, 2, forState("sleeping", { working: true, reduced: true }));
+  assert.ok(signals.frame.work > 0.95 && signals.frame.spin < 0.05);
+  const still = signals.frame.orbit;
+  run(signals, 1, forState("sleeping", { working: true, reduced: true }));
+  assert.ok(Math.abs(signals.frame.orbit - still) < 0.01, "reduced motion shows a steady ring, not a moving arc");
+  run(signals, 2, forState("sleeping"));
+  assert.ok(signals.frame.work < 0.05);
 });

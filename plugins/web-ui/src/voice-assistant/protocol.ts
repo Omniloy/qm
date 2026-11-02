@@ -299,10 +299,11 @@ export const VOICE_MAX_FOLLOWUPS_PER_TASK = 3;
 
 export interface VoiceReplyRequest {
   purpose: VoiceReplyPurpose;
+  entry?: string;
   language: VoiceLanguage;
   messages: VoiceMessage[];
   tools: boolean;
-  context?: { runningTasks: VoiceTaskSummary[]; voices?: VoiceChoice[]; voice?: string };
+  context?: { runningTasks: VoiceTaskSummary[]; voices?: VoiceChoice[]; voice?: string; timezone?: string };
 }
 
 export type VoiceReplyErrorReason =
@@ -319,11 +320,31 @@ interface VoiceReplyUsage {
   output: number;
 }
 
+export const VOICE_ACTIVITY_KINDS = [
+  "task_created",
+  "message_sent",
+  "conversations_read",
+  "memory_saved",
+  "memory_compacted",
+  "approved",
+] as const;
+export type VoiceActivityKind = (typeof VOICE_ACTIVITY_KINDS)[number];
+
+export interface VoiceActivity {
+  kind: VoiceActivityKind;
+  title?: string;
+  taskRef?: string;
+  count?: number;
+}
+
+export const VOICE_MAX_ACTIVITY = 8;
+
 export type VoiceReplyFrame =
   | { type: "delta"; text: string }
   | { type: "text_end" }
   | ({ type: "tool_call" } & VoiceToolCall)
   | { type: "written"; id: string; markdown: string }
+  | { type: "activity"; activity: VoiceActivity }
   | { type: "done"; usage?: VoiceReplyUsage; model?: string }
   | { type: "error"; reason: VoiceReplyErrorReason };
 
@@ -396,6 +417,13 @@ export interface VoiceTranscriptEntry {
   role: "user" | "assistant";
   text: string;
   at: number;
+  activity?: readonly VoiceActivity[];
+}
+
+export interface VoiceWork {
+  text: string;
+  taskRef: string | null;
+  busy: boolean;
 }
 
 export interface VoiceStageView {
@@ -412,6 +440,7 @@ export interface VoiceStageView {
   transcript: readonly VoiceTranscriptEntry[];
   awaitingUser: boolean;
   announcement: string;
+  work: VoiceWork | null;
 }
 
 export interface VoiceStageHandlers {
@@ -423,6 +452,8 @@ export interface VoiceStageHandlers {
   onMicMode(mode: MicMode): void;
   onPttDown(): void;
   onPttUp(): void;
+  onOpenTask(taskRef: string): void;
+  onOpenActivity(activity: VoiceActivity): void;
   onOpen(): void;
   onClose(): void;
 }

@@ -1,5 +1,6 @@
 import type { SessionEntry } from "../types.ts";
 import type { DurableMap } from "../persistence/durable-map.ts";
+import { isHiddenEntry, isOverheardEntry } from "./session-store.ts";
 
 export interface SharedAttachment {
   id: string;
@@ -58,7 +59,7 @@ export function sharedMessages(
     if (entry.type === "user") {
       posted = false;
       posts.clear();
-      if (payload.hidden || payload.overheard) continue;
+      if (isHiddenEntry(entry) || isOverheardEntry(entry)) continue;
       const text = typeof payload.display === "string" && payload.display.trim() ? payload.display : payload.text;
       emit("user", typeof text === "string" ? text : "", attachmentIds(payload.attachments));
     } else if (entry.type === "tool_call" && payload.action === "post") {

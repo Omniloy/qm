@@ -106,6 +106,8 @@ function deps(sessions: CoreSession[], over: Partial<VoiceToolDeps> = {}) {
       return settings;
     },
     sessions: async () => sessions,
+    titles: new Map(),
+    startingTasks: () => new Map(),
     startTurn: async (body) => {
       log.push(`turn:${body.threadRef}:${body.text}:${body.idempotencyKey}`);
       return { runId: "run-1" };
@@ -234,6 +236,31 @@ test("task summaries carry the delegated title and never the task's output", () 
   assert.deepEqual(summaries, [{ taskRef: "web:ana:voice:1", title: "Resumen del correo", state: "idle" }]);
 });
 
+test("a task that started before its session is listed still counts as running, until the list has it", () => {
+  const titles = new Map([["web:ana:voice:new", "Resumir el README"]]);
+  const starting = new Map([
+    ["web:ana:voice:new", "working" as const],
+    ["web:ana:voice:old", "working" as const],
+    ["web:ana:voice:done", "idle" as const],
+  ]);
+  const summaries = taskSummaries(
+    [session("web:ana:voice:old", { working: true, title: "Informe", lastActivityAt: 9 })],
+    titles,
+    starting,
+  );
+  assert.deepEqual(summaries, [
+    { taskRef: "web:ana:voice:new", title: "Resumir el README", state: "working" },
+    { taskRef: "web:ana:voice:old", title: "Informe", state: "working" },
+  ]);
+  assert.equal(taskSummaries([], new Map(), starting, 1).length, 1);
+});
+
+test("check_tasks reports a task that is starting before its session is listed", async () => {
+  const { deps: d } = deps([], { startingTasks: () => new Map([["web:ana:voice:new", "working" as const]]) });
+  const listed = await runVoiceTool({ id: "c", name: "check_tasks", args: {} }, d);
+  assert.deepEqual(JSON.parse(listed.content).tasks, [{ taskRef: "web:ana:voice:new", title: "", state: "working" }]);
+});
+
 test("set_language and set_voice change the settings and validate their arguments strictly", async () => {
   const { deps: d, log } = deps([]);
   const english = await runVoiceTool({ id: "c", name: "set_language", args: { language: "en" } }, d);
@@ -360,4 +387,82 @@ test("ask_user waits for the person", async () => {
   const outcome = await runVoiceTool({ id: "c", name: "ask_user", args: { question: "¿Qué trimestre?" } }, d);
   assert.deepEqual(JSON.parse(outcome.content), { ok: true, status: "waiting_for_user" });
   assert.equal(outcome.ask, true);
+});
+
+test("tools that act report what they did as activity taken from their real result", async () => {
+  const sessions = [
+    session("web:ana@example.com:voice:t1", { title: "Informe" }),
+    session("web:ana:2", { awaitingInput: true, title: "Correo" }),
+  ];
+  const { deps: d } = deps(sessions);
+  const delegated = await runVoiceTool(
+    { id: "c", name: "delegate_task", args: { instruction: "Resume el correo", title: "Resumen" } },
+    d,
+  );
+  assert.deepEqual(delegated.activity, {
+    kind: "task_created",
+    title: "Resumen",
+    taskRef: "web:ana@example.com:voice:id1",
+  });
+  const sent = await runVoiceTool(
+    { id: "c", name: "send_task_message", args: { taskRef: "web:ana@example.com:voice:t1", text: "sigue" } },
+    d,
+  );
+  assert.deepEqual(sent.activity, { kind: "message_sent", title: "Informe", taskRef: "web:ana@example.com:voice:t1" });
+  const asked = await runVoiceTool({ id: "c", name: "approve_task", args: { taskRef: "web:ana:2" } }, d);
+  assert.equal(asked.activity, undefined, "asking for approval is not an approval");
+  assert.deepEqual((await asked.confirm!.execute()).activity, {
+    kind: "approved",
+    title: "Correo",
+    taskRef: "web:ana:2",
+  });
+  const rejected = await runVoiceTool({ id: "c", name: "reject_task", args: { taskRef: "web:ana:2" } }, d);
+  assert.equal((await rejected.confirm!.execute()).activity, undefined);
+  const failed = await runVoiceTool(
+    { id: "c", name: "delegate_task", args: { instruction: "x", title: "y" } },
+    { ...d, startTurn: async () => ({}) },
+  );
+  assert.equal(failed.activity, undefined);
+});
+
+test("activity names a delegated task by the title the voice agent gave it, not its first prompt", async () => {
+  const sessions = [session("web:ana@example.com:voice:t1", { title: "Escribe un haiku original sobre el otoño…" })];
+  const { deps: d } = deps(sessions, { titles: new Map([["web:ana@example.com:voice:t1", "Haiku de otoño"]]) });
+  const sent = await runVoiceTool(
+    { id: "c", name: "send_task_message", args: { taskRef: "web:ana@example.com:voice:t1", text: "que rime" } },
+    d,
+  );
+  assert.equal(sent.activity?.title, "Haiku de otoño");
+  const checked = await runVoiceTool({ id: "c", name: "check_tasks", args: {} }, d);
+  assert.equal(JSON.parse(checked.content).tasks[0].title, "Haiku de otoño");
+});
+
+test("activity frames and stored activity are validated, and old entries without activity still load", () => {
+  assert.deepEqual(
+    parseSseEvent('data: {"type":"activity","activity":{"kind":"conversations_read","count":2,"extra":1}}'),
+    { type: "activity", activity: { kind: "conversations_read", count: 2 } },
+  );
+  assert.equal(parseSseEvent('data: {"type":"activity","activity":{"kind":"hacked"}}'), null);
+  assert.deepEqual(
+    parseVoiceTranscript([
+      { id: "a", role: "assistant", text: "Hecho", at: 1 },
+      {
+        id: "b",
+        role: "assistant",
+        text: "",
+        at: 2,
+        activity: [{ kind: "memory_saved" }, { kind: "nope" }, { kind: "approved", title: " Correo ", count: -1 }],
+      },
+    ]),
+    [
+      { id: "a", role: "assistant", text: "Hecho", at: 1 },
+      {
+        id: "b",
+        role: "assistant",
+        text: "",
+        at: 2,
+        activity: [{ kind: "memory_saved" }, { kind: "approved", title: "Correo" }],
+      },
+    ],
+  );
 });

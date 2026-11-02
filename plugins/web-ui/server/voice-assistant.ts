@@ -56,6 +56,7 @@ function voiceTranscriptPath(user: string): string {
 }
 
 const VOICE_TRANSCRIPT_PATH = "/v1/voice/transcript";
+const VOICE_ACTIVITY_PATH = "/v1/voice/transcript/activity";
 
 export function modelUpstreamUrl(file: ModelFile, origin: string): URL {
   const segments = (parts: string) => parts.split("/").map(encodeURIComponent).join("/");
@@ -98,16 +99,22 @@ async function relayTranscript(c: VoiceCtx, deps: VoiceAssistantDeps): Promise<v
   relayText(c.res, r.status, r.text);
 }
 
-async function relayTranscriptAppend(c: VoiceCtx, deps: VoiceAssistantDeps): Promise<void> {
+async function relayTranscriptPost(
+  c: VoiceCtx,
+  deps: VoiceAssistantDeps,
+  path: string,
+  fields: readonly string[],
+): Promise<void> {
   const body = await deps.readJson(c.req, c.res);
   if (!body) return;
   if (Array.isArray(body)) return json(c.res, 400, { error: "bad_request" });
+  const picked = Object.fromEntries(fields.map((field) => [field, (body as Record<string, unknown>)[field]]));
   const controller = abortOnClose(c.res);
   try {
     const upstream = await deps.coreStream(
       "POST",
-      VOICE_TRANSCRIPT_PATH,
-      JSON.stringify({ entries: (body as { entries?: unknown }).entries, principalId: c.user }),
+      path,
+      JSON.stringify({ ...picked, principalId: c.user }),
       controller.signal,
     );
     const text = await upstream.text();
@@ -298,7 +305,12 @@ export function voiceAssistantRoutes(deps: VoiceAssistantDeps): VoiceRoute[] {
     {
       method: "POST",
       path: "/api/voice/transcript",
-      handle: (c) => relayTranscriptAppend(c, deps),
+      handle: (c) => relayTranscriptPost(c, deps, VOICE_TRANSCRIPT_PATH, ["entries"]),
+    },
+    {
+      method: "POST",
+      path: "/api/voice/transcript/activity",
+      handle: (c) => relayTranscriptPost(c, deps, VOICE_ACTIVITY_PATH, ["entryId", "activity"]),
     },
     {
       method: "POST",

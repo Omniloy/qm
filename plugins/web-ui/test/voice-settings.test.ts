@@ -77,7 +77,6 @@ const api = async () => ({
       missingBytes: missing,
       asrEngine: "qwen3-asr-0.6b" as const,
       ttsEngine: orgTts === "phonon-40m" && gatedMissing ? ("supertonic-3" as const) : orgTts,
-      configuredTtsEngine: orgTts,
     };
   },
   downloadVoiceModels: (files: readonly ModelFile[], onProgress: (fraction: number) => void) => {
@@ -140,7 +139,7 @@ test("turning it on saves the setting, downloads with progress and then starts t
   await settle();
   assert.deepEqual(calls, ["download:2", "start"]);
   assert.match(host.textContent ?? "", /Descargados en este dispositivo \(1,3 GB\)/);
-  assert.equal(host.querySelector(".voice-engine-note")!.textContent, "Motor de voz: Phonon 40M.");
+  assert.doesNotMatch(host.textContent ?? "", /Phonon|Supertonic|Qwen|Motor de voz/);
 });
 
 test("the user sees only the on switch, mic mode, language and voice", () => {
@@ -210,7 +209,7 @@ test("the voice list follows the engine the organisation configured", async () =
   orgTts = "supertonic-3";
   option("Microphone mode", "open").click();
   await settle();
-  assert.equal(host.querySelector(".voice-engine-note")!.textContent, "Speech engine: Supertonic 3.");
+  assert.doesNotMatch(host.textContent ?? "", /Supertonic|Speech engine/);
   const voices = host.querySelector<HTMLSelectElement>(".voice-voice-select select")!;
   assert.equal(voices.querySelectorAll("optgroup").length, 0, "Supertonic voices are one list");
   assert.equal(voices.options.length, 10);
@@ -232,15 +231,14 @@ test("a gated model the server cannot fetch explains the missing token", async (
   assert.match(host.textContent ?? "", /Ask an administrator to configure HF_TOKEN/);
 });
 
-test("a server without gated access says which speech engine is used instead", async () => {
+test("a server without gated access falls back silently, without naming engines", async () => {
   gatedMissing = true;
   option("Microphone mode", "push").click();
   await settle();
   gatedMissing = false;
-  assert.equal(
-    host.querySelector(".voice-engine-note")!.textContent,
-    "Speech engine: Supertonic 3 (Phonon 40M is not available right now).",
-  );
+  assert.doesNotMatch(host.textContent ?? "", /Phonon|Supertonic|not available|Speech engine/);
+  assert.match(host.textContent ?? "", /Voice models/);
+  assert.match(host.textContent ?? "", /1\.3 GB/);
 });
 
 test("turning it off persists and hides the details", async () => {

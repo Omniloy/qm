@@ -116,6 +116,17 @@ test("idle without a prior working state, metadata frames and repeats are not an
   assert.equal(t.delivered.length, 1);
 });
 
+test("the announcer tracks the live state of a thread before its session is listed", async () => {
+  const t = setup({ sessions: [session("web:ana:1", { working: true })] });
+  await t.announcer.start();
+  t.announcer.handle({ threadRef: "web:ana:voice:new", state: "working", at });
+  assert.equal(t.announcer.states().get("web:ana:voice:new"), "working");
+  assert.equal(t.announcer.states().get("web:ana:1"), "working");
+  t.announcer.handle({ threadRef: "web:ana:voice:new", state: "idle", at });
+  assert.equal(t.announcer.states().get("web:ana:voice:new"), "idle");
+  await t.announcer.settled();
+});
+
 test("a task waiting on approval is announced with what it wants to do", async () => {
   const t = setup({ sessions: [session("web:ana:2", { working: true })] });
   await t.announcer.start();

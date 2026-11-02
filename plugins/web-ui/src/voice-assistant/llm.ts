@@ -1,7 +1,15 @@
 import { webFetch, withBase } from "../core-bridge.ts";
-import type { VoiceReplyErrorReason, VoiceReplyFrame, VoiceReplyRequest, VoiceTranscriptEntry } from "./protocol.ts";
+import {
+  VOICE_ACTIVITY_KINDS,
+  VOICE_MAX_ACTIVITY,
+  type VoiceActivity,
+  type VoiceReplyErrorReason,
+  type VoiceReplyFrame,
+  type VoiceReplyRequest,
+  type VoiceTranscriptEntry,
+} from "./protocol.ts";
 
-const FRAME_TYPES = new Set(["delta", "text_end", "tool_call", "written", "done", "error"]);
+const FRAME_TYPES = new Set(["delta", "text_end", "tool_call", "written", "activity", "done", "error"]);
 
 export class VoiceReplyError extends Error {
   readonly reason: VoiceReplyErrorReason;
@@ -37,8 +45,11 @@ export function parseSseEvent(block: string): VoiceReplyFrame | null {
     .join("\n");
   if (!data) return null;
   try {
-    const frame = JSON.parse(data) as { type?: unknown };
-    return frame && typeof frame.type === "string" && FRAME_TYPES.has(frame.type) ? (frame as VoiceReplyFrame) : null;
+    const frame = JSON.parse(data) as { type?: unknown; activity?: unknown };
+    if (!frame || typeof frame.type !== "string" || !FRAME_TYPES.has(frame.type)) return null;
+    if (frame.type !== "activity") return frame as VoiceReplyFrame;
+    const activity = parseVoiceActivity(frame.activity);
+    return activity ? { type: "activity", activity } : null;
   } catch {
     return null;
   }
@@ -85,12 +96,37 @@ export async function* streamVoiceReply(
   yield* readVoiceReply(response.body);
 }
 
+const optionalText = (value: unknown): string | undefined =>
+  typeof value === "string" && value.trim() ? value.trim() : undefined;
+
+function parseVoiceActivity(value: unknown): VoiceActivity | null {
+  if (typeof value !== "object" || value === null) return null;
+  const raw = value as Record<string, unknown>;
+  const kind = VOICE_ACTIVITY_KINDS.find((known) => known === raw.kind);
+  if (!kind) return null;
+  const title = optionalText(raw.title);
+  const taskRef = optionalText(raw.taskRef);
+  const count = Number.isInteger(raw.count) && (raw.count as number) > 0 ? (raw.count as number) : undefined;
+  return { kind, ...(title ? { title } : {}), ...(taskRef ? { taskRef } : {}), ...(count ? { count } : {}) };
+}
+
 export function parseVoiceTranscript(value: unknown): VoiceTranscriptEntry[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((raw: unknown) => {
-    const entry = raw as Partial<VoiceTranscriptEntry> | null;
+    const entry = raw as (Partial<VoiceTranscriptEntry> & { activity?: unknown }) | null;
     if (!entry || typeof entry.id !== "string" || typeof entry.text !== "string") return [];
     if (entry.role !== "user" && entry.role !== "assistant") return [];
-    return [{ id: entry.id, role: entry.role, text: entry.text, at: typeof entry.at === "number" ? entry.at : 0 }];
+    const activity = Array.isArray(entry.activity)
+      ? entry.activity.flatMap((item: unknown) => parseVoiceActivity(item) ?? []).slice(0, VOICE_MAX_ACTIVITY)
+      : [];
+    return [
+      {
+        id: entry.id,
+        role: entry.role,
+        text: entry.text,
+        at: typeof entry.at === "number" ? entry.at : 0,
+        ...(activity.length ? { activity } : {}),
+      },
+    ];
   });
 }

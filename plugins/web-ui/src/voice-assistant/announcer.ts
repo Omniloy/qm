@@ -50,6 +50,7 @@ export interface Announcer {
   handle(event: SessionStateEvent): void;
   resync(): Promise<void>;
   settled(): Promise<void>;
+  states(): ReadonlyMap<string, TaskState>;
   dispose(): void;
 }
 
@@ -185,6 +186,9 @@ export function createAnnouncer(deps: AnnouncerDeps): Announcer {
     },
     settled() {
       return chain;
+    },
+    states() {
+      return states;
     },
     dispose() {
       disposed = true;

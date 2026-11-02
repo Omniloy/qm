@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ANNOUNCE_QUIET_MS,
+  HEARD_MS,
+  mergeActivity,
   PTT_MIN_MS,
   SPEAKING_VAD,
   THINKING_CHIME_MS,
@@ -26,11 +28,13 @@ import {
   type SpeechWorkerOut,
   type TtsWorkerIn,
   type TtsWorkerOut,
+  type VoiceActivity,
   type VoiceMessage,
   type VoiceReplyFrame,
   type VoiceReplyRequest,
   type VoiceSettings,
   type VoiceStageView,
+  type VoiceTaskSummary,
   type VoiceToolCall,
 } from "../src/voice-assistant/protocol.ts";
 import { stepsForChunk } from "../src/voice-assistant/text-chunker.ts";
@@ -104,6 +108,9 @@ function setup(scripts: Script[] = [], settings: Partial<VoiceSettings> = {}) {
   const fatal: string[] = [];
   const muted: boolean[] = [];
   const persisted: VoiceTranscriptNote[] = [];
+  const attached: Array<{ entryId: string; activity: VoiceActivity[] }> = [];
+  const outcomes: Partial<Record<VoiceToolCall["name"], VoiceActivity>> = {};
+  const background: VoiceTaskSummary[] = [];
   const deps: VoiceControllerDeps = {
     speech,
     tts,
@@ -122,14 +129,20 @@ function setup(scripts: Script[] = [], settings: Partial<VoiceSettings> = {}) {
     async persist(entries) {
       persisted.push(...entries);
     },
+    async attachActivity(entryId, activity) {
+      if (entryId === "unsaved") throw new Error("not_found");
+      attached.push({ entryId, activity: [...activity] });
+    },
     async runTool(call) {
       tools.push(call);
       return {
         content: JSON.stringify({ ok: true, name: call.name }),
         ...(call.name === "ask_user" ? { ask: true as const } : {}),
+        ...(outcomes[call.name] ? { activity: outcomes[call.name] } : {}),
       };
     },
     runningTasks: () => [{ taskRef: "web:u:1", title: "Informe", state: "working" }],
+    backgroundTasks: () => background,
     chime: (kind) => void chimes.push(kind),
     setMuted: (value) => void muted.push(value),
     render: (view) => void views.push(view),
@@ -168,6 +181,9 @@ function setup(scripts: Script[] = [], settings: Partial<VoiceSettings> = {}) {
     fatal,
     muted,
     persisted,
+    attached,
+    outcomes,
+    background,
     ready,
     modes,
     speaks,
@@ -231,6 +247,7 @@ test("the words after the wake phrase become the first turn, streamed into speec
   assert.equal(request.tools, true);
   assert.deepEqual(request.messages, [{ role: "user", content: "¿qué tareas tengo?" }]);
   assert.deepEqual(request.context?.runningTasks, [{ taskRef: "web:u:1", title: "Informe", state: "working" }]);
+  assert.equal(request.context?.timezone, Intl.DateTimeFormat().resolvedOptions().timeZone);
   const speaks = t.speaks();
   assert.ok(speaks.length >= 2);
   speaks.forEach((speak, i) => {
@@ -460,12 +477,14 @@ test("after switching language the next hop speaks in the new language and voice
       yield* scripts.shift() ?? [{ type: "done" }];
     },
     persist: async () => undefined,
+    attachActivity: async () => undefined,
     runTool: async (call) => {
       if (call.name === "set_language") settings = { ...settings, language: call.args.language };
       if (call.name === "set_voice") settings = { ...settings, voice: "M1" };
       return { content: JSON.stringify({ ok: true }) };
     },
     runningTasks: () => [],
+    backgroundTasks: () => [],
     chime: () => undefined,
     setMuted: () => undefined,
     render: () => undefined,
@@ -513,8 +532,10 @@ test("a failed action goes back to the model so it can explain", async () => {
       )[t.requests.length - 1] ?? [{ type: "done" }];
     },
     persist: async () => undefined,
+    attachActivity: async () => undefined,
     runTool: async () => ({ content: JSON.stringify({ ok: false, error: "not_running" }), isError: true }),
     runningTasks: () => [],
+    backgroundTasks: () => [],
     chime: () => undefined,
     setMuted: () => undefined,
     render: () => undefined,
@@ -742,8 +763,10 @@ test("a rejected request surfaces the server's reason", async () => {
       [Symbol.asyncIterator]: () => ({ next: () => Promise.reject(new VoiceReplyError("over_budget", 429)) }),
     }),
     persist: async () => undefined,
+    attachActivity: async () => undefined,
     runTool: async () => ({ content: "{}" }),
     runningTasks: () => [],
+    backgroundTasks: () => [],
     chime: () => undefined,
     setMuted: () => undefined,
     render: (view) => void t.views.push(view),
@@ -886,8 +909,10 @@ test("an approval is only carried out after the user says yes to a read-back the
       ] as VoiceReplyFrame[];
     },
     persist: async () => undefined,
+    attachActivity: async () => undefined,
     runTool: async () => ({ content: JSON.stringify({ ok: true, awaitingConfirmation: true }), confirm }),
     runningTasks: () => [],
+    backgroundTasks: () => [],
     chime: () => undefined,
     setMuted: () => undefined,
     render: () => undefined,
@@ -975,11 +1000,13 @@ test("interrupting a turn while a tool runs stops the remaining tools and keeps 
       }
     },
     persist: async () => undefined,
+    attachActivity: async () => undefined,
     runTool: (call) => {
       ran.push(call.name);
       return new Promise((resolve) => (finish = () => resolve({ content: "{}" })));
     },
     runningTasks: () => [],
+    backgroundTasks: () => [],
     chime: () => undefined,
     setMuted: () => undefined,
     render: () => undefined,
@@ -1026,8 +1053,10 @@ test("interrupting a delegation that is still starting tells the model it may ha
       ) as VoiceReplyFrame[];
     },
     persist: async () => undefined,
+    attachActivity: async () => undefined,
     runTool: () => new Promise(() => undefined),
     runningTasks: () => [],
+    backgroundTasks: () => [],
     chime: () => undefined,
     setMuted: () => undefined,
     render: () => undefined,
@@ -1240,8 +1269,10 @@ test("fatal worker errors name the engine that failed", () => {
       yield { type: "done" };
     },
     persist: async () => undefined,
+    attachActivity: async () => undefined,
     runTool: async () => ({ content: "{}" }),
     runningTasks: () => [],
+    backgroundTasks: () => [],
     chime: () => undefined,
     setMuted: () => undefined,
     render: () => undefined,
@@ -1326,8 +1357,10 @@ test("push to talk is ignored in open mode or while muted, and switching modes r
       yield { type: "done" };
     },
     persist: async () => undefined,
+    attachActivity: async () => undefined,
     runTool: async () => ({ content: "{}" }),
     runningTasks: () => [],
+    backgroundTasks: () => [],
     chime: () => undefined,
     setMuted: () => undefined,
     render: (view) => void views.push(view),
@@ -1617,7 +1650,12 @@ test("queued reviews are interrupted on dispose", async () => {
   assert.equal(await t.controller.review(UPDATE), "interrupted");
 });
 
-function confirmingController(t: ReturnType<typeof setup>, scripts: Script[], settings: Partial<VoiceSettings> = {}) {
+function confirmingController(
+  t: ReturnType<typeof setup>,
+  scripts: Script[],
+  settings: Partial<VoiceSettings> = {},
+  approvedActivity = false,
+) {
   const executed: boolean[] = [];
   const persisted: VoiceTranscriptNote[] = [];
   const views: VoiceStageView[] = [];
@@ -1632,6 +1670,7 @@ function confirmingController(t: ReturnType<typeof setup>, scripts: Script[], se
       yield* (scripts.shift() ?? { frames: [{ type: "done" }] as VoiceReplyFrame[] }).frames;
     },
     persist: async (entries) => void persisted.push(...entries),
+    attachActivity: async () => undefined,
     runTool: async (call) =>
       call.name === "approve_task"
         ? {
@@ -1642,12 +1681,18 @@ function confirmingController(t: ReturnType<typeof setup>, scripts: Script[], se
               summary: "enviar el informe",
               execute: async () => {
                 executed.push(true);
-                return { content: "{}" };
+                return approvedActivity
+                  ? {
+                      content: "{}",
+                      activity: { kind: "approved" as const, title: "Correo", taskRef: "web:u:9" },
+                    }
+                  : { content: "{}" };
               },
             },
           }
         : { content: JSON.stringify({ ok: true }), ...(call.name === "ask_user" ? { ask: true as const } : {}) },
     runningTasks: () => [],
+    backgroundTasks: () => [],
     chime: () => undefined,
     setMuted: () => undefined,
     render: (view) => void views.push(view),
@@ -1800,4 +1845,310 @@ test("speech from consecutive hops is joined with a space", async () => {
   for (let i = 0; i < 6; i++) await flush();
   t.pcmFor(0);
   assert.equal(t.view().captions.agent!.text, "Lo miro. Hay una tarea.");
+});
+
+test("the view says the assistant is working while a turn or a tool is in flight, and clears when it ends", async () => {
+  let release = () => undefined as void;
+  const t = setup([
+    {
+      frames: [
+        {
+          type: "tool_call",
+          id: "c1",
+          name: "delegate_task",
+          args: { instruction: "x", title: "Revisar conversaciones" },
+        },
+        { type: "done" },
+      ],
+    },
+    { frames: [{ type: "delta", text: "En marcha." }, { type: "done" }], hold: new Promise((r) => (release = r)) },
+  ]);
+  t.ready();
+  t.controller.type("mira mis conversaciones");
+  assert.deepEqual(t.view().work, { text: "Pensando…", taskRef: null, busy: true });
+  for (let i = 0; i < 6; i++) await flush();
+  assert.ok(
+    t.views.some((view) => view.work?.text === "Iniciando: Revisar conversaciones…"),
+    "a running delegate_task names the task it starts",
+  );
+  assert.equal(t.view().work?.busy, true);
+  release();
+  for (let i = 0; i < 6; i++) await flush();
+  assert.equal(t.requests.length, 2);
+  assert.deepEqual(
+    t.view().work,
+    { text: "Pensando…", taskRef: null, busy: true },
+    "the line keeps thinking after the reply stream ends until its audio starts",
+  );
+  t.pcmFor(0);
+  assert.equal(t.view().work?.text, "Hablando");
+  t.playback.emit({ type: "drained", utteranceId: t.speaks()[0]!.utteranceId });
+  assert.equal(t.view().work, null);
+});
+
+test("voice-started background tasks keep the working status beside the push-to-talk hint until they finish", () => {
+  const t = setup([], { micMode: "push" });
+  t.ready();
+  assert.equal(t.view().work, null);
+  t.background.push({ taskRef: "web:u:voice:1", title: "Revisar conversaciones", state: "working" });
+  t.controller.tasksChanged();
+  assert.deepEqual(t.view().work, {
+    text: "Trabajando: Revisar conversaciones…",
+    taskRef: "web:u:voice:1",
+    busy: true,
+  });
+  assert.equal(t.view().status, "Mantén pulsada la barra espaciadora o el orbe para hablar");
+  t.background.push({ taskRef: "web:u:voice:2", title: "Informe", state: "working" });
+  t.controller.tasksChanged();
+  assert.equal(t.view().work?.text, "Trabajando en 2 tareas: Revisar conversaciones…");
+  t.background.splice(0, 2, { taskRef: "web:u:voice:2", title: "Informe", state: "awaiting_approval" });
+  t.controller.tasksChanged();
+  assert.deepEqual(t.view().work, { text: "Necesita tu aprobación: Informe", taskRef: "web:u:voice:2", busy: false });
+  t.background.length = 0;
+  t.controller.tasksChanged();
+  assert.equal(t.view().work, null);
+});
+
+test("the working status speaks the chosen language", () => {
+  const t = setup([], { language: "en" });
+  t.ready();
+  t.background.push({ taskRef: "web:u:voice:1", title: "Report", state: "working" });
+  t.controller.tasksChanged();
+  assert.equal(t.view().work?.text, "Working: Report…");
+  t.background.push({ taskRef: "web:u:voice:2", title: "Mail", state: "working" });
+  t.controller.tasksChanged();
+  assert.equal(t.view().work?.text, "Working on 2 tasks: Report…");
+});
+
+test("the status line follows the turn: listening, heard with the words, thinking, then speaking", async () => {
+  let release = () => undefined as void;
+  const t = setup(
+    [
+      {
+        frames: [{ type: "delta", text: "Tienes dos." }, { type: "text_end" }, { type: "done" }],
+        hold: new Promise((r) => (release = r)),
+      },
+    ],
+    { micMode: "push" },
+  );
+  t.ready();
+  t.controller.pttDown();
+  t.clock.advance(PTT_MIN_MS);
+  assert.deepEqual(t.view().work, { text: "Escuchando…", taskRef: null, busy: false });
+  t.speech.emit({ type: "speech-start" });
+  assert.equal(t.view().work?.text, "Escuchando…");
+  t.controller.pttUp();
+  assert.equal(t.view().work?.text, "Escuchado", "the gap while the words are transcribed is not empty");
+  t.speech.emit({ type: "speech-end", segmentId: 1, durationMs: 900, purpose: "utterance" });
+  assert.equal(t.view().work?.text, "Escuchado");
+  t.transcript("¿cuántas tareas tengo?");
+  assert.equal(t.view().work?.text, "Escuchado: «¿cuántas tareas tengo?»");
+  t.clock.advance(HEARD_MS);
+  assert.equal(t.view().work?.text, "Pensando…");
+  for (let i = 0; i < 4; i++) await flush();
+  t.pcmFor(0);
+  assert.equal(t.view().work?.text, "Hablando");
+  release();
+  for (let i = 0; i < 4; i++) await flush();
+  t.playback.emit({ type: "drained", utteranceId: t.speaks()[0]!.utteranceId });
+  assert.equal(t.view().work, null);
+});
+
+test("a running task or a pending approval keeps the line and its link through a whole turn", async () => {
+  let release = () => undefined as void;
+  const t = setup(
+    [
+      {
+        frames: [{ type: "delta", text: "Sigue en marcha." }, { type: "text_end" }, { type: "done" }],
+        hold: new Promise((r) => (release = r)),
+      },
+    ],
+    { micMode: "push" },
+  );
+  t.ready();
+  t.background.push({ taskRef: "web:u:voice:1", title: "Informe", state: "working" });
+  t.controller.tasksChanged();
+  const task = { text: "Trabajando: Informe…", taskRef: "web:u:voice:1", busy: true };
+  assert.deepEqual(t.view().work, task);
+  t.controller.pttDown();
+  t.clock.advance(PTT_MIN_MS);
+  t.speech.emit({ type: "speech-start" });
+  assert.deepEqual(t.view().work, task, "listening does not hide the running task");
+  t.controller.pttUp();
+  t.speech.emit({ type: "speech-end", segmentId: 1, durationMs: 900, purpose: "utterance" });
+  t.transcript("¿cómo va?");
+  assert.deepEqual(t.view().work, task);
+  t.background.splice(0, 1, { taskRef: "web:u:voice:1", title: "Informe", state: "awaiting_approval" });
+  t.controller.tasksChanged();
+  for (let i = 0; i < 4; i++) await flush();
+  t.pcmFor(0);
+  assert.equal(t.controller.state, "speaking");
+  assert.deepEqual(t.view().work, { text: "Necesita tu aprobación: Informe", taskRef: "web:u:voice:1", busy: true });
+  release();
+  for (let i = 0; i < 4; i++) await flush();
+});
+
+test("in open mic the line says listening while the user talks and heard once the speech ends", () => {
+  const t = setup([], { language: "en" });
+  t.ready();
+  t.transcript("Oye Omni", "wake");
+  assert.equal(t.controller.state, "listening");
+  assert.equal(t.view().work, null);
+  t.speech.emit({ type: "speech-start" });
+  assert.equal(t.view().work?.text, "Listening…");
+  t.speech.emit({ type: "speech-end", segmentId: 2, durationMs: 800, purpose: "utterance" });
+  assert.equal(t.view().work?.text, "Heard");
+  t.transcript("what is on my list", "utterance", 2);
+  assert.equal(t.view().work?.text, "Heard: “what is on my list”");
+});
+
+test("typed text goes straight to thinking without a heard line", () => {
+  const t = setup([{ frames: [{ type: "done" }], hold: new Promise(() => undefined) }]);
+  t.ready();
+  t.controller.type("hola");
+  assert.equal(t.view().work?.text, "Pensando…");
+});
+
+test("activity from server and client tools lands under the written message of the turn and is persisted", async () => {
+  const t = setup([
+    {
+      frames: [
+        { type: "activity", activity: { kind: "memory_saved" } },
+        { type: "written", id: "w1", markdown: "Lo apunto y creo la tarea." },
+        { type: "tool_call", id: "d1", name: "delegate_task", args: { instruction: "x", title: "Informe" } },
+        { type: "done" },
+      ],
+    },
+    {
+      frames: [
+        { type: "activity", activity: { kind: "conversations_read", count: 1, taskRef: "s1" } },
+        { type: "activity", activity: { kind: "conversations_read", count: 2 } },
+        { type: "done" },
+      ],
+    },
+  ]);
+  t.outcomes.delegate_task = { kind: "task_created", title: "Informe", taskRef: "web:u:voice:1" };
+  t.ready();
+  t.controller.type("apunta que me gusta el té y prepara el informe");
+  for (let i = 0; i < 8; i++) await flush();
+  const written = t.view().transcript.find((entry) => entry.id === "w1")!;
+  assert.deepEqual(written.activity, [
+    { kind: "memory_saved" },
+    { kind: "task_created", title: "Informe", taskRef: "web:u:voice:1" },
+    { kind: "conversations_read", count: 2 },
+  ]);
+  assert.deepEqual(
+    t.attached,
+    [{ entryId: "w1", activity: [{ kind: "task_created", title: "Informe", taskRef: "web:u:voice:1" }] }],
+    "only the client's own activity is attached; the server already stored what it streamed",
+  );
+  assert.equal(t.requests[0]!.entry, undefined);
+  assert.equal(t.requests[1]!.entry, "w1", "later hops tell the server which entry the turn writes under");
+  assert.equal(
+    t.persisted.some((note) => note.activity),
+    false,
+    "activity on a server-written message is attached, never appended",
+  );
+});
+
+test("activity of a turn that wrote nothing is kept on its own assistant entry", async () => {
+  const t = setup([
+    {
+      frames: [
+        { type: "tool_call", id: "s1", name: "send_task_message", args: { taskRef: "web:u:1", text: "sigue" } },
+        { type: "done" },
+      ],
+    },
+    { frames: [{ type: "done" }] },
+  ]);
+  t.outcomes.send_task_message = { kind: "message_sent", title: "Informe", taskRef: "web:u:1" };
+  t.ready();
+  t.controller.type("dile que siga");
+  for (let i = 0; i < 8; i++) await flush();
+  const activity = [{ kind: "message_sent", title: "Informe", taskRef: "web:u:1" }];
+  assert.deepEqual(t.view().transcript.at(-1), {
+    ...t.view().transcript.at(-1)!,
+    role: "assistant",
+    text: "",
+    activity,
+  });
+  assert.deepEqual(t.persisted.at(-1), { role: "assistant", text: "", activity });
+  assert.deepEqual(t.attached, []);
+});
+
+test("an approval said yes to carries its activity on the written outcome", async () => {
+  const t = setup();
+  const { c, persisted } = confirmingController(t, [APPROVE], {}, true);
+  t.ready();
+  c.type("aprueba el correo");
+  for (let i = 0; i < 4; i++) await flush();
+  c.type("sí");
+  for (let i = 0; i < 4; i++) await flush();
+  assert.deepEqual(persisted.at(-1), {
+    role: "assistant",
+    text: "Aprobado.",
+    activity: [{ kind: "approved", title: "Correo", taskRef: "web:u:9" }],
+  });
+  c.dispose();
+});
+
+test("a refresh that has not caught up keeps the chips already shown on an entry", async () => {
+  const t = setup([
+    {
+      frames: [
+        { type: "written", id: "w1", markdown: "Hecho." },
+        { type: "tool_call", id: "d1", name: "delegate_task", args: { instruction: "x", title: "Informe" } },
+        { type: "done" },
+      ],
+    },
+    { frames: [{ type: "done" }] },
+  ]);
+  t.outcomes.delegate_task = { kind: "task_created", title: "Informe", taskRef: "web:u:voice:1" };
+  t.ready();
+  t.controller.type("prepara el informe");
+  for (let i = 0; i < 8; i++) await flush();
+  t.controller.setTranscript([
+    { id: "u1", role: "user", text: "prepara el informe", at: 1 },
+    { id: "w1", role: "assistant", text: "Hecho.", at: 2, activity: [{ kind: "memory_saved" }] },
+  ]);
+  assert.deepEqual(t.view().transcript.find((entry) => entry.id === "w1")!.activity, [
+    { kind: "task_created", title: "Informe", taskRef: "web:u:voice:1" },
+    { kind: "memory_saved" },
+  ]);
+});
+
+test("client activity that cannot attach to its entry is kept on an entry of its own", async () => {
+  const t = setup([
+    {
+      frames: [
+        { type: "written", id: "unsaved", markdown: "Hecho." },
+        { type: "tool_call", id: "d1", name: "delegate_task", args: { instruction: "x", title: "Informe" } },
+        { type: "done" },
+      ],
+    },
+    { frames: [{ type: "done" }] },
+  ]);
+  const activity = { kind: "task_created" as const, title: "Informe", taskRef: "web:u:voice:1" };
+  t.outcomes.delegate_task = activity;
+  t.ready();
+  t.controller.type("prepara el informe");
+  for (let i = 0; i < 8; i++) await flush();
+  assert.deepEqual(t.persisted.at(-1), { role: "assistant", text: "", activity: [activity] });
+});
+
+test("a task that cannot be opened yet says so on the status line", () => {
+  const t = setup();
+  t.ready();
+  t.controller.taskUnavailable();
+  assert.equal(t.view().status, "Esa conversación aún no está disponible.");
+});
+
+test("merged activity keeps one conversations chip, drops repeats and stays bounded", () => {
+  const merged = mergeActivity(
+    [{ kind: "conversations_read", count: 3 }, { kind: "memory_saved" }],
+    [{ kind: "memory_saved" }, { kind: "conversations_read", count: 4 }],
+  );
+  assert.deepEqual(merged, [{ kind: "memory_saved" }, { kind: "conversations_read", count: 4 }]);
+  const many = Array.from({ length: 12 }, (_, i) => ({ kind: "task_created" as const, title: `T${i}` }));
+  assert.equal(mergeActivity([], many).length, 8);
 });

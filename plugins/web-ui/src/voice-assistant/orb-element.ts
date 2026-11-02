@@ -14,6 +14,7 @@ export class VoiceOrb extends LitElement {
     status: { reflect: true },
     mode: { reflect: true },
     muted: { type: Boolean, reflect: true },
+    working: { type: Boolean, reflect: true },
     size: { reflect: true },
     label: {},
     pressed: { type: Boolean },
@@ -23,6 +24,7 @@ export class VoiceOrb extends LitElement {
   declare status: OrbStatus;
   declare mode: OrbMode;
   declare muted: boolean;
+  declare working: boolean;
   declare size: OrbSize;
   declare label: string;
   declare pressed: boolean;
@@ -39,6 +41,7 @@ export class VoiceOrb extends LitElement {
     status: "idle",
     mode: "idle",
     muted: false,
+    working: false,
     hover: false,
     press: false,
     dark: false,
@@ -49,6 +52,7 @@ export class VoiceOrb extends LitElement {
     this.status = "idle";
     this.mode = "idle";
     this.muted = false;
+    this.working = false;
     this.size = "stage";
     this.label = "";
     this.pressed = false;
@@ -100,6 +104,7 @@ export class VoiceOrb extends LitElement {
     s.status = this.status;
     s.mode = this.mode;
     s.muted = this.muted;
+    s.working = this.working;
     s.hover = this.hover || this.focusRing;
     s.press = this.press;
     s.dark = this.dark;
