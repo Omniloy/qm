@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { CoreSession, PendingApproval } from "../src/core-bridge.ts";
-import { VoiceReplyError, parseSseEvent, streamVoiceReply } from "../src/voice-assistant/llm.ts";
+import { VoiceReplyError, parseSseEvent, parseVoiceTranscript, streamVoiceReply } from "../src/voice-assistant/llm.ts";
 import {
   DEFAULT_VOICE_SETTINGS,
   type VoiceReplyFrame,
   type VoiceReplyRequest,
   type VoiceSettings,
 } from "../src/voice-assistant/protocol.ts";
-import { parseVoiceSettings, runnableVoiceSettings } from "../src/voice-assistant/settings-store.ts";
+import { parseVoicePreferences, runnableVoiceSettings } from "../src/voice-assistant/settings-store.ts";
 import { isVoiceThread, runVoiceTool, taskSummaries, type VoiceToolDeps } from "../src/voice-assistant/tools.ts";
 
 const REQUEST: VoiceReplyRequest = {
@@ -101,11 +101,13 @@ function deps(sessions: CoreSession[], over: Partial<VoiceToolDeps> = {}) {
     user: "ana@example.com",
     settings: () => settings,
     saveSettings: async (patch) => {
-      settings = parseVoiceSettings({ ...settings, ...patch });
+      settings = { ...settings, ...parseVoicePreferences({ ...settings, ...patch }) };
       log.push(`settings:${settings.language}:${settings.voice}`);
       return settings;
     },
     sessions: async () => sessions,
+    titles: new Map(),
+    startingTasks: () => new Map(),
     startTurn: async (body) => {
       log.push(`turn:${body.threadRef}:${body.text}:${body.idempotencyKey}`);
       return { runId: "run-1" };
@@ -234,6 +236,31 @@ test("task summaries carry the delegated title and never the task's output", () 
   assert.deepEqual(summaries, [{ taskRef: "web:ana:voice:1", title: "Resumen del correo", state: "idle" }]);
 });
 
+test("a task that started before its session is listed still counts as running, until the list has it", () => {
+  const titles = new Map([["web:ana:voice:new", "Resumir el README"]]);
+  const starting = new Map([
+    ["web:ana:voice:new", "working" as const],
+    ["web:ana:voice:old", "working" as const],
+    ["web:ana:voice:done", "idle" as const],
+  ]);
+  const summaries = taskSummaries(
+    [session("web:ana:voice:old", { working: true, title: "Informe", lastActivityAt: 9 })],
+    titles,
+    starting,
+  );
+  assert.deepEqual(summaries, [
+    { taskRef: "web:ana:voice:new", title: "Resumir el README", state: "working" },
+    { taskRef: "web:ana:voice:old", title: "Informe", state: "working" },
+  ]);
+  assert.equal(taskSummaries([], new Map(), starting, 1).length, 1);
+});
+
+test("check_tasks reports a task that is starting before its session is listed", async () => {
+  const { deps: d } = deps([], { startingTasks: () => new Map([["web:ana:voice:new", "working" as const]]) });
+  const listed = await runVoiceTool({ id: "c", name: "check_tasks", args: {} }, d);
+  assert.deepEqual(JSON.parse(listed.content).tasks, [{ taskRef: "web:ana:voice:new", title: "", state: "working" }]);
+});
+
 test("set_language and set_voice change the settings and validate their arguments strictly", async () => {
   const { deps: d, log } = deps([]);
   const english = await runVoiceTool({ id: "c", name: "set_language", args: { language: "en" } }, d);
@@ -278,7 +305,7 @@ test("set_voice on the fallback engine picks from the voices the model was offer
   const { deps: d } = deps([], {
     settings: runtime,
     saveSettings: async (patch) => {
-      stored = parseVoiceSettings({ ...stored, ...patch });
+      stored = { ...stored, ...parseVoicePreferences({ ...stored, ...patch }) };
       return runtime();
     },
   });
@@ -289,4 +316,153 @@ test("set_voice on the fallback engine picks from the voices the model was offer
   assert.equal(JSON.parse(next.content).voice, "M4");
   assert.equal(stored.ttsEngine, "phonon-40m");
   assert.equal(runnableVoiceSettings(stored, true).ttsEngine, "phonon-40m");
+});
+
+test("written frames pass through the stream and transcript entries are validated", async () => {
+  const frames = await collect(
+    streamVoiceReply(
+      REQUEST,
+      new AbortController().signal,
+      async () =>
+        new Response(
+          sse(['data: {"type":"written","id":"e1","markdown":"**Hecho**"}\n\n', 'data: {"type":"done"}\n\n']),
+          { status: 200 },
+        ),
+    ),
+  );
+  assert.deepEqual(frames[0], { type: "written", id: "e1", markdown: "**Hecho**" });
+  assert.deepEqual(
+    parseVoiceTranscript([
+      { id: "a", role: "user", text: "hola", at: 1 },
+      { id: "b", role: "assistant", text: "**hola**" },
+      { id: "c", role: "system", text: "x", at: 2 },
+      { role: "user", text: "sin id" },
+      null,
+    ]),
+    [
+      { id: "a", role: "user", text: "hola", at: 1 },
+      { id: "b", role: "assistant", text: "**hola**", at: 0 },
+    ],
+  );
+  assert.deepEqual(parseVoiceTranscript({ entries: [] }), []);
+});
+
+test("send_task_message continues the existing task thread and says whether it was queued", async () => {
+  const { deps: d, log } = deps([session("web:ana@example.com:voice:t1"), session("web:ana@example.com:other")]);
+  const sent = await runVoiceTool(
+    { id: "c", name: "send_task_message", args: { taskRef: "web:ana@example.com:voice:t1", text: "  Añade Q4  " } },
+    d,
+  );
+  assert.deepEqual(JSON.parse(sent.content), {
+    ok: true,
+    taskRef: "web:ana@example.com:voice:t1",
+    status: "sent",
+  });
+  assert.deepEqual(log, ["turn:web:ana@example.com:voice:t1:Añade Q4:id1"]);
+  const byId = await runVoiceTool(
+    { id: "c", name: "send_task_message", args: { taskRef: "s-web:ana@example.com:other", text: "sigue" } },
+    { ...d, startTurn: async () => ({ status: "queued", runId: "run-2", steered: true }) },
+  );
+  assert.deepEqual(JSON.parse(byId.content), { ok: true, taskRef: "web:ana@example.com:other", status: "queued" });
+});
+
+test("send_task_message refuses unknown tasks and empty messages", async () => {
+  const { deps: d, log } = deps([session("web:ana@example.com:voice:t1")]);
+  const unknown = await runVoiceTool(
+    { id: "c", name: "send_task_message", args: { taskRef: "web:bob@example.com:x", text: "hola" } },
+    d,
+  );
+  assert.equal(unknown.isError, true);
+  assert.equal(JSON.parse(unknown.content).error, "task_not_found");
+  const empty = await runVoiceTool(
+    { id: "c", name: "send_task_message", args: { taskRef: "web:ana@example.com:voice:t1", text: "  " } },
+    d,
+  );
+  assert.equal(empty.isError, true);
+  assert.deepEqual(log, []);
+});
+
+test("ask_user waits for the person", async () => {
+  const { deps: d } = deps([]);
+  const outcome = await runVoiceTool({ id: "c", name: "ask_user", args: { question: "¿Qué trimestre?" } }, d);
+  assert.deepEqual(JSON.parse(outcome.content), { ok: true, status: "waiting_for_user" });
+  assert.equal(outcome.ask, true);
+});
+
+test("tools that act report what they did as activity taken from their real result", async () => {
+  const sessions = [
+    session("web:ana@example.com:voice:t1", { title: "Informe" }),
+    session("web:ana:2", { awaitingInput: true, title: "Correo" }),
+  ];
+  const { deps: d } = deps(sessions);
+  const delegated = await runVoiceTool(
+    { id: "c", name: "delegate_task", args: { instruction: "Resume el correo", title: "Resumen" } },
+    d,
+  );
+  assert.deepEqual(delegated.activity, {
+    kind: "task_created",
+    title: "Resumen",
+    taskRef: "web:ana@example.com:voice:id1",
+  });
+  const sent = await runVoiceTool(
+    { id: "c", name: "send_task_message", args: { taskRef: "web:ana@example.com:voice:t1", text: "sigue" } },
+    d,
+  );
+  assert.deepEqual(sent.activity, { kind: "message_sent", title: "Informe", taskRef: "web:ana@example.com:voice:t1" });
+  const asked = await runVoiceTool({ id: "c", name: "approve_task", args: { taskRef: "web:ana:2" } }, d);
+  assert.equal(asked.activity, undefined, "asking for approval is not an approval");
+  assert.deepEqual((await asked.confirm!.execute()).activity, {
+    kind: "approved",
+    title: "Correo",
+    taskRef: "web:ana:2",
+  });
+  const rejected = await runVoiceTool({ id: "c", name: "reject_task", args: { taskRef: "web:ana:2" } }, d);
+  assert.equal((await rejected.confirm!.execute()).activity, undefined);
+  const failed = await runVoiceTool(
+    { id: "c", name: "delegate_task", args: { instruction: "x", title: "y" } },
+    { ...d, startTurn: async () => ({}) },
+  );
+  assert.equal(failed.activity, undefined);
+});
+
+test("activity names a delegated task by the title the voice agent gave it, not its first prompt", async () => {
+  const sessions = [session("web:ana@example.com:voice:t1", { title: "Escribe un haiku original sobre el otoño…" })];
+  const { deps: d } = deps(sessions, { titles: new Map([["web:ana@example.com:voice:t1", "Haiku de otoño"]]) });
+  const sent = await runVoiceTool(
+    { id: "c", name: "send_task_message", args: { taskRef: "web:ana@example.com:voice:t1", text: "que rime" } },
+    d,
+  );
+  assert.equal(sent.activity?.title, "Haiku de otoño");
+  const checked = await runVoiceTool({ id: "c", name: "check_tasks", args: {} }, d);
+  assert.equal(JSON.parse(checked.content).tasks[0].title, "Haiku de otoño");
+});
+
+test("activity frames and stored activity are validated, and old entries without activity still load", () => {
+  assert.deepEqual(
+    parseSseEvent('data: {"type":"activity","activity":{"kind":"conversations_read","count":2,"extra":1}}'),
+    { type: "activity", activity: { kind: "conversations_read", count: 2 } },
+  );
+  assert.equal(parseSseEvent('data: {"type":"activity","activity":{"kind":"hacked"}}'), null);
+  assert.deepEqual(
+    parseVoiceTranscript([
+      { id: "a", role: "assistant", text: "Hecho", at: 1 },
+      {
+        id: "b",
+        role: "assistant",
+        text: "",
+        at: 2,
+        activity: [{ kind: "memory_saved" }, { kind: "nope" }, { kind: "approved", title: " Correo ", count: -1 }],
+      },
+    ]),
+    [
+      { id: "a", role: "assistant", text: "Hecho", at: 1 },
+      {
+        id: "b",
+        role: "assistant",
+        text: "",
+        at: 2,
+        activity: [{ kind: "memory_saved" }, { kind: "approved", title: "Correo" }],
+      },
+    ],
+  );
 });

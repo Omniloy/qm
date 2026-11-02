@@ -6600,6 +6600,7 @@
                 <template data-settings-card="card-model-account-modes"></template>
                 <template data-settings-card="card-branding"></template>
                 <template data-settings-card="card-feature-flags"></template>
+                <template data-settings-card="card-voice-assistant"></template>
                 <div class="governance-group" id="governance-credentials">
                   <h2>Credentials</h2>
                   <p>Shared server-side authority available to agents in this organization.</p>
@@ -6742,6 +6743,7 @@
           $("card-soul"),
           $("card-branding"),
           $("card-feature-flags"),
+          $("card-voice-assistant"),
           $("card-service-credentials"),
           keychains,
         ].forEach((card) => content.insertBefore(card, anchor));
@@ -8250,6 +8252,11 @@
         if (requestedView === "customize") {
           savedBranding = r.data.branding || {};
           governanceUI.settings.load(r.data, scope, "branding");
+          governanceUI.settings.load(r.data, scope, "voice-assistant");
+          void api("GET", "/api/voice-models").then((models) => {
+            if (requestedScope === scope)
+              governanceUI.settings.voiceModels(models.ok ? models.data.gatedModels === true : null);
+          });
         }
 
         if (requestedView === "credentials") {
@@ -8762,6 +8769,7 @@
         "personal-account-access": "st-personal-account-access",
         "ack-emoji": "st-ack-emoji",
         branding: "st-branding",
+        "voice-assistant": "st-voice-assistant",
       };
       const SAVE_RELOADS = new Set([
         "internal-member-overrides",

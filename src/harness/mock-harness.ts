@@ -1136,6 +1136,29 @@ export function createMockHarness(): Harness {
           yield end("done", 5);
           return;
         }
+        const offers = (name: string): boolean => input.tools.some((tool) => tool.name === name);
+        const last = input.messages.at(-1);
+        if (lastUser.includes("!voice-write") && offers("write_message")) {
+          yield { type: "delta", text: "Hecho." };
+          yield {
+            type: "tool_call",
+            id: "voice-write-1",
+            name: "write_message",
+            args: { markdown: "**Hecho**\n- uno" },
+          };
+          yield end("done", 6);
+          return;
+        }
+        if (lastUser.includes("!voice-remember") && last?.role === "tool") {
+          yield { type: "delta", text: `Apuntado: ${last.content}.` };
+          yield end("done", 3);
+          return;
+        }
+        if (lastUser.includes("!voice-remember") && offers("remember")) {
+          yield { type: "tool_call", id: "voice-remember-1", name: "remember", args: { facts: ["likes tea"] } };
+          yield end("done", 4);
+          return;
+        }
         for (const text of ["Vale, ", lastUser.trim() || "sin texto", "."]) yield { type: "delta", text };
         yield end("done", 3);
       },

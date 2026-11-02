@@ -16,6 +16,9 @@ uniform float uOut;
 uniform float uListen;
 uniform float uThink;
 uniform float uSpeak;
+uniform float uWork;
+uniform float uOrbit;
+uniform float uSpin;
 uniform vec3 uDeep;
 uniform vec3 uMid;
 uniform vec3 uLight;
@@ -103,6 +106,11 @@ void main() {
   float lit = max(0.0, dot(uv / max(r, 1e-4), vec2(-0.6, 0.8)));
   col = mix(col, uHigh, smoothstep(0.94, 0.995, r) * lit * mix(0.18, 0.1, uDark));
 
+  float bearing = atan(uv.y, uv.x);
+  float gap = abs(mod(bearing - uOrbit + 3.14159265, 6.2831853) - 3.14159265);
+  float arc = mix(0.45, exp(-gap * gap * 2.2), uSpin) * uWork;
+  col = mix(col, uHigh, arc * smoothstep(0.78, 1.0, r) * 0.45);
+
   float luma = dot(col, vec3(0.299, 0.587, 0.114));
   col = mix(col, vec3(luma), 0.4 * uMuted);
 
@@ -113,6 +121,8 @@ void main() {
   float ringR = 1.0 + max(uRing, 0.0) * 0.36;
   float ring = step(0.0, uRing) * pow(1.0 - clamp(uRing, 0.0, 1.0), 2.0) * exp(-pow((r - ringR) * 26.0, 2.0)) * 0.32 * (1.0 - disc);
   halo += ring;
+  float rim = (r - 1.05) * 16.0;
+  halo += arc * exp(-rim * rim) * 0.5 * (1.0 - disc);
   vec3 haloCol = mix(mix(uMid, uLight, 0.6), mix(uDeep, uMid, 0.7), uDark);
 
   float n = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);

@@ -235,6 +235,7 @@ export type HarnessVoiceReplyEvent =
   | { type: "unsupported" }
   | { type: "start"; modelId: string }
   | { type: "delta"; text: string }
+  | { type: "text_end" }
   | ({ type: "tool_call" } & HarnessVoiceToolCall)
   | {
       type: "end";

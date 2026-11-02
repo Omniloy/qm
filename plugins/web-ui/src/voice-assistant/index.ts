@@ -13,22 +13,24 @@ import {
 import { mainConversation, onSessionState, onSessionStateResync } from "../conversations.ts";
 import { appState } from "../shell-state.ts";
 import { openSession, refreshSessions, sessionTitle, sessionsState } from "../sessions.ts";
-import { createAnnouncer, type Announcement, type Announcer } from "./announcer.ts";
+import { createAnnouncer, fallbackAnnouncement, type Announcement, type Announcer } from "./announcer.ts";
 import { playChime } from "./audio/chimes.ts";
 import { createAudioGraph, type AudioGraph } from "./audio/graph.ts";
 import { createVoiceController, voiceCopy, type Port, type VoiceController } from "./controller.ts";
-import { streamVoiceReply } from "./llm.ts";
+import { parseVoiceTranscript, streamVoiceReply } from "./llm.ts";
 import {
   detectGpu,
   downloadVoiceModels,
   effectiveVoiceSettings,
   fallBackFrom,
-  gatedModelsAvailable,
+  forgetVoiceAccess,
+  voiceAccess,
   voiceModelFiles,
 } from "./model-plan.ts";
 import { missingModelFiles } from "./model-cache.ts";
 import {
   DEFAULT_VAD_OPTIONS,
+  DEFAULT_VOICE_ORG_CONFIG,
   VOICE_CHANNEL_NAME,
   modelFileKey,
   unavailableModelKey,
@@ -41,11 +43,16 @@ import {
   type TtsEngineId,
   type TtsWorkerIn,
   type TtsWorkerOut,
+  type VoiceAccess,
+  type VoiceActivity,
+  type VoicePreferences,
   type VoiceSettings,
   type VoiceStageView,
+  type VoiceTaskSummary,
+  type VoiceTranscriptEntry,
 } from "./protocol.ts";
 import {
-  currentVoiceSettings,
+  currentVoicePreferences,
   onVoiceSettingsChange,
   saveVoiceSettings,
   storeVoiceMuted,
@@ -64,6 +71,7 @@ export { downloadVoiceModels, voiceModelStatus } from "./model-plan.ts";
 export interface VoiceMountOptions {
   autoStart: boolean;
   onActiveChange(active: boolean): void;
+  openView(view: "chats" | "memory"): void;
 }
 
 interface Session {
@@ -94,12 +102,18 @@ let starting: AbortController | null = null;
 let stopSettings: (() => void) | null = null;
 let releaseLock: (() => void) | null = null;
 let idleView: VoiceStageView | null = null;
-let gatedModels = true;
+let access: VoiceAccess = { gatedModels: true, config: { ...DEFAULT_VOICE_ORG_CONFIG } };
+let transcript: readonly VoiceTranscriptEntry[] = [];
 let spaceDown = false;
 
 function runtimeSettings(): VoiceSettings {
-  return effectiveVoiceSettings(currentVoiceSettings(), gatedModels);
+  return effectiveVoiceSettings(currentVoicePreferences(), access);
 }
+
+const NO_MICROPHONE: Port<SpeechWorkerIn, SpeechWorkerOut> = {
+  post: () => undefined,
+  listen: () => () => undefined,
+};
 
 function offView(status = ""): VoiceStageView {
   const settings = runtimeSettings();
@@ -114,7 +128,10 @@ function offView(status = ""): VoiceStageView {
     muted: storedVoiceMuted(),
     status,
     captions: { user: null, agent: null },
+    transcript,
+    awaitingUser: false,
     announcement: "",
+    work: null,
   };
 }
 
@@ -206,30 +223,68 @@ function openTask(session: CoreSession): void {
   void openSession(session);
 }
 
-async function ensureVoiceFiles(chosen: VoiceSettings): Promise<void> {
-  const settings = effectiveVoiceSettings(chosen, gatedModels);
+async function openTaskRef(taskRef: string): Promise<void> {
+  const known = (list: readonly CoreSession[]) =>
+    list.find((candidate) => candidate.threadRef === taskRef || candidate.id === taskRef);
+  const found =
+    known(sessionsState.list) ??
+    known(await sessionsNow()) ??
+    (await fetchTranscript(taskRef, { tailTurns: 1 }).then(
+      (page) => page.session,
+      () => undefined,
+    ));
+  if (found) openTask(found);
+  else session?.controller.taskUnavailable();
+}
+
+function openActivity(activity: VoiceActivity): void {
+  if (activity.taskRef) {
+    void openTaskRef(activity.taskRef).catch((error: unknown) => swallow("voice: open task", error));
+    return;
+  }
+  stage?.close();
+  options?.openView(activity.kind === "conversations_read" ? "chats" : "memory");
+}
+
+function tasksChanged(): void {
+  session?.controller.tasksChanged();
+}
+
+function refreshTranscript(): void {
+  void api<{ entries?: unknown }>("/api/voice/transcript").then(
+    (body) => {
+      transcript = parseVoiceTranscript(body.entries);
+      if (session) session.controller.setTranscript(transcript);
+      else if (idleView) showIdle(idleView.status);
+    },
+    (error: unknown) => swallow("voice: transcript", error),
+  );
+}
+
+async function ensureVoiceFiles(chosen: VoicePreferences): Promise<void> {
+  const settings = effectiveVoiceSettings(chosen, access);
   await downloadVoiceModels(ttsFilesFor(settings.ttsEngine, settings.voice), () => undefined).catch((error: unknown) =>
     swallow("voice: download voice", error),
   );
 }
 
-async function saveSettings(patch: Partial<VoiceSettings>): Promise<VoiceSettings> {
+async function saveSettings(patch: Partial<VoicePreferences>): Promise<VoiceSettings> {
   const saved = await saveVoiceSettings(patch, (next) => (session ? ensureVoiceFiles(next) : Promise.resolve()));
-  return effectiveVoiceSettings(saved, gatedModels);
+  return effectiveVoiceSettings(saved, access);
 }
 
-function changeVoiceSettings(patch: Partial<VoiceSettings>): void {
+function changeVoiceSettings(patch: Partial<VoicePreferences>): void {
   void saveSettings(patch).catch((error: unknown) => swallow("voice: save settings", error));
 }
 
-function orbTarget(target: EventTarget | null): boolean {
-  return target instanceof HTMLElement && target.closest(".qm-voice-orb-button") !== null;
+function voiceButton(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && target.closest(".qm-voice-orb-button, .voice-toggle") !== null;
 }
 
 function pttKey(e: KeyboardEvent): boolean {
-  if (e.code !== "Space" || session === null || currentVoiceSettings().micMode !== "push") return false;
+  if (e.code !== "Space" || session === null || runtimeSettings().micMode !== "push") return false;
   if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.isComposing) return false;
-  return orbTarget(e.target) || !handlesSpace(e.target);
+  return voiceButton(e.target) || !handlesSpace(e.target);
 }
 
 function onPttKeydown(e: KeyboardEvent): void {
@@ -237,7 +292,7 @@ function onPttKeydown(e: KeyboardEvent): void {
   e.preventDefault();
   if (e.repeat) return;
   spaceDown = true;
-  if (currentVoiceSettings().pttStyle === "hold") session?.controller.pttDown();
+  if (runtimeSettings().pttStyle === "hold") session?.controller.pttDown();
   else session?.controller.pttToggle();
 }
 
@@ -245,7 +300,7 @@ function onPttKeyup(e: KeyboardEvent): void {
   if (e.code !== "Space" || !spaceDown) return;
   spaceDown = false;
   e.preventDefault();
-  if (currentVoiceSettings().pttStyle === "hold") session?.controller.pttUp();
+  if (runtimeSettings().pttStyle === "hold") session?.controller.pttUp();
 }
 
 function releasePtt(): void {
@@ -257,14 +312,23 @@ function onVisibility(): void {
   if (document.visibilityState === "hidden") releasePtt();
 }
 
+function startingTasks(user: string): ReadonlyMap<string, VoiceTaskSummary["state"]> {
+  return new Map([...(session?.announcer.states() ?? [])].filter(([threadRef]) => isVoiceThread(user, threadRef)));
+}
+
 function toolDeps(user: string, titles: Map<string, string>): VoiceToolDeps {
   return {
     user,
     settings: runtimeSettings,
     saveSettings,
     sessions: sessionsNow,
+    titles,
+    startingTasks: () => startingTasks(user),
     startTurn: (body) =>
-      api<{ runId?: string; status?: string }>("/api/turn", { method: "POST", body: JSON.stringify(body) }),
+      api<{ runId?: string; status?: string; steered?: boolean }>("/api/turn", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
     tail: taskTail,
     approvals: async (sessionId) => (await fetchSessionApprovals(sessionId))?.approvals ?? [],
     resolveApproval: (decision) => resolveApproval(decision),
@@ -273,7 +337,9 @@ function toolDeps(user: string, titles: Map<string, string>): VoiceToolDeps {
     open: openTask,
     delegated: (threadRef, title) => {
       titles.set(threadRef, title);
-      void refreshSessions({ silent: true }).catch((error: unknown) => swallow("voice: refresh sessions", error));
+      void refreshSessions({ silent: true })
+        .catch((error: unknown) => swallow("voice: refresh sessions", error))
+        .finally(tasksChanged);
     },
     newId: mintSendKey,
   };
@@ -304,6 +370,7 @@ function foregroundThread(): string | null {
 }
 
 function teardown(current: Session): void {
+  transcript = current.controller.transcript;
   current.abort.abort();
   current.controller.dispose();
   current.announcer.dispose();
@@ -349,15 +416,16 @@ export async function startVoice(takeover = true): Promise<void> {
   if (!user) return;
   const abort = new AbortController();
   starting = abort;
-  const copy = () => voiceCopy(currentVoiceSettings().language);
+  const copy = () => voiceCopy(currentVoicePreferences().language);
   let graph: AudioGraph | null = null;
   const workers: Worker[] = [];
   let files: readonly ModelFile[] = [];
   let settings = runtimeSettings();
   try {
-    const [gpu, gated] = await Promise.all([detectGpu(), gatedModelsAvailable()]);
+    forgetVoiceAccess();
+    const [gpu, fetched] = await Promise.all([detectGpu(), voiceAccess()]);
     if (abort.signal.aborted) return;
-    gatedModels = gated;
+    access = fetched;
     if (!gpu.webgpu) {
       if (takeover) stage.open();
       showIdle(copy().webgpu);
@@ -366,8 +434,10 @@ export async function startVoice(takeover = true): Promise<void> {
     }
     settings = runtimeSettings();
     const { asrEngine } = settings;
+    const microphone = settings.micMode !== "off";
     files = voiceModelFiles(gpu, settings);
-    const quiet = !takeover && ((await missingModelFiles(files)).length > 0 || !(await microphoneGranted()));
+    const quiet =
+      !takeover && ((await missingModelFiles(files)).length > 0 || (microphone && !(await microphoneGranted())));
     if (abort.signal.aborted) return;
     if (quiet) {
       starting = null;
@@ -381,16 +451,16 @@ export async function startVoice(takeover = true): Promise<void> {
       return;
     }
     releaseLock = release;
-    graph = await createAudioGraph();
+    graph = await createAudioGraph(microphone);
     if (abort.signal.aborted) throw new DOMException("aborted", "AbortError");
     const audio = graph;
-    const speechWorker = new Worker(new URL("./speech.worker.ts", import.meta.url), {
-      type: "module",
-      name: "qm-voice-speech",
-    });
+    const speechWorker = microphone
+      ? new Worker(new URL("./speech.worker.ts", import.meta.url), { type: "module", name: "qm-voice-speech" })
+      : null;
     const ttsWorker = new Worker(new URL("./tts.worker.ts", import.meta.url), { type: "module", name: "qm-voice-tts" });
-    workers.push(speechWorker, ttsWorker);
-    const speech = workerPort<SpeechWorkerIn, SpeechWorkerOut>(speechWorker);
+    if (speechWorker) workers.push(speechWorker);
+    workers.push(ttsWorker);
+    const speech = speechWorker ? workerPort<SpeechWorkerIn, SpeechWorkerOut>(speechWorker) : NO_MICROPHONE;
     const tts = workerPort<TtsWorkerIn, TtsWorkerOut>(ttsWorker);
     const titles = new Map<string, string>();
     const deps = toolDeps(user, titles);
@@ -400,12 +470,28 @@ export async function startVoice(takeover = true): Promise<void> {
       playback: nodePort(audio.playback),
       settings: runtimeSettings,
       reply: streamVoiceReply,
+      persist: (entries) =>
+        api("/api/voice/transcript", { method: "POST", body: JSON.stringify({ entries }) }).then(
+          () => undefined,
+          (error: unknown) => swallow("voice: persist transcript", error),
+        ),
+      attachActivity: (entryId, activity) =>
+        api("/api/voice/transcript/activity", { method: "POST", body: JSON.stringify({ entryId, activity }) }).then(
+          () => undefined,
+        ),
       runTool: (call) => runVoiceTool(call, deps),
-      runningTasks: () => taskSummaries(sessionsState.list, titles),
+      runningTasks: () => taskSummaries(sessionsState.list, titles, startingTasks(user)),
+      backgroundTasks: () =>
+        taskSummaries(
+          sessionsState.list.filter((candidate) => isVoiceThread(user, candidate.threadRef)),
+          titles,
+          startingTasks(user),
+        ).filter((task) => task.state !== "idle"),
       chime: (kind) => playChime(audio.context, audio.output, kind),
       setMuted: (muted) => audio.setMuted(muted),
       onMutedChange: storeVoiceMuted,
       muted: storedVoiceMuted(),
+      transcript,
       render: (view) => stage?.update(view),
       onFatal: (message, stage) => {
         if (stage && fallBackFrom(stage === "asr" ? settings.asrEngine : settings.ttsEngine)) restartVoice();
@@ -413,8 +499,8 @@ export async function startVoice(takeover = true): Promise<void> {
       },
     });
     const announcer = createAnnouncer({
-      scope: () => currentVoiceSettings().announceScope,
-      language: () => currentVoiceSettings().language,
+      scope: () => runtimeSettings().announceScope,
+      language: () => currentVoicePreferences().language,
       isVoiceThread: (threadRef) => isVoiceThread(user, threadRef),
       foregroundThread,
       sessions: sessionsNow,
@@ -424,6 +510,16 @@ export async function startVoice(takeover = true): Promise<void> {
         return pending ? (pending.summary ?? pending.purpose ?? pending.command) : "";
       },
       summarize: streamVoiceReply,
+      review: (update) => {
+        notifyHidden({
+          threadRef: update.taskRef,
+          kind: update.kind,
+          title: update.title,
+          text: fallbackAnnouncement(update.kind, update.title, currentVoicePreferences().language),
+          detail: update.detail,
+        });
+        return controller.review(update);
+      },
       title: (threadRef) => titles.get(threadRef),
       deliver: (announcement) => {
         notifyHidden(announcement);
@@ -437,11 +533,24 @@ export async function startVoice(takeover = true): Promise<void> {
       graph: audio,
       workers,
       release: [
-        onSessionState((event) => announcer.handle(event)),
-        onSessionStateResync(() => void announcer.resync().catch((e: unknown) => swallow("voice: resync", e))),
+        onSessionState((event) => {
+          announcer.handle(event);
+          queueMicrotask(tasksChanged);
+        }),
+        onSessionStateResync(
+          () =>
+            void announcer
+              .resync()
+              .catch((e: unknown) => swallow("voice: resync", e))
+              .finally(tasksChanged),
+        ),
         onVoiceSettingsChange((next) => {
-          const effective = effectiveVoiceSettings(next, gatedModels);
-          if (effective.ttsEngine !== settings.ttsEngine || effective.asrEngine !== settings.asrEngine) {
+          const effective = effectiveVoiceSettings(next, access);
+          if (
+            effective.ttsEngine !== settings.ttsEngine ||
+            effective.asrEngine !== settings.asrEngine ||
+            (effective.micMode === "off") !== !microphone
+          ) {
             restartVoice();
             return;
           }
@@ -459,18 +568,19 @@ export async function startVoice(takeover = true): Promise<void> {
       abort.signal,
     );
     if (session?.controller !== controller) return;
-    speech.post(
-      {
-        type: "init",
-        framePort: audio.framePort,
-        asrEngine,
-        asrVariant: asrVariantFor(asrEngine, gpu),
-        asrFiles: files.filter((file) => file.role === "asr"),
-        language: runtimeSettings().language,
-        vad: { ...DEFAULT_VAD_OPTIONS },
-      },
-      [audio.framePort],
-    );
+    if (audio.framePort)
+      speech.post(
+        {
+          type: "init",
+          framePort: audio.framePort,
+          asrEngine,
+          asrVariant: asrVariantFor(asrEngine, gpu),
+          asrFiles: files.filter((file) => file.role === "asr"),
+          language: runtimeSettings().language,
+          vad: { ...DEFAULT_VAD_OPTIONS },
+        },
+        [audio.framePort],
+      );
     tts.post({
       type: "init",
       engine: settings.ttsEngine,
@@ -539,13 +649,20 @@ export async function mountVoiceAssistant(mount: VoiceMountOptions): Promise<voi
       else void startVoice(true);
     },
     onPttUp: () => session?.controller.pttUp(),
+    onOpenTask: (taskRef) => void openTaskRef(taskRef).catch((error: unknown) => swallow("voice: open task", error)),
+    onOpenActivity: openActivity,
     onTypeInstead: (text) => session?.controller.type(text),
     onLanguage: (language) => changeVoiceSettings({ language }),
     onVoice: (voice) => changeVoiceSettings({ voice, language: languageForVoice(runtimeSettings(), voice) }),
     onMicMode: (micMode) => changeVoiceSettings({ micMode }),
+    onOpen: refreshTranscript,
     onClose: () => undefined,
   });
   showIdle();
+  void voiceAccess().then((fetched) => {
+    access = fetched;
+    if (!session && idleView) showIdle(idleView.status);
+  });
   document.addEventListener("keydown", onPttKeydown);
   document.addEventListener("keyup", onPttKeyup);
   document.addEventListener("visibilitychange", onVisibility);

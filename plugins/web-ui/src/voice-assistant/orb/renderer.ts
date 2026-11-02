@@ -9,6 +9,7 @@ export interface OrbRead {
   status: OrbStatus;
   mode: OrbMode;
   muted: boolean;
+  working: boolean;
   hover: boolean;
   press: boolean;
   dark: boolean;
@@ -97,6 +98,7 @@ export function createOrbRenderer(
       status: state.status,
       mode: state.mode,
       muted: state.muted,
+      working: state.working,
       input: levels.read("input"),
       output: levels.read("output"),
       hover: state.hover,

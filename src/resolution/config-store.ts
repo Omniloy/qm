@@ -23,6 +23,7 @@ import {
   type DecryptedConnectorClient,
 } from "../connectors/connector-client-store.ts";
 import { errMessage, reportFailureAs } from "../util/errors.ts";
+import type { VoiceOrgConfig } from "../voice/voice-config.ts";
 
 export interface PersistedSoul {
   scopeId: ScopeId;
@@ -171,6 +172,10 @@ export interface PersistedBranding {
   scopeId: ScopeId;
   branding: OrgBranding;
 }
+export interface PersistedVoiceConfig {
+  scopeId: ScopeId;
+  config: VoiceOrgConfig;
+}
 export interface PersistedBrowseMaxSteps {
   scopeId: ScopeId;
   steps: number;
@@ -315,6 +320,8 @@ export interface ScopedConfigStore {
   getBranding(id: ScopeId): OrgBranding | null;
   setBranding(id: ScopeId, branding: OrgBranding | null): void;
   getBrandingDurable(id: ScopeId): Promise<OrgBranding | null>;
+  setVoiceConfig(id: ScopeId, config: VoiceOrgConfig | null): void;
+  getVoiceConfigDurable(id: ScopeId): Promise<VoiceOrgConfig | null>;
   getBrowseMaxSteps(id: ScopeId): number | null;
   setBrowseMaxSteps(id: ScopeId, steps: number | null): void;
   getBrowseModel(id: ScopeId): string | null;
@@ -409,6 +416,7 @@ export function createMemoryConfigStore(
     ackEmoji?: DurableMap<PersistedAckEmoji>;
     slackEmojiCatalog?: DurableMap<PersistedSlackEmojiCatalog>;
     branding?: DurableMap<PersistedBranding>;
+    voiceConfigs?: DurableMap<PersistedVoiceConfig>;
     browseMaxSteps?: DurableMap<PersistedBrowseMaxSteps>;
     browseModels?: DurableMap<PersistedBrowseModel>;
     browserProviders?: DurableMap<PersistedBrowserProvider>;
@@ -505,6 +513,7 @@ export function createMemoryConfigStore(
   const ackEmojiStore = opts.ackEmoji ?? createMemoryMap<PersistedAckEmoji>();
   const slackEmojiCatalogStore = opts.slackEmojiCatalog ?? createMemoryMap<PersistedSlackEmojiCatalog>();
   const brandingStore = opts.branding ?? createMemoryMap<PersistedBranding>();
+  const voiceConfigStore = opts.voiceConfigs ?? createMemoryMap<PersistedVoiceConfig>();
   const browseMaxStepsStore = opts.browseMaxSteps ?? createMemoryMap<PersistedBrowseMaxSteps>();
   const browseModelStore = canonicalRows(
     opts.browseModels ?? createMemoryMap<PersistedBrowseModel>(),
@@ -1251,6 +1260,16 @@ export function createMemoryConfigStore(
       }
     },
     getBrandingDurable: async (id) => (await brandingStore.get(id))?.branding ?? null,
+    setVoiceConfig(id, config) {
+      persist(`voiceConfig:${id}`, "voice assistant config", () =>
+        config === null ? voiceConfigStore.delete(id) : voiceConfigStore.put(id, { scopeId: id, config }),
+      );
+    },
+    getVoiceConfigDurable: async (id) => {
+      const pending = pendingWrites.get(`voiceConfig:${id}`);
+      if (pending) await pending;
+      return (await voiceConfigStore.get(id))?.config ?? null;
+    },
     getBrowseMaxSteps: (id) => browseMaxSteps.get(id) ?? null,
     setBrowseMaxSteps(id, steps) {
       if (steps === null) {
@@ -1489,6 +1508,7 @@ export function createMemoryConfigStore(
         `turnWallClock:${id}`,
         `appIdleStop:${id}`,
         `branding:${id}`,
+        `voiceConfig:${id}`,
         ...(id === org
           ? [`approvedHarnesses:${org}`, `orgAmbient:${org}`, `interactiveFastMode:${org}`, `autoFlagger:${org}`]
           : []),

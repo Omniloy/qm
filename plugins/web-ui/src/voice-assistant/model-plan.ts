@@ -2,15 +2,23 @@ import { api, withBase } from "../core-bridge.ts";
 import { asrFilesFor, asrVariantFor } from "./asr/models.ts";
 import { ensureModelFiles, missingModelFiles, requestPersistentStorage, voiceStorageEstimate } from "./model-cache.ts";
 import {
+  DEFAULT_VOICE_ORG_CONFIG,
   MODEL_PROXY_PREFIX,
   modelFileKey,
   type AsrEngineId,
   type GpuSupport,
   type ModelFile,
   type TtsEngineId,
+  type VoiceAccess,
+  type VoicePreferences,
   type VoiceSettings,
 } from "./protocol.ts";
-import { FALLBACK_ASR_ENGINE, FALLBACK_TTS_ENGINE, runnableVoiceSettings } from "./settings-store.ts";
+import {
+  FALLBACK_ASR_ENGINE,
+  FALLBACK_TTS_ENGINE,
+  parseVoiceOrgConfig,
+  runnableVoiceSettings,
+} from "./settings-store.ts";
 import { ttsFilesFor } from "./tts/models.ts";
 
 export interface VoiceModelStatus {
@@ -23,17 +31,22 @@ export interface VoiceModelStatus {
 }
 
 const failedEngines = new Set<AsrEngineId | TtsEngineId>();
-let gatedAccess: Promise<boolean> | null = null;
+const FALLBACK_ACCESS: VoiceAccess = { gatedModels: true, config: { ...DEFAULT_VOICE_ORG_CONFIG } };
+let access: Promise<VoiceAccess> | null = null;
 
-export function gatedModelsAvailable(): Promise<boolean> {
-  gatedAccess ??= api<{ gatedModels?: unknown }>("/api/voice/access").then(
-    (access) => access.gatedModels !== false,
+export function voiceAccess(): Promise<VoiceAccess> {
+  access ??= api<{ gatedModels?: unknown; config?: unknown }>("/api/voice/access").then(
+    (body) => ({ gatedModels: body.gatedModels !== false, config: parseVoiceOrgConfig(body.config) }),
     () => {
-      gatedAccess = null;
-      return true;
+      access = null;
+      return FALLBACK_ACCESS;
     },
   );
-  return gatedAccess;
+  return access;
+}
+
+export function forgetVoiceAccess(): void {
+  access = null;
 }
 
 export function fallBackFrom(engine: AsrEngineId | TtsEngineId): boolean {
@@ -42,8 +55,8 @@ export function fallBackFrom(engine: AsrEngineId | TtsEngineId): boolean {
   return true;
 }
 
-export function effectiveVoiceSettings(settings: VoiceSettings, gatedModels: boolean): VoiceSettings {
-  return runnableVoiceSettings(settings, gatedModels, failedEngines);
+export function effectiveVoiceSettings(preferences: VoicePreferences, current: VoiceAccess): VoiceSettings {
+  return runnableVoiceSettings({ ...preferences, ...current.config }, current.gatedModels, failedEngines);
 }
 
 type GpuNavigator = Navigator & {
@@ -65,19 +78,20 @@ export async function detectGpu(): Promise<GpuSupport> {
 
 export function voiceModelFiles(
   gpu: GpuSupport,
-  settings: Pick<VoiceSettings, "asrEngine" | "ttsEngine" | "voice">,
+  settings: Pick<VoiceSettings, "asrEngine" | "ttsEngine" | "voice" | "micMode">,
 ): readonly ModelFile[] {
   const { asrEngine } = settings;
-  return [...asrFilesFor(asrEngine, asrVariantFor(asrEngine, gpu)), ...ttsFilesFor(settings.ttsEngine, settings.voice)];
+  const asr = settings.micMode === "off" ? [] : asrFilesFor(asrEngine, asrVariantFor(asrEngine, gpu));
+  return [...asr, ...ttsFilesFor(settings.ttsEngine, settings.voice)];
 }
 
 function totalBytes(files: readonly ModelFile[]): number {
   return files.reduce((sum, file) => sum + file.bytes, 0);
 }
 
-export async function voiceModelStatus(chosen: VoiceSettings): Promise<VoiceModelStatus> {
-  const [gpu, gatedModels] = await Promise.all([detectGpu(), gatedModelsAvailable()]);
-  const settings = effectiveVoiceSettings(chosen, gatedModels);
+export async function voiceModelStatus(preferences: VoicePreferences): Promise<VoiceModelStatus> {
+  const [gpu, current] = await Promise.all([detectGpu(), voiceAccess()]);
+  const settings = effectiveVoiceSettings(preferences, current);
   const files = voiceModelFiles(gpu, settings);
   const missing = typeof caches === "undefined" ? files : await missingModelFiles(files);
   return {

@@ -354,3 +354,43 @@ test("models view loads and saves purpose cards through the real page handlers",
     f.dom.window.close();
   }
 });
+
+test("customize view loads the voice assistant card and its gated-model status", async () => {
+  const f = litFixture();
+  try {
+    f.root.innerHTML = '<template data-settings-card="card-voice-assistant"></template>';
+    f.ui.settings.mountCards();
+    for (const [response, expected] of [
+      [{ ok: true, data: { gatedModels: false } }, /No HF_TOKEN/],
+      [{ ok: true, data: { gatedModels: true } }, /Gated models are servable/],
+    ] as const) {
+      const requests: unknown[][] = [];
+      const context = vm.createContext({
+        governanceUI: f.ui,
+        requestedView: "customize",
+        requestedScope: "org:test",
+        scope: "org:test",
+        savedBranding: null,
+        r: { data: { voiceAssistant: { wakePhrase: "Hola Omni" } } },
+        api: async (...args: unknown[]) => {
+          requests.push(args);
+          return response;
+        },
+      });
+      vm.runInContext(
+        extract(
+          'if (requestedView === "customize") {\n          savedBranding',
+          'if (requestedView === "credentials") {',
+        ),
+        context,
+      );
+      await setImmediate();
+      assert.deepEqual(requests, [["GET", "/api/voice-models"]]);
+      assert.equal(f.ui.settings.states.get("voice-assistant").available, true);
+      assert.equal(f.ui.collect("voice-assistant").wakePhrase, "Hola Omni");
+      assert.match(f.document.getElementById("voice-gated-models")!.textContent!, expected);
+    }
+  } finally {
+    f.dom.window.close();
+  }
+});

@@ -41,11 +41,22 @@ test("plumbing keys and short values are not masked", () => {
   const mask = createSecretValueMasker({
     AGENT_API_URL: "https://core.example.test",
     AWS_REGION: "us-west-2",
+    BROWSE_PROVIDER: "browserbase",
     PYTHONUNBUFFERED: "1",
     DB_PASS: "hunter2",
   });
-  const cmd = "curl https://core.example.test --region us-west-2 && echo 1 hunter2";
+  const cmd = "curl https://core.example.test --region us-west-2 && echo 1 hunter2 via browserbase";
   assert.equal(mask(cmd), cmd);
+});
+
+test("the chosen browser is a name, not a credential, so ordinary output that mentions it survives", () => {
+  const mask = createExactSecretValueMasker(
+    Object.values(executionSecretEnv({ BROWSE_PROVIDER: "extension", API_TOKEN: "tok-1234567890" })),
+  );
+  assert.equal(
+    mask("BROWSER=extension; open the QM Browser Bridge extension with tok-1234567890"),
+    "BROWSER=extension; open the QM Browser Bridge extension with <redacted:credential>",
+  );
 });
 
 test("regex metacharacters in a secret cannot break the replacement", () => {

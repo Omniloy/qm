@@ -326,6 +326,56 @@ test("branding governance validates, round-trips through surface-config, clears,
   }
 });
 
+test("voice-assistant settings validate, round-trip through the customize view, clear, and are org-only", async () => {
+  const srv = start();
+  const url = `${srv.base}/v1/admin/scopes/org:default-org/voice-assistant`;
+  const put = (body: unknown, target = url, headers: Record<string, string> = ADMIN) =>
+    fetch(target, { method: "PUT", headers, body: JSON.stringify(body) });
+  const read = async () =>
+    (
+      (await (
+        await fetch(`${srv.base}/v1/admin/scopes/org:default-org?view=customize`, { headers: ADMIN })
+      ).json()) as {
+        voiceAssistant?: unknown;
+      }
+    ).voiceAssistant;
+  const custom = {
+    ttsEngine: "supertonic-3",
+    asrEngine: "qwen3-asr-0.6b",
+    wakePhrase: "  Hola   Omni ",
+    pttStyle: "toggle",
+    announceScope: "voice",
+  };
+  try {
+    assert.deepEqual(await read(), {
+      ttsEngine: "phonon-40m",
+      asrEngine: "phonon-2.5",
+      wakePhrase: "Oye Omni",
+      pttStyle: "hold",
+      announceScope: "all",
+    });
+    assert.equal((await put(custom, url, { ...ADMIN, "x-admin-actor": "nobody@default-org" })).status, 403);
+    assert.equal((await put(custom, `${srv.base}/v1/admin/scopes/channel:C1/voice-assistant`)).status, 400);
+    for (const bad of [
+      { ...custom, ttsEngine: "kokoro" },
+      { ...custom, asrEngine: undefined },
+      { ...custom, wakePhrase: " " },
+      { ...custom, wakePhrase: "x".repeat(61) },
+      { ...custom, pttStyle: "tap" },
+      { ...custom, announceScope: "none" },
+    ]) {
+      assert.equal((await put(bad)).status, 400, JSON.stringify(bad));
+    }
+    assert.equal((await put(custom)).status, 200);
+    assert.deepEqual(await read(), { ...custom, wakePhrase: "Hola Omni" });
+    assert.equal((await put({ reset: true })).status, 200);
+    assert.equal(await srv.built.config.getVoiceConfigDurable("org:default-org"), null);
+    assert.equal(((await read()) as { ttsEngine: string }).ttsEngine, "phonon-40m");
+  } finally {
+    await srv.close();
+  }
+});
+
 test("surface-config filters persisted model choices to the active native harness", async () => {
   const srv = start("codex");
   try {

@@ -42,12 +42,46 @@ async function listen(server: Server): Promise<string> {
   return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 }
 
+const ORG_CONFIG = {
+  ttsEngine: "supertonic-3",
+  asrEngine: "qwen3-asr-0.6b",
+  wakePhrase: "Hola Omni",
+  pttStyle: "toggle",
+  announceScope: "voice",
+};
+
+const transcriptAppends: Array<Record<string, unknown>> = [];
+
 const core = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://core");
   const path = url.pathname;
   if (path === "/v1/voice/access") {
     res.writeHead(200, { "content-type": "application/json" });
-    return void res.end(JSON.stringify({ enabled: url.searchParams.get("principalId") === "alice" }));
+    const enabled = url.searchParams.get("principalId") === "alice";
+    return void res.end(JSON.stringify(enabled ? { enabled, config: ORG_CONFIG } : { enabled }));
+  }
+  if (req.method === "POST" && path === "/v1/voice/transcript/activity") {
+    const body = JSON.parse(await readRaw(req)) as Record<string, unknown>;
+    transcriptAppends.push({ path, ...body });
+    res.writeHead(200, { "content-type": "application/json" });
+    return void res.end(JSON.stringify({ entry: { id: body.entryId } }));
+  }
+  if (req.method === "POST" && path === "/v1/voice/transcript") {
+    const body = JSON.parse(await readRaw(req)) as Record<string, unknown>;
+    transcriptAppends.push(body);
+    res.writeHead(body.principalId === "alice" ? 200 : 403, { "content-type": "application/json" });
+    return void res.end(JSON.stringify(body.principalId === "alice" ? { entries: [] } : { error: "feature_disabled" }));
+  }
+  if (path === "/v1/voice/transcript") {
+    const principal = url.searchParams.get("principalId");
+    res.writeHead(principal === "alice" ? 200 : 403, { "content-type": "application/json" });
+    return void res.end(
+      JSON.stringify(
+        principal === "alice"
+          ? { entries: [{ id: "e1", role: "assistant", text: `**hola** ${principal}`, at: 1 }] }
+          : { error: "feature_disabled" },
+      ),
+    );
   }
   if (req.method === "POST" && path === "/v1/voice/reply") {
     const raw = await readRaw(req);
@@ -242,8 +276,60 @@ test("the SPA CSP allows same-origin and blob media", async () => {
 test("voice access relays core's answer for the signed-in user", async () => {
   const response = await fetch(`${base}/api/voice/access`, { headers: identity("alice") });
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { enabled: true, gatedModels: Boolean(process.env.HF_TOKEN?.trim()) });
+  assert.deepEqual(await response.json(), {
+    enabled: true,
+    config: ORG_CONFIG,
+    gatedModels: Boolean(process.env.HF_TOKEN?.trim()),
+  });
   assert.equal((await fetch(`${base}/api/voice/access`)).status, 401);
+});
+
+test("the voice transcript is relayed for the signed-in user only", async () => {
+  const response = await fetch(`${base}/api/voice/transcript`, { headers: identity("alice") });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    entries: [{ id: "e1", role: "assistant", text: "**hola** alice", at: 1 }],
+  });
+  const bob = await fetch(`${base}/api/voice/transcript?principalId=alice`, { headers: identity("bob") });
+  assert.equal(bob.status, 403, "the principal is pinned to the session user, not the query");
+  assert.equal((await fetch(`${base}/api/voice/transcript`)).status, 401);
+});
+
+test("transcript notes are appended for the signed-in user only", async () => {
+  const entries = [{ role: "user", text: "sí" }];
+  const saved = await fetch(`${base}/api/voice/transcript`, {
+    method: "POST",
+    headers: identity("alice"),
+    body: JSON.stringify({ principalId: "mallory", entries }),
+  });
+  assert.equal(saved.status, 200);
+  assert.deepEqual(transcriptAppends.at(-1), { entries, principalId: "alice" });
+  const bob = await fetch(`${base}/api/voice/transcript`, {
+    method: "POST",
+    headers: identity("bob"),
+    body: JSON.stringify({ entries }),
+  });
+  assert.equal(bob.status, 403);
+  const before = transcriptAppends.length;
+  assert.equal((await fetch(`${base}/api/voice/transcript`, { method: "POST", body: "{}" })).status, 401);
+  assert.equal(transcriptAppends.length, before);
+});
+
+test("activity for a transcript entry is relayed for the signed-in user with only the entry and items", async () => {
+  const activity = [{ kind: "task_created", title: "Informe", taskRef: "web:alice:voice:1" }];
+  const saved = await fetch(`${base}/api/voice/transcript/activity`, {
+    method: "POST",
+    headers: identity("alice"),
+    body: JSON.stringify({ principalId: "mallory", entryId: "e1", activity, extra: true }),
+  });
+  assert.equal(saved.status, 200);
+  assert.deepEqual(transcriptAppends.at(-1), {
+    path: "/v1/voice/transcript/activity",
+    entryId: "e1",
+    activity,
+    principalId: "alice",
+  });
+  assert.equal((await fetch(`${base}/api/voice/transcript/activity`, { method: "POST", body: "{}" })).status, 401);
 });
 
 test("voice access tells the browser whether gated models can be served", async () => {
@@ -251,6 +337,11 @@ test("voice access tells the browser whether gated models can be served", async 
     (await fetch(`${await startProxy(overrides)}/api/voice/access`)).json();
   const coreFetch: VoiceAssistantDeps["coreFetch"] = async () => ({ status: 200, text: '{"enabled":true}' });
   assert.deepEqual(await access({ coreFetch }), { enabled: true, gatedModels: true });
+  const configured: VoiceAssistantDeps["coreFetch"] = async () => ({
+    status: 200,
+    text: JSON.stringify({ enabled: true, config: ORG_CONFIG }),
+  });
+  assert.deepEqual(await access({ coreFetch: configured }), { enabled: true, config: ORG_CONFIG, gatedModels: true });
   for (const hfToken of [undefined, "", "  "])
     assert.deepEqual(await access({ coreFetch, hfToken }), { enabled: true, gatedModels: false });
   assert.deepEqual(await access({ coreFetch, hfToken: undefined, localModelDir: "/models" }), {

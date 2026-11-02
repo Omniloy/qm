@@ -1,5 +1,5 @@
 import type { SessionEntry, SurfaceContextQuery, SurfaceContextResult } from "../types.ts";
-import type { SessionStore } from "../sessions/session-store.ts";
+import { isHiddenEntry, type SessionStore } from "../sessions/session-store.ts";
 import { createTranscriptSource } from "../harness/tape-projection.ts";
 
 const WEB_CONTEXT_MESSAGE_CHARS = 600;
@@ -40,12 +40,11 @@ export function webConversationWindow(
       display?: unknown;
       action?: unknown;
       callId?: unknown;
-      hidden?: unknown;
       name?: unknown;
     };
     const text = typeof p.text === "string" ? p.text : "";
     const time = new Date(e.createdAt).toISOString().slice(0, 16).replace("T", " ");
-    if (e.type === "user" && !p.hidden) {
+    if (e.type === "user" && !isHiddenEntry(e)) {
       const display = typeof p.display === "string" && p.display.trim() ? p.display : text;
       if (display.trim()) {
         all.push({

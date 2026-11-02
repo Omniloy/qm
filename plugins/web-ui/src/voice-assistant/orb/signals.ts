@@ -18,6 +18,7 @@ export const MOTION = {
   scaleSpeak: 0.025,
   thinkRotation: 0.12,
   ringSeconds: 0.9,
+  workOrbit: 1.8,
 };
 
 export function approach(current: number, target: number, rate: number, dt: number): number {
@@ -38,6 +39,7 @@ export interface SignalInput {
   status: OrbStatus;
   mode: OrbMode;
   muted: boolean;
+  working: boolean;
   input: number;
   output: number;
   hover: boolean;
@@ -59,6 +61,9 @@ export interface OrbFrame {
   listen: number;
   think: number;
   speak: number;
+  work: number;
+  orbit: number;
+  spin: number;
   awake: number;
   muted: number;
   hover: number;
@@ -83,6 +88,9 @@ export class OrbSignals {
     listen: 0,
     think: 0,
     speak: 0,
+    work: 0,
+    orbit: 0,
+    spin: 1,
     awake: 0,
     muted: 0,
     hover: 0,
@@ -130,6 +138,10 @@ export class OrbSignals {
       dt,
     );
     f.speak = approach(f.speak, connected && s.mode === "speaking" ? 1 : 0, MOTION.stateRate, dt);
+    const resting = s.mode === "idle" || s.mode === "listening";
+    f.work = approach(f.work, connected && s.working && resting ? 1 : 0, MOTION.stateRate, dt);
+    f.spin = approach(f.spin, s.reduced ? 0 : 1, MOTION.stateRate, dt);
+    f.orbit = (f.orbit + dt * MOTION.workOrbit * f.spin) % (Math.PI * 2);
     f.awake = approach(f.awake, inCall ? 1 : 0, 2, dt);
     f.muted = approach(f.muted, s.muted && inCall ? 1 : 0, MOTION.stateRate, dt);
     f.hover = approach(f.hover, s.hover ? 1 : 0, 6, dt);
@@ -140,11 +152,12 @@ export class OrbSignals {
         f.awake * 0.015 +
         f.listen * (0.02 + f.inSlow * 0.04) +
         f.think * 0.03 +
+        f.work * 0.02 +
         f.speak * (0.03 + easedOut * 0.1)) *
       (1 - 0.5 * f.muted);
     f.speed = approach(f.speed, targetSpeed, MOTION.speedRate, dt);
     f.phase += dt * f.speed * f.calm;
-    f.rot += dt * MOTION.thinkRotation * f.think * f.calm;
+    f.rot += dt * MOTION.thinkRotation * (f.think + f.work * 0.5) * f.calm;
 
     const breath = Math.sin((f.time / 8) * Math.PI * 2) * MOTION.breath * f.calm;
     const base = baseScale(s.status, inCall);

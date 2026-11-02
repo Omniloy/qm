@@ -6,6 +6,8 @@ import {
   fallbackAnnouncement,
   type Announcement,
   type AnnouncerDeps,
+  type ReviewOutcome,
+  type TaskUpdate,
 } from "../src/voice-assistant/announcer.ts";
 import type { AnnounceScope, VoiceReplyFrame, VoiceReplyRequest } from "../src/voice-assistant/protocol.ts";
 
@@ -30,11 +32,13 @@ function setup(
     summary?: VoiceReplyFrame[] | Error;
     failed?: boolean;
     titles?: Record<string, string>;
+    review?: (update: TaskUpdate) => Promise<ReviewOutcome>;
   } = {},
 ) {
   let sessions = options.sessions ?? [];
   const delivered: Announcement[] = [];
   const requests: VoiceReplyRequest[] = [];
+  const reviews: TaskUpdate[] = [];
   const deps: AnnouncerDeps = {
     scope: () => options.scope ?? "all",
     language: () => "es",
@@ -57,6 +61,10 @@ function setup(
       if (summary instanceof Error) throw summary;
       for (const frame of summary) yield frame;
     },
+    review: (update) => {
+      reviews.push(update);
+      return options.review ? options.review(update) : Promise.reject(new Error("no_review"));
+    },
     title: (threadRef) => options.titles?.[threadRef],
     deliver: (announcement) => void delivered.push(announcement),
   };
@@ -65,6 +73,7 @@ function setup(
     announcer,
     delivered,
     requests,
+    reviews,
     setSessions: (next: CoreSession[]) => {
       sessions = next;
     },
@@ -105,6 +114,17 @@ test("idle without a prior working state, metadata frames and repeats are not an
   t.announcer.handle({ threadRef: "web:ana:1", state: "idle", at });
   await t.announcer.settled();
   assert.equal(t.delivered.length, 1);
+});
+
+test("the announcer tracks the live state of a thread before its session is listed", async () => {
+  const t = setup({ sessions: [session("web:ana:1", { working: true })] });
+  await t.announcer.start();
+  t.announcer.handle({ threadRef: "web:ana:voice:new", state: "working", at });
+  assert.equal(t.announcer.states().get("web:ana:voice:new"), "working");
+  assert.equal(t.announcer.states().get("web:ana:1"), "working");
+  t.announcer.handle({ threadRef: "web:ana:voice:new", state: "idle", at });
+  assert.equal(t.announcer.states().get("web:ana:voice:new"), "idle");
+  await t.announcer.settled();
 });
 
 test("a task waiting on approval is announced with what it wants to do", async () => {
@@ -200,4 +220,99 @@ test("a task started by voice is announced under the title the assistant gave it
   await t.announcer.settled();
   assert.equal(t.delivered[0]!.title, "Resumen del correo");
   assert.match(t.requests[0]!.messages[0]!.content, /Tarea: Resumen del correo\n/);
+});
+
+async function finish(t: ReturnType<typeof setup>, threadRef: string, times: number): Promise<void> {
+  for (let i = 0; i < times; i++) {
+    t.announcer.handle({ threadRef, state: "working", at });
+    t.announcer.handle({ threadRef, state: "idle", at });
+    await t.announcer.settled();
+  }
+}
+
+test("a finished task is handed to a review turn instead of a spoken summary", async () => {
+  const t = setup({ sessions: [session("web:ana:1", { working: true })], review: async () => "done" });
+  await t.announcer.start();
+  t.announcer.handle({ threadRef: "web:ana:1", state: "idle", at });
+  await t.announcer.settled();
+  assert.deepEqual(t.reviews, [
+    {
+      taskRef: "web:ana:1",
+      title: "Tarea web:ana:1",
+      kind: "done",
+      detail: "El informe está listo con tres conclusiones.",
+    },
+  ]);
+  assert.deepEqual(t.delivered, []);
+  assert.deepEqual(t.requests, []);
+});
+
+test("reviews are capped per task and later updates fall back to the spoken announcement", async () => {
+  const t = setup({ sessions: [session("web:ana:1", { working: true })], review: async () => "done" });
+  await t.announcer.start();
+  t.announcer.handle({ threadRef: "web:ana:1", state: "idle", at });
+  await t.announcer.settled();
+  await finish(t, "web:ana:1", 3);
+  assert.equal(t.reviews.length, 3);
+  assert.equal(t.delivered.length, 1);
+  assert.equal(t.requests[0]!.purpose, "announce");
+});
+
+test("a failed review falls back to the spoken announcement", async () => {
+  const t = setup({ sessions: [session("web:ana:1", { working: true })] });
+  await t.announcer.start();
+  t.announcer.handle({ threadRef: "web:ana:1", state: "idle", at });
+  await t.announcer.settled();
+  assert.equal(t.reviews.length, 1);
+  assert.equal(t.delivered[0]!.text, "Listo: informe. Tiene tres conclusiones.");
+});
+
+test("an interrupted review stops further follow-ups for that task", async () => {
+  let outcome: ReviewOutcome = "interrupted";
+  const t = setup({
+    sessions: [session("web:ana:1", { working: true }), session("web:ana:2", { working: true })],
+    review: async () => outcome,
+  });
+  await t.announcer.start();
+  t.announcer.handle({ threadRef: "web:ana:1", state: "idle", at });
+  await t.announcer.settled();
+  outcome = "done";
+  await finish(t, "web:ana:1", 1);
+  assert.equal(t.reviews.length, 1);
+  assert.equal(t.delivered.length, 1, "the next update is only announced");
+  await finish(t, "web:ana:2", 1);
+  assert.equal(t.reviews.length, 2, "other tasks are still reviewed");
+});
+
+test("a review interrupted before anything was heard still delivers the notice and stops follow-ups", async () => {
+  const t = setup({ sessions: [session("web:ana:1", { working: true })], review: async () => "unheard" });
+  await t.announcer.start();
+  t.announcer.handle({ threadRef: "web:ana:1", state: "idle", at });
+  await t.announcer.settled();
+  assert.equal(t.reviews.length, 1);
+  assert.equal(t.delivered.length, 1, "the finish is still announced");
+  await finish(t, "web:ana:1", 1);
+  assert.equal(t.reviews.length, 1, "no further autonomous reviews for that task");
+  assert.equal(t.delivered.length, 2);
+});
+
+test("a task that finishes again while its review is still running is reviewed afterwards", async () => {
+  let endReview: (outcome: ReviewOutcome) => void = () => undefined;
+  const t = setup({
+    sessions: [session("web:ana:1", { working: true })],
+    review: () => new Promise((resolve) => (endReview = resolve)),
+  });
+  await t.announcer.start();
+  t.announcer.handle({ threadRef: "web:ana:1", state: "idle", at });
+  for (let i = 0; i < 6; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(t.reviews.length, 1);
+  t.announcer.handle({ threadRef: "web:ana:1", state: "working", at });
+  t.announcer.handle({ threadRef: "web:ana:1", state: "idle", at });
+  const first = endReview;
+  first("done");
+  for (let i = 0; i < 6; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(t.reviews.length, 2, "the follow-up's result is reviewed too");
+  endReview("done");
+  await t.announcer.settled();
+  assert.deepEqual(t.delivered, []);
 });

@@ -985,13 +985,17 @@ def main():
             # "//" and must not get an https:// prefix bolted on.
             url = a.url if re.match(r"^[a-z][a-z0-9+.-]*:", a.url) else "https://" + a.url
             c.call("Page.enable")
-            c.call("Page.navigate", url=url)
+            nav = c.call("Page.navigate", url=url)
             wait_ready(c, 30)
             time.sleep(0.4)
             info = json.loads(c.eval(
                 "JSON.stringify({url: location.href, title: document.title})"))
             blocked = json.loads(c.eval(BLOCK_JS))
             print(f"{info['title'][:80]}\n{info['url']}")
+            if nav.get("errorText"):
+                print(f"\nThe page did not load: {nav['errorText']} ({url}). The browser is fine; "
+                      "the site refused or could not be reached. Tell the person what failed and "
+                      "ask them to fix it or give you access, then try again.")
             if blocked.get("blocked"):
                 print("\nThis page looks like an automation block rather than the real "
                       "content. Nothing is wrong with the browser — the site refuses "

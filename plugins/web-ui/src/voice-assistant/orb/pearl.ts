@@ -38,6 +38,9 @@ export function createPearl(gl: WebGL2RenderingContext): Pearl {
       gl.uniform1f(u("uListen"), f.listen);
       gl.uniform1f(u("uThink"), f.think);
       gl.uniform1f(u("uSpeak"), f.speak);
+      gl.uniform1f(u("uWork"), f.work);
+      gl.uniform1f(u("uOrbit"), f.orbit);
+      gl.uniform1f(u("uSpin"), f.spin);
       gl.uniform3fv(u("uDeep"), f.colors.deep);
       gl.uniform3fv(u("uMid"), f.colors.mid);
       gl.uniform3fv(u("uLight"), f.colors.light);

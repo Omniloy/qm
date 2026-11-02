@@ -15,6 +15,7 @@ export { configureProviders, openProvider, loadProviders } from "./settings-prov
 import { mountFlags } from "./settings-flags.ts";
 export { configureFlags, loadFlags } from "./settings-flags.ts";
 import { brandingCard } from "./settings-branding.ts";
+import { voiceAssistantBody, voiceAssistantCard, voiceAssistantDraft } from "./settings-voice.ts";
 import { modelAccountModesCard, modelAccountModesDraft, personalAccountsOffered } from "./model-account-modes.ts";
 import { PEOPLE_ACCESS, peopleAccessBody, peopleAccessCard, peopleAccessDraft } from "./people-access.ts";
 import { html } from "lit";
@@ -30,6 +31,7 @@ export class SettingsState extends SettingState {
   selected = "";
   editing = false;
   history: Data[] = [];
+  gatedModels: boolean | null = null;
   collect(_validate = true): Data {
     if (_validate && this.key === "soul" && (this.draft.content || "").length > 100000)
       throw new Error("Maximum length reached");
@@ -39,6 +41,7 @@ export class SettingsState extends SettingState {
       return structuredClone(selection);
     }
     if (this.key in PEOPLE_ACCESS) return peopleAccessBody(this.draft, _validate);
+    if (this.key === "voice-assistant") return voiceAssistantBody(this.draft, _validate);
     if (this.key === "branding")
       return Object.fromEntries(Object.entries(this.draft).map(([key, value]) => [key, String(value).trim()]));
     return structuredClone(this.draft);
@@ -111,6 +114,7 @@ export const states = new Map(
     "personal-account-access",
     "soul",
     "branding",
+    "voice-assistant",
   ].map((key) => [key, new SettingsState(key)]),
 );
 export const { owns, collect, capture, commit, status, statusKey } = settingRegistry(states);
@@ -127,6 +131,13 @@ export function load(data: Data, scope: string, only?: string) {
         markUrl: data.branding?.markUrl || "",
       };
       s.available = scope.startsWith("org:") && "branding" in data;
+      s.saving = false;
+      capture(key);
+      continue;
+    }
+    if (key === "voice-assistant") {
+      s.draft = voiceAssistantDraft(data);
+      s.available = scope.startsWith("org:") && "voiceAssistant" in data;
       s.saving = false;
       capture(key);
       continue;
@@ -174,6 +185,11 @@ export function load(data: Data, scope: string, only?: string) {
     capture(key);
   }
 }
+export function voiceModels(gatedModels: boolean | null) {
+  const s = states.get("voice-assistant")!;
+  s.gatedModels = gatedModels;
+  s.render();
+}
 export function updateCatalog(data: Data) {
   for (const s of states.values()) {
     s.context = { ...s.context, ...data };
@@ -205,6 +221,7 @@ const label = (s: SettingsState, id: string) => {
 function card(s: SettingsState) {
   if (s.key === "soul") return soulCard(s);
   if (s.key === "branding") return brandingCard(s);
+  if (s.key === "voice-assistant") return voiceAssistantCard(s);
   if (s.key === "model-account-modes") return modelAccountModesCard(s);
   if (s.key in PEOPLE_ACCESS)
     return peopleAccessCard(
@@ -389,6 +406,7 @@ export function mountCards() {
       {
         soul: "card-soul",
         branding: "card-branding",
+        "voice-assistant": "card-voice-assistant",
         "webui-models": "card-webui-models",
       } as Record<string, string>
     )[key];
