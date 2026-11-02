@@ -11,7 +11,15 @@ import {
   requestPersistentStorage,
   voiceStorageEstimate,
 } from "../src/voice-assistant/model-cache.ts";
-import { ASR_MODEL_FILES, asrFilesFor, asrPaths, asrVariantFor } from "../src/voice-assistant/asr/models.ts";
+import {
+  ASR_MODEL_FILES,
+  PHONON_ASR_MODEL_FILES,
+  PHONON_ASR_PATHS,
+  QWEN_ASR_MODEL_FILES,
+  asrFilesFor,
+  asrPaths,
+  asrVariantFor,
+} from "../src/voice-assistant/asr/models.ts";
 import { VOICE_MODEL_FILES, VOICE_MODEL_FILES_BY_KEY } from "../src/voice-assistant/models.ts";
 import { ASR_VARIANTS, modelFileKey } from "../src/voice-assistant/protocol.ts";
 import type { ModelFile, ModelProgress } from "../src/voice-assistant/protocol.ts";
@@ -171,20 +179,29 @@ test("storage helpers degrade to false and zero without a StorageManager", async
   assert.deepEqual(await voiceStorageEstimate(), { usage: 0, quota: 0 });
 });
 
-test("the ASR manifest pins one 40-hex revision with sha256 and sizes for every file", () => {
-  assert.ok(ASR_MODEL_FILES.every((f) => /^[0-9a-f]{40}$/.test(f.revision) && /^[0-9a-f]{64}$/.test(f.sha256)));
+test("the ASR manifests pin one revision per engine with sha256 and sizes for every file", () => {
+  assert.ok(ASR_MODEL_FILES.every((f) => /^[0-9a-f]{64}$/.test(f.sha256)));
   assert.ok(ASR_MODEL_FILES.every((f) => f.role === "asr" && Number.isInteger(f.bytes) && f.bytes > 0));
-  assert.equal(new Set(ASR_MODEL_FILES.map((f) => f.revision)).size, 1);
+  assert.ok(QWEN_ASR_MODEL_FILES.every((f) => /^[0-9a-f]{40}$/.test(f.revision)));
+  assert.equal(new Set(QWEN_ASR_MODEL_FILES.map((f) => f.revision)).size, 1);
+  assert.equal(new Set(PHONON_ASR_MODEL_FILES.map((f) => f.revision)).size, 1);
 });
 
 test("each ASR variant resolves every path it needs to a manifest entry", () => {
   for (const variant of ASR_VARIANTS) {
-    const files = asrFilesFor(variant);
+    const files = asrFilesFor("qwen3-asr-0.6b", variant);
     assert.deepEqual(Object.values(asrPaths(variant)).sort(), files.map((f) => f.path).sort());
     assert.ok(files.every((f) => f.variant === undefined || f.variant === variant));
+    assert.deepEqual(
+      asrFilesFor("phonon-2.5", variant)
+        .map((f) => f.path)
+        .sort(),
+      Object.values(PHONON_ASR_PATHS).sort(),
+    );
   }
-  assert.equal(asrVariantFor({ webgpu: true, shaderF16: true }), "q4f16");
-  assert.equal(asrVariantFor({ webgpu: true, shaderF16: false }), "q4");
+  assert.equal(asrVariantFor("qwen3-asr-0.6b", { webgpu: true, shaderF16: true }), "q4f16");
+  assert.equal(asrVariantFor("qwen3-asr-0.6b", { webgpu: true, shaderF16: false }), "q4");
+  assert.equal(asrVariantFor("phonon-2.5", { webgpu: true, shaderF16: true }), "q4");
 });
 
 test("the voice model allowlist is keyed by repo@revision/path with no duplicates", () => {

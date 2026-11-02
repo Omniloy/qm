@@ -1,5 +1,7 @@
 import { errMessage } from "../../../chassis/src/errors.ts";
 import {
+  PTT_MAX_MS,
+  SPEECH_FRAME_MS,
   SPEECH_SAMPLE_RATE,
   UTTERANCE_MAX_NEW_TOKENS,
   WAKE_MAX_NEW_TOKENS,
@@ -14,6 +16,7 @@ import {
 } from "./protocol.ts";
 
 export const VAD_EVENT = {
+  speechStart: "SPEECH_START",
   speechRealStart: "SPEECH_REAL_START",
   misfire: "VAD_MISFIRE",
   speechEnd: "SPEECH_END",
@@ -54,6 +57,26 @@ const SENTENCE_END = /[.?!…。？！]["»”)]*$/u;
 
 const WAKE_SEGMENT_SAMPLES = (WAKE_SEGMENT_MAX_MS * SPEECH_SAMPLE_RATE) / 1000;
 
+const HELD_MAX_SAMPLES = (PTT_MAX_MS * SPEECH_SAMPLE_RATE) / 1000;
+const PREROLL_FRAMES = Math.ceil(200 / SPEECH_FRAME_MS);
+
+interface HeldCapture {
+  frames: Float32Array[];
+  samples: number;
+  speech: boolean;
+  dropped: boolean;
+}
+
+function joined(frames: readonly Float32Array[], samples: number): Float32Array {
+  const audio = new Float32Array(samples);
+  let offset = 0;
+  for (const frame of frames) {
+    audio.set(frame, offset);
+    offset += frame.length;
+  }
+  return audio;
+}
+
 function wakeSegment(audio: Float32Array): Float32Array {
   return audio.length > WAKE_SEGMENT_SAMPLES ? audio.subarray(0, WAKE_SEGMENT_SAMPLES) : audio;
 }
@@ -68,6 +91,8 @@ export function createSpeechPipeline(deps: SpeechPipelineDeps): SpeechPipeline {
   let frames: Promise<void> = Promise.resolve();
   let transcriptions: Promise<void> = Promise.resolve();
   let lastWake: { id: number; audio: Float32Array } | null = null;
+  let held: HeldCapture | null = null;
+  const preroll: Float32Array[] = [];
 
   const transcribe = (id: number, purpose: SpeechPurpose, audio: Float32Array) => {
     const request: AsrRequest = {
@@ -99,7 +124,7 @@ export function createSpeechPipeline(deps: SpeechPipelineDeps): SpeechPipeline {
   };
 
   const handle = (event: VadEvent) => {
-    if (mode === "paused") return;
+    if (mode === "paused" || mode === "held") return;
     if (event.msg === VAD_EVENT.speechRealStart) post({ type: "speech-start" });
     else if (event.msg === VAD_EVENT.misfire) post({ type: "speech-misfire" });
     else if (event.msg === VAD_EVENT.speechEnd && event.audio) {
@@ -124,17 +149,63 @@ export function createSpeechPipeline(deps: SpeechPipelineDeps): SpeechPipeline {
     });
   };
 
+  const finishHeld = () => {
+    const target = held;
+    if (!target) return;
+    held = null;
+    enqueue(() => {
+      if (!target.speech) {
+        post({ type: "speech-misfire" });
+        return;
+      }
+      const id = ++segmentId;
+      const durationMs = Math.round((target.samples * 1000) / SPEECH_SAMPLE_RATE);
+      post({ type: "speech-end", segmentId: id, durationMs, purpose: "utterance" });
+      transcribe(id, "utterance", joined(target.frames, target.samples));
+    });
+  };
+
+  const capture = (target: HeldCapture, frame: Float32Array) => {
+    target.frames.push(frame);
+    target.samples += frame.length;
+    enqueue(() =>
+      vad.process(frame, (event) => {
+        if (target.dropped || target.speech) return;
+        if (event.msg !== VAD_EVENT.speechStart && event.msg !== VAD_EVENT.speechRealStart) return;
+        target.speech = true;
+        post({ type: "speech-start" });
+      }),
+    );
+    if (target.samples >= HELD_MAX_SAMPLES) finishHeld();
+  };
+
+  const startHeld = () => {
+    const target: HeldCapture = { frames: [], samples: 0, speech: false, dropped: false };
+    held = target;
+    enqueue(() => vad.reset());
+    for (const frame of preroll.splice(0)) capture(target, frame);
+  };
+
   vad.resume();
 
   return {
     frame(frame) {
-      if (mode === "paused") return;
+      if (held) {
+        capture(held, frame);
+        return;
+      }
+      preroll.push(frame);
+      if (preroll.length > PREROLL_FRAMES) preroll.shift();
+      if (mode === "paused" || mode === "held") return;
       enqueue(() => (mode === "paused" ? undefined : vad.process(frame, handle)));
     },
     setMode(next) {
       if (next === mode) return;
       mode = next;
-      if (next === "paused") enqueue(() => vad.reset());
+      if (held) held.dropped = true;
+      held = null;
+      if (next === "held") startHeld();
+      else if (next === "paused") enqueue(() => vad.reset());
     },
     configure(update) {
       if (update.language) language = update.language;
@@ -144,6 +215,10 @@ export function createSpeechPipeline(deps: SpeechPipelineDeps): SpeechPipeline {
       }
     },
     endSegment() {
+      if (mode === "held") {
+        finishHeld();
+        return;
+      }
       enqueue(() => {
         vad.endSegment(handle);
       });

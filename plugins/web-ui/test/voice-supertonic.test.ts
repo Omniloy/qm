@@ -2,7 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { SUPERTONIC_VOICES } from "../src/voice-assistant/voices.ts";
 import { backendAttempts, loadTtsEngine } from "../src/voice-assistant/tts/engine.ts";
-import { TTS_MODEL_FILES } from "../src/voice-assistant/tts/models.ts";
+import { SUPERTONIC_MODEL_FILES } from "../src/voice-assistant/tts/models.ts";
+import type { PhononRuntime } from "../src/voice-assistant/tts/phonon.ts";
+import type { TtsEngine, TtsRequest } from "../src/voice-assistant/protocol.ts";
 import { normalizeSpeechText } from "../src/voice-assistant/tts/normalize.ts";
 import {
   SUPERTONIC_MAX_CHARS,
@@ -19,6 +21,18 @@ import {
   trailingPauseSeconds,
   type OrtModule,
 } from "../src/voice-assistant/tts/supertonic.ts";
+
+async function speak(engine: TtsEngine, request: TtsRequest, signal?: AbortSignal): Promise<Float32Array> {
+  const parts: Float32Array[] = [];
+  for await (const pcm of engine.stream(request, signal)) parts.push(pcm);
+  assert.ok(parts.length <= 1);
+  return parts[0] ?? new Float32Array(0);
+}
+
+const PHONON_UNUSED: PhononRuntime = {
+  init: () => Promise.reject(new Error("phonon_unused")),
+  load: () => Promise.reject(new Error("phonon_unused")),
+};
 
 const CONFIG = {
   ae: { sample_rate: 44100, base_chunk_size: 512 },
@@ -106,7 +120,7 @@ test("speech is levelled to a common loudness without clipping", () => {
 });
 
 test("the manifest pins every Supertonic 3 file with size and digest", () => {
-  const paths = TTS_MODEL_FILES.map((f) => f.path);
+  const paths = SUPERTONIC_MODEL_FILES.map((f) => f.path);
   for (const path of [
     SUPERTONIC_PATHS.config,
     SUPERTONIC_PATHS.indexer,
@@ -119,7 +133,7 @@ test("the manifest pins every Supertonic 3 file with size and digest", () => {
     assert.ok(paths.includes(path), path);
   }
   assert.equal(new Set(paths).size, paths.length);
-  for (const file of TTS_MODEL_FILES) {
+  for (const file of SUPERTONIC_MODEL_FILES) {
     assert.equal(file.repo, "supertone-oss-archive/supertonic-3");
     assert.equal(file.revision, "aafc6e32416a594460b32413efc49d7fe4ce6d46");
     assert.equal(file.role, "tts");
@@ -127,7 +141,7 @@ test("the manifest pins every Supertonic 3 file with size and digest", () => {
     assert.ok(file.bytes > 0);
   }
   assert.equal(
-    TTS_MODEL_FILES.reduce((sum, f) => sum + f.bytes, 0),
+    SUPERTONIC_MODEL_FILES.reduce((sum, f) => sum + f.bytes, 0),
     401_276_744,
   );
 });
@@ -211,7 +225,7 @@ test("synthesis runs duration, encoder, the requested denoising steps and the vo
   });
   assert.equal(engine.sampleRate, 44100);
   assert.deepEqual(engine.voices, SUPERTONIC_VOICES);
-  const pcm = await engine.synthesize({ text: "Hola", language: "es", voice: "M2", steps: 3 });
+  const pcm = await speak(engine, { text: "Hola", language: "es", voice: "M2", steps: 3 });
 
   assert.deepEqual(
     fake.runs.map((r) => r.session),
@@ -249,12 +263,12 @@ test("synthesis rejects over-long chunks, skips unspeakable text and unknown voi
     readFile: readFake,
   });
   await assert.rejects(
-    engine.synthesize({ text: "a".repeat(SUPERTONIC_MAX_CHARS + 1), language: "es", voice: "F1", steps: 2 }),
+    speak(engine, { text: "a".repeat(SUPERTONIC_MAX_CHARS + 1), language: "es", voice: "F1", steps: 2 }),
     RangeError,
   );
-  assert.equal((await engine.synthesize({ text: " ... ", language: "es", voice: "F1", steps: 2 })).length, 0);
+  assert.equal((await speak(engine, { text: " ... ", language: "es", voice: "F1", steps: 2 })).length, 0);
   await assert.rejects(
-    engine.synthesize({ text: "Hola", language: "es", voice: "Z9", steps: 2 }),
+    speak(engine, { text: "Hola", language: "es", voice: "Z9", steps: 2 }),
     /supertonic_voice_unknown/,
   );
   assert.equal(fake.runs.length, 0);
@@ -269,7 +283,7 @@ test("a chunk within the raw limit still speaks when normalization makes it long
     readFile: readFake,
   });
   const text = "Información sobre la canción ".repeat(20).slice(0, SUPERTONIC_MAX_CHARS);
-  const pcm = await engine.synthesize({ text, language: "es", voice: "F1", steps: 2 });
+  const pcm = await speak(engine, { text, language: "es", voice: "F1", steps: 2 });
   assert.ok(pcm.length > 0);
 });
 
@@ -288,7 +302,7 @@ test("an aborted signal stops synthesis before the next model run", async () => 
     return original(...items);
   };
   await assert.rejects(
-    engine.synthesize({ text: "Hola", language: "es", voice: "F1", steps: 5 }, controller.signal),
+    speak(engine, { text: "Hola", language: "es", voice: "F1", steps: 5 }, controller.signal),
     (e: Error) => e.name === "AbortError",
   );
   assert.equal(fake.runs.filter((r) => r.session === SUPERTONIC_PATHS.vectorEstimator).length, 1);
@@ -311,7 +325,12 @@ test("the engine loader falls back from WebGPU to WASM and warms up the chosen b
   assert.deepEqual(backendAttempts("webgpu"), ["webgpu", "wasm"]);
   assert.deepEqual(backendAttempts("wasm"), ["wasm"]);
   const fake = fakeOrt({ failProvider: "webgpu" });
-  const engine = await loadTtsEngine("supertonic-3", { ort: fake.ort, backend: "webgpu", readFile: readFake });
+  const engine = await loadTtsEngine("supertonic-3", {
+    ort: fake.ort,
+    phonon: PHONON_UNUSED,
+    backend: "webgpu",
+    readFile: readFake,
+  });
   assert.equal(engine.backend, "wasm");
   assert.ok(fake.created.every((c) => c.providers.join() === "wasm"));
   assert.ok(fake.created.every((c) => c.logSeverityLevel === 3));
@@ -321,7 +340,7 @@ test("the engine loader falls back from WebGPU to WASM and warms up the chosen b
 test("the engine loader surfaces the last error when every backend fails", async () => {
   const fake = fakeOrt({ failProvider: "wasm" });
   await assert.rejects(
-    loadTtsEngine("supertonic-3", { ort: fake.ort, backend: "wasm", readFile: readFake }),
+    loadTtsEngine("supertonic-3", { ort: fake.ort, phonon: PHONON_UNUSED, backend: "wasm", readFile: readFake }),
     /no wasm/,
   );
 });

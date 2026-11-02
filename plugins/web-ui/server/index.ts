@@ -1201,6 +1201,8 @@ function memoryQuery({ url, user }: WebCtx): string {
 const apiRoutes: readonly WebRoute[] = [
   ...voiceAssistantRoutes({
     models: VOICE_MODEL_FILES_BY_KEY,
+    hfToken: process.env.HF_TOKEN,
+    localModelDir: process.env.VOICE_MODEL_DIR,
     coreFetch,
     coreStream,
     readJson: (req, res) => readJson(req, res, false),

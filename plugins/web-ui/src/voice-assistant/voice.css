@@ -101,6 +101,72 @@ qm-voice-orb[size="dock"] {
   display: none;
 }
 
+qm-voice-orb[hold-to-talk] .qm-voice-orb-button {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.voice-stage-orb qm-voice-orb {
+  border-radius: 50%;
+  transition: box-shadow var(--om-moderate) var(--om-ease-standard);
+}
+
+.voice-stage[data-ptt="true"] .voice-stage-orb qm-voice-orb {
+  box-shadow:
+    0 0 0 4px var(--om-surface),
+    0 0 0 7px var(--om-senal);
+}
+
+.voice-mode {
+  position: absolute;
+  top: max(1.25rem, env(safe-area-inset-top));
+  left: 50%;
+  display: flex;
+  gap: 0.2rem;
+  padding: 0.25rem;
+  border: 1px solid var(--om-line);
+  border-radius: 999px;
+  background: var(--om-surface);
+  translate: -50% 0;
+}
+
+.voice-mode-option {
+  height: 32px;
+  padding: 0 0.85rem;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--om-ink-soft);
+  font: inherit;
+  font-size: 0.8rem;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--om-fast) var(--om-ease-standard),
+    color var(--om-fast) var(--om-ease-standard);
+}
+
+.voice-mode-option:hover {
+  background: var(--om-wash);
+}
+
+.voice-mode-option[aria-checked="true"] {
+  background: var(--om-placa);
+  color: var(--om-papel);
+}
+
+.dark .voice-mode-option[aria-checked="true"] {
+  background: var(--om-luz);
+  color: var(--om-placa);
+}
+
+.voice-mode-option:focus-visible {
+  outline: 2px solid var(--om-senal);
+  outline-offset: 2px;
+}
+
 .qm-voice-orb-canvas {
   position: absolute;
   width: 150%;

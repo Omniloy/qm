@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import test from "node:test";
 import { JSDOM, VirtualConsole } from "jsdom";
-import type { VoiceStageHandlers, VoiceStageView } from "../src/voice-assistant/protocol.ts";
+import type { VoiceChoice, VoiceStageHandlers, VoiceStageView } from "../src/voice-assistant/protocol.ts";
 
 registerHooks({
   load(url, context, nextLoad) {
@@ -23,6 +23,7 @@ const globals = {
   HTMLElement: win.HTMLElement,
   HTMLButtonElement: win.HTMLButtonElement,
   HTMLSelectElement: win.HTMLSelectElement,
+  MouseEvent: win.MouseEvent,
   Node: win.Node,
   Event: win.Event,
   CustomEvent: win.CustomEvent,
@@ -36,7 +37,9 @@ const globals = {
 for (const [key, value] of Object.entries(globals))
   Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
 
-const { karaokeWords, mountVoiceStage } = await import("../src/voice-assistant/voice-stage.ts");
+const { editableTarget, handlesSpace, karaokeWords, mountVoiceStage } =
+  await import("../src/voice-assistant/voice-stage.ts");
+const { ORB_HOLD_END_EVENT, ORB_HOLD_START_EVENT } = await import("../src/voice-assistant/orb-element.ts");
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 40));
 
@@ -49,6 +52,9 @@ function view(over: Partial<VoiceStageView> = {}): VoiceStageView {
       { id: "F1", label: "Voz femenina 1", gender: "female" },
       { id: "M1", label: "Voz masculina 1", gender: "male" },
     ],
+    micMode: "open",
+    pttStyle: "hold",
+    pttActive: false,
     muted: false,
     status: "",
     captions: { user: null, agent: null },
@@ -67,6 +73,9 @@ function setup() {
     onClose: () => calls.push("close"),
     onLanguage: (language) => calls.push(`language:${language}`),
     onVoice: (voice) => calls.push(`voice:${voice}`),
+    onMicMode: (mode) => calls.push(`mic:${mode}`),
+    onPttDown: () => calls.push("ptt-down"),
+    onPttUp: () => calls.push("ptt-up"),
   };
   const host = document.createElement("div");
   document.body.append(host);
@@ -312,5 +321,176 @@ test("typing is only offered while the assistant can answer", async () => {
   stage.update(view({ state: "off" }));
   await settle();
   assert.equal(host.querySelector(".voice-type-input"), null, "the field closes when the assistant stops");
+  stage.destroy();
+});
+
+const PHONON_CHOICES: VoiceChoice[] = [
+  { id: "celia", label: "Celia (España)", gender: "female", locale: "es-ES" },
+  { id: "marcos", label: "Marcos (España)", gender: "male", locale: "es-ES" },
+  { id: "aldo", label: "Aldo (México)", gender: "male", locale: "es-MX" },
+  { id: "rebeca", label: "Rebeca (México)", gender: "female", locale: "es-MX" },
+  { id: "harper", label: "Harper (EE. UU.)", gender: "female", locale: "en-US" },
+  { id: "freya", label: "Freya (Reino Unido)", gender: "female", locale: "en-GB" },
+];
+
+function groups(select: HTMLSelectElement): Array<[string, string[]]> {
+  return [...select.querySelectorAll("optgroup")].map((group) => [
+    group.label,
+    [...group.querySelectorAll("option")].map((option) => option.value),
+  ]);
+}
+
+test("the voice picker groups by accent, shows the active language first and can open every language", async () => {
+  const { host, stage, calls } = setup();
+  stage.update(view({ voice: "celia", voices: PHONON_CHOICES }));
+  stage.open();
+  await settle();
+  let select = host.querySelector<HTMLSelectElement>(".voice-voice-select")!;
+  assert.deepEqual(groups(select), [
+    ["Español (España)", ["celia", "marcos"]],
+    ["Español (México)", ["rebeca", "aldo"]],
+  ]);
+  const more = [...select.options].at(-1)!;
+  assert.equal(more.value, "*");
+  assert.equal(more.textContent, "Ver voces de otros idiomas…");
+  select.value = "*";
+  select.dispatchEvent(new win.Event("change", { bubbles: true }));
+  await settle();
+  select = host.querySelector<HTMLSelectElement>(".voice-voice-select")!;
+  assert.deepEqual(
+    groups(select).map(([label]) => label),
+    ["Español (España)", "Español (México)", "Inglés (EE. UU.)", "Inglés (Reino Unido)"],
+  );
+  assert.equal(select.value, "celia");
+  assert.deepEqual(calls, []);
+  select.value = "harper";
+  select.dispatchEvent(new win.Event("change", { bubbles: true }));
+  assert.deepEqual(calls, ["voice:harper"]);
+  stage.update(view({ language: "en", voice: "harper", voices: PHONON_CHOICES }));
+  await settle();
+  select = host.querySelector<HTMLSelectElement>(".voice-voice-select")!;
+  assert.deepEqual(groups(select), [
+    ["English (US)", ["harper"]],
+    ["English (UK)", ["freya"]],
+  ]);
+  stage.destroy();
+});
+
+test("the dock switches between open mic and push to talk", async () => {
+  const { host, stage, calls } = setup();
+  stage.update(view());
+  stage.open();
+  await settle();
+  const group = host.querySelector<HTMLElement>('.voice-mode[role="radiogroup"]')!;
+  assert.equal(group.getAttribute("aria-label"), "Micrófono");
+  const radios = [...group.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
+  assert.deepEqual(
+    radios.map((radio) => [radio.textContent?.trim(), radio.getAttribute("aria-checked")]),
+    [
+      ["Micrófono abierto", "true"],
+      ["Pulsar para hablar", "false"],
+    ],
+  );
+  radios[0]!.click();
+  radios[1]!.click();
+  assert.deepEqual(calls, ["mic:push"]);
+  stage.destroy();
+});
+
+test("push to talk: press and hold the orb, Space is left to the page-wide binding", async () => {
+  win.HTMLElement.prototype.setPointerCapture = () => undefined;
+  const { host, stage, calls } = setup();
+  stage.update(view({ micMode: "push" }));
+  stage.open();
+  await settle();
+  const orb = host.querySelector(".voice-stage-orb qm-voice-orb")!;
+  const button = orb.querySelector("button")!;
+  assert.ok(orb.hasAttribute("hold-to-talk"));
+  assert.equal(button.getAttribute("aria-label"), "Mantén pulsado para hablar");
+  assert.equal(button.getAttribute("aria-pressed"), "false");
+  button.dispatchEvent(new win.MouseEvent("pointerdown", { bubbles: true, button: 0 }));
+  stage.update(view({ micMode: "push", state: "listening", pttActive: true }));
+  await settle();
+  assert.equal(button.getAttribute("aria-pressed"), "true");
+  assert.equal(button.getAttribute("aria-label"), "Suelta para enviar");
+  assert.equal(host.querySelector(".voice-stage")!.getAttribute("data-ptt"), "true");
+  button.dispatchEvent(new win.MouseEvent("pointerup", { bubbles: true, button: 0 }));
+  button.dispatchEvent(new win.MouseEvent("click", { bubbles: true, detail: 1 }));
+  assert.deepEqual(calls, ["ptt-down", "ptt-up"], "the click that ends a hold is not a press");
+  button.dispatchEvent(new win.MouseEvent("click", { bubbles: true, detail: 0 }));
+  assert.deepEqual(calls, ["ptt-down", "ptt-up", "orb"], "Enter on the orb still presses it");
+  key(" ");
+  assert.deepEqual(calls, ["ptt-down", "ptt-up", "orb"]);
+  stage.update(view({ micMode: "push", pttStyle: "toggle" }));
+  await settle();
+  assert.ok(!orb.hasAttribute("hold-to-talk"));
+  assert.equal(button.getAttribute("aria-label"), "Pulsa para hablar");
+  stage.destroy();
+});
+
+test("text fields, including contenteditable and textbox roles, are editable targets", () => {
+  const input = document.createElement("input");
+  const editor = document.createElement("div");
+  editor.setAttribute("contenteditable", "true");
+  const inner = document.createElement("span");
+  editor.append(inner);
+  const box = document.createElement("div");
+  box.setAttribute("role", "textbox");
+  document.body.append(editor, box);
+  assert.equal(editableTarget(input), true);
+  assert.equal(editableTarget(inner), true);
+  assert.equal(editableTarget(box), true);
+  assert.equal(editableTarget(document.createElement("button")), false);
+  assert.equal(editableTarget(document.body), false);
+  editor.remove();
+  box.remove();
+});
+
+test("buttons, links and widget roles own the space key, plain content does not", () => {
+  const radio = document.createElement("div");
+  radio.setAttribute("role", "radio");
+  const label = document.createElement("span");
+  radio.append(label);
+  const chip = document.createElement("div");
+  chip.setAttribute("role", "button");
+  const link = document.createElement("a");
+  link.href = "/x";
+  document.body.append(radio, chip, link);
+  for (const target of [document.createElement("button"), label, chip, link, document.createElement("input")])
+    assert.equal(handlesSpace(target), true);
+  assert.equal(handlesSpace(document.body), false);
+  assert.equal(handlesSpace(document.createElement("a")), false);
+  radio.remove();
+  chip.remove();
+  link.remove();
+});
+
+test("space on a focused control in open mode activates the control, not the orb", () => {
+  const { stage, calls } = setup();
+  stage.update(view());
+  stage.open();
+  const radio = document.createElement("div");
+  radio.setAttribute("role", "radio");
+  document.body.append(radio);
+  key(" ", radio);
+  assert.ok(!calls.includes("orb"));
+  key(" ");
+  assert.ok(calls.includes("orb"));
+  radio.remove();
+  stage.destroy();
+});
+
+test("closing the stage mid-hold releases the push-to-talk hold exactly once", () => {
+  const { host, stage, calls } = setup();
+  stage.update(view({ micMode: "push" }));
+  stage.open();
+  host.dispatchEvent(new win.CustomEvent(ORB_HOLD_START_EVENT, { bubbles: true }));
+  key("Escape");
+  assert.deepEqual(
+    calls.filter((call) => call.startsWith("ptt")),
+    ["ptt-down", "ptt-up"],
+  );
+  host.dispatchEvent(new win.CustomEvent(ORB_HOLD_END_EVENT, { bubbles: true }));
+  assert.equal(calls.filter((call) => call === "ptt-up").length, 1);
   stage.destroy();
 });

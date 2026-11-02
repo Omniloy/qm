@@ -3,15 +3,18 @@ import { keyed } from "lit/directives/keyed.js";
 import { live } from "lit/directives/live.js";
 import { ArrowUp, Keyboard, Mic, MicOff, X } from "lucide";
 import { icon } from "../ui.ts";
-import { ORB_PRESS_EVENT } from "./orb-element.ts";
+import { ORB_HOLD_END_EVENT, ORB_HOLD_START_EVENT, ORB_PRESS_EVENT } from "./orb-element.ts";
 import {
+  MIC_MODES,
   ORB_INPUTS_BY_STATE,
   VOICE_LANGUAGES,
+  type MicMode,
   type VoiceLanguage,
   type VoiceStageHandlers,
   type VoiceStageView,
   type VoiceState,
 } from "./protocol.ts";
+import { ALL_VOICES_OPTION, voiceOptions } from "./voice-picker.ts";
 import "./voice.css";
 
 export interface VoiceStage {
@@ -43,6 +46,12 @@ const COPY = {
     close: "Cerrar",
     language: "Idioma",
     voice: "Voz",
+    micMode: "Micrófono",
+    modes: { open: "Micrófono abierto", push: "Pulsar para hablar" },
+    holdToTalk: "Mantén pulsado para hablar",
+    releaseToSend: "Suelta para enviar",
+    tapToTalk: "Pulsa para hablar",
+    tapToSend: "Pulsa para enviar",
   },
   en: {
     dialog: "Voice assistant",
@@ -59,8 +68,14 @@ const COPY = {
     close: "Close",
     language: "Language",
     voice: "Voice",
+    micMode: "Microphone",
+    modes: { open: "Open mic", push: "Push to talk" },
+    holdToTalk: "Hold to talk",
+    releaseToSend: "Release to send",
+    tapToTalk: "Press to talk",
+    tapToSend: "Press to send",
   },
-} satisfies Record<VoiceLanguage, Record<string, string>>;
+} satisfies Record<VoiceLanguage, Record<string, string | Record<MicMode, string>>>;
 
 type Copy = (typeof COPY)[VoiceLanguage];
 
@@ -70,11 +85,18 @@ const TYPING_STATES: ReadonlySet<VoiceState> = new Set(["sleeping", "listening",
 
 const PRESSED_STATES: ReadonlySet<VoiceState> = new Set(["listening", "thinking", "speaking"]);
 
+function orbPressed(view: VoiceStageView): boolean {
+  return view.micMode === "push" ? view.pttActive : PRESSED_STATES.has(view.state);
+}
+
 const EMPTY_VIEW: VoiceStageView = {
   state: "off",
   language: "es",
   voice: "",
   voices: [],
+  micMode: "open",
+  pttStyle: "hold",
+  pttActive: false,
   muted: false,
   status: "",
   captions: { user: null, agent: null },
@@ -101,17 +123,33 @@ export function karaokeWords(text: string, spokenChars: number): KaraokeWord[] {
   return result;
 }
 
-function orbLabel(state: VoiceState, copy: Copy): string {
+function orbLabel(view: VoiceStageView, copy: Copy): string {
+  const { state } = view;
   if (state === "off") return copy.start;
   if (state === "arming") return copy.loading;
+  if (view.micMode === "push") {
+    if (view.pttStyle === "hold") return view.pttActive ? copy.releaseToSend : copy.holdToTalk;
+    return view.pttActive ? copy.tapToSend : copy.tapToTalk;
+  }
   if (state === "sleeping") return copy.talk;
   if (state === "listening") return copy.stop;
   return copy.interrupt;
 }
 
-function editableTarget(target: EventTarget | null): boolean {
+export function editableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
-  return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+  return (
+    target.isContentEditable ||
+    ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) ||
+    target.closest("[contenteditable]:not([contenteditable='false']), [role='textbox']") !== null
+  );
+}
+
+const SPACE_CONTROLS =
+  "button, a[href], summary, [role='button'], [role='radio'], [role='switch'], [role='tab'], [role='checkbox'], [role='menuitem'], [role='option']";
+
+export function handlesSpace(target: EventTarget | null): boolean {
+  return editableTarget(target) || (target instanceof HTMLElement && target.closest(SPACE_CONTROLS) !== null);
 }
 
 function focusables(root: HTMLElement): HTMLElement[] {
@@ -133,6 +171,8 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
   let pastId = 0;
   let returnFocus: HTMLElement | null = null;
   let destroyed = false;
+  let allVoices = false;
+  let holding = false;
 
   const stageRoot = () => host.querySelector<HTMLElement>(".voice-stage");
 
@@ -150,6 +190,16 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
     const target = e.target as HTMLElement;
     if (target.closest(".voice-dock-orb")) stage.open();
     else handlers.onOrbPress();
+  };
+
+  const onHoldStart = () => {
+    holding = true;
+    handlers.onPttDown();
+  };
+  const onHoldEnd = () => {
+    if (!holding) return;
+    holding = false;
+    handlers.onPttUp();
   };
 
   const requestClose = () => {
@@ -194,7 +244,14 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
 
   const onVoice = (e: Event) => {
     const value = (e.target as HTMLSelectElement).value;
+    if (value === ALL_VOICES_OPTION) {
+      allVoices = true;
+      paint();
+      return;
+    }
+    allVoices = false;
     if (value !== view.voice && view.voices.some((voice) => voice.id === value)) handlers.onVoice(value);
+    else paint();
   };
 
   const onKeydown = (e: KeyboardEvent) => {
@@ -227,7 +284,7 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
       handlers.onToggleMute();
       return;
     }
-    if (e.key === " " && !(e.target instanceof HTMLButtonElement)) {
+    if (e.key === " " && view.micMode === "open" && !handlesSpace(e.target)) {
       e.preventDefault();
       handlers.onOrbPress();
     }
@@ -240,8 +297,9 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
       .status=${inputs.status}
       .mode=${inputs.mode}
       .muted=${view.muted}
-      .label=${size === "dock" ? copy.openStage : orbLabel(view.state, copy)}
-      .pressed=${size === "dock" ? false : PRESSED_STATES.has(view.state)}
+      .label=${size === "dock" ? copy.openStage : orbLabel(view, copy)}
+      .pressed=${size === "dock" ? false : orbPressed(view)}
+      .holdToTalk=${size === "stage" && view.micMode === "push" && view.pttStyle === "hold" && view.state !== "off"}
     ></qm-voice-orb>`;
   };
 
@@ -338,12 +396,7 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
                         .value=${live(view.voice)}
                         @change=${onVoice}
                       >
-                        ${view.voices.map(
-                          (voice) =>
-                            html`<option value=${voice.id} ?selected=${voice.id === view.voice}>
-                              ${voice.label}
-                            </option>`,
-                        )}
+                        ${voiceOptions(view.voices, { language: view.language, voice: view.voice, showAll: allVoices })}
                       </select>`
                     : nothing
                 }`
@@ -360,8 +413,35 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
       </button>
     </div>`;
 
+  const modeTemplate = () =>
+    html`<div class="voice-mode" role="radiogroup" aria-label=${copy.micMode}>
+      ${MIC_MODES.map(
+        (mode) =>
+          html`<button
+            type="button"
+            class="voice-mode-option"
+            role="radio"
+            aria-checked=${view.micMode === mode ? "true" : "false"}
+            data-value=${mode}
+            @click=${() => {
+              if (mode !== view.micMode) handlers.onMicMode(mode);
+            }}
+          >
+            ${copy.modes[mode]}
+          </button>`,
+      )}
+    </div>`;
+
   const stageTemplate = () =>
-    html`<div class="voice-stage" role="dialog" aria-modal="true" aria-label=${copy.dialog} tabindex="-1">
+    html`<div
+      class="voice-stage"
+      role="dialog"
+      aria-modal="true"
+      aria-label=${copy.dialog}
+      tabindex="-1"
+      data-ptt=${view.pttActive ? "true" : "false"}
+    >
+      ${modeTemplate()}
       <div class="voice-stage-center">
         <div class="voice-stage-orb">${orbTemplate("stage")}</div>
         <p class="voice-status" role="status" aria-live="polite" data-empty=${view.status ? "false" : "true"}>
@@ -420,6 +500,7 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
     },
     close() {
       if (!open) return;
+      onHoldEnd();
       open = false;
       typing = false;
       draft = "";
@@ -434,6 +515,8 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
     destroy() {
       document.removeEventListener("keydown", onKeydown);
       host.removeEventListener(ORB_PRESS_EVENT, onOrbPress);
+      host.removeEventListener(ORB_HOLD_START_EVENT, onHoldStart);
+      host.removeEventListener(ORB_HOLD_END_EVENT, onHoldEnd);
       render(nothing, host);
       destroyed = true;
       open = false;
@@ -441,6 +524,8 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
   };
 
   host.addEventListener(ORB_PRESS_EVENT, onOrbPress);
+  host.addEventListener(ORB_HOLD_START_EVENT, onHoldStart);
+  host.addEventListener(ORB_HOLD_END_EVENT, onHoldEnd);
   paint();
   return stage;
 }

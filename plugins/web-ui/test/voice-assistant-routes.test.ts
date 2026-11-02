@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { mintPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
@@ -97,7 +100,9 @@ const FILE: ModelFile = {
   sha256: "0".repeat(64),
   role: "asr",
 };
+const GATED: ModelFile = { ...FILE, repo: "acme/gated-tts", path: "model.q8.gguf", role: "tts", gated: true };
 const PAYLOAD = Buffer.from("abcdefghijklmnopqrstuvwxyz");
+const FAKE_TOKEN = "fake-hf-token-for-tests";
 
 interface UpstreamHit {
   url: string;
@@ -107,7 +112,7 @@ interface UpstreamHit {
 const hfHits: UpstreamHit[] = [];
 const cdnHits: UpstreamHit[] = [];
 const evilHits: UpstreamHit[] = [];
-let hfMode: "redirect" | "relative" | "evil" | "direct" | "missing" | "short" | "loop" = "redirect";
+let hfMode: "redirect" | "relative" | "evil" | "direct" | "missing" | "short" | "loop" | "unauthorized" = "redirect";
 
 function serveBytes(req: IncomingMessage, res: ServerResponse): void {
   const range = /^bytes=(\d+)-(\d+)$/.exec(req.headers.range ?? "");
@@ -156,6 +161,10 @@ const hf = createServer((req, res) => {
     res.writeHead(404);
     return void res.end("Entry not found");
   }
+  if (hfMode === "unauthorized") {
+    res.writeHead(401);
+    return void res.end("Access to model is restricted");
+  }
   if (hfMode === "short") {
     res.writeHead(200, { "content-length": "3" });
     return void res.end("abc");
@@ -173,7 +182,10 @@ const hf = createServer((req, res) => {
 const hfBase = await listen(hf);
 
 const deps: VoiceAssistantDeps = {
-  models: new Map([[modelFileKey(FILE), FILE]]),
+  models: new Map([
+    [modelFileKey(FILE), FILE],
+    [modelFileKey(GATED), GATED],
+  ]),
   coreFetch: async () => ({ status: 200, text: "{}" }),
   coreStream: () => Promise.reject(new Error("unused")),
   readJson: async () => ({}),
@@ -181,22 +193,31 @@ const deps: VoiceAssistantDeps = {
     origin: hfBase,
     allowRedirect: (target) => target.origin === hfBase || target.origin === cdnBase,
   },
+  hfToken: ` ${FAKE_TOKEN}\n`,
 };
-const routes = voiceAssistantRoutes(deps);
-const proxy = createServer((req, res) => {
-  const url = new URL(req.url ?? "/", "http://surface");
-  const found = findRoute(routes, req.method ?? "GET", url.pathname);
-  if (!found) {
-    res.writeHead(404);
-    return void res.end();
-  }
-  void found.route.handle({ req, res, url, user: "alice" });
-});
-const proxyBase = await listen(proxy);
+const proxies: Server[] = [];
+
+async function startProxy(overrides: Partial<VoiceAssistantDeps>): Promise<string> {
+  const routes = voiceAssistantRoutes({ ...deps, ...overrides });
+  const proxy = createServer((req, res) => {
+    const url = new URL(req.url ?? "/", "http://surface");
+    const found = findRoute(routes, req.method ?? "GET", url.pathname);
+    if (!found) {
+      res.writeHead(404);
+      return void res.end();
+    }
+    void found.route.handle({ req, res, url, user: "alice" });
+  });
+  proxies.push(proxy);
+  return listen(proxy);
+}
+
+const proxyBase = await startProxy({});
 const modelUrl = `${proxyBase}${MODEL_PROXY_PREFIX}${modelFileKey(FILE)}`;
+const gatedUrl = `${proxyBase}${MODEL_PROXY_PREFIX}${modelFileKey(GATED)}`;
 
 test.after(() => {
-  for (const server of [surface, core, proxy, hf, cdn, evil]) {
+  for (const server of [surface, core, hf, cdn, evil, ...proxies]) {
     server.closeAllConnections();
     server.close();
   }
@@ -221,8 +242,26 @@ test("the SPA CSP allows same-origin and blob media", async () => {
 test("voice access relays core's answer for the signed-in user", async () => {
   const response = await fetch(`${base}/api/voice/access`, { headers: identity("alice") });
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { enabled: true });
+  assert.deepEqual(await response.json(), { enabled: true, gatedModels: Boolean(process.env.HF_TOKEN?.trim()) });
   assert.equal((await fetch(`${base}/api/voice/access`)).status, 401);
+});
+
+test("voice access tells the browser whether gated models can be served", async () => {
+  const access = async (overrides: Partial<VoiceAssistantDeps>) =>
+    (await fetch(`${await startProxy(overrides)}/api/voice/access`)).json();
+  const coreFetch: VoiceAssistantDeps["coreFetch"] = async () => ({ status: 200, text: '{"enabled":true}' });
+  assert.deepEqual(await access({ coreFetch }), { enabled: true, gatedModels: true });
+  for (const hfToken of [undefined, "", "  "])
+    assert.deepEqual(await access({ coreFetch, hfToken }), { enabled: true, gatedModels: false });
+  assert.deepEqual(await access({ coreFetch, hfToken: undefined, localModelDir: "/models" }), {
+    enabled: true,
+    gatedModels: true,
+  });
+  const denied = await fetch(
+    `${await startProxy({ coreFetch: async () => ({ status: 403, text: "nope" }) })}/api/voice/access`,
+  );
+  assert.equal(denied.status, 403);
+  assert.equal(await denied.text(), "nope");
 });
 
 test("voice reply streams core SSE, signs the request and pins the principal to the session user", async () => {
@@ -347,6 +386,70 @@ test("the model proxy refuses redirects off the allowed hosts and bad upstream a
   assert.equal(evilHits.length, 0);
   hfMode = "direct";
   assert.equal((await fetch(modelUrl)).status, 200);
+});
+
+test("gated models send the token only on the first Hugging Face hop and are cached privately", async () => {
+  for (const mode of ["redirect", "relative"] as const) {
+    hfMode = mode;
+    hfHits.length = 0;
+    cdnHits.length = 0;
+    const response = await fetch(gatedUrl);
+    assert.equal(response.status, 200, mode);
+    assert.equal(response.headers.get("cache-control"), "private, max-age=31536000, immutable");
+    assert.deepEqual(Buffer.from(await response.arrayBuffer()), PAYLOAD);
+    assert.equal(hfHits[0]?.url, `/${GATED.repo}/resolve/${GATED.revision}/${GATED.path}`);
+    assert.equal(hfHits[0]?.headers.authorization, `Bearer ${FAKE_TOKEN}`);
+    const later = [...hfHits.slice(1), ...cdnHits];
+    assert.equal(later.length, 1, mode);
+    for (const hit of later) assert.equal(hit.headers.authorization, undefined, mode);
+    const text = JSON.stringify([...response.headers]);
+    assert.ok(!text.includes(FAKE_TOKEN));
+  }
+});
+
+test("gated models answer 503 without a token and 502 when Hugging Face refuses the token", async () => {
+  hfMode = "direct";
+  for (const hfToken of [undefined, "", "  "]) {
+    const base = await startProxy({ hfToken });
+    hfHits.length = 0;
+    const response = await fetch(`${base}${MODEL_PROXY_PREFIX}${modelFileKey(GATED)}`);
+    assert.equal(response.status, 503);
+    assert.equal((await response.json()).error, "model_unavailable");
+    assert.equal(hfHits.length, 0);
+    assert.equal((await fetch(`${base}${MODEL_PROXY_PREFIX}${modelFileKey(FILE)}`)).status, 200);
+  }
+  hfMode = "unauthorized";
+  const refused = await fetch(gatedUrl);
+  assert.equal(refused.status, 502);
+  const body = await refused.text();
+  assert.deepEqual(JSON.parse(body), { error: "upstream_error" });
+  assert.ok(!body.includes(FAKE_TOKEN));
+});
+
+test("a local model directory serves exact-size files before upstream and falls back otherwise", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "voice-models-"));
+  const local = Buffer.from("ZYXWVUTSRQPONMLKJIHGFEDCBA");
+  for (const [file, bytes] of [
+    [GATED, local],
+    [FILE, Buffer.from("short")],
+  ] as const) {
+    const path = join(dir, file.repo, file.revision, file.path);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, bytes);
+  }
+  const base = await startProxy({ localModelDir: dir, hfToken: undefined });
+  hfMode = "direct";
+  hfHits.length = 0;
+  const served = await fetch(`${base}${MODEL_PROXY_PREFIX}${modelFileKey(GATED)}`);
+  assert.equal(served.status, 200);
+  assert.equal(served.headers.get("content-length"), String(local.length));
+  assert.equal(served.headers.get("cache-control"), "private, max-age=31536000, immutable");
+  assert.deepEqual(Buffer.from(await served.arrayBuffer()), local);
+  assert.equal(hfHits.length, 0);
+  const fallback = await fetch(`${base}${MODEL_PROXY_PREFIX}${modelFileKey(FILE)}`);
+  assert.deepEqual(Buffer.from(await fallback.arrayBuffer()), PAYLOAD);
+  assert.equal(hfHits.length, 1);
+  rmSync(dir, { recursive: true, force: true });
 });
 
 test("only Hugging Face hosts over default-port HTTPS are allowed as redirect targets", () => {

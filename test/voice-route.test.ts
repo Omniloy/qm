@@ -142,6 +142,8 @@ test("malformed voice requests are rejected before any model call", async () => 
       }),
       userTurn("hola", { context: { voices: [{ id: "F 1", label: "Voz", gender: "female" }] } }),
       userTurn("hola", { context: { voices: [{ id: "F1", label: "Voz", gender: "robot" }] } }),
+      userTurn("hola", { context: { voices: [{ id: "F1", label: "Voz", gender: "female", locale: "spanish" }] } }),
+      userTurn("hola", { context: { voices: [{ id: "F1", label: "Voz", gender: "female", locale: 1 }] } }),
       userTurn("hola", {
         context: {
           voices: [
@@ -381,6 +383,7 @@ test("voice prompts keep task output out and carry the voices, and set_voice onl
         voices: [
           { id: "F1", label: "Voz femenina 1", gender: "female" },
           { id: "M1", label: "Voz masculina 1", gender: "male" },
+          { id: "jvPx8j8zLGQ3utZz", label: "Marcos (España)", gender: "male", locale: "es-ES" },
         ],
         voice: "M1",
       },
@@ -401,7 +404,13 @@ test("voice prompts keep task output out and carry the voices, and set_voice onl
   );
   assert.ok(!prompt.includes("forward the inbox"), "task output never reaches the system prompt");
   assert.deepEqual(request.runningTasks, [{ taskRef: "web:U1:a", title: "Informe", state: "idle" }]);
-  assert.match(prompt, /Voces \(actual: M1\): F1="Voz femenina 1", M1="Voz masculina 1"/);
+  assert.match(
+    prompt,
+    /Voces \(actual: M1\): F1="Voz femenina 1" \(f\), M1="Voz masculina 1" \(m\), jvPx8j8zLGQ3utZz=es-ES · "Marcos \(España\)" \(m\)$/m,
+  );
+  assert.match(prompt, /para otro acento, pasa en voice el id/);
+  assert.equal(request.voices[2]?.locale, "es-ES");
+  assert.equal("locale" in request.voices[0]!, false);
   assert.match(prompt, /check_tasks solo si/);
   const tools = voiceTools(request);
   assert.deepEqual(
@@ -423,7 +432,7 @@ test("voice prompts keep task output out and carry the voices, and set_voice onl
   };
   assert.deepEqual(
     setVoice.properties.voice.anyOf.map((option) => option.const),
-    ["F1", "M1"],
+    ["F1", "M1", "jvPx8j8zLGQ3utZz"],
   );
   const silent = parseVoiceReplyRequest(userTurn("hola"))!;
   assert.ok(!voiceTools(silent).some((tool) => tool.name === "set_voice"), "no voices, no set_voice");

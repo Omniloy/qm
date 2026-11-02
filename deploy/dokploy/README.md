@@ -334,6 +334,20 @@ node -e "const {generateKeyPairSync}=require('node:crypto');process.stdout.write
 Connector OAuth clients and the optional Slack bot tokens are not set here — enter them
 at `${PUBLIC_URL}/admin` once the stack is up.
 
+### Voice assistant models
+
+| Key        | Value                                                                                                  |
+| ---------- | ------------------------------------------------------------------------------------------------------ |
+| `HF_TOKEN` | a read-only Hugging Face token whose account has accepted the gated voice model repos (Phonon 40M TTS) |
+
+Only `web-ui` receives it. Its model proxy at `/api/voice/models/` sends the token to
+`huggingface.co` on the first request for a gated file and never on the redirect to the
+CDN, and it never reaches the browser or the logs. Without it, gated files answer `503
+model_unavailable` and the voice assistant cannot download its default speech model;
+ungated files (Supertonic, the Phonon voices, the speech-recognition models) still
+work. Confirm it landed with `docker exec <appName>-web-ui-1 printenv HF_TOKEN | wc -c`
+rather than printing the value.
+
 ### First-boot feature flags
 
 Core pins four behaviours explicitly, each overridable from the Dokploy env without a

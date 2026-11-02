@@ -3,7 +3,8 @@ import ortWasmUrl from "onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url
 import { errMessage, swallow } from "../../../chassis/src/errors.ts";
 import { readModelFile } from "./model-cache.ts";
 import type { ModelFile, TtsEngine, TtsWorkerIn, TtsWorkerOut } from "./protocol.ts";
-import { loadTtsEngine } from "./tts/engine.ts";
+import { loadTtsEngine, speak } from "./tts/engine.ts";
+import { PHONON_RUNTIME } from "./tts/phonon-runtime.ts";
 
 type SpeakJob = Extract<TtsWorkerIn, { type: "speak" }>;
 
@@ -40,23 +41,18 @@ async function drainQueue(): Promise<void> {
     const controller = new AbortController();
     current = { job, controller };
     try {
-      const pcm = await active.synthesize(
-        { text: job.text, language: job.language, voice: job.voice, steps: job.steps },
-        controller.signal,
-      );
-      if (!controller.signal.aborted) {
+      let samples = 0;
+      const request = { text: job.text, language: job.language, voice: job.voice, steps: job.steps };
+      for await (const pcm of speak(active, request, controller.signal)) {
+        if (controller.signal.aborted) break;
+        samples += pcm.length;
         send(
-          {
-            type: "pcm",
-            utteranceId: job.utteranceId,
-            chunkIndex: job.chunkIndex,
-            pcm,
-            sampleRate: active.sampleRate,
-            chars: job.text.length,
-          },
+          { type: "pcm", utteranceId: job.utteranceId, chunkIndex: job.chunkIndex, pcm, sampleRate: active.sampleRate },
           [pcm.buffer],
         );
       }
+      if (!controller.signal.aborted)
+        send({ type: "chunk-end", utteranceId: job.utteranceId, chunkIndex: job.chunkIndex, samples });
     } catch (error) {
       if (!controller.signal.aborted) {
         send({
@@ -96,6 +92,7 @@ async function init(message: Extract<TtsWorkerIn, { type: "init" }>): Promise<vo
   try {
     const loaded = await loadTtsEngine(message.engine, {
       ort,
+      phonon: PHONON_RUNTIME,
       backend: message.backend,
       readFile: fileReader(message.files),
     });

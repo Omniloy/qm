@@ -244,7 +244,10 @@ export async function createSupertonic(deps: SupertonicDeps): Promise<TtsEngine>
     sampleRate: cfg.sampleRate,
     voices: SUPERTONIC_VOICES,
     backend: deps.backend,
-    synthesize,
+    async *stream(request: TtsRequest, signal?: AbortSignal) {
+      const pcm = await synthesize(request, signal);
+      if (pcm.length) yield pcm;
+    },
     async dispose() {
       styles.clear();
       await Promise.all(sessions.map((s) => s.release()));

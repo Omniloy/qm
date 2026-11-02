@@ -72,7 +72,7 @@ export default defineConfig({
     ],
   },
   optimizeDeps: {
-    exclude: ["onnxruntime-web"],
+    exclude: ["onnxruntime-web", "phonon-tts"],
     include: ["@ricky0123/vad-web/dist/frame-processor.js", "@ricky0123/vad-web/dist/models/silero.js"],
   },
   worker: { format: "es" },

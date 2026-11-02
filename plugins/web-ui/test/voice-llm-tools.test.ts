@@ -237,16 +237,26 @@ test("task summaries carry the delegated title and never the task's output", () 
 test("set_language and set_voice change the settings and validate their arguments strictly", async () => {
   const { deps: d, log } = deps([]);
   const english = await runVoiceTool({ id: "c", name: "set_language", args: { language: "en" } }, d);
-  assert.deepEqual(JSON.parse(english.content), { ok: true, language: "en", voice: "F1" });
+  assert.deepEqual(JSON.parse(english.content), { ok: true, language: "en", voice: "4SZHfMpw-p46Ywgs" });
   const male = await runVoiceTool({ id: "c", name: "set_voice", args: { gender: "male" } }, d);
-  assert.deepEqual(JSON.parse(male.content), { ok: true, voice: "M1", label: "Male 1" });
+  assert.deepEqual(JSON.parse(male.content), { ok: true, voice: "LMDIYE0Oa377Qh6Z", label: "Easton (US)" });
   const next = await runVoiceTool({ id: "c", name: "set_voice", args: { next: true } }, d);
-  assert.equal(JSON.parse(next.content).voice, "M2");
+  assert.equal(JSON.parse(next.content).voice, "40QrMVgAxFiUnP9f");
   const again = await runVoiceTool({ id: "c", name: "set_voice", args: { gender: "male" } }, d);
-  assert.equal(JSON.parse(again.content).voice, "M3", "asking for the same gender moves to another voice of it");
-  const named = await runVoiceTool({ id: "c", name: "set_voice", args: { voice: "F2" } }, d);
-  assert.equal(JSON.parse(named.content).label, "Female 2");
-  assert.deepEqual(log, ["settings:en:F1", "settings:en:M1", "settings:en:M2", "settings:en:M3", "settings:en:F2"]);
+  assert.equal(
+    JSON.parse(again.content).voice,
+    "d9XCyhjo4JhkHF1d",
+    "asking for the same gender moves to another voice of it",
+  );
+  const named = await runVoiceTool({ id: "c", name: "set_voice", args: { voice: "nGzMHMPAWGaJFHOo" } }, d);
+  assert.equal(JSON.parse(named.content).label, "Delia (US)");
+  assert.deepEqual(log, [
+    "settings:en:4SZHfMpw-p46Ywgs",
+    "settings:en:LMDIYE0Oa377Qh6Z",
+    "settings:en:40QrMVgAxFiUnP9f",
+    "settings:en:d9XCyhjo4JhkHF1d",
+    "settings:en:nGzMHMPAWGaJFHOo",
+  ]);
   for (const args of [{ voice: "Z9" }, { gender: "robot" }, { next: false }, {}, { voice: "F1", next: true }])
     assert.equal(
       (await runVoiceTool({ id: "c", name: "set_voice", args } as never, d)).isError,

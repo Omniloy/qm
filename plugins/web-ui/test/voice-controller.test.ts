@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ANNOUNCE_QUIET_MS,
+  PTT_MIN_MS,
   SPEAKING_VAD,
   THINKING_CHIME_MS,
   createVoiceController,
@@ -138,14 +139,9 @@ function setup(scripts: Script[] = [], settings: Partial<VoiceSettings> = {}) {
     speech.emit({ type: "transcript", segmentId, purpose, text, language: "es", ms: 100 });
   const pcmFor = (index: number, samples = 44_100) => {
     const speak = speaks()[index]!;
-    tts.emit({
-      type: "pcm",
-      utteranceId: speak.utteranceId,
-      chunkIndex: speak.chunkIndex,
-      pcm: new Float32Array(samples),
-      sampleRate: 44_100,
-      chars: speak.text.length,
-    });
+    const chunk = { utteranceId: speak.utteranceId, chunkIndex: speak.chunkIndex };
+    tts.emit({ type: "pcm", ...chunk, pcm: new Float32Array(samples), sampleRate: 44_100 });
+    tts.emit({ type: "chunk-end", ...chunk, samples });
   };
   return {
     controller,
@@ -229,7 +225,7 @@ test("the words after the wake phrase become the first turn, streamed into speec
   speaks.forEach((speak, i) => {
     assert.equal(speak.chunkIndex, i);
     assert.equal(speak.steps, stepsForChunk(i));
-    assert.equal(speak.voice, "F1");
+    assert.equal(speak.voice, DEFAULT_VOICE_SETTINGS.voice);
     assert.equal(speak.language, "es");
   });
   assert.equal(t.controller.state, "thinking");
@@ -377,7 +373,7 @@ test("a silent delegation is acknowledged out loud by the app without another mo
 });
 
 test("switching language or voice is confirmed in the new language and voice, in one hop", async () => {
-  let settings: VoiceSettings = { ...DEFAULT_VOICE_SETTINGS, enabled: true };
+  let settings: VoiceSettings = { ...DEFAULT_VOICE_SETTINGS, enabled: true, ttsEngine: "supertonic-3", voice: "F1" };
   const t = setup([
     { frames: [{ type: "tool_call", id: "l", name: "set_language", args: { language: "en" } }, { type: "done" }] },
     { frames: [{ type: "tool_call", id: "v", name: "set_voice", args: { gender: "male" } }, { type: "done" }] },
@@ -1045,4 +1041,245 @@ test("spoken characters follow playback through each chunk", () => {
   assert.equal(spokenChars(spans, 200), 21);
   assert.equal(spokenChars(spans, 1_000), 31);
   assert.equal(spokenChars([{ start: 0, end: 10, samples: 0 }], 500), 0);
+});
+
+test("a streamed chunk keeps playing until the worker says it ended, counting every frame", async () => {
+  const t = setup([{ frames: [{ type: "delta", text: "Hola." }, { type: "done" }] }]);
+  t.ready();
+  t.controller.type("hola");
+  await flush();
+  const speak = t.speaks()[0]!;
+  const chunk = { utteranceId: speak.utteranceId, chunkIndex: speak.chunkIndex };
+  t.tts.emit({ type: "pcm", ...chunk, pcm: new Float32Array(1_920), sampleRate: 24_000 });
+  t.tts.emit({ type: "pcm", ...chunk, pcm: new Float32Array(1_920), sampleRate: 24_000 });
+  assert.equal(t.controller.state, "speaking");
+  assert.deepEqual(
+    t.playback.sent.map((m) => m.type),
+    ["push", "push"],
+  );
+  t.playback.emit({ type: "progress", utteranceId: speak.utteranceId, playedSamples: 1_920, sampleRate: 24_000 });
+  assert.equal(t.view().captions.agent!.spokenChars, 3);
+  t.tts.emit({ type: "chunk-end", ...chunk, samples: 3_840 });
+  assert.deepEqual(t.playback.sent.at(-1), { type: "end", utteranceId: speak.utteranceId });
+});
+
+test("push to talk: no wake phrase, the held capture is sent on release and the reply ends asleep", async () => {
+  const t = setup([{ frames: [{ type: "delta", text: "Vale." }, { type: "done" }] }], { micMode: "push" });
+  t.ready();
+  assert.equal(t.controller.state, "sleeping");
+  assert.deepEqual(t.modes(), []);
+  assert.equal(t.view().status, "Mantén pulsada la barra espaciadora o el orbe para hablar");
+  assert.equal(t.view().micMode, "push");
+  t.transcript("Oye Omni", "wake");
+  assert.equal(t.controller.state, "sleeping");
+  t.controller.pttDown();
+  assert.equal(t.view().pttActive, true);
+  assert.deepEqual(t.modes(), ["held"]);
+  assert.deepEqual(t.chimes, []);
+  t.clock.advance(PTT_MIN_MS);
+  assert.equal(t.controller.state, "listening");
+  assert.deepEqual(t.chimes, ["wake"]);
+  t.speech.emit({ type: "speech-start" });
+  t.clock.advance(IDLE_TO_SLEEP_MS * 2);
+  assert.equal(t.controller.state, "listening", "a held capture never times out");
+  t.controller.pttUp();
+  assert.deepEqual(t.speech.sent.slice(-2), [{ type: "end-segment" }, { type: "mode", mode: "paused" }]);
+  assert.equal(t.view().pttActive, false);
+  t.speech.emit({ type: "speech-end", segmentId: 1, durationMs: 900, purpose: "utterance" });
+  t.transcript("¿qué tareas tengo?");
+  await flush();
+  assert.equal(t.requests.length, 1);
+  t.pcmFor(0);
+  t.playback.emit({ type: "drained", utteranceId: t.speaks()[0]!.utteranceId });
+  assert.equal(t.controller.state, "sleeping");
+  assert.deepEqual(t.modes(), ["held", "paused"]);
+});
+
+test("a hold shorter than the minimum is dropped without transcribing", () => {
+  const t = setup([], { micMode: "push" });
+  t.ready();
+  t.controller.pttDown();
+  t.clock.advance(100);
+  t.controller.pttUp();
+  assert.ok(!t.speech.sent.some((m) => m.type === "end-segment"));
+  assert.deepEqual(t.modes(), ["held", "paused"]);
+  assert.equal(t.controller.state, "sleeping");
+});
+
+test("a tap shorter than the minimum keeps the reply going and the turn alive", async () => {
+  const t = setup([{ frames: [{ type: "delta", text: "Una respuesta larga." }, { type: "done" }] }], {
+    micMode: "push",
+  });
+  t.ready();
+  t.controller.type("haz algo");
+  await flush();
+  t.pcmFor(0);
+  const chimes = t.chimes.length;
+  t.controller.pttDown();
+  t.speech.emit({ type: "speech-start" });
+  t.clock.advance(50);
+  t.controller.pttUp();
+  assert.equal(t.signals[0]!.aborted, false);
+  assert.equal(t.controller.state, "speaking");
+  assert.ok(!t.tts.sent.some((m) => m.type === "cancel"));
+  assert.equal(t.chimes.length, chimes);
+  assert.equal(t.modes().at(-1), "paused");
+});
+
+test("a short tap after speech started neither blocks announcements nor leaves a partial caption", () => {
+  const t = setup([], { micMode: "push" });
+  t.ready();
+  t.controller.pttDown();
+  t.speech.emit({ type: "speech-start" });
+  t.clock.advance(100);
+  t.controller.pttUp();
+  t.speech.emit({ type: "speech-start" });
+  assert.equal(t.view().captions.user, null);
+  t.clock.advance(ANNOUNCE_QUIET_MS);
+  t.controller.announce("La tarea ha terminado.");
+  t.clock.advance(ANNOUNCE_QUIET_MS);
+  assert.equal(t.speaks().length, 1);
+});
+
+test("muting during a held capture goes back to sleep and shows the hint again", () => {
+  const t = setup([], { micMode: "push" });
+  t.ready();
+  t.controller.pttDown();
+  t.clock.advance(PTT_MIN_MS);
+  assert.equal(t.controller.state, "listening");
+  t.controller.toggleMute();
+  t.controller.toggleMute();
+  assert.equal(t.controller.state, "sleeping");
+  assert.equal(t.view().pttActive, false);
+  assert.equal(t.view().status, "Mantén pulsada la barra espaciadora o el orbe para hablar");
+  assert.equal(t.modes().at(-1), "paused");
+});
+
+test("fatal worker errors name the engine that failed", () => {
+  const fatal: Array<[string, string | undefined]> = [];
+  const t = setup();
+  t.controller.dispose();
+  const c = createVoiceController({
+    speech: t.speech,
+    tts: t.tts,
+    playback: t.playback,
+    settings: () => ({ ...DEFAULT_VOICE_SETTINGS, enabled: true }),
+    reply: async function* () {
+      yield { type: "done" };
+    },
+    runTool: async () => ({ content: "{}" }),
+    runningTasks: () => [],
+    chime: () => undefined,
+    setMuted: () => undefined,
+    render: () => undefined,
+    onFatal: (message, stage) => void fatal.push([message, stage]),
+  });
+  t.speech.emit({ type: "error", stage: "asr", reason: "kernel_unsupported", fatal: true });
+  t.speech.emit({ type: "error", stage: "asr", reason: "webgpu_unavailable", fatal: true });
+  t.speech.emit({ type: "error", stage: "vad", reason: "boom", fatal: true });
+  t.tts.emit({ type: "error", reason: "boom", fatal: true });
+  assert.deepEqual(
+    fatal.map(([, stage]) => stage),
+    ["asr", undefined, undefined, "tts"],
+  );
+  c.dispose();
+});
+
+test("toggle style starts and stops with presses, and a capture the worker capped ends on its own", async () => {
+  const t = setup([{ frames: [{ type: "done" }] }], { micMode: "push", pttStyle: "toggle" });
+  t.ready();
+  assert.equal(t.view().status, "Pulsa la barra espaciadora o el orbe para hablar, y otra vez para enviar");
+  t.controller.press();
+  assert.equal(t.view().pttActive, true);
+  t.controller.press();
+  assert.deepEqual(t.speech.sent.slice(-2), [{ type: "end-segment" }, { type: "mode", mode: "paused" }]);
+  t.speech.emit({ type: "speech-misfire" });
+  assert.equal(t.controller.state, "sleeping");
+  t.controller.pttToggle();
+  t.speech.emit({ type: "speech-start" });
+  t.speech.emit({ type: "speech-end", segmentId: 2, durationMs: 30_000, purpose: "utterance" });
+  assert.equal(t.view().pttActive, false);
+  assert.equal(t.modes().at(-1), "paused");
+  t.transcript("un mensaje muy largo", "utterance", 2);
+  await flush();
+  assert.equal(t.requests.length, 1);
+});
+
+test("pressing to talk while the assistant speaks barges in", async () => {
+  const t = setup([{ frames: [{ type: "delta", text: "Una respuesta larga." }, { type: "done" }] }], {
+    micMode: "push",
+  });
+  t.ready();
+  t.controller.type("cuéntame algo");
+  await flush();
+  t.pcmFor(0);
+  assert.equal(t.controller.state, "speaking");
+  t.controller.pttDown();
+  assert.equal(t.modes().at(-1), "held");
+  assert.equal(t.controller.state, "speaking");
+  t.clock.advance(PTT_MIN_MS);
+  assert.equal(t.controller.state, "listening");
+  assert.ok(t.tts.sent.some((m) => m.type === "cancel"));
+  assert.deepEqual(t.playback.sent.at(-1), { type: "flush" });
+  assert.equal(t.modes().at(-1), "held");
+});
+
+test("announcements still play in push mode but never over a held capture", () => {
+  const t = setup([], { micMode: "push" });
+  t.ready();
+  t.controller.pttDown();
+  t.clock.advance(ANNOUNCE_QUIET_MS);
+  t.controller.announce("La tarea ha terminado.");
+  assert.equal(t.speaks().length, 0);
+  t.clock.advance(PTT_MIN_MS);
+  t.controller.pttUp();
+  t.speech.emit({ type: "speech-misfire" });
+  t.clock.advance(ANNOUNCE_QUIET_MS);
+  assert.equal(t.speaks().length, 1);
+  assert.equal(t.speaks()[0]!.text, "La tarea ha terminado.");
+});
+
+test("push to talk is ignored in open mode or while muted, and switching modes resets the gate", () => {
+  let settings: VoiceSettings = { ...DEFAULT_VOICE_SETTINGS, enabled: true };
+  const t = setup();
+  t.controller.dispose();
+  const views: VoiceStageView[] = [];
+  const c = createVoiceController({
+    speech: t.speech,
+    tts: t.tts,
+    playback: t.playback,
+    settings: () => settings,
+    reply: async function* () {
+      yield { type: "done" };
+    },
+    runTool: async () => ({ content: "{}" }),
+    runningTasks: () => [],
+    chime: () => undefined,
+    setMuted: () => undefined,
+    render: (view) => void views.push(view),
+    onFatal: () => undefined,
+    now: t.clock.now,
+    timers: t.clock.timers,
+  });
+  t.ready();
+  c.pttDown();
+  assert.equal(c.state, "sleeping");
+  c.press();
+  assert.equal(c.state, "listening");
+  settings = { ...settings, micMode: "push" };
+  c.applySettings();
+  assert.equal(c.state, "sleeping");
+  assert.equal(t.modes().at(-1), "paused");
+  c.toggleMute();
+  c.pttDown();
+  assert.equal(c.state, "sleeping");
+  c.toggleMute();
+  c.pttDown();
+  t.clock.advance(PTT_MIN_MS);
+  assert.equal(views.at(-1)!.pttActive, true);
+  settings = { ...settings, micMode: "open" };
+  c.applySettings();
+  assert.equal(views.at(-1)!.pttActive, false);
+  assert.equal(t.modes().at(-1), "awake");
+  c.dispose();
 });

@@ -73,6 +73,13 @@ test("common transcription variants of the default phrase still wake", () => {
   assert.deepEqual(wake("Hoy Omni, cuantos correos sin leer tengo", OMNI), [true, "cuantos correos sin leer tengo"]);
 });
 
+test("Phonon-2.5 renderings of the default phrase wake", () => {
+  assert.deepEqual(wake("Oye omni.", OMNI), [true, ""]);
+  assert.deepEqual(wake("Oye omi, qué tal.", OMNI), [true, "qué tal."]);
+  assert.deepEqual(wake("Hoy Omni", OMNI), [true, ""]);
+  assert.deepEqual(wake("Hej ommi!", OMNI), [true, ""]);
+});
+
 test("the default phrase does not wake on unrelated speech", () => {
   assert.deepEqual(wake("el ómnibus llega tarde", OMNI), [false, ""]);
   assert.deepEqual(wake("oye mamá", OMNI), [false, ""]);

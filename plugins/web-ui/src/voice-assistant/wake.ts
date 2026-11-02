@@ -1,6 +1,6 @@
 export const WAKE_THRESHOLD = 0.8;
 
-const GREETING_VARIANTS = ["hey", "hola", "oye", "hoy", "hi", "ola", "ey", "oiga", "okay", "ok"] as const;
+const GREETING_VARIANTS = ["hey", "hola", "oye", "hoy", "hi", "ola", "ey", "oiga", "okay", "ok", "hej"] as const;
 const MAX_NAME_TOKENS = 2;
 const WORD = /[\p{L}\p{N}\p{M}]+/gu;
 const LEADING_SEPARATORS = /^[\s,.;:!?…\-–—"'»)\]]+/u;
@@ -67,6 +67,7 @@ function phonetic(word: string): string {
     .replace(/[cs]h/g, "x")
     .replace(/qu/g, "k")
     .replace(/ll/g, "y")
+    .replace(/mn/g, "m")
     .replace(/c(?=[eiy])/g, "s")
     .replace(/c/g, "k")
     .replace(/h/g, "")
@@ -111,8 +112,8 @@ function bestName(tokens: readonly Token[], start: number, name: string): Candid
   let best: Candidate = { score: 0, consumed: 0 };
   let joined = "";
   for (let n = 1; n <= MAX_NAME_TOKENS && start + n <= tokens.length; n++) {
-    joined += tokens[start + n - 1].phonetic;
-    const score = similarity(joined, name);
+    joined += tokens[start + n - 1].text;
+    const score = similarity(phonetic(joined), name);
     if (score > best.score) best = { score, consumed: n };
   }
   return best;

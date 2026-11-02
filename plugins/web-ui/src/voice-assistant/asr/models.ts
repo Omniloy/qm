@@ -1,7 +1,16 @@
-import type { AsrVariant, GpuSupport, ModelFile } from "../protocol.ts";
+import type { AsrEngineId, AsrVariant, GpuSupport, ModelFile } from "../protocol.ts";
 
 const REPO = "jiangzhuo9357/Qwen3-ASR-0.6B-ONNX";
 const REVISION = "4a01b95fafe2c9e3af77e33c18bbb7de349c62f6";
+
+const PHONON_ASR_REPO = "enriqueag/phonon-2.5-onnx";
+const PHONON_ASR_REVISION = "5a76001bd8dfc058632290d2ef594236b7ca2bd4";
+
+export const PHONON_ASR_PATHS = {
+  encoder: "encoder.exact2x2.onnx",
+  decoderJoint: "decoder_joint.int8.onnx",
+  vocab: "vocab.txt",
+} as const;
 
 export interface AsrModelPaths {
   encoder: string;
@@ -38,7 +47,7 @@ export function asrPaths(variant: AsrVariant): AsrModelPaths {
   return { ...VARIANT_PATHS[variant], ...SHARED_PATHS };
 }
 
-export const ASR_MODEL_FILES: readonly ModelFile[] = [
+export const QWEN_ASR_MODEL_FILES: readonly ModelFile[] = [
   {
     repo: REPO,
     revision: REVISION,
@@ -137,10 +146,40 @@ export const ASR_MODEL_FILES: readonly ModelFile[] = [
   },
 ];
 
-export function asrFilesFor(variant: AsrVariant): readonly ModelFile[] {
-  return ASR_MODEL_FILES.filter((file) => file.variant === undefined || file.variant === variant);
+export const PHONON_ASR_MODEL_FILES: readonly ModelFile[] = [
+  {
+    repo: PHONON_ASR_REPO,
+    revision: PHONON_ASR_REVISION,
+    path: PHONON_ASR_PATHS.encoder,
+    bytes: 362728506,
+    sha256: "786bb68c5489d2b894b4565e1a123f5ad3d2197e84f5e7ffefca63d1ecf82033",
+    role: "asr",
+  },
+  {
+    repo: PHONON_ASR_REPO,
+    revision: PHONON_ASR_REVISION,
+    path: PHONON_ASR_PATHS.decoderJoint,
+    bytes: 17644009,
+    sha256: "ccfe6ed79343be430a1d706dbfc8dec8b88cd2110bd3a695f8448e10ac34f8c9",
+    role: "asr",
+  },
+  {
+    repo: PHONON_ASR_REPO,
+    revision: PHONON_ASR_REVISION,
+    path: PHONON_ASR_PATHS.vocab,
+    bytes: 93928,
+    sha256: "048eb9ded015a578855d1661c244f4f1101e6d68c82a5c3bce14dff046a11431",
+    role: "asr",
+  },
+];
+
+export const ASR_MODEL_FILES: readonly ModelFile[] = [...QWEN_ASR_MODEL_FILES, ...PHONON_ASR_MODEL_FILES];
+
+export function asrFilesFor(engine: AsrEngineId, variant: AsrVariant): readonly ModelFile[] {
+  if (engine === "phonon-2.5") return PHONON_ASR_MODEL_FILES;
+  return QWEN_ASR_MODEL_FILES.filter((file) => file.variant === undefined || file.variant === variant);
 }
 
-export function asrVariantFor(gpu: GpuSupport): AsrVariant {
-  return gpu.shaderF16 ? "q4f16" : "q4";
+export function asrVariantFor(engine: AsrEngineId, gpu: GpuSupport): AsrVariant {
+  return engine === "qwen3-asr-0.6b" && gpu.shaderF16 ? "q4f16" : "q4";
 }

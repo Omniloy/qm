@@ -30,6 +30,7 @@ const MAX_TOOL_ARGS_CHARS = 8_000;
 const MAX_VOICES = 32;
 const MAX_VOICE_LABEL_CHARS = 60;
 const VOICE_ID = /^[A-Za-z0-9_.-]{1,32}$/;
+const VOICE_LOCALE = /^[a-z]{2}-[A-Z]{2}$/;
 
 type VoiceLanguage = (typeof VOICE_LANGUAGES)[number];
 type VoiceToolName = (typeof VOICE_TOOL_NAMES)[number];
@@ -44,6 +45,7 @@ interface VoiceOption {
   id: string;
   label: string;
   gender: (typeof VOICE_GENDERS)[number];
+  locale?: string;
 }
 
 export interface VoiceReplyRequest {
@@ -104,7 +106,10 @@ function parseTask(value: unknown): VoiceTaskSummary | null {
 function parseVoiceOption(value: unknown): VoiceOption | null {
   if (!isRecord(value) || typeof value.id !== "string" || !VOICE_ID.test(value.id)) return null;
   if (!boundedText(value.label, MAX_VOICE_LABEL_CHARS) || !value.label.trim()) return null;
-  return oneOf(VOICE_GENDERS, value.gender) ? { id: value.id, label: value.label, gender: value.gender } : null;
+  if (!oneOf(VOICE_GENDERS, value.gender)) return null;
+  if (value.locale === undefined) return { id: value.id, label: value.label, gender: value.gender };
+  if (typeof value.locale !== "string" || !VOICE_LOCALE.test(value.locale)) return null;
+  return { id: value.id, label: value.label, gender: value.gender, locale: value.locale };
 }
 
 function parseVoices(context: Record<string, unknown>): { voices: VoiceOption[]; voice: string | null } | null {
@@ -225,7 +230,7 @@ const PROMPTS: Record<
       "Para cualquier cosa que requiera trabajo real, como buscar, redactar, programar, leer el correo o actuar en otros sistemas, usa delegate_task con una instrucción completa y autosuficiente, y di en una frase que te pones con ello.",
       "Gestiona las tareas con task_result, approve_task, reject_task, stop_task y open_task. El taskRef sale siempre de la lista de tareas.",
       "La lista de tareas de abajo está al día: responde con ella a las preguntas sobre su estado. Usa check_tasks solo si necesitas algo que no está en la lista, y task_result para leer un resultado completo.",
-      "Si el usuario pide hablar en otro idioma, usa set_language. Si pide otra voz, usa set_voice con voice, gender o next. Al llamar a set_language o set_voice no escribas nada: la app lo confirma.",
+      "Si el usuario pide hablar en otro idioma, usa set_language. Si pide otra voz, usa set_voice con voice, gender o next; para otro acento, pasa en voice el id de una voz de ese acento. Al llamar a set_language o set_voice no escribas nada: la app lo confirma.",
       "No apruebes ni rechaces nada sin que el usuario lo haya pedido de forma explícita.",
     ].join("\n"),
     noTools: "Ahora no puedes iniciar ni gestionar tareas; responde solo con lo que sabes.",
@@ -250,7 +255,7 @@ const PROMPTS: Record<
       "For anything that needs real work, such as searching, writing, coding, reading mail or acting in other systems, call delegate_task with a complete, self-contained instruction, and say in one sentence that you are on it.",
       "Manage tasks with task_result, approve_task, reject_task, stop_task and open_task. The taskRef always comes from the task list.",
       "The task list below is current: answer questions about task status from it. Call check_tasks only when you need something the list does not have, and task_result to read a full result.",
-      "If the user asks to speak another language, call set_language. If they ask for another voice, call set_voice with voice, gender or next. When you call set_language or set_voice, write nothing: the app confirms it.",
+      "If the user asks to speak another language, call set_language. If they ask for another voice, call set_voice with voice, gender or next; for another accent, pass as voice the id of a voice with that accent. When you call set_language or set_voice, write nothing: the app confirms it.",
       "Never approve or reject anything unless the user explicitly asked for it.",
     ].join("\n"),
     noTools: "You cannot start or manage tasks right now; answer only from what you know.",
@@ -266,6 +271,11 @@ const PROMPTS: Record<
   },
 };
 
+function voiceEntry(voice: VoiceOption): string {
+  const locale = voice.locale ? `${voice.locale} · ` : "";
+  return `${voice.id}=${locale}${JSON.stringify(voice.label)} (${voice.gender === "female" ? "f" : "m"})`;
+}
+
 export function voiceSystemPrompt(request: VoiceReplyRequest): string {
   const copy = PROMPTS[request.language];
   if (request.purpose === "announce") return copy.announce;
@@ -279,9 +289,7 @@ export function voiceSystemPrompt(request: VoiceReplyRequest): string {
   const sections = [copy.reply, request.tools ? copy.tools : copy.noTools, tasks];
   if (request.tools && request.voices.length) {
     const current = request.voices.find((voice) => voice.id === request.voice)?.id ?? "-";
-    sections.push(
-      `${copy.voices(current)} ${request.voices.map((voice) => `${voice.id}=${JSON.stringify(voice.label)}`).join(", ")}`,
-    );
+    sections.push(`${copy.voices(current)} ${request.voices.map(voiceEntry).join(", ")}`);
   }
   return sections.join("\n\n");
 }

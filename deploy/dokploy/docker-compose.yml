@@ -171,6 +171,7 @@ services:
       PORTAL_IDENTITY_SECRET: ${PORTAL_IDENTITY_SECRET}
       WEB_UI_FAVICON_SVG_FILE: /etc/qm/brand/logo.svg
       DEPLOY_APPS_DOMAIN: ${DEPLOY_APPS_DOMAIN:-}
+      HF_TOKEN: ${HF_TOKEN:-}
     volumes:
       - ../layers/omniloy/logo.svg:/etc/qm/brand/logo.svg:ro
     networks: [qm]

@@ -7,6 +7,7 @@ import {
   VOICE_MAX_MESSAGES,
   VOICE_MAX_TOOL_HOPS,
   type PlaybackWorkletIn,
+  type PttStyle,
   type PlaybackWorkletOut,
   type SpeechMode,
   type SpeechWorkerIn,
@@ -29,6 +30,7 @@ import {
 } from "./protocol.ts";
 import { createTextChunker, stepsForChunk, withoutClosingPunctuation, type TextChunker } from "./text-chunker.ts";
 import type { VoiceConfirmation, VoiceToolOutcome } from "./tools.ts";
+import { pickerVoices } from "./voice-picker.ts";
 import { voiceChoices, voiceLabel } from "./voices.ts";
 import { confirmationAnswer, matchWake } from "./wake.ts";
 
@@ -53,7 +55,7 @@ export interface VoiceControllerDeps {
   chime(kind: ChimeKind): void;
   setMuted(muted: boolean): void;
   render(view: VoiceStageView): void;
-  onFatal(message: string): void;
+  onFatal(message: string, stage?: "asr" | "tts"): void;
   onMutedChange?(muted: boolean): void;
   muted?: boolean;
   now?(): number;
@@ -64,6 +66,9 @@ export interface VoiceController {
   readonly state: VoiceState;
   readonly muted: boolean;
   press(): void;
+  pttDown(): void;
+  pttUp(): void;
+  pttToggle(): void;
   toggleMute(): void;
   type(text: string): void;
   announce(text: string): void;
@@ -74,6 +79,7 @@ export interface VoiceController {
 
 export const ANNOUNCE_QUIET_MS = 1_500;
 export const THINKING_CHIME_MS = 2_500;
+export const PTT_MIN_MS = 250;
 
 const READ_TOOLS: ReadonlySet<VoiceToolName> = new Set(["check_tasks", "task_result"]);
 const SETTING_TOOLS: ReadonlySet<VoiceToolName> = new Set(["set_language", "set_voice"]);
@@ -97,6 +103,10 @@ const COPY = {
     storage: "No hay espacio suficiente para los modelos de voz.",
     muted: "Micrófono apagado",
     wakeHint: (phrase: string) => `Di «${phrase}»`,
+    pttHint: {
+      hold: "Mantén pulsada la barra espaciadora o el orbe para hablar",
+      toggle: "Pulsa la barra espaciadora o el orbe para hablar, y otra vez para enviar",
+    } satisfies Record<PttStyle, string>,
     webgpu: "Este navegador no admite WebGPU, que el asistente de voz necesita.",
     fatal: "No se ha podido iniciar el asistente de voz.",
     voiceTts: "No se ha podido cargar la voz.",
@@ -131,6 +141,10 @@ const COPY = {
     storage: "There is not enough storage for the voice models.",
     muted: "Microphone off",
     wakeHint: (phrase: string) => `Say “${phrase}”`,
+    pttHint: {
+      hold: "Hold Space or the orb to talk",
+      toggle: "Press Space or the orb to talk, and again to send",
+    } satisfies Record<PttStyle, string>,
     webgpu: "This browser does not support WebGPU, which the voice assistant needs.",
     fatal: "The voice assistant could not start.",
     voiceTts: "The voice could not be loaded.",
@@ -261,15 +275,22 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
   let disposed = false;
   let confirmation: VoiceConfirmation | null = null;
   let thinkingTimer: unknown = null;
+  let pttActive = false;
+  let pttConfirmed = false;
+  let pttTimer: unknown = null;
+  let pttAt = 0;
+  let pttClosing = 0;
 
   const copy = () => COPY[deps.settings().language];
+  const pushMode = () => deps.settings().micMode === "push";
 
   const status = (): string => {
     if (state === "arming") return armingStatus;
     if (errorStatus) return errorStatus;
     if (muted) return copy().muted;
-    if (state === "sleeping") return copy().wakeHint(deps.settings().wakePhrase);
-    return "";
+    if (state !== "sleeping") return "";
+    const settings = deps.settings();
+    return settings.micMode === "push" ? copy().pttHint[settings.pttStyle] : copy().wakeHint(settings.wakePhrase);
   };
 
   const render = () => {
@@ -279,7 +300,10 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
       state,
       language: settings.language,
       voice: settings.voice,
-      voices: voiceChoices(settings),
+      voices: pickerVoices(settings),
+      micMode: settings.micMode,
+      pttStyle: settings.pttStyle,
+      pttActive,
       muted,
       status: status(),
       captions,
@@ -289,6 +313,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
 
   const desiredMode = (): SpeechMode => {
     if (muted || state === "off" || state === "arming") return "paused";
+    if (pushMode()) return pttActive ? "held" : "paused";
     return state === "sleeping" || utterance?.resume === "sleeping" ? "sleeping" : "awake";
   };
 
@@ -312,7 +337,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
 
   const armIdle = () => {
     clearIdle();
-    if (state !== "listening") return;
+    if (state !== "listening" || pttActive) return;
     idleTimer = timers.set(() => {
       idleTimer = null;
       if (state === "listening" && !speechActive && pendingSegments.size === 0) setState("sleeping");
@@ -325,7 +350,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
     state = next;
     if (next === "sleeping") {
       errorStatus = "";
-      confirmation = null;
+      if (!pushMode()) confirmation = null;
     }
     syncMode();
     if (state === "listening") armIdle();
@@ -335,7 +360,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
   };
 
   const canAnnounce = (): boolean => {
-    if (utterance || turn || speechActive) return false;
+    if (utterance || turn || speechActive || pttActive || pttClosing > 0) return false;
     if (state === "sleeping") return true;
     return state === "listening" && pendingSegments.size === 0;
   };
@@ -363,7 +388,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
     render();
   }
 
-  const beginUtterance = (resume: VoiceState = "listening"): Utterance => {
+  const beginUtterance = (resume: VoiceState): Utterance => {
     const created: Utterance = {
       id: `u${++utteranceSeq}`,
       chunker: createTextChunker(),
@@ -630,7 +655,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
     captions = { user: { text, final: true }, agent: null };
     setState("thinking");
     armThinking(controller);
-    const spoken = beginUtterance();
+    const spoken = beginUtterance(pushMode() ? "sleeping" : "listening");
     const answer = awaiting ? confirmationAnswer(text) : null;
     try {
       if (awaiting && answer) await settle(awaiting, answer === "yes", controller, spoken);
@@ -649,6 +674,75 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
     finishText(spoken);
   };
 
+  const clearPttTimer = () => {
+    if (pttTimer !== null) timers.clear(pttTimer);
+    pttTimer = null;
+  };
+
+  const heldCaptureEnded = (): boolean => {
+    if (pttClosing > 0) pttClosing--;
+    else if (pttActive) {
+      clearPttTimer();
+      pttActive = false;
+      pttConfirmed = false;
+    } else return false;
+    syncMode();
+    render();
+    return true;
+  };
+
+  const confirmHold = () => {
+    clearPttTimer();
+    if (!pttActive || pttConfirmed) return;
+    pttConfirmed = true;
+    silence();
+    deps.chime("wake");
+    if (speechActive) captions = { user: { text: "", final: false }, agent: captions.agent };
+    setState("listening");
+  };
+
+  const dropHold = () => {
+    clearPttTimer();
+    pttActive = false;
+    pttConfirmed = false;
+    speechActive = false;
+    if (captions.user && !captions.user.final) captions = { ...captions, user: null };
+  };
+
+  const pttDown = () => {
+    if (!pushMode() || pttActive || muted || state === "off" || state === "arming") return;
+    pttActive = true;
+    pttConfirmed = false;
+    pttAt = now();
+    errorStatus = "";
+    if (deps.settings().pttStyle !== "hold") {
+      confirmHold();
+      return;
+    }
+    syncMode();
+    render();
+    pttTimer = timers.set(confirmHold, PTT_MIN_MS);
+  };
+
+  const pttUp = () => {
+    if (!pttActive) return;
+    if (!pttConfirmed && now() - pttAt < PTT_MIN_MS) {
+      dropHold();
+      setState(state);
+      return;
+    }
+    confirmHold();
+    pttActive = false;
+    pttConfirmed = false;
+    pttClosing++;
+    deps.speech.post({ type: "end-segment" });
+    syncMode();
+    armIdle();
+    render();
+  };
+
+  const pttToggle = () => (pttActive ? pttUp() : pttDown());
+
   const onSpeech = (message: SpeechWorkerOut) => {
     if (disposed) return;
     switch (message.type) {
@@ -664,18 +758,28 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
         speechReady = true;
         if (ttsReady && state === "arming") setState("sleeping");
         return;
-      case "speech-start":
+      case "speech-start": {
+        const listening = desiredMode();
+        if (listening === "paused") return;
         lastSpeechAt = now();
         speechActive = true;
-        if (desiredMode() === "sleeping") return;
+        if (listening === "sleeping" || (listening === "held" && !pttConfirmed)) return;
         if (state === "thinking" || state === "speaking") interrupt();
         clearIdle();
         captions = { user: { text: "", final: false }, agent: captions.agent };
         render();
         return;
+      }
       case "speech-misfire":
         speechActive = false;
         lastSpeechAt = now();
+        if (heldCaptureEnded()) {
+          if (state === "listening" && !pttActive) {
+            captions = { ...captions, user: null };
+            setState("sleeping");
+          }
+          return;
+        }
         if (state === "listening") {
           captions = { ...captions, user: null };
           armIdle();
@@ -688,6 +792,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
         lastSpeechAt = now();
         if (message.purpose === "utterance") {
           pendingSegments.add(message.segmentId);
+          heldCaptureEnded();
           clearIdle();
         }
         drainAnnouncements();
@@ -696,7 +801,10 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
         handleTranscript(message);
         return;
       case "error":
-        if (message.fatal) deps.onFatal(message.reason === "webgpu_unavailable" ? copy().webgpu : copy().fatal);
+        if (message.fatal) {
+          const noGpu = message.reason === "webgpu_unavailable";
+          deps.onFatal(noGpu ? copy().webgpu : copy().fatal, !noGpu && message.stage === "asr" ? "asr" : undefined);
+        }
         return;
     }
   };
@@ -725,7 +833,8 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
     const woken = afterWake ? matchWake(heard, phrase) : null;
     const text = woken?.matched ? woken.remainder : heard;
     if (!text) {
-      if (state === "listening") {
+      if (state === "listening" && pushMode() && !pttActive) setState("sleeping");
+      else if (state === "listening") {
         captions = { ...captions, user: null };
         armIdle();
         render();
@@ -744,21 +853,22 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
       return;
     }
     if (message.type === "error" && message.fatal) {
-      deps.onFatal(copy().voiceTts);
+      deps.onFatal(copy().voiceTts, "tts");
       return;
     }
     const target = utterance;
     if (!target || message.utteranceId !== target.id) return;
-    target.pending = Math.max(0, target.pending - 1);
     if (message.type === "pcm") {
       const span = target.spans[message.chunkIndex];
-      if (span) span.samples = message.pcm.length;
+      if (span) span.samples += message.pcm.length;
       target.received = true;
       deps.playback.post({ type: "push", utteranceId: target.id, pcm: message.pcm, sampleRate: message.sampleRate }, [
         message.pcm.buffer,
       ]);
       if (state !== "speaking") setState("speaking");
+      return;
     }
+    target.pending = Math.max(0, target.pending - 1);
     maybeEnd(target);
   };
 
@@ -788,7 +898,8 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
       return muted;
     },
     press() {
-      if (state === "sleeping") {
+      if (pushMode()) pttToggle();
+      else if (state === "sleeping") {
         deps.chime("wake");
         setState("listening");
       } else if (state === "listening") {
@@ -798,11 +909,21 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
         interrupt();
       }
     },
+    pttDown,
+    pttUp,
+    pttToggle,
     toggleMute() {
       muted = !muted;
       deps.setMuted(muted);
       deps.onMutedChange?.(muted);
-      if (muted) speechActive = false;
+      if (muted) {
+        const held = pttActive;
+        dropHold();
+        if (held && state === "listening") {
+          setState("sleeping");
+          return;
+        }
+      }
       syncMode();
       render();
     },
@@ -823,12 +944,19 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
     },
     applySettings() {
       deps.speech.post({ type: "config", language: deps.settings().language });
+      if (!pushMode() && pttActive) dropHold();
+      if (pushMode() && state === "listening" && !pttActive) {
+        setState("sleeping");
+        return;
+      }
+      syncMode();
       render();
     },
     dispose() {
       if (disposed) return;
       silence();
       clearIdle();
+      clearPttTimer();
       if (quietTimer !== null) timers.clear(quietTimer);
       quietTimer = null;
       confirmation = null;

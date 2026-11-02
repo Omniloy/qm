@@ -28,6 +28,7 @@ export const WAKE_SEGMENT_MAX_MS = 5_000;
 export const WAKE_MAX_NEW_TOKENS = 32;
 export const UTTERANCE_MAX_NEW_TOKENS = 200;
 export const IDLE_TO_SLEEP_MS = 8_000;
+export const PTT_MAX_MS = 30_000;
 
 export const CAPTURE_PROCESSOR = "qm-voice-capture";
 export const PLAYBACK_PROCESSOR = "qm-voice-playback";
@@ -80,7 +81,7 @@ export type PlaybackWorkletOut =
   | { type: "drained"; utteranceId: string }
   | { type: "flushed" };
 
-export type SpeechMode = "paused" | "sleeping" | "awake";
+export type SpeechMode = "paused" | "sleeping" | "awake" | "held";
 export type SpeechPurpose = "wake" | "utterance";
 export type ExecutionBackend = "webgpu" | "wasm";
 
@@ -96,6 +97,7 @@ export type SpeechWorkerIn =
   | {
       type: "init";
       framePort: TransferablePort;
+      asrEngine: AsrEngineId;
       asrVariant: AsrVariant;
       asrFiles: readonly ModelFile[];
       language: VoiceLanguage;
@@ -124,16 +126,25 @@ export type SpeechWorkerOut =
     }
   | { type: "error"; stage: "vad" | "asr" | "frames"; reason: string; fatal: boolean };
 
-export const TTS_ENGINE_IDS = ["supertonic-3"] as const;
+export const TTS_ENGINE_IDS = ["phonon-40m", "supertonic-3"] as const;
 export type TtsEngineId = (typeof TTS_ENGINE_IDS)[number];
+
+export const ASR_ENGINE_IDS = ["phonon-2.5", "qwen3-asr-0.6b"] as const;
+export type AsrEngineId = (typeof ASR_ENGINE_IDS)[number];
 
 export const VOICE_GENDERS = ["female", "male"] as const;
 export type VoiceGender = (typeof VOICE_GENDERS)[number];
 
+export const VOICE_LOCALES = ["es-ES", "es-MX", "en-US", "en-GB"] as const;
+export type VoiceLocale = (typeof VOICE_LOCALES)[number];
+
 export interface TtsVoice {
+  readonly engine: TtsEngineId;
   readonly id: string;
+  readonly name: string;
   readonly gender: VoiceGender;
   readonly languages: readonly VoiceLanguage[];
+  readonly locale: VoiceLocale | null;
   readonly labels: Readonly<Record<VoiceLanguage, string>>;
 }
 
@@ -141,6 +152,7 @@ export interface VoiceChoice {
   id: string;
   label: string;
   gender: VoiceGender;
+  locale?: VoiceLocale;
 }
 
 export interface TtsRequest {
@@ -156,7 +168,7 @@ export interface TtsEngine {
   readonly sampleRate: number;
   readonly voices: readonly TtsVoice[];
   readonly backend: ExecutionBackend;
-  synthesize(request: TtsRequest, signal?: AbortSignal): Promise<Float32Array>;
+  stream(request: TtsRequest, signal?: AbortSignal): AsyncIterable<Float32Array>;
   dispose(): Promise<void>;
 }
 
@@ -181,10 +193,9 @@ export type TtsWorkerIn =
 
 export type TtsWorkerOut =
   | { type: "ready"; engine: TtsEngineId; backend: ExecutionBackend; sampleRate: number }
-  | { type: "pcm"; utteranceId: string; chunkIndex: number; pcm: Float32Array; sampleRate: number; chars: number }
+  | { type: "pcm"; utteranceId: string; chunkIndex: number; pcm: Float32Array; sampleRate: number }
+  | { type: "chunk-end"; utteranceId: string; chunkIndex: number; samples: number }
   | { type: "error"; utteranceId?: string; chunkIndex?: number; reason: string; fatal: boolean };
-
-type AsrEngineId = "qwen3-asr-0.6b";
 
 export interface AsrRequest {
   language: VoiceLanguage;
@@ -217,6 +228,7 @@ export interface ModelFile {
   sha256: string;
   role: ModelRole;
   variant?: AsrVariant;
+  gated?: true;
 }
 
 export const MODEL_PROXY_PREFIX = "/api/voice/models/";
@@ -309,6 +321,12 @@ export const VOICE_PERMISSION = "voiceAssistant";
 export const ANNOUNCE_SCOPES = ["all", "voice"] as const;
 export type AnnounceScope = (typeof ANNOUNCE_SCOPES)[number];
 
+export const MIC_MODES = ["open", "push"] as const;
+export type MicMode = (typeof MIC_MODES)[number];
+
+export const PTT_STYLES = ["hold", "toggle"] as const;
+export type PttStyle = (typeof PTT_STYLES)[number];
+
 export interface VoiceSettings {
   enabled: boolean;
   wakePhrase: string;
@@ -316,6 +334,9 @@ export interface VoiceSettings {
   announceScope: AnnounceScope;
   voice: string;
   ttsEngine: TtsEngineId;
+  asrEngine: AsrEngineId;
+  micMode: MicMode;
+  pttStyle: PttStyle;
 }
 
 export const DEFAULT_VOICE_SETTINGS: Readonly<VoiceSettings> = {
@@ -323,8 +344,11 @@ export const DEFAULT_VOICE_SETTINGS: Readonly<VoiceSettings> = {
   wakePhrase: "Oye Omni",
   language: "es",
   announceScope: "all",
-  voice: "F1",
-  ttsEngine: "supertonic-3",
+  voice: "rmLBOdHrfkFym9MM",
+  ttsEngine: "phonon-40m",
+  asrEngine: "phonon-2.5",
+  micMode: "open",
+  pttStyle: "hold",
 };
 
 export const VOICE_SETTINGS_UI_STATE_KEY = "voice-assistant";
@@ -341,6 +365,9 @@ export interface VoiceStageView {
   language: VoiceLanguage;
   voice: string;
   voices: readonly VoiceChoice[];
+  micMode: MicMode;
+  pttStyle: PttStyle;
+  pttActive: boolean;
   muted: boolean;
   status: string;
   captions: VoiceCaptions;
@@ -353,5 +380,8 @@ export interface VoiceStageHandlers {
   onTypeInstead(text: string): void;
   onLanguage(language: VoiceLanguage): void;
   onVoice(voice: string): void;
+  onMicMode(mode: MicMode): void;
+  onPttDown(): void;
+  onPttUp(): void;
   onClose(): void;
 }

@@ -1,4 +1,7 @@
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { join } from "node:path";
 import { Readable } from "node:stream";
 import { json, sendBuffered } from "../../chassis/src/http.ts";
 import { MODEL_PROXY_PREFIX, type ModelFile } from "../src/voice-assistant/protocol.ts";
@@ -25,10 +28,13 @@ export interface VoiceAssistantDeps {
   coreStream: (method: "POST", path: string, rawBody: string, signal: AbortSignal) => Promise<Response>;
   readJson: (req: IncomingMessage, res: ServerResponse) => Promise<object | null>;
   modelUpstream?: ModelUpstream;
+  hfToken?: string;
+  localModelDir?: string;
 }
 
 const MAX_MODEL_REDIRECTS = 5;
 const MODEL_CACHE_CONTROL = "public, max-age=31536000, immutable";
+const GATED_MODEL_CACHE_CONTROL = "private, max-age=31536000, immutable";
 const FORWARDED_MODEL_HEADERS = ["content-length", "content-range", "accept-ranges", "etag"] as const;
 
 export function isModelHost(hostname: string): boolean {
@@ -56,13 +62,29 @@ function relayText(res: ServerResponse, status: number, text: string): void {
   sendBuffered(res, status, { "content-type": "application/json", "x-content-type-options": "nosniff" }, text);
 }
 
-function isJsonObject(text: string): boolean {
+function jsonObject(text: string): Record<string, unknown> | null {
   try {
     const parsed: unknown = JSON.parse(text);
-    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+function hfToken(deps: VoiceAssistantDeps): string | undefined {
+  return deps.hfToken?.trim() || undefined;
+}
+
+function gatedModelsServable(deps: VoiceAssistantDeps): boolean {
+  return Boolean(hfToken(deps) || deps.localModelDir);
+}
+
+async function relayAccess(c: VoiceCtx, deps: VoiceAssistantDeps): Promise<void> {
+  const r = await deps.coreFetch("GET", voiceAccessPath(c.user));
+  const access = r.status === 200 ? jsonObject(r.text) : null;
+  relayText(c.res, r.status, access ? JSON.stringify({ ...access, gatedModels: gatedModelsServable(deps) }) : r.text);
 }
 
 function pipeBody(body: ReadableStream<Uint8Array>, res: ServerResponse): void {
@@ -81,13 +103,19 @@ function abortOnClose(res: ServerResponse): AbortController {
 async function fetchModelUpstream(
   start: URL,
   range: string | undefined,
+  token: string | undefined,
   upstream: ModelUpstream,
   signal: AbortSignal,
 ): Promise<Response | null> {
   let target = start;
   for (let hop = 0; hop <= MAX_MODEL_REDIRECTS; hop++) {
+    const authorized = token !== undefined && hop === 0 && target.origin === upstream.origin;
     const response = await fetch(target, {
-      headers: { "accept-encoding": "identity", ...(range ? { range } : {}) },
+      headers: {
+        "accept-encoding": "identity",
+        ...(range ? { range } : {}),
+        ...(authorized ? { authorization: `Bearer ${token}` } : {}),
+      },
       redirect: "manual",
       signal,
     });
@@ -102,10 +130,38 @@ async function fetchModelUpstream(
   return null;
 }
 
+function modelHeaders(file: ModelFile): Record<string, string> {
+  return {
+    "content-type": "application/octet-stream",
+    "cache-control": file.gated ? GATED_MODEL_CACHE_CONTROL : MODEL_CACHE_CONTROL,
+    "x-content-type-options": "nosniff",
+  };
+}
+
+async function serveLocalModel(res: ServerResponse, file: ModelFile, dir: string): Promise<boolean> {
+  const path = join(dir, file.repo, file.revision, file.path);
+  const info = await stat(path).catch(() => null);
+  if (!info?.isFile() || info.size !== file.bytes) return false;
+  res.writeHead(200, { ...modelHeaders(file), "content-length": String(info.size) });
+  const source = createReadStream(path);
+  res.on("close", () => source.destroy());
+  source.on("error", () => res.destroy());
+  source.pipe(res);
+  return true;
+}
+
 async function serveModel(c: VoiceCtx, deps: VoiceAssistantDeps): Promise<void> {
   const { req, res, url } = c;
   const file = deps.models.get(url.pathname.slice(MODEL_PROXY_PREFIX.length));
   if (!file) return json(res, 404, { error: "not_found" });
+  if (deps.localModelDir && (await serveLocalModel(res, file, deps.localModelDir))) return;
+  const token = file.gated ? hfToken(deps) : undefined;
+  if (file.gated && !token) {
+    return json(res, 503, {
+      error: "model_unavailable",
+      message: "This voice model is gated and the server has no HF_TOKEN configured.",
+    });
+  }
   const upstream = deps.modelUpstream ?? HUGGING_FACE_UPSTREAM;
   const rawRange = req.headers.range;
   const range = /^bytes=\d*-\d*$/.test(rawRange ?? "") ? rawRange : undefined;
@@ -114,6 +170,7 @@ async function serveModel(c: VoiceCtx, deps: VoiceAssistantDeps): Promise<void> 
     const response = await fetchModelUpstream(
       modelUpstreamUrl(file, upstream.origin),
       range,
+      token,
       upstream,
       controller.signal,
     );
@@ -142,11 +199,7 @@ async function serveModel(c: VoiceCtx, deps: VoiceAssistantDeps): Promise<void> 
       await response?.body?.cancel();
       return json(res, 502, { error: "upstream_error" });
     }
-    const headers: Record<string, string> = {
-      "content-type": "application/octet-stream",
-      "cache-control": MODEL_CACHE_CONTROL,
-      "x-content-type-options": "nosniff",
-    };
+    const headers = modelHeaders(file);
     for (const name of FORWARDED_MODEL_HEADERS) {
       const value = response.headers.get(name);
       if (value) headers[name] = value;
@@ -182,7 +235,7 @@ async function relayReply(c: VoiceCtx, deps: VoiceAssistantDeps): Promise<void> 
       return relayText(
         res,
         upstream.ok ? 502 : upstream.status,
-        isJsonObject(text) ? text : JSON.stringify({ error: "upstream_error" }),
+        jsonObject(text) ? text : JSON.stringify({ error: "upstream_error" }),
       );
     }
     res.writeHead(200, {
@@ -204,10 +257,7 @@ export function voiceAssistantRoutes(deps: VoiceAssistantDeps): VoiceRoute[] {
     {
       method: "GET",
       path: "/api/voice/access",
-      handle: async ({ res, user }) => {
-        const r = await deps.coreFetch("GET", voiceAccessPath(user));
-        relayText(res, r.status, r.text);
-      },
+      handle: (c) => relayAccess(c, deps),
     },
     {
       method: "POST",

@@ -4,6 +4,7 @@ import sileroUrl from "@ricky0123/vad-web/dist/silero_vad_v6.onnx?url";
 import * as ort from "onnxruntime-web/webgpu";
 import ortWasmUrl from "onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url";
 import { errMessage } from "../../../chassis/src/errors.ts";
+import { createPhononAsr } from "./asr/phonon-asr.ts";
 import { createQwenAsr } from "./asr/qwen-asr.ts";
 import { readModelFile } from "./model-cache.ts";
 import {
@@ -60,12 +61,13 @@ async function loadVad(options: VadOptions): Promise<FrameProcessor> {
 
 async function loadAsr(message: InitMessage): Promise<AsrEngine> {
   if (!hasWebGpu()) throw new Error("webgpu_unavailable");
-  const engine = await createQwenAsr({
+  const deps = {
     ort,
     variant: message.asrVariant,
-    executionProviders: ["webgpu"],
+    executionProviders: ["webgpu"] as const,
     readFile: fileReader(message.asrFiles),
-  });
+  };
+  const engine = await (message.asrEngine === "phonon-2.5" ? createPhononAsr(deps) : createQwenAsr(deps));
   asr = engine;
   return engine;
 }

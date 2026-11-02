@@ -1,4 +1,4 @@
-import { swallow } from "../../../chassis/src/errors.ts";
+import { errMessage, swallow } from "../../../chassis/src/errors.ts";
 import {
   abortRunById,
   activeRunForThread,
@@ -18,15 +18,26 @@ import { playChime } from "./audio/chimes.ts";
 import { createAudioGraph, type AudioGraph } from "./audio/graph.ts";
 import { createVoiceController, voiceCopy, type Port, type VoiceController } from "./controller.ts";
 import { streamVoiceReply } from "./llm.ts";
-import { downloadVoiceModels, detectGpu, voiceModelFiles } from "./model-plan.ts";
+import {
+  detectGpu,
+  downloadVoiceModels,
+  effectiveVoiceSettings,
+  fallBackFrom,
+  gatedModelsAvailable,
+  voiceModelFiles,
+} from "./model-plan.ts";
 import { missingModelFiles } from "./model-cache.ts";
 import {
   DEFAULT_VAD_OPTIONS,
   VOICE_CHANNEL_NAME,
+  modelFileKey,
+  type AsrEngineId,
+  type ModelFile,
   type PlaybackWorkletIn,
   type PlaybackWorkletOut,
   type SpeechWorkerIn,
   type SpeechWorkerOut,
+  type TtsEngineId,
   type TtsWorkerIn,
   type TtsWorkerOut,
   type VoiceSettings,
@@ -35,16 +46,17 @@ import {
 import {
   currentVoiceSettings,
   onVoiceSettingsChange,
+  parseVoiceSettings,
   saveVoiceSettings,
   storeVoiceMuted,
   storedVoiceMuted,
 } from "./settings-store.ts";
 import { isVoiceThread, runVoiceTool, taskSummaries, type TaskTail, type VoiceToolDeps } from "./tools.ts";
-import { voiceChoices } from "./voices.ts";
-import { mountVoiceStage, type VoiceStage } from "./voice-stage.ts";
+import { languageForVoice, pickerVoices } from "./voice-picker.ts";
+import { handlesSpace, mountVoiceStage, type VoiceStage } from "./voice-stage.ts";
 import { onFirstActivation } from "./activation.ts";
 import { asrVariantFor } from "./asr/models.ts";
-import { TTS_MODEL_FILES } from "./tts/models.ts";
+import { ttsEngineFiles, ttsFilesFor } from "./tts/models.ts";
 
 export { deleteVoiceModels } from "./model-cache.ts";
 export { downloadVoiceModels, voiceModelStatus } from "./model-plan.ts";
@@ -82,14 +94,23 @@ let starting: AbortController | null = null;
 let stopSettings: (() => void) | null = null;
 let releaseLock: (() => void) | null = null;
 let idleView: VoiceStageView | null = null;
+let gatedModels = true;
+let spaceDown = false;
+
+function runtimeSettings(): VoiceSettings {
+  return effectiveVoiceSettings(currentVoiceSettings(), gatedModels);
+}
 
 function offView(status = ""): VoiceStageView {
-  const settings = currentVoiceSettings();
+  const settings = runtimeSettings();
   return {
     state: "off",
     language: settings.language,
     voice: settings.voice,
-    voices: voiceChoices(settings),
+    voices: pickerVoices(settings),
+    micMode: settings.micMode,
+    pttStyle: settings.pttStyle,
+    pttActive: false,
     muted: storedVoiceMuted(),
     status,
     captions: { user: null, agent: null },
@@ -185,15 +206,66 @@ function openTask(session: CoreSession): void {
   void openSession(session);
 }
 
+async function ensureVoiceFiles(chosen: VoiceSettings): Promise<void> {
+  const settings = effectiveVoiceSettings(chosen, gatedModels);
+  await downloadVoiceModels(ttsFilesFor(settings.ttsEngine, settings.voice), () => undefined).catch((error: unknown) =>
+    swallow("voice: download voice", error),
+  );
+}
+
+async function saveSettings(patch: Partial<VoiceSettings>): Promise<VoiceSettings> {
+  const pinned =
+    patch.voice !== undefined && patch.ttsEngine === undefined
+      ? { ttsEngine: runtimeSettings().ttsEngine, ...patch }
+      : patch;
+  if (session) await ensureVoiceFiles(parseVoiceSettings({ ...currentVoiceSettings(), ...pinned }));
+  return saveVoiceSettings(pinned);
+}
+
 function changeVoiceSettings(patch: Partial<VoiceSettings>): void {
-  void saveVoiceSettings(patch).catch((error: unknown) => swallow("voice: save settings", error));
+  void saveSettings(patch).catch((error: unknown) => swallow("voice: save settings", error));
+}
+
+function orbTarget(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && target.closest(".qm-voice-orb-button") !== null;
+}
+
+function pttKey(e: KeyboardEvent): boolean {
+  if (e.code !== "Space" || session === null || currentVoiceSettings().micMode !== "push") return false;
+  if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.isComposing) return false;
+  return orbTarget(e.target) || !handlesSpace(e.target);
+}
+
+function onPttKeydown(e: KeyboardEvent): void {
+  if (!pttKey(e) || (e.repeat && !spaceDown)) return;
+  e.preventDefault();
+  if (e.repeat) return;
+  spaceDown = true;
+  if (currentVoiceSettings().pttStyle === "hold") session?.controller.pttDown();
+  else session?.controller.pttToggle();
+}
+
+function onPttKeyup(e: KeyboardEvent): void {
+  if (e.code !== "Space" || !spaceDown) return;
+  spaceDown = false;
+  e.preventDefault();
+  if (currentVoiceSettings().pttStyle === "hold") session?.controller.pttUp();
+}
+
+function releasePtt(): void {
+  spaceDown = false;
+  session?.controller.pttUp();
+}
+
+function onVisibility(): void {
+  if (document.visibilityState === "hidden") releasePtt();
 }
 
 function toolDeps(user: string, titles: Map<string, string>): VoiceToolDeps {
   return {
     user,
     settings: currentVoiceSettings,
-    saveSettings: saveVoiceSettings,
+    saveSettings,
     sessions: sessionsNow,
     startTurn: (body) =>
       api<{ runId?: string; status?: string }>("/api/turn", { method: "POST", body: JSON.stringify(body) }),
@@ -247,6 +319,22 @@ function teardown(current: Session): void {
   void current.graph.close();
 }
 
+function failedDownload(
+  error: unknown,
+  files: readonly ModelFile[],
+  settings: VoiceSettings,
+): AsrEngineId | TtsEngineId | null {
+  const key = /^model_download_failed:(.+):\d+$/.exec(errMessage(error))?.[1];
+  const file = files.find((candidate) => modelFileKey(candidate) === key);
+  if (!file) return null;
+  return file.role === "asr" ? settings.asrEngine : settings.ttsEngine;
+}
+
+function restartVoice(): void {
+  stopVoice();
+  void startVoice(true);
+}
+
 export function stopVoice(status = ""): void {
   starting?.abort();
   starting = null;
@@ -268,16 +356,21 @@ export async function startVoice(takeover = true): Promise<void> {
   const copy = () => voiceCopy(currentVoiceSettings().language);
   let graph: AudioGraph | null = null;
   const workers: Worker[] = [];
+  let files: readonly ModelFile[] = [];
+  let settings = runtimeSettings();
   try {
-    const gpu = await detectGpu();
+    const [gpu, gated] = await Promise.all([detectGpu(), gatedModelsAvailable()]);
     if (abort.signal.aborted) return;
+    gatedModels = gated;
     if (!gpu.webgpu) {
       if (takeover) stage.open();
       showIdle(copy().webgpu);
       starting = null;
       return;
     }
-    const files = voiceModelFiles(gpu);
+    settings = runtimeSettings();
+    const { asrEngine } = settings;
+    files = voiceModelFiles(gpu, settings);
     const quiet = !takeover && ((await missingModelFiles(files)).length > 0 || !(await microphoneGranted()));
     if (abort.signal.aborted) return;
     if (quiet) {
@@ -309,7 +402,7 @@ export async function startVoice(takeover = true): Promise<void> {
       speech,
       tts,
       playback: nodePort(audio.playback),
-      settings: currentVoiceSettings,
+      settings: runtimeSettings,
       reply: streamVoiceReply,
       runTool: (call) => runVoiceTool(call, deps),
       runningTasks: () => taskSummaries(sessionsState.list, titles),
@@ -318,7 +411,10 @@ export async function startVoice(takeover = true): Promise<void> {
       onMutedChange: storeVoiceMuted,
       muted: storedVoiceMuted(),
       render: (view) => stage?.update(view),
-      onFatal: (message) => stopVoice(message),
+      onFatal: (message, stage) => {
+        if (stage && fallBackFrom(stage === "asr" ? settings.asrEngine : settings.ttsEngine)) restartVoice();
+        else stopVoice(message);
+      },
     });
     const announcer = createAnnouncer({
       scope: () => currentVoiceSettings().announceScope,
@@ -347,12 +443,19 @@ export async function startVoice(takeover = true): Promise<void> {
       release: [
         onSessionState((event) => announcer.handle(event)),
         onSessionStateResync(() => void announcer.resync().catch((e: unknown) => swallow("voice: resync", e))),
-        onVoiceSettingsChange(() => controller.applySettings()),
+        onVoiceSettingsChange((next) => {
+          const effective = effectiveVoiceSettings(next, gatedModels);
+          if (effective.ttsEngine !== settings.ttsEngine || effective.asrEngine !== settings.asrEngine) {
+            restartVoice();
+            return;
+          }
+          controller.applySettings();
+          void ensureVoiceFiles(next);
+        }),
       ],
     };
     starting = null;
     options?.onActiveChange(true);
-    const settings = currentVoiceSettings();
     controller.setStatus(copy().downloading(0));
     await downloadVoiceModels(
       files,
@@ -364,9 +467,10 @@ export async function startVoice(takeover = true): Promise<void> {
       {
         type: "init",
         framePort: audio.framePort,
-        asrVariant: asrVariantFor(gpu),
+        asrEngine,
+        asrVariant: asrVariantFor(asrEngine, gpu),
         asrFiles: files.filter((file) => file.role === "asr"),
-        language: settings.language,
+        language: runtimeSettings().language,
         vad: { ...DEFAULT_VAD_OPTIONS },
       },
       [audio.framePort],
@@ -374,7 +478,7 @@ export async function startVoice(takeover = true): Promise<void> {
     tts.post({
       type: "init",
       engine: settings.ttsEngine,
-      files: TTS_MODEL_FILES,
+      files: ttsEngineFiles(settings.ttsEngine),
       backend: "webgpu",
     });
     await announcer.start();
@@ -388,6 +492,11 @@ export async function startVoice(takeover = true): Promise<void> {
     if (starting === abort) starting = null;
     if (aborted) return;
     swallow("voice: start", error);
+    const engine = failedDownload(error, files, settings);
+    if (engine && fallBackFrom(engine)) {
+      restartVoice();
+      return;
+    }
     const message = error instanceof Error && error.message === "voice_storage_full" ? copy().storage : copy().fatal;
     stopVoice(message);
   }
@@ -429,12 +538,22 @@ export async function mountVoiceAssistant(mount: VoiceMountOptions): Promise<voi
       storeVoiceMuted(!storedVoiceMuted());
       showIdle(idleView?.status ?? "");
     },
+    onPttDown: () => {
+      if (session) session.controller.pttDown();
+      else void startVoice(true);
+    },
+    onPttUp: () => session?.controller.pttUp(),
     onTypeInstead: (text) => session?.controller.type(text),
     onLanguage: (language) => changeVoiceSettings({ language }),
-    onVoice: (voice) => changeVoiceSettings({ voice }),
+    onVoice: (voice) => changeVoiceSettings({ voice, language: languageForVoice(runtimeSettings(), voice) }),
+    onMicMode: (micMode) => changeVoiceSettings({ micMode }),
     onClose: () => undefined,
   });
   showIdle();
+  document.addEventListener("keydown", onPttKeydown);
+  document.addEventListener("keyup", onPttKeyup);
+  document.addEventListener("visibilitychange", onVisibility);
+  window.addEventListener("blur", releasePtt);
   if (typeof BroadcastChannel !== "undefined") {
     channel = new BroadcastChannel(VOICE_CHANNEL_NAME);
     channel.onmessage = (event: MessageEvent<{ type?: string }>) => {
@@ -453,6 +572,10 @@ export async function mountVoiceAssistant(mount: VoiceMountOptions): Promise<voi
 export function unmountVoiceAssistant(): void {
   if (!host) return;
   stopVoice();
+  document.removeEventListener("keydown", onPttKeydown);
+  document.removeEventListener("keyup", onPttKeyup);
+  document.removeEventListener("visibilitychange", onVisibility);
+  window.removeEventListener("blur", releasePtt);
   stopSettings?.();
   stopSettings = null;
   channel?.close();

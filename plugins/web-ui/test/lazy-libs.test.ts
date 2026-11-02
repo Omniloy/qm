@@ -64,7 +64,7 @@ test("only the voice assistant chunk imports onnxruntime-web or vad-web", () => 
 });
 
 test("the app reaches the voice assistant lazily and statically loads only its settings, protocol and voice catalog", () => {
-  const allowed = new Set(["protocol.ts", "settings-store.ts", "voices.ts"]);
+  const allowed = new Set(["protocol.ts", "settings-store.ts", "voice-picker.ts", "voices.ts"]);
   for (const { file, text } of appSources) {
     if (file.startsWith("voice-assistant/")) continue;
     for (const match of text.matchAll(/^import[^;]*?from "\.\/voice-assistant\/([^"]+)"/gm))

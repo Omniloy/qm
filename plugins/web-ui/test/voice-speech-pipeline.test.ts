@@ -4,6 +4,7 @@ import { FrameProcessor } from "@ricky0123/vad-web/dist/frame-processor.js";
 import { Message } from "@ricky0123/vad-web/dist/messages.js";
 import {
   DEFAULT_VAD_OPTIONS,
+  PTT_MAX_MS,
   SPEECH_FRAME_MS,
   SPEECH_FRAME_SAMPLES,
   SPEECH_SAMPLE_RATE,
@@ -61,6 +62,7 @@ function setup(
 const framesFor = (ms: number) => Math.ceil(ms / SPEECH_FRAME_MS);
 
 test("the vad event names match vad-web's Message enum", () => {
+  assert.equal(VAD_EVENT.speechStart, Message.SpeechStart);
   assert.equal(VAD_EVENT.speechRealStart, Message.SpeechRealStart);
   assert.equal(VAD_EVENT.misfire, Message.VADMisfire);
   assert.equal(VAD_EVENT.speechEnd, Message.SpeechEnd);
@@ -279,4 +281,68 @@ test("a throwing vad reports one error per failure streak", async () => {
   pipeline.frame(frame(SPEECH));
   await pipeline.settled();
   assert.equal(posted.length, 2);
+});
+
+const PREROLL_FRAMES = framesFor(200);
+
+test("a held capture sends everything between press and release, with a short pre-roll, as one utterance", async () => {
+  const { pipeline, posted, asrCalls, feed } = setup({ mode: "paused" });
+  feed(SILENCE, 20);
+  pipeline.setMode("held");
+  feed(SPEECH, 2);
+  feed(SILENCE, framesFor(2_000));
+  feed(SPEECH, 2);
+  await pipeline.settled();
+  assert.deepEqual(posted, [{ type: "speech-start" }], "pauses and short words never split or drop the capture");
+  pipeline.endSegment();
+  pipeline.setMode("paused");
+  feed(SPEECH, framesFor(500));
+  await pipeline.settled();
+  assert.deepEqual(
+    posted.map((m) => m.type),
+    ["speech-start", "speech-end", "transcript"],
+  );
+  const frames = PREROLL_FRAMES + 4 + framesFor(2_000);
+  assert.equal(asrCalls.length, 1);
+  assert.equal(asrCalls[0].samples, frames * SPEECH_FRAME_SAMPLES);
+  assert.equal(asrCalls[0].request.maxNewTokens, UTTERANCE_MAX_NEW_TOKENS);
+  const end = posted[1];
+  assert.ok(end.type === "speech-end" && end.purpose === "utterance");
+});
+
+test("a held capture without speech is a misfire and is never transcribed", async () => {
+  const { pipeline, posted, asrCalls, feed } = setup({ mode: "paused" });
+  pipeline.setMode("held");
+  feed(SILENCE, framesFor(1_000));
+  pipeline.endSegment();
+  await pipeline.settled();
+  assert.deepEqual(posted, [{ type: "speech-misfire" }]);
+  assert.equal(asrCalls.length, 0);
+});
+
+test("a held capture ends itself at the push-to-talk limit", async () => {
+  const { pipeline, posted, asrCalls, feed } = setup({ mode: "paused" });
+  pipeline.setMode("held");
+  feed(SPEECH, framesFor(PTT_MAX_MS) + 20);
+  await pipeline.settled();
+  assert.deepEqual(
+    posted.map((m) => m.type),
+    ["speech-start", "speech-end", "transcript"],
+  );
+  assert.ok(asrCalls[0].samples >= (PTT_MAX_MS * SPEECH_SAMPLE_RATE) / 1000);
+  assert.ok(asrCalls[0].samples < ((PTT_MAX_MS + 100) * SPEECH_SAMPLE_RATE) / 1000);
+  pipeline.endSegment();
+  await pipeline.settled();
+  assert.equal(posted.length, 3);
+});
+
+test("leaving held without ending the segment drops the capture", async () => {
+  const { pipeline, posted, asrCalls, feed } = setup({ mode: "paused" });
+  pipeline.setMode("held");
+  feed(SPEECH, framesFor(600));
+  pipeline.setMode("paused");
+  pipeline.endSegment();
+  await pipeline.settled();
+  assert.deepEqual(posted, []);
+  assert.equal(asrCalls.length, 0);
 });

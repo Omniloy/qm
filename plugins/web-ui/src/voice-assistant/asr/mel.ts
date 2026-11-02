@@ -17,17 +17,18 @@ function melToHz(mel: number): number {
   return mel < 15 ? (200 * mel) / 3 : 1_000 * Math.exp((Math.log(6.4) / 27) * (mel - 15));
 }
 
-export function slaneyFilterbank(): Float32Array {
-  const filters = new Float32Array(MEL_BINS * FREQ_BINS);
+export function slaneyFilterbank(nFft = MEL_N_FFT): Float32Array {
+  const bins = nFft / 2 + 1;
+  const filters = new Float32Array(MEL_BINS * bins);
   const top = hzToMel(MEL_FMAX);
   const edges = Array.from({ length: MEL_BINS + 2 }, (_, i) => melToHz((top * i) / (MEL_BINS + 1)));
   for (let m = 0; m < MEL_BINS; m++) {
     const [left, center, right] = [edges[m], edges[m + 1], edges[m + 2]];
     const norm = 2 / (right - left);
-    for (let k = 0; k < FREQ_BINS; k++) {
-      const hz = (k * SPEECH_SAMPLE_RATE) / MEL_N_FFT;
+    for (let k = 0; k < bins; k++) {
+      const hz = (k * SPEECH_SAMPLE_RATE) / nFft;
       const weight = Math.min((hz - left) / (center - left), (right - hz) / (right - center));
-      if (weight > 0) filters[m * FREQ_BINS + k] = weight * norm;
+      if (weight > 0) filters[m * bins + k] = weight * norm;
     }
   }
   return filters;
@@ -110,6 +111,16 @@ function fft(
   }
 }
 
+export function powerSpectrum(nFft: number): (frame: Float64Array, power: Float64Array) => void {
+  const plan = fftPlan(nFft);
+  const re = new Float64Array(nFft);
+  const im = new Float64Array(nFft);
+  return (frame, power) => {
+    fft(plan, frame, 0, 1, re, im, 0, nFft, 0);
+    for (let k = 0; k < power.length; k++) power[k] = re[k] * re[k] + im[k] * im[k];
+  };
+}
+
 function reflectIndex(i: number, length: number): number {
   if (length === 1) return 0;
   const period = 2 * (length - 1);
@@ -117,13 +128,13 @@ function reflectIndex(i: number, length: number): number {
   return folded < length ? folded : period - folded;
 }
 
-let shared: { filters: Float32Array; window: Float64Array; plan: FftPlan } | null = null;
+let shared: { filters: Float32Array; window: Float64Array; spectrum: ReturnType<typeof powerSpectrum> } | null = null;
 
 function tables(): NonNullable<typeof shared> {
   shared ??= {
     filters: slaneyFilterbank(),
     window: Float64Array.from({ length: MEL_N_FFT }, (_, i) => 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / MEL_N_FFT)),
-    plan: fftPlan(MEL_N_FFT),
+    spectrum: powerSpectrum(MEL_N_FFT),
   };
   return shared;
 }
@@ -132,18 +143,15 @@ export function logMel(audio: Float32Array): { data: Float32Array; frames: numbe
   const frames = Math.floor(audio.length / MEL_HOP);
   const data = new Float32Array(MEL_BINS * frames);
   if (frames === 0) return { data, frames };
-  const { filters, window, plan } = tables();
+  const { filters, window, spectrum } = tables();
   const pad = MEL_N_FFT / 2;
   const frame = new Float64Array(MEL_N_FFT);
-  const re = new Float64Array(MEL_N_FFT);
-  const im = new Float64Array(MEL_N_FFT);
   const power = new Float64Array(FREQ_BINS);
   let peak = -Infinity;
   for (let f = 0; f < frames; f++) {
     const start = f * MEL_HOP - pad;
     for (let i = 0; i < MEL_N_FFT; i++) frame[i] = audio[reflectIndex(start + i, audio.length)] * window[i];
-    fft(plan, frame, 0, 1, re, im, 0, MEL_N_FFT, 0);
-    for (let k = 0; k < FREQ_BINS; k++) power[k] = re[k] * re[k] + im[k] * im[k];
+    spectrum(frame, power);
     for (let m = 0; m < MEL_BINS; m++) {
       let energy = 0;
       const row = m * FREQ_BINS;

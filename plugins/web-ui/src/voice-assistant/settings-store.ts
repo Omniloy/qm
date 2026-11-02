@@ -1,13 +1,19 @@
 import { fetchUiState, putUiState, type UiStateRecord } from "../core-bridge.ts";
 import {
   ANNOUNCE_SCOPES,
+  ASR_ENGINE_IDS,
   DEFAULT_VOICE_SETTINGS,
+  MIC_MODES,
+  PTT_STYLES,
   TTS_ENGINE_IDS,
   VOICE_LANGUAGES,
   VOICE_MUTED_STORAGE_KEY,
   VOICE_SETTINGS_UI_STATE_KEY,
+  type AsrEngineId,
+  type TtsEngineId,
   type VoiceSettings,
 } from "./protocol.ts";
+import { ttsEngineFiles } from "./tts/models.ts";
 import { supportedVoice } from "./voices.ts";
 
 export const WAKE_PHRASE_MAX_CHARS = 60;
@@ -33,7 +39,9 @@ export function cleanWakePhrase(value: unknown): string | null {
 export function parseVoiceSettings(value: unknown): VoiceSettings {
   const raw = value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
   const language = member(VOICE_LANGUAGES, raw.language) ? raw.language : DEFAULT_VOICE_SETTINGS.language;
-  const ttsEngine = member(TTS_ENGINE_IDS, raw.ttsEngine) ? raw.ttsEngine : DEFAULT_VOICE_SETTINGS.ttsEngine;
+  const chosenEngines = "asrEngine" in raw;
+  const ttsEngine =
+    chosenEngines && member(TTS_ENGINE_IDS, raw.ttsEngine) ? raw.ttsEngine : DEFAULT_VOICE_SETTINGS.ttsEngine;
   return {
     enabled: typeof raw.enabled === "boolean" ? raw.enabled : DEFAULT_VOICE_SETTINGS.enabled,
     wakePhrase: cleanWakePhrase(raw.wakePhrase) ?? DEFAULT_VOICE_SETTINGS.wakePhrase,
@@ -43,7 +51,25 @@ export function parseVoiceSettings(value: unknown): VoiceSettings {
       : DEFAULT_VOICE_SETTINGS.announceScope,
     voice: supportedVoice(ttsEngine, language, raw.voice ?? DEFAULT_VOICE_SETTINGS.voice),
     ttsEngine,
+    asrEngine: member(ASR_ENGINE_IDS, raw.asrEngine) ? raw.asrEngine : DEFAULT_VOICE_SETTINGS.asrEngine,
+    micMode: member(MIC_MODES, raw.micMode) ? raw.micMode : DEFAULT_VOICE_SETTINGS.micMode,
+    pttStyle: member(PTT_STYLES, raw.pttStyle) ? raw.pttStyle : DEFAULT_VOICE_SETTINGS.pttStyle,
   };
+}
+
+export const FALLBACK_ASR_ENGINE: AsrEngineId = "qwen3-asr-0.6b";
+export const FALLBACK_TTS_ENGINE: TtsEngineId = "supertonic-3";
+
+export function runnableVoiceSettings(
+  settings: VoiceSettings,
+  gatedModels: boolean,
+  failed: ReadonlySet<AsrEngineId | TtsEngineId> = new Set(),
+): VoiceSettings {
+  const asrEngine = failed.has(settings.asrEngine) ? FALLBACK_ASR_ENGINE : settings.asrEngine;
+  const gated = !gatedModels && ttsEngineFiles(settings.ttsEngine).some((file) => file.gated);
+  const ttsEngine = gated || failed.has(settings.ttsEngine) ? FALLBACK_TTS_ENGINE : settings.ttsEngine;
+  if (asrEngine === settings.asrEngine && ttsEngine === settings.ttsEngine) return settings;
+  return { ...settings, asrEngine, ttsEngine, voice: supportedVoice(ttsEngine, settings.language, settings.voice) };
 }
 
 export function currentVoiceSettings(): VoiceSettings {
