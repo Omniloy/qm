@@ -450,3 +450,32 @@ test("a scheduled task's hold goes to its owner, and the owner's decision resume
     await s.close();
   }
 });
+
+test("a held turn settles as held by security in both the pushed state and the session list", async () => {
+  const s = start();
+  try {
+    const events: { threadRef: string; state: string; heldFor?: string[] }[] = [];
+    s.built.sessionStateBus.subscribe((event) => events.push(event));
+    const held = await s.built.app.turn(dm(RISKY, "held-state"));
+    const settle = events.filter((event) => event.threadRef === "dm:U1:held-state").at(-1);
+    assert.equal(settle?.state, "awaiting_approval");
+    assert.deepEqual(settle?.heldFor, ["U1"]);
+    const row = (await s.built.app.listSessions("U1")).find((session) => session.id === held.sessionId);
+    assert.equal(row?.awaitingInput, true);
+    assert.equal(row?.securityHeld, true);
+    await s.built.sessions.addParticipant(held.sessionId!, "U2");
+    const teammate = (await s.built.app.listSessions("U2")).find((session) => session.id === held.sessionId);
+    assert.ok(teammate, "the teammate sees the conversation");
+    assert.equal(teammate.securityHeld, undefined, "but not a hold they can neither see nor release");
+    const plain = await s.built.app.turn(
+      dm(`!run ${["git", "push", `--${"force"}`, "origin", "main"].join(" ")}`, "plain-wait"),
+    );
+    const waiting = (await s.built.app.listSessions("U1")).find((session) => session.id === plain.sessionId);
+    assert.equal(waiting?.awaitingInput, true);
+    assert.equal(waiting?.securityHeld, undefined);
+    const plainSettle = events.filter((event) => event.threadRef === "dm:U1:plain-wait").at(-1);
+    assert.equal(plainSettle?.heldFor, undefined);
+  } finally {
+    await s.close();
+  }
+});

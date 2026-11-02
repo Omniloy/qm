@@ -528,12 +528,13 @@ interface SessionStateFrame {
   threadRef?: string;
   state?: string;
   participants?: string[];
+  heldFor?: string[];
   [k: string]: unknown;
 }
 
-function forwardSessionState(frame: SessionStateFrame): void {
+export function sessionStateDeliveries(frame: SessionStateFrame): [string, Record<string, unknown>][] {
   const threadRef = typeof frame.threadRef === "string" ? frame.threadRef : "";
-  if (!threadRef) return;
+  if (!threadRef) return [];
   const targets = new Set<string>(
     Array.isArray(frame.participants) ? frame.participants.filter((p): p is string => typeof p === "string") : [],
   );
@@ -541,9 +542,14 @@ function forwardSessionState(frame: SessionStateFrame): void {
     const owner = ownerOfWebThread(threadRef);
     if (owner) targets.add(owner);
   }
-  const { participants: _participants, ...visible } = frame;
-  for (const user of targets) {
-    for (const res of deliveryClients.get(user) ?? []) sseEvent(res, "session_state", visible);
+  const { participants: _participants, heldFor, ...visible } = frame;
+  const held = new Set(Array.isArray(heldFor) ? heldFor : []);
+  return [...targets].map((user) => [user, held.has(user) ? { ...visible, securityHeld: true } : visible]);
+}
+
+function forwardSessionState(frame: SessionStateFrame): void {
+  for (const [user, event] of sessionStateDeliveries(frame)) {
+    for (const res of deliveryClients.get(user) ?? []) sseEvent(res, "session_state", event);
   }
 }
 

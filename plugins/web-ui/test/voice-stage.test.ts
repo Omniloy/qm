@@ -816,4 +816,24 @@ test("activity chips read in both languages and drop a missing title", () => {
   assert.equal(activityLabel({ kind: "conversations_read", count: 1 }, "en"), "Conversations read (1)");
   assert.equal(activityLabel({ kind: "memory_compacted" }, "es"), "Memoria compactada");
   assert.equal(activityLabel({ kind: "task_created" }, "es"), "Tarea creada");
+  assert.equal(activityLabel({ kind: "allowed", title: "Gmail", taskRef: "web:u:1" }, "es"), "Permitido: Gmail");
+  assert.equal(activityLabel({ kind: "kept_blocked", title: "Gmail", taskRef: "web:u:1" }, "es"), "Bloqueado: Gmail");
+  assert.equal(activityLabel({ kind: "allowed", title: "Gmail" }, "en"), "Allowed: Gmail");
+  assert.equal(activityLabel({ kind: "kept_blocked", title: "Gmail" }, "en"), "Blocked: Gmail");
+});
+
+test("a held task's status line opens that task, where the security card is", async () => {
+  const { host, stage, calls } = setup();
+  stage.open();
+  stage.update(
+    view({ work: { text: "Retenido por seguridad: Buscar en Gmail", taskRef: "web:u:voice:2", busy: false } }),
+  );
+  await settle();
+  const line = host.querySelector<HTMLButtonElement>(".voice-work-slot button.voice-work")!;
+  assert.equal(line.textContent?.trim(), "Retenido por seguridad: Buscar en Gmail");
+  assert.equal(line.dataset.busy, "false");
+  assert.ok(!host.querySelector(".voice-stage-orb qm-voice-orb")!.hasAttribute("working"));
+  line.click();
+  assert.deepEqual(calls, ["task:web:u:voice:2"]);
+  stage.destroy();
 });

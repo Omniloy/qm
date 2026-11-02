@@ -99,6 +99,8 @@ const ACTIVITY_LABELS: Record<VoiceLanguage, Record<VoiceActivityKind, (activity
     memory_saved: () => "Memoria guardada",
     memory_compacted: () => "Memoria compactada",
     approved: (a) => `Aprobado: ${a.title ?? ""}`,
+    allowed: (a) => `Permitido: ${a.title ?? ""}`,
+    kept_blocked: (a) => `Bloqueado: ${a.title ?? ""}`,
   },
   en: {
     task_created: (a) => `Task created: ${a.title ?? ""}`,
@@ -107,6 +109,8 @@ const ACTIVITY_LABELS: Record<VoiceLanguage, Record<VoiceActivityKind, (activity
     memory_saved: () => "Memory saved",
     memory_compacted: () => "Memory compacted",
     approved: (a) => `Approved: ${a.title ?? ""}`,
+    allowed: (a) => `Allowed: ${a.title ?? ""}`,
+    kept_blocked: (a) => `Blocked: ${a.title ?? ""}`,
   },
 };
 

@@ -653,6 +653,14 @@ a.chat-row-open {
   vertical-align: middle;
   animation: awaiting-breathe 2.4s ease-in-out infinite;
 }
+.held-mark {
+  display: inline-flex;
+  flex: 0 0 auto;
+  margin-left: 2px;
+  margin-right: 5px;
+  vertical-align: middle;
+  color: var(--awaiting-dot, var(--warning));
+}
 .list-row-title .awaiting-dot {
   margin-bottom: 1px;
 }

@@ -1473,3 +1473,20 @@ test("server activity survives a reply cut short and joins the entry the client 
     await srv.close();
   }
 });
+
+test("the task message tool makes the voice agent choose between steering now and after the run", () => {
+  const request = parseVoiceReplyRequest(userTurn("dile que pare"))!;
+  const tool = voiceTools(request, { capture: true, compact: true }).find((t) => t.name === "send_task_message")!;
+  const schema = tool.parameters as {
+    required?: string[];
+    properties: Record<string, { anyOf?: { const: string }[] }>;
+  };
+  assert.ok(schema.required?.includes("when"));
+  assert.deepEqual(
+    schema.properties.when!.anyOf!.map((option) => option.const),
+    ["now", "after_run"],
+  );
+  assert.match(voiceSystemPrompt(request), /Si el usuario dijo cuándo[^\n]*haz lo que dijo/);
+  assert.match(voiceSystemPrompt(request), /Un mensaje nunca libera una tarea retenida por seguridad/);
+  assert.match(voiceSystemPrompt({ ...request, language: "en" }), /If the user said when[^\n]*do what they said/);
+});

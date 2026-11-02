@@ -154,6 +154,7 @@ export type SessionRow = CoreSession & { stateAt?: number };
 export interface SessionStateDelta {
   threadRef: string;
   state: "working" | "awaiting_approval" | "idle";
+  securityHeld?: boolean;
   at?: number;
 }
 
@@ -170,6 +171,7 @@ export function applySessionState(
       ...s,
       working: delta.state === "working",
       awaitingInput: delta.state === "awaiting_approval",
+      securityHeld: delta.state === "awaiting_approval" && delta.securityHeld === true,
       ...(delta.at !== undefined ? { stateAt: delta.at } : {}),
     };
   });
@@ -179,6 +181,7 @@ export function applySessionState(
 export interface RowIndicators {
   working: boolean;
   awaiting: boolean;
+  held: boolean;
   background: { jobs: number; watches: number; crons: number; label: string } | null;
 }
 
@@ -203,6 +206,7 @@ export function rowIndicators(s: CoreSession, liveThreads: ReadonlySet<string> |
   return {
     working: Boolean(s.working) || (Boolean(s.threadRef) && live.has(s.threadRef)),
     awaiting: Boolean(s.awaitingInput),
+    held: Boolean(s.awaitingInput && s.securityHeld),
     background: backgroundLabel(s.backgroundJobs ?? 0, s.watches ?? 0, s.crons ?? 0),
   };
 }

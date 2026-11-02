@@ -142,6 +142,7 @@ export function createSessionMethods(
     reconcileProjectMember,
     syncProjectChannelRoster,
     approvalRecordIsCurrent,
+    approvalVisibleToViewer,
     principalCanAccessCurrentScope,
     principalCanWriteScope,
     principalGitPermission,
@@ -537,7 +538,16 @@ export function createSessionMethods(
         const session = visibleById.get(record.sessionId);
         if (session && (await approvalRecordIsCurrent(record, session))) approvalRows.push(record);
       }
-      const waiting = new Set(approvalRows.filter((r) => r.blocksInput !== false).map((r) => r.sessionId));
+      const blocking = approvalRows.filter((r) => r.blocksInput !== false);
+      const waiting = new Set(blocking.map((r) => r.sessionId));
+      const held = new Set<string>();
+      for (const record of blocking) {
+        if (
+          record.securityHold &&
+          (await approvalVisibleToViewer(visibleById.get(record.sessionId)!, principalId, record))
+        )
+          held.add(record.sessionId);
+      }
       const sessions = all.filter(
         (s) =>
           s.hasEntries !== false || Boolean(s.title?.trim()) || workingThreadRefs.has(s.threadRef) || waiting.has(s.id),
@@ -570,6 +580,7 @@ export function createSessionMethods(
         ...s,
         ...(workingThreadRefs.has(s.threadRef) ? { working: true } : {}),
         ...(waiting.has(s.id) ? { awaitingInput: true } : {}),
+        ...(held.has(s.id) ? { securityHeld: true } : {}),
         ...(jobCounts.has(s.threadRef) ? { backgroundJobs: jobCounts.get(s.threadRef)! } : {}),
         ...(watchCounts.has(s.threadRef) ? { watches: watchCounts.get(s.threadRef)! } : {}),
         ...(cronCounts.has(s.threadRef) ? { crons: cronCounts.get(s.threadRef)! } : {}),

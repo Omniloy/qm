@@ -80,7 +80,7 @@ export interface VoiceController {
   pttToggle(): void;
   toggleMute(): void;
   type(text: string): void;
-  announce(text: string): void;
+  announce(text: string, written?: string): void;
   review(update: TaskUpdate): Promise<ReviewOutcome>;
   readonly transcript: readonly VoiceTranscriptEntry[];
   setTranscript(entries: readonly VoiceTranscriptEntry[]): void;
@@ -163,16 +163,22 @@ const COPY = {
       tasks: (title: string, count: number) =>
         count > 1 ? `Trabajando en ${count} tareas: ${title}…` : `Trabajando: ${title}…`,
       approval: (title: string) => `Necesita tu aprobación: ${title}`,
+      held: (title: string) => `Retenido por seguridad: ${title}`,
     },
     webgpu: "Este navegador no admite WebGPU, que el asistente de voz necesita.",
     fatal: "No se ha podido iniciar el asistente de voz.",
     voiceTts: "No se ha podido cargar la voz.",
     confirm: (c: VoiceConfirmation) =>
-      `${confirmationSubject(c)}. ¿${c.approved ? "Lo apruebo" : "Lo rechazo"}? Di sí o no.`,
+      c.hold
+        ? `${withoutClosingPunctuation(c.title)}: el control de seguridad retuvo un resultado por posible ${c.hold.category}. ¿${c.approved ? "Lo permito una vez" : "Lo mantengo bloqueado"}? Di sí o no.`
+        : `${confirmationSubject(c)}. ¿${c.approved ? "Lo apruebo" : "Lo rechazo"}? Di sí o no.`,
     approved: "Aprobado.",
     rejected: "Rechazado.",
+    allowed: "Permitido. La tarea continúa.",
+    keptBlocked: "Sigue bloqueado.",
     declined: "Vale, no hago nada.",
     confirmFailed: "No he podido hacerlo. Ábrela en pantalla.",
+    holdFailed: "No puedo decidirlo desde aquí. Abre la tarea y decide en la tarjeta.",
     taskUnavailable: "Esa conversación aún no está disponible.",
     errors: {
       feature_disabled: "El asistente de voz no está activado para tu cuenta.",
@@ -213,16 +219,22 @@ const COPY = {
       tasks: (title: string, count: number) =>
         count > 1 ? `Working on ${count} tasks: ${title}…` : `Working: ${title}…`,
       approval: (title: string) => `Needs your approval: ${title}`,
+      held: (title: string) => `Held by security: ${title}`,
     },
     webgpu: "This browser does not support WebGPU, which the voice assistant needs.",
     fatal: "The voice assistant could not start.",
     voiceTts: "The voice could not be loaded.",
     confirm: (c: VoiceConfirmation) =>
-      `${confirmationSubject(c)}. ${c.approved ? "Approve it" : "Reject it"}? Say yes or no.`,
+      c.hold
+        ? `${withoutClosingPunctuation(c.title)}: the security screen held back ${c.hold.source} as possible ${c.hold.category}. ${c.approved ? "Allow it once" : "Keep it blocked"}? Say yes or no.`
+        : `${confirmationSubject(c)}. ${c.approved ? "Approve it" : "Reject it"}? Say yes or no.`,
     approved: "Approved.",
     rejected: "Rejected.",
+    allowed: "Allowed. The task carries on.",
+    keptBlocked: "Kept blocked.",
     declined: "Okay, I won't do anything.",
     confirmFailed: "I could not do that. Open the task on screen.",
+    holdFailed: "I can't decide that from here. Open the task and use the card.",
     taskUnavailable: "That conversation is not available yet.",
     errors: {
       feature_disabled: "The voice assistant is not turned on for your account.",
@@ -323,7 +335,7 @@ export function taskUpdateMessages(update: TaskUpdate, callId: string): VoiceMes
 }
 
 type Queued =
-  | { kind: "announce"; text: string }
+  | { kind: "announce"; text: string; written?: string }
   | { kind: "review"; update: TaskUpdate; settle(outcome: ReviewOutcome | Error): void };
 
 function isAbort(error: unknown): boolean {
@@ -422,9 +434,14 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
     const words = copy().work;
     const tasks = deps.backgroundTasks();
     const working = tasks.filter((task) => task.state === "working");
-    const waiting = tasks.find((task) => task.state === "awaiting_approval");
+    const waiting = tasks.find((task) => task.state === "awaiting_approval" || task.state === "held");
     const busy = turn !== null || state === "thinking" || working.length > 0;
-    if (waiting) return { text: words.approval(waiting.title), taskRef: waiting.taskRef, busy };
+    if (waiting)
+      return {
+        text: waiting.state === "held" ? words.held(waiting.title) : words.approval(waiting.title),
+        taskRef: waiting.taskRef,
+        busy,
+      };
     const [first] = working;
     if (first)
       return {
@@ -582,12 +599,16 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
       void runReview(item);
       return;
     }
-    const { text } = item;
+    const { text, written } = item;
     deps.chime("announce");
     announcement = text;
     errorStatus = "";
     captions = { user: null, agent: { text: "", spokenChars: 0 } };
-    history.push({ role: "assistant", content: clip(text) });
+    history.push({ role: "assistant", content: clip(written ?? text) });
+    if (written) {
+      record("assistant", written);
+      keep([{ role: "assistant", text: written }]);
+    }
     const spoken = beginUtterance(state);
     feed(spoken, text);
     finishText(spoken);
@@ -736,7 +757,9 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
     let reply: string = words.declined;
     if (yes) {
       const outcome = await pending.execute();
-      reply = outcome.isError ? words.confirmFailed : words[pending.approved ? "approved" : "rejected"];
+      if (pending.hold)
+        reply = outcome.isError ? words.holdFailed : words[pending.approved ? "allowed" : "keptBlocked"];
+      else reply = outcome.isError ? words.confirmFailed : words[pending.approved ? "approved" : "rejected"];
       if (outcome.activity) act.pending.push(outcome.activity);
     }
     if (controller.signal.aborted) {
@@ -872,6 +895,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
       let opened = false;
       const refusal = (call: VoiceToolCall): string | null => {
         if (ask) return "awaiting_confirmation";
+        if (review && (call.name === "approve_task" || call.name === "reject_task")) return "user_turn_only";
         if (call.name === "delegate_task" && readResult) return "ask_user_first";
         if (review && call.name === "send_task_message") {
           if (call.args.taskRef !== review.taskRef) return "not_the_reviewed_task";
@@ -927,7 +951,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
     setState("thinking");
     armThinking(controller);
     const spoken = beginUtterance(resumeState());
-    const answer = awaiting ? confirmationAnswer(text) : null;
+    const answer = awaiting ? confirmationAnswer(text, awaiting.approved) : null;
     const act: TurnActivity = { entry: null, pending: [], shown: [] };
     try {
       if (awaiting && answer) await settle(awaiting, text, answer === "yes", controller, spoken, act);
@@ -1253,10 +1277,11 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
       heard = null;
       void respond(trimmed);
     },
-    announce(text) {
+    announce(text, written) {
       const trimmed = text.trim();
       if (!trimmed) return;
-      announcements.push({ kind: "announce", text: trimmed });
+      const note = written?.trim();
+      announcements.push({ kind: "announce", text: trimmed, ...(note ? { written: note } : {}) });
       drainAnnouncements();
     },
     review(update) {

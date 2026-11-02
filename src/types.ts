@@ -116,6 +116,7 @@ export interface Session {
   hasEntries?: boolean;
   working?: boolean;
   awaitingInput?: boolean;
+  securityHeld?: boolean;
   backgroundJobs?: number;
   watches?: number;
   crons?: number;

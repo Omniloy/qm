@@ -272,7 +272,7 @@ interface VoiceToolArgs {
   open_task: { taskRef: string };
   set_language: { language: VoiceLanguage };
   set_voice: { voice?: string; gender?: VoiceGender; next?: true };
-  send_task_message: { taskRef: string; text: string };
+  send_task_message: { taskRef: string; text: string; when: "now" | "after_run" };
   ask_user: { question: string };
 }
 
@@ -288,7 +288,7 @@ export type VoiceMessage =
 export interface VoiceTaskSummary {
   taskRef: string;
   title: string;
-  state: "working" | "awaiting_approval" | "idle";
+  state: "working" | "awaiting_approval" | "held" | "idle";
 }
 
 export const VOICE_MAX_MESSAGES = 32;
@@ -327,6 +327,8 @@ export const VOICE_ACTIVITY_KINDS = [
   "memory_saved",
   "memory_compacted",
   "approved",
+  "allowed",
+  "kept_blocked",
 ] as const;
 export type VoiceActivityKind = (typeof VOICE_ACTIVITY_KINDS)[number];
 

@@ -26,6 +26,7 @@ import {
   PinOff,
   Plus,
   RefreshCw,
+  ShieldAlert,
   SquareTerminal,
   Users,
   X,
@@ -762,10 +763,18 @@ function sessionWorking(s: CoreSession): boolean {
   return rowIndicators(s, liveThreads()).working;
 }
 
+export function awaitingMark(held: boolean): TemplateResult {
+  return held
+    ? html`<span class="held-mark" aria-label="Held by the security screen" ${tip("Held by the security screen")}
+        >${icon(ShieldAlert, 12)}</span
+      >`
+    : html`<span class="awaiting-dot" aria-label="Waiting for your reply"></span>`;
+}
+
 function statusMarks(s: CoreSession): TemplateResult {
   const ind = rowIndicators(s, liveThreads());
   return html`${ind.working ? html`<span class="working-mark" ${ref(syncWorkingPulse)}>${workingWave()}</span>` : nothing}${
-    ind.awaiting ? html`<span class="awaiting-dot" aria-label="Waiting for your reply"></span>` : nothing
+    ind.awaiting ? awaitingMark(ind.held) : nothing
   }${
     ind.background
       ? html`<span
@@ -976,7 +985,8 @@ function sessionRow(s: CoreSession, projectChild = false): TemplateResult {
     surface !== "web" ? surface : null,
     context,
     working ? "agent is working" : null,
-    s.awaitingInput ? "waiting for your reply" : null,
+    s.awaitingInput && !s.securityHeld ? "waiting for your reply" : null,
+    s.awaitingInput && s.securityHeld ? "held by the security screen" : null,
     readOnly ? "read-only" : null,
     s.pinned ? "pinned" : null,
     selection.ids.has(s.id) ? "selected" : null,

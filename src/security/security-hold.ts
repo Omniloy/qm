@@ -17,6 +17,7 @@ export interface SecurityHoldView {
   title: string;
   held: string;
   subject?: string;
+  category: SecurityScreenCategory;
   categoryLabel: string;
   explanation: string;
   facts: SecurityHoldFact[];
@@ -178,6 +179,7 @@ export function securityHoldView(hold: SecurityHold): SecurityHoldView {
     title,
     held: title.replace(/^Paused: /, ""),
     ...(subject ? { subject } : {}),
+    category: hold.category,
     categoryLabel: SECURITY_CATEGORY_LABELS[hold.category],
     explanation: `The security screen held back ${held.what} before the assistant read ${pronoun}, because ${verb} to ${CATEGORY_CONCERNS[hold.category]}.${unattended}`,
     facts: [
