@@ -262,8 +262,9 @@ test("voice replies turn reasoning off for Terra, run the fallback at its lowest
   const terra = await reply("gpt-6.1-terra", "none");
   assert.deepEqual(terra[0], { type: "start", modelId: "gpt-6.1-terra" });
   assert.deepEqual(terra[1], { type: "delta", text: "Vale." });
-  assert.equal(terra[2]?.type, "tool_call");
-  assert.deepEqual(terra[2]?.type === "tool_call" ? terra[2].args : undefined, {
+  assert.deepEqual(terra[2], { type: "text_end" });
+  assert.equal(terra[3]?.type, "tool_call");
+  assert.deepEqual(terra[3]?.type === "tool_call" ? terra[3].args : undefined, {
     instruction: "book it",
     title: "Booking",
   });
@@ -425,6 +426,10 @@ test("voice replies on Sonnet 5.5 switch thinking to between_tools and survive t
   assert.deepEqual(
     events.filter((event) => event.type === "delta"),
     [{ type: "delta", text: "Hola." }],
+  );
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ["start", "delta", "text_end", "end"],
   );
   assert.deepEqual(bodies.at(-1)?.thinking, { type: "between_tools" });
   assert.equal((bodies.at(-1)?.output_config as { effort?: unknown } | undefined)?.effort, undefined);

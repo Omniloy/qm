@@ -1,7 +1,8 @@
 import { html, nothing, render } from "lit";
-import { keyed } from "lit/directives/keyed.js";
+import { repeat } from "lit/directives/repeat.js";
 import { live } from "lit/directives/live.js";
 import { ArrowUp, Keyboard, Mic, MicOff, X } from "lucide";
+import { markdown } from "../message-markdown.ts";
 import { icon } from "../ui.ts";
 import { ORB_HOLD_END_EVENT, ORB_HOLD_START_EVENT, ORB_PRESS_EVENT } from "./orb-element.ts";
 import {
@@ -47,7 +48,8 @@ const COPY = {
     language: "Idioma",
     voice: "Voz",
     micMode: "Micrófono",
-    modes: { open: "Micrófono abierto", push: "Pulsar para hablar" },
+    modes: { open: "Micrófono abierto", push: "Pulsar para hablar", off: "Sin micrófono" },
+    transcript: "Conversación con Omni",
     holdToTalk: "Mantén pulsado para hablar",
     releaseToSend: "Suelta para enviar",
     tapToTalk: "Pulsa para hablar",
@@ -69,7 +71,8 @@ const COPY = {
     language: "Language",
     voice: "Voice",
     micMode: "Microphone",
-    modes: { open: "Open mic", push: "Push to talk" },
+    modes: { open: "Open mic", push: "Push to talk", off: "Mic off" },
+    transcript: "Conversation with Omni",
     holdToTalk: "Hold to talk",
     releaseToSend: "Release to send",
     tapToTalk: "Press to talk",
@@ -86,6 +89,7 @@ const TYPING_STATES: ReadonlySet<VoiceState> = new Set(["sleeping", "listening",
 const PRESSED_STATES: ReadonlySet<VoiceState> = new Set(["listening", "thinking", "speaking"]);
 
 function orbPressed(view: VoiceStageView): boolean {
+  if (view.micMode === "off") return view.state === "thinking" || view.state === "speaking";
   return view.micMode === "push" ? view.pttActive : PRESSED_STATES.has(view.state);
 }
 
@@ -100,6 +104,8 @@ const EMPTY_VIEW: VoiceStageView = {
   muted: false,
   status: "",
   captions: { user: null, agent: null },
+  transcript: [],
+  awaitingUser: false,
   announcement: "",
 };
 
@@ -127,6 +133,7 @@ function orbLabel(view: VoiceStageView, copy: Copy): string {
   const { state } = view;
   if (state === "off") return copy.start;
   if (state === "arming") return copy.loading;
+  if (view.micMode === "off") return state === "thinking" || state === "speaking" ? copy.interrupt : copy.type;
   if (view.micMode === "push") {
     if (view.pttStyle === "hold") return view.pttActive ? copy.releaseToSend : copy.holdToTalk;
     return view.pttActive ? copy.tapToSend : copy.tapToTalk;
@@ -166,9 +173,6 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
   let open = false;
   let typing = false;
   let draft = "";
-  let lastAgent: string | null = null;
-  let past: { id: number; text: string } | null = null;
-  let pastId = 0;
   let returnFocus: HTMLElement | null = null;
   let destroyed = false;
   let allVoices = false;
@@ -189,6 +193,7 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
   const onOrbPress = (e: Event) => {
     const target = e.target as HTMLElement;
     if (target.closest(".voice-dock-orb")) stage.open();
+    else if (view.micMode === "off" && !orbPressed(view)) startTyping();
     else handlers.onOrbPress();
   };
 
@@ -279,7 +284,7 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
       return;
     }
     if (editableTarget(e.target)) return;
-    if (e.key === "m" || e.key === "M") {
+    if ((e.key === "m" || e.key === "M") && view.micMode !== "off") {
       e.preventDefault();
       handlers.onToggleMute();
       return;
@@ -306,14 +311,11 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
   const captionsTemplate = () => {
     const { user, agent } = view.captions;
     return html`<div class="voice-region" aria-hidden="true">
-      <div class="voice-captions-past">
-        ${past ? keyed(past.id, html`<p class="voice-caption-agent is-past">${past.text}</p>`) : nothing}
-      </div>
       <div class="voice-captions">
         <div class="voice-captions-flow">
-          ${user ? html`<p class="voice-caption-user ${user.final ? "" : "is-partial"}">${user.text}</p>` : nothing}
+          ${user && !user.final ? html`<p class="voice-caption-user is-partial">${user.text}</p>` : nothing}
           ${
-            agent
+            agent && view.state === "speaking"
               ? html`<p class="voice-caption-agent">
                   ${karaokeWords(agent.text, agent.spokenChars).map(
                     (word, i) =>
@@ -326,6 +328,22 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
       </div>
     </div>`;
   };
+
+  const transcriptTemplate = () =>
+    view.transcript.length
+      ? html`<section class="voice-transcript" aria-label=${copy.transcript} aria-live="polite">
+          <div class="voice-transcript-log">
+            ${repeat(
+              view.transcript,
+              (entry) => entry.id,
+              (entry) =>
+                entry.role === "assistant"
+                  ? html`<div class="voice-entry voice-entry-assistant">${markdown(entry.text)}</div>`
+                  : html`<p class="voice-entry voice-entry-user" dir="auto">${entry.text}</p>`,
+            )}
+          </div>
+        </section>`
+      : nothing;
 
   const dockTemplate = () =>
     html`<div class="voice-dock" data-typing=${typing ? "true" : "false"}>
@@ -352,17 +370,21 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
                   ${icon(ArrowUp, 18)}
                 </button>
               </form>`
-            : html`<button
-                  type="button"
-                  class="voice-dock-button voice-mute-toggle"
-                  aria-label=${copy.mute}
-                  aria-pressed=${view.muted ? "true" : "false"}
-                  aria-keyshortcuts="M"
-                  data-alert=${view.muted ? "true" : "false"}
-                  @click=${() => handlers.onToggleMute()}
-                >
-                  ${icon(view.muted ? MicOff : Mic, 20)}
-                </button>
+            : html`${
+                  view.micMode === "off"
+                    ? nothing
+                    : html`<button
+                        type="button"
+                        class="voice-dock-button voice-mute-toggle"
+                        aria-label=${copy.mute}
+                        aria-pressed=${view.muted ? "true" : "false"}
+                        aria-keyshortcuts="M"
+                        data-alert=${view.muted ? "true" : "false"}
+                        @click=${() => handlers.onToggleMute()}
+                      >
+                        ${icon(view.muted ? MicOff : Mic, 20)}
+                      </button>`
+                }
                 ${
                   TYPING_STATES.has(view.state)
                     ? html`<button
@@ -451,7 +473,7 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
         </p>
         ${captionsTemplate()}
       </div>
-      ${dockTemplate()}
+      ${transcriptTemplate()} ${dockTemplate()}
     </div>`;
 
   const surfaceTemplate = () => {
@@ -479,17 +501,15 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
 
   const stage: VoiceStage = {
     update(next) {
-      const agentText = next.captions.agent?.text ?? null;
-      if (lastAgent && agentText !== lastAgent && !(agentText ?? "").startsWith(lastAgent))
-        past = { id: ++pastId, text: lastAgent };
-      lastAgent = agentText;
+      const asked = next.awaitingUser && !view.awaitingUser && next.micMode === "off";
       view = next;
       copy = COPY[next.language];
       if (typing && !TYPING_STATES.has(next.state)) {
         typing = false;
         draft = "";
       }
-      paint();
+      if (asked && open && !typing) startTyping();
+      else paint();
     },
     open() {
       if (open || destroyed) return;
@@ -499,6 +519,7 @@ export function mountVoiceStage(host: HTMLElement, handlers: VoiceStageHandlers)
       document.addEventListener("keydown", onKeydown);
       paint();
       focusOrb();
+      handlers.onOpen();
     },
     close() {
       if (!open) return;

@@ -12,7 +12,7 @@ import playbackUrl from "./playback.worklet.ts?worker&url";
 
 export interface AudioGraph {
   readonly context: AudioContext;
-  readonly framePort: MessagePort;
+  readonly framePort: MessagePort | null;
   readonly playback: AudioWorkletNode;
   readonly output: AudioNode;
   setMuted(muted: boolean): void;
@@ -33,37 +33,56 @@ function meter(context: AudioContext): AnalyserNode {
   return analyser;
 }
 
-export async function createAudioGraph(): Promise<AudioGraph> {
+interface Capture {
+  framePort: MessagePort;
+  tracks: MediaStreamTrack[];
+  close(): void;
+}
+
+function connectCapture(context: AudioContext, stream: MediaStream): Capture {
+  const tracks = stream.getAudioTracks();
+  const source = context.createMediaStreamSource(stream);
+  const processorOptions: CaptureProcessorOptions = {
+    targetSampleRate: SPEECH_SAMPLE_RATE,
+    frameSamples: SPEECH_FRAME_SAMPLES,
+  };
+  const capture = new AudioWorkletNode(context, CAPTURE_PROCESSOR, {
+    numberOfInputs: 1,
+    numberOfOutputs: 0,
+    channelCount: 1,
+    channelCountMode: "explicit",
+    processorOptions,
+  });
+  const inputMeter = meter(context);
+  source.connect(capture);
+  source.connect(inputMeter);
+  const channel = new MessageChannel();
+  const attach: CaptureWorkletIn = { type: "attach", port: channel.port1 };
+  capture.port.postMessage(attach, [channel.port1]);
+  levelBus.attach("input", analyserLevel(inputMeter));
+  return {
+    framePort: channel.port2,
+    tracks,
+    close() {
+      const detach: CaptureWorkletIn = { type: "detach" };
+      capture.port.postMessage(detach);
+      source.disconnect();
+      for (const track of tracks) track.stop();
+    },
+  };
+}
+
+export async function createAudioGraph(microphone: boolean): Promise<AudioGraph> {
   const context = new AudioContext({ latencyHint: "interactive" });
   void context.resume().catch(() => undefined);
-  const media = navigator.mediaDevices.getUserMedia({ audio: MIC_CONSTRAINTS });
+  const media = microphone ? navigator.mediaDevices.getUserMedia({ audio: MIC_CONSTRAINTS }) : Promise.resolve(null);
   try {
     const [stream] = await Promise.all([
       media,
-      context.audioWorklet.addModule(captureUrl),
+      microphone ? context.audioWorklet.addModule(captureUrl) : undefined,
       context.audioWorklet.addModule(playbackUrl),
     ]);
-    const tracks = stream.getAudioTracks();
-
-    const source = context.createMediaStreamSource(stream);
-    const processorOptions: CaptureProcessorOptions = {
-      targetSampleRate: SPEECH_SAMPLE_RATE,
-      frameSamples: SPEECH_FRAME_SAMPLES,
-    };
-    const capture = new AudioWorkletNode(context, CAPTURE_PROCESSOR, {
-      numberOfInputs: 1,
-      numberOfOutputs: 0,
-      channelCount: 1,
-      channelCountMode: "explicit",
-      processorOptions,
-    });
-    const inputMeter = meter(context);
-    source.connect(capture);
-    source.connect(inputMeter);
-
-    const channel = new MessageChannel();
-    const attach: CaptureWorkletIn = { type: "attach", port: channel.port1 };
-    capture.port.postMessage(attach, [channel.port1]);
+    const capture = stream ? connectCapture(context, stream) : null;
 
     const playback = new AudioWorkletNode(context, PLAYBACK_PROCESSOR, {
       numberOfInputs: 0,
@@ -80,30 +99,26 @@ export async function createAudioGraph(): Promise<AudioGraph> {
     audio.srcObject = destination.stream;
     void audio.play().catch(() => undefined);
 
-    levelBus.attach("input", analyserLevel(inputMeter));
     levelBus.attach("output", analyserLevel(outputMeter));
 
     let closed = false;
     return {
       context,
-      framePort: channel.port2,
+      framePort: capture?.framePort ?? null,
       playback,
       output: destination,
       setMuted(muted) {
-        for (const track of tracks) track.enabled = !muted;
+        for (const track of capture?.tracks ?? []) track.enabled = !muted;
       },
       async close() {
         if (closed) return;
         closed = true;
         levelBus.attach("input", null);
         levelBus.attach("output", null);
-        const detach: CaptureWorkletIn = { type: "detach" };
-        capture.port.postMessage(detach);
-        source.disconnect();
+        capture?.close();
         playback.disconnect();
         audio.pause();
         audio.srcObject = null;
-        for (const track of tracks) track.stop();
         await context.close().catch(() => undefined);
       },
     };

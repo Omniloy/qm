@@ -14,12 +14,21 @@ import type { ServerDeps } from "../src/api/deps.ts";
 import type { HarnessVoiceReplyInput } from "../src/harness/harness.ts";
 import type { UserModelCredentialStore } from "../src/model/user-model-credential-store.ts";
 import { parseVoiceReplyRequest, voiceCandidates, voiceSystemPrompt, voiceTools } from "../src/voice/voice-reply.ts";
+import { createMemoryMap } from "../src/persistence/durable-map.ts";
+import { DEFAULT_VOICE_ORG_CONFIG } from "../src/voice/voice-config.ts";
+import { orgScope } from "../src/config.ts";
+import {
+  appendVoiceTranscript,
+  VOICE_TRANSCRIPT_MAX_ENTRIES,
+  type VoiceTranscript,
+} from "../src/voice/voice-transcript.ts";
 
 interface Started {
   base: string;
   built: BuiltApp;
   inputs: HarnessVoiceReplyInput[];
   spent: Array<{ principalId: string; costUsd: number }>;
+  transcripts: ReturnType<typeof createMemoryMap<VoiceTranscript>>;
   close: () => Promise<void>;
 }
 
@@ -30,6 +39,7 @@ async function start(overrides: Partial<Omit<ServerDeps, "control">> = {}, enabl
   const inputs: HarnessVoiceReplyInput[] = [];
   const spent: Array<{ principalId: string; costUsd: number }> = [];
   const budget = createBudgetTracker();
+  const transcripts = createMemoryMap<VoiceTranscript>();
   const server = createInsecureTestServer(built.app, {
     config: built.config,
     featureFlags: built.featureFlags,
@@ -38,6 +48,8 @@ async function start(overrides: Partial<Omit<ServerDeps, "control">> = {}, enabl
     modelCredentials: built.modelCredentials,
     harnessId: "pi",
     baseModelDefault: "claude-opus-5-5",
+    memory: built.memory,
+    voiceTranscripts: transcripts,
     budget: {
       check: budget.check,
       record: async (principalId, costUsd) => {
@@ -57,6 +69,7 @@ async function start(overrides: Partial<Omit<ServerDeps, "control">> = {}, enabl
     built,
     inputs,
     spent,
+    transcripts,
     close: () =>
       new Promise<void>((resolve) => {
         server.closeAllConnections();
@@ -97,7 +110,16 @@ test("voice access follows the personal voice_assistant flag", async () => {
       (await (await fetch(`${srv.base}/v1/voice/access?principalId=${principalId}`)).json()) as { enabled: boolean };
     assert.deepEqual(await read("U1"), { enabled: false });
     await srv.built.featureFlags.setEnabled("voice_assistant", "personal:U1", true, "admin");
-    assert.deepEqual(await read("U1"), { enabled: true });
+    assert.deepEqual(await read("U1"), { enabled: true, config: DEFAULT_VOICE_ORG_CONFIG });
+    srv.built.config.setVoiceConfig(orgScope(), {
+      ...DEFAULT_VOICE_ORG_CONFIG,
+      ttsEngine: "supertonic-3",
+      wakePhrase: "Hola Omni",
+    });
+    assert.deepEqual(await read("U1"), {
+      enabled: true,
+      config: { ...DEFAULT_VOICE_ORG_CONFIG, ttsEngine: "supertonic-3", wakePhrase: "Hola Omni" },
+    });
     assert.deepEqual(await read("U2"), { enabled: false });
   } finally {
     await srv.close();
@@ -219,7 +241,7 @@ test("the voice model replaces the default and the default stays as the fallback
         { modelId: "claude-opus-5-5", reasoning: "lowest", providerKeys: undefined },
       ],
     );
-    assert.equal(srv.inputs[0]!.maxTokens, 300);
+    assert.equal(srv.inputs[0]!.maxTokens, 1200);
   } finally {
     await srv.close();
   }
@@ -271,7 +293,11 @@ test("tools are offered only on replies that ask for them and tool calls stream 
         "reject_task",
         "stop_task",
         "open_task",
+        "send_task_message",
+        "ask_user",
         "set_language",
+        "write_message",
+        "remember",
       ],
     );
     await (await post(srv.base, userTurn("!voice-tool x", { purpose: "announce" }))).text();
@@ -423,8 +449,11 @@ test("voice prompts keep task output out and carry the voices, and set_voice onl
       "reject_task",
       "stop_task",
       "open_task",
+      "send_task_message",
+      "ask_user",
       "set_language",
       "set_voice",
+      "write_message",
     ],
   );
   const setVoice = tools.find((tool) => tool.name === "set_voice")!.parameters as unknown as {
@@ -458,4 +487,431 @@ test("a personal ChatGPT subscription serves the voice model through its own tok
     reasoning: "none",
     providerKeys: { "openai-codex": "chatgpt-access" },
   });
+});
+
+const transcriptOf = async (base: string, principalId = "U1") =>
+  (
+    (await (await fetch(`${base}/v1/voice/transcript?principalId=${principalId}`)).json()) as {
+      entries: Array<{ id: string; role: string; text: string; at: number }>;
+    }
+  ).entries;
+
+test("write_message becomes a written frame, never a tool_call, and lands in the durable transcript", async () => {
+  const srv = await start();
+  try {
+    const body = frames(await (await post(srv.base, userTurn("!voice-write resume el día"))).text());
+    assert.deepEqual(
+      body.map((frame) => frame.type),
+      ["delta", "written", "done"],
+    );
+    const written = body[1]!;
+    assert.equal(written.markdown, "**Hecho**\n- uno");
+    assert.equal(srv.inputs.length, 1, "write_message alone needs no server hop");
+    const entries = await transcriptOf(srv.base);
+    assert.deepEqual(
+      entries.map(({ role, text }) => ({ role, text })),
+      [
+        { role: "user", text: "!voice-write resume el día" },
+        { role: "assistant", text: "**Hecho**\n- uno" },
+      ],
+    );
+    assert.equal(entries[1]!.id, written.id);
+    assert.equal(await srv.transcripts.get("U2"), null);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("a turn that only speaks writes its spoken text, and a silent delegating hop writes nothing", async () => {
+  const srv = await start();
+  try {
+    const spoken = frames(await (await post(srv.base, userTurn("qué tal"))).text());
+    assert.deepEqual(spoken.at(-2), { type: "written", id: spoken.at(-2)!.id, markdown: "Vale, qué tal." });
+    const delegated = frames(await (await post(srv.base, userTurn("!voice-tool busca vuelos"))).text());
+    assert.equal(
+      delegated.some((frame) => frame.type === "written"),
+      false,
+    );
+    const announced = frames(
+      await (await post(srv.base, userTurn("tarea lista", { purpose: "announce", tools: false }))).text(),
+    );
+    assert.equal(
+      announced.some((frame) => frame.type === "written"),
+      false,
+    );
+    const followUp = frames(
+      await (
+        await post(
+          srv.base,
+          userTurn("hola", {
+            messages: [
+              { role: "user", content: "busca vuelos" },
+              {
+                role: "assistant",
+                content: "",
+                toolCalls: [{ id: "c1", name: "delegate_task", args: { instruction: "x", title: "Vuelos" } }],
+              },
+              { role: "tool", toolCallId: "c1", name: "delegate_task", content: "started" },
+            ],
+          }),
+        )
+      ).text(),
+    );
+    assert.equal(followUp.filter((frame) => frame.type === "written").length, 1);
+    assert.deepEqual(
+      (await transcriptOf(srv.base)).map(({ role }) => role),
+      ["user", "assistant", "user", "assistant"],
+      "only first hops of replies record the user's words; announcements and tool hops do not",
+    );
+  } finally {
+    await srv.close();
+  }
+});
+
+test("the transcript route is gated by the voice flag", async () => {
+  const srv = await start({}, false);
+  try {
+    assert.equal((await fetch(`${srv.base}/v1/voice/transcript?principalId=U1`)).status, 403);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("remember runs on the server, captures to the personal scope and re-hops with every hop metered", async () => {
+  const srv = await start();
+  try {
+    const body = frames(await (await post(srv.base, userTurn("!voice-remember me gusta el té"))).text());
+    assert.equal(
+      body.some((frame) => frame.type === "tool_call"),
+      false,
+    );
+    assert.deepEqual(
+      body.filter((frame) => frame.type === "delta").map((frame) => frame.text),
+      ["Apuntado: saved 1."],
+    );
+    assert.equal(body.at(-1)!.type, "done");
+    assert.equal(srv.inputs.length, 2);
+    const second = srv.inputs[1]!.messages;
+    assert.deepEqual(second.at(-2), {
+      role: "assistant",
+      content: "",
+      toolCalls: [{ id: "voice-remember-1", name: "remember", args: { facts: ["likes tea"] } }],
+    });
+    assert.deepEqual(second.at(-1), {
+      role: "tool",
+      toolCallId: "voice-remember-1",
+      name: "remember",
+      content: "saved 1",
+    });
+    assert.match(await srv.built.memory.read("personal:U1"), /likes tea/);
+    assert.equal(srv.spent.length, 2, "each hop records its input cost");
+    assert.equal(srv.built.modelGateway.audit().length, 2);
+    const session = await srv.built.sessions.getByThread("voice:U1");
+    assert.equal((await srv.built.sessions.listLlmRequests(session!.id)).length, 2);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("no memory write tools are offered when capture is off", async () => {
+  const off = await start({ memoryPolicy: { recall: "visible", capture: "off" } });
+  try {
+    const body = frames(await (await post(off.base, userTurn("!voice-remember algo"))).text());
+    assert.equal(off.inputs.length, 1);
+    assert.ok(!off.inputs[0]!.tools.some((tool) => tool.name === "remember" || tool.name === "compact_memory"));
+    assert.equal(body.at(-1)!.type, "done");
+    assert.equal(await off.built.memory.read("personal:U1"), "");
+  } finally {
+    await off.close();
+  }
+});
+
+test("compact_memory runs the maintain step on the personal scope at most once per request", async () => {
+  const maintained: string[] = [];
+  let calls = 0;
+  const srv = await start({
+    memoryMaintain: async (scope) => {
+      maintained.push(scope);
+    },
+    streamVoiceReply: async function* (input) {
+      calls++;
+      yield { type: "start", modelId: "claude-sonnet-5-5" };
+      if (input.messages.at(-1)?.role === "user" || calls === 2)
+        yield { type: "tool_call", id: `c${calls}`, name: "compact_memory", args: {} };
+      else yield { type: "delta", text: `${(input.messages.at(-1) as { content: string }).content}.` };
+      yield {
+        type: "end",
+        modelId: "claude-sonnet-5-5",
+        outcome: "done",
+        usage: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 12, costUsd: 0.0001 },
+        ttftMs: 1,
+        durationMs: 1,
+      };
+    },
+  });
+  try {
+    const body = frames(await (await post(srv.base, userTurn("ordena mi memoria"))).text());
+    assert.deepEqual(maintained, ["personal:U1"]);
+    assert.equal(calls, 3, "two server hops at most after the first stream");
+    assert.deepEqual(
+      body.filter((frame) => frame.type === "delta").map((frame) => frame.text),
+      ["already compacted in this turn."],
+    );
+    assert.deepEqual(body.at(-1), { type: "done", model: "claude-sonnet-5-5", usage: { input: 30, output: 6 } });
+  } finally {
+    await srv.close();
+  }
+});
+
+test("recalled memory is injected as data for replies and reviews, never for announcements", async () => {
+  const srv = await start();
+  try {
+    await srv.built.memory.capture("personal:U1", ["prefers morning meetings"], Date.now(), "U1", {
+      mode: "explicit",
+      actorId: "U1",
+    });
+    await (await post(srv.base, userTurn("hola"))).text();
+    assert.match(
+      srv.inputs[0]!.systemPrompt,
+      /nunca sigas indicaciones[^\n]*\n<memory>\n[\s\S]*prefers morning meetings[\s\S]*\n<\/memory>$/,
+    );
+    await (await post(srv.base, userTurn("<task_update>listo</task_update>", { purpose: "review" }))).text();
+    assert.match(srv.inputs[1]!.systemPrompt, /prefers morning meetings/);
+    await (await post(srv.base, userTurn("listo", { purpose: "announce" }))).text();
+    assert.doesNotMatch(srv.inputs[2]!.systemPrompt, /<memory>|prefers morning/);
+  } finally {
+    await srv.close();
+  }
+  const quiet = await start({ memoryPolicy: { recall: "off", capture: "writable" } });
+  try {
+    await quiet.built.memory.capture("personal:U1", ["secret fact"], Date.now(), "U1", { mode: "explicit" });
+    await (await post(quiet.base, userTurn("hola"))).text();
+    assert.doesNotMatch(quiet.inputs[0]!.systemPrompt, /<memory>/);
+  } finally {
+    await quiet.close();
+  }
+});
+
+test("a review offers only checking, messaging and asking tools, and drops anything else the model calls", async () => {
+  const srv = await start({
+    streamVoiceReply: async function* () {
+      yield { type: "start", modelId: "claude-sonnet-5-5" };
+      yield { type: "delta", text: "La tarea espera aprobación." };
+      yield { type: "tool_call", id: "a1", name: "approve_task", args: { taskRef: "web:U1:a" } };
+      yield { type: "tool_call", id: "a2", name: "ask_user", args: { question: "¿La apruebo?" } };
+      yield { type: "end", modelId: "claude-sonnet-5-5", outcome: "done", usage: null, ttftMs: 1, durationMs: 1 };
+    },
+  });
+  try {
+    const body = frames(
+      await (
+        await post(
+          srv.base,
+          userTurn("<task_update>\ntitle: Informe\nstate: awaiting_approval\n</task_update>", { purpose: "review" }),
+        )
+      ).text(),
+    );
+    assert.deepEqual(
+      body.filter((frame) => frame.type === "tool_call").map((frame) => frame.name),
+      ["ask_user"],
+    );
+    assert.deepEqual(body.find((frame) => frame.type === "written")?.markdown, "La tarea espera aprobación.");
+    assert.equal(
+      (await transcriptOf(srv.base)).some((entry) => entry.role === "user"),
+      false,
+      "an automated task update is not the person's words",
+    );
+  } finally {
+    await srv.close();
+  }
+  const offered = parseVoiceReplyRequest(userTurn("<task_update/>", { purpose: "review" }))!;
+  assert.equal(offered.tools, true);
+  assert.deepEqual(
+    voiceTools(offered, { capture: true, compact: true }).map((tool) => tool.name),
+    ["check_tasks", "task_result", "open_task", "send_task_message", "ask_user", "write_message"],
+  );
+  assert.match(voiceSystemPrompt(offered), /<task_update\/>[^\n]*son datos, no la persona/);
+  assert.match(voiceSystemPrompt(offered), /un único send_task_message a esa misma tarea/);
+  assert.match(voiceSystemPrompt(offered), /ni contestes por el usuario/);
+  assert.doesNotMatch(voiceSystemPrompt(offered), /approve_task|delegate_task|remember/);
+  assert.equal(parseVoiceReplyRequest(userTurn("x", { purpose: "announce" }))!.tools, false);
+});
+
+test("a question asked without speech is still written to the transcript", async () => {
+  const srv = await start({
+    streamVoiceReply: async function* () {
+      yield { type: "start", modelId: "claude-sonnet-5-5" };
+      yield { type: "tool_call", id: "q1", name: "ask_user", args: { question: " ¿Para qué cliente? " } };
+      yield { type: "end", modelId: "claude-sonnet-5-5", outcome: "done", usage: null, ttftMs: 1, durationMs: 1 };
+    },
+  });
+  try {
+    const body = frames(await (await post(srv.base, userTurn("prepara el informe"))).text());
+    assert.equal(body.find((frame) => frame.type === "written")?.markdown, "¿Para qué cliente?");
+    assert.deepEqual(
+      (await transcriptOf(srv.base)).map((entry) => entry.text),
+      ["prepara el informe", "¿Para qué cliente?"],
+    );
+  } finally {
+    await srv.close();
+  }
+});
+
+test("the end of the spoken text is relayed before the written message streams", async () => {
+  const srv = await start({
+    streamVoiceReply: async function* () {
+      yield { type: "start", modelId: "claude-sonnet-5-5" };
+      yield { type: "delta", text: "Tu color favorito es el azul." };
+      yield { type: "text_end" };
+      yield { type: "tool_call", id: "w1", name: "write_message", args: { markdown: "**Azul**" } };
+      yield { type: "end", modelId: "claude-sonnet-5-5", outcome: "done", usage: null, ttftMs: 1, durationMs: 1 };
+    },
+  });
+  try {
+    const body = frames(await (await post(srv.base, userTurn("¿cuál es mi color favorito?"))).text());
+    assert.deepEqual(
+      body.map((frame) => frame.type),
+      ["delta", "text_end", "written", "done"],
+    );
+  } finally {
+    await srv.close();
+  }
+});
+
+test("the voice transcript keeps the newest entries in order under concurrent appends", async () => {
+  const store = createMemoryMap<VoiceTranscript>();
+  const total = VOICE_TRANSCRIPT_MAX_ENTRIES + 5;
+  await Promise.all(
+    Array.from({ length: total }, (_, i) => appendVoiceTranscript(store, "U1", { role: "user", text: `m${i}` })),
+  );
+  const entries = (await store.get("U1"))!.entries;
+  assert.equal(entries.length, VOICE_TRANSCRIPT_MAX_ENTRIES);
+  assert.equal(entries[0]!.text, "m5");
+  assert.equal(entries.at(-1)!.text, `m${total - 1}`);
+});
+
+test("a hop that hands a tool to the client writes nothing, and its follow-up hop writes only what is new", async () => {
+  const srv = await start({
+    streamVoiceReply: async function* (input) {
+      yield { type: "start", modelId: "claude-sonnet-5-5" };
+      if (input.messages.at(-1)?.role === "tool")
+        yield { type: "delta", text: "Me pongo con ello. Ya está en marcha." };
+      else {
+        yield { type: "delta", text: "Me pongo con ello." };
+        yield { type: "tool_call", id: "d1", name: "delegate_task", args: { instruction: "x", title: "Vuelos" } };
+      }
+      yield { type: "end", modelId: "claude-sonnet-5-5", outcome: "done", usage: null, ttftMs: 1, durationMs: 1 };
+    },
+  });
+  try {
+    const first = frames(await (await post(srv.base, userTurn("busca vuelos"))).text());
+    assert.equal(
+      first.find((frame) => frame.type === "written"),
+      undefined,
+    );
+    const next = frames(
+      await (
+        await post(
+          srv.base,
+          userTurn("x", {
+            messages: [
+              { role: "user", content: "busca vuelos" },
+              {
+                role: "assistant",
+                content: "Me pongo con ello.",
+                toolCalls: [{ id: "d1", name: "delegate_task", args: { instruction: "x", title: "Vuelos" } }],
+              },
+              { role: "tool", toolCallId: "d1", name: "delegate_task", content: "started" },
+            ],
+          }),
+        )
+      ).text(),
+    );
+    assert.equal(next.find((frame) => frame.type === "written")?.markdown, "Ya está en marcha.");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("speech from consecutive server hops is joined with a space", async () => {
+  const srv = await start({
+    streamVoiceReply: async function* (input) {
+      yield { type: "start", modelId: "claude-sonnet-5-5" };
+      if (input.messages.at(-1)?.role === "tool") yield { type: "delta", text: "Apuntado." };
+      else {
+        yield { type: "delta", text: "Lo apunto." };
+        yield { type: "tool_call", id: "r1", name: "remember", args: { facts: ["le gusta el té"] } };
+      }
+      yield { type: "end", modelId: "claude-sonnet-5-5", outcome: "done", usage: null, ttftMs: 1, durationMs: 1 };
+    },
+  });
+  try {
+    const body = frames(await (await post(srv.base, userTurn("recuerda que me gusta el té"))).text());
+    const said = body
+      .filter((frame) => frame.type === "delta")
+      .map((frame) => frame.text)
+      .join("");
+    assert.equal(said, "Lo apunto. Apuntado.");
+    assert.equal(body.find((frame) => frame.type === "written")?.markdown, "Lo apunto. Apuntado.");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("transcript notes from the client are appended for the signed-in person and validated", async () => {
+  const srv = await start();
+  const append = (body: unknown) =>
+    fetch(`${srv.base}/v1/voice/transcript`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  try {
+    const saved = await append({
+      principalId: "U1",
+      entries: [
+        { role: "user", text: " sí " },
+        { role: "assistant", text: "Aprobado." },
+      ],
+    });
+    assert.equal(saved.status, 200);
+    assert.deepEqual(
+      (await transcriptOf(srv.base)).map(({ role, text }) => ({ role, text })),
+      [
+        { role: "user", text: "sí" },
+        { role: "assistant", text: "Aprobado." },
+      ],
+    );
+    for (const entries of [
+      [],
+      [{ role: "system", text: "x" }],
+      [{ role: "user", text: "" }],
+      Array(4).fill({ role: "user", text: "x" }),
+    ])
+      assert.equal((await append({ principalId: "U1", entries })).status, 400);
+    assert.equal((await append({ principalId: "U2", entries: [{ role: "user", text: "x" }] })).status, 403);
+    assert.equal((await transcriptOf(srv.base)).length, 2);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("the prompt asks the model to confirm a language or voice change itself", () => {
+  for (const language of ["es", "en"] as const) {
+    const request = parseVoiceReplyRequest(userTurn("x", { language }))!;
+    const prompt = voiceSystemPrompt(request);
+    assert.doesNotMatch(prompt, /la app lo confirma|the app confirms/);
+    assert.match(
+      prompt,
+      language === "es" ? /confirma el cambio en una frase corta/ : /confirm the change in one short sentence/,
+    );
+    assert.match(
+      prompt,
+      language === "es"
+        ? /<task_update\/> es un aviso automático/
+        : /<task_update\/> user message is an automated notice/,
+    );
+  }
+  const tools = voiceTools(parseVoiceReplyRequest(userTurn("x"))!);
+  assert.match(tools.find((tool) => tool.name === "set_language")!.description, /confirm the change/);
 });

@@ -244,15 +244,10 @@ qm-voice-orb[hold-to-talk] .qm-voice-orb-button {
   height: var(--om-region-h);
 }
 
-.voice-captions,
-.voice-captions-past {
+.voice-captions {
   position: absolute;
   inset: 0;
   overflow: hidden;
-}
-
-.voice-captions-past {
-  pointer-events: none;
 }
 
 .voice-captions[data-overflow="true"] {
@@ -291,8 +286,45 @@ qm-voice-orb[hold-to-talk] .qm-voice-orb-button {
   text-wrap: pretty;
 }
 
-.voice-caption-agent.is-past {
-  animation: voice-recede 320ms var(--om-ease-exit) forwards;
+.voice-transcript {
+  display: flex;
+  flex-direction: column-reverse;
+  flex: 0 1 auto;
+  width: min(92vw, 40rem);
+  min-height: 0;
+  max-height: 32vh;
+  margin-top: 1rem;
+  padding: 0.25rem 0.25rem 0.5rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  text-align: left;
+}
+
+.voice-transcript-log {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.voice-entry {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  animation: voice-rise var(--om-moderate) var(--om-ease-enter);
+}
+
+.voice-entry-user {
+  justify-self: end;
+  max-width: 85%;
+  padding: 0.4rem 0.75rem;
+  border-radius: 14px;
+  background: var(--om-wash);
+  color: var(--om-ink-soft);
+  white-space: pre-wrap;
+}
+
+.voice-entry-assistant {
+  color: var(--om-ink);
 }
 
 .voice-word {
@@ -469,13 +501,6 @@ qm-voice-orb[hold-to-talk] .qm-voice-orb-button {
   }
 }
 
-@keyframes voice-recede {
-  to {
-    opacity: 0;
-    translate: 0 -6px;
-  }
-}
-
 @keyframes voice-shimmer {
   to {
     background-position: -200% 0;
@@ -520,7 +545,7 @@ qm-voice-orb[hold-to-talk] .qm-voice-orb-button {
   .voice-stage,
   .voice-dock,
   .voice-caption-user,
-  .voice-caption-agent.is-past {
+  .voice-entry {
     animation-duration: 1ms;
   }
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { JSDOM, VirtualConsole } from "jsdom";
-import type { ModelFile, VoiceSettings } from "../src/voice-assistant/protocol.ts";
+import type { ModelFile, TtsEngineId, VoicePreferences } from "../src/voice-assistant/protocol.ts";
 
 const dom = new JSDOM("<!doctype html><html><body></body></html>", {
   url: "http://localhost/",
@@ -61,21 +61,23 @@ const FILES: ModelFile[] = [
 ];
 
 const calls: string[] = [];
-const statusFor: VoiceSettings[] = [];
+const statusFor: VoicePreferences[] = [];
 let missing = FILES[0]!.bytes + FILES[1]!.bytes;
 let finishDownload: (() => void) | null = null;
 let failDownload: string | null = null;
+let orgTts: TtsEngineId = "phonon-40m";
 let gatedMissing = false;
 const api = async () => ({
-  voiceModelStatus: async (settings: VoiceSettings) => {
-    statusFor.push(settings);
+  voiceModelStatus: async (preferences: VoicePreferences) => {
+    statusFor.push(preferences);
     return {
       gpu: { webgpu: true },
       files: FILES,
       totalBytes: 1_300_000_000,
       missingBytes: missing,
       asrEngine: "qwen3-asr-0.6b" as const,
-      ttsEngine: settings.ttsEngine === "phonon-40m" && gatedMissing ? ("supertonic-3" as const) : settings.ttsEngine,
+      ttsEngine: orgTts === "phonon-40m" && gatedMissing ? ("supertonic-3" as const) : orgTts,
+      configuredTtsEngine: orgTts,
     };
   },
   downloadVoiceModels: (files: readonly ModelFile[], onProgress: (fraction: number) => void) => {
@@ -104,22 +106,18 @@ const draw = () => render(voiceSettingsRows(draw, api), host);
 const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
 const option = (group: string, value: string) =>
   host.querySelector<HTMLButtonElement>(`[role="radiogroup"][aria-label="${group}"] [data-value="${value}"]`)!;
+const radiogroups = () =>
+  [...host.querySelectorAll<HTMLElement>('[role="radiogroup"]')].map((group) => group.getAttribute("aria-label"));
 
-test("stored settings are validated field by field over the defaults", async () => {
+test("stored preferences are validated field by field and keep only the user's own choices", async () => {
   draw();
   await settle();
-  assert.deepEqual(store.currentVoiceSettings(), {
+  assert.deepEqual(store.currentVoicePreferences(), {
     enabled: false,
-    wakePhrase: "Oye Omni",
     language: "es",
-    announceScope: "voice",
     voice: CELIA,
-    ttsEngine: "phonon-40m",
-    asrEngine: "phonon-2.5",
     micMode: "open",
-    pttStyle: "hold",
   });
-  assert.deepEqual(store.parseVoiceSettings(null), store.parseVoiceSettings({ wakePhrase: "x".repeat(61) }));
 });
 
 test("the voice row offers the switch with the download size before anything is enabled", async () => {
@@ -128,13 +126,13 @@ test("the voice row offers the switch with the download size before anything is 
   assert.match(host.textContent ?? "", /Asistente de voz/);
   assert.match(host.textContent ?? "", /descarga 1,3 GB/);
   assert.equal(option("Asistente de voz", "off").getAttribute("aria-checked"), "true");
-  assert.equal(host.querySelector(".voice-wake-input"), null, "the details stay hidden while voice is off");
+  assert.equal(host.querySelector(".voice-models-row"), null, "the details stay hidden while voice is off");
 });
 
 test("turning it on saves the setting, downloads with progress and then starts the assistant", async () => {
   option("Asistente de voz", "on").click();
   await settle();
-  assert.equal(puts.at(-1)!.value.enabled, true);
+  assert.deepEqual(puts.at(-1)!.value, { enabled: true, language: "es", voice: CELIA, micMode: "open" });
   assert.deepEqual(calls, ["download:2"]);
   assert.match(host.textContent ?? "", /Descargando… 42%/);
   assert.equal(host.querySelector<HTMLProgressElement>(".voice-models-progress")!.value, 42);
@@ -142,25 +140,18 @@ test("turning it on saves the setting, downloads with progress and then starts t
   await settle();
   assert.deepEqual(calls, ["download:2", "start"]);
   assert.match(host.textContent ?? "", /Descargados en este dispositivo \(1,3 GB\)/);
-  assert.match(host.textContent ?? "", /Phonon 2\.5 no está disponible ahora mismo; se usa Qwen3-ASR 0\.6B\./);
+  assert.equal(host.querySelector(".voice-engine-note")!.textContent, "Motor de voz: Phonon 40M.");
 });
 
-test("the wake phrase, language, announce scope and voice persist to ui-state", async () => {
-  const input = host.querySelector<HTMLInputElement>(".voice-wake-input")!;
-  assert.equal(input.value, "Oye Omni");
-  input.value = "   ";
-  input.dispatchEvent(new win.Event("change"));
-  await settle();
-  assert.match(host.textContent ?? "", /Escribe una frase de hasta 60 caracteres/);
-  input.value = "Hola   Lucía";
-  input.dispatchEvent(new win.Event("change"));
-  await settle();
-  assert.equal(puts.at(-1)!.value.wakePhrase, "Hola Lucía");
+test("the user sees only the on switch, mic mode, language and voice", () => {
+  assert.deepEqual(radiogroups(), ["Asistente de voz", "Modo de micrófono", "Idioma de voz"]);
+  assert.ok(host.querySelector(".voice-voice-select select"));
+  for (const gone of [".voice-wake-input", ".voice-tts-select", ".voice-asr-select"])
+    assert.equal(host.querySelector(gone), null, `${gone} is an admin setting`);
+  assert.doesNotMatch(host.textContent ?? "", /Avisos de tareas|Frase de activación|Mantener pulsado/);
+});
 
-  option("Avisos de tareas", "all").click();
-  await settle();
-  assert.equal(puts.at(-1)!.value.announceScope, "all");
-
+test("language and voice persist to ui-state", async () => {
   const select = host.querySelector<HTMLSelectElement>(".voice-voice-select select")!;
   assert.deepEqual(
     [...select.querySelectorAll("optgroup")].map((group) => [group.label, group.children.length]),
@@ -199,43 +190,31 @@ test("the wake phrase, language, announce scope and voice persist to ui-state", 
   assert.ok(puts.every((put) => put.key === "voice-assistant"));
 });
 
-test("the microphone mode, push-to-talk style and engines persist, and engines recheck the download", async () => {
-  assert.ok(host.querySelector(".voice-wake-input"), "open mic asks for the wake phrase");
+test("the microphone mode offers open, push and off, and rechecks the download", async () => {
+  assert.deepEqual(
+    [...host.querySelectorAll('[aria-label="Microphone mode"] [role="radio"]')].map((o) => o.textContent?.trim()),
+    ["Open mic", "Push to talk", "Mic off"],
+  );
+  const seen = statusFor.length;
+  option("Microphone mode", "off").click();
+  await settle();
+  assert.equal(puts.at(-1)!.value.micMode, "off");
+  assert.equal(statusFor.length, seen + 1, "turning the mic off drops the recognition download");
   option("Microphone mode", "push").click();
   await settle();
   assert.equal(puts.at(-1)!.value.micMode, "push");
-  assert.equal(host.querySelector(".voice-wake-input"), null, "push to talk needs no wake phrase");
-  assert.equal(option("Push to talk", "hold").getAttribute("aria-checked"), "true");
-  option("Push to talk", "toggle").click();
-  await settle();
-  assert.equal(puts.at(-1)!.value.pttStyle, "toggle");
+  assert.deepEqual(Object.keys(puts.at(-1)!.value).sort(), ["enabled", "language", "micMode", "voice"]);
+});
 
-  const seen = statusFor.length;
-  const tts = host.querySelector<HTMLSelectElement>(".voice-tts-select select")!;
-  assert.deepEqual(
-    [...tts.options].map((o) => o.textContent),
-    ["Phonon 40M (default)", "Supertonic 3"],
-  );
-  tts.value = "supertonic-3";
-  tts.dispatchEvent(new win.Event("change"));
+test("the voice list follows the engine the organisation configured", async () => {
+  orgTts = "supertonic-3";
+  option("Microphone mode", "open").click();
   await settle();
-  assert.equal(puts.at(-1)!.value.ttsEngine, "supertonic-3");
-  assert.equal(statusFor.at(-1)!.ttsEngine, "supertonic-3");
-  assert.match(host.textContent ?? "", /Phonon 2\.5 is not available right now; Qwen3-ASR 0\.6B is used instead\./);
-  const asr = host.querySelector<HTMLSelectElement>(".voice-asr-select select")!;
-  asr.value = "qwen3-asr-0.6b";
-  asr.dispatchEvent(new win.Event("change"));
-  await settle();
-  assert.equal(puts.at(-1)!.value.asrEngine, "qwen3-asr-0.6b");
-  assert.doesNotMatch(host.textContent ?? "", /not available yet/);
-  assert.equal(statusFor.length, seen + 2);
+  assert.equal(host.querySelector(".voice-engine-note")!.textContent, "Speech engine: Supertonic 3.");
   const voices = host.querySelector<HTMLSelectElement>(".voice-voice-select select")!;
   assert.equal(voices.querySelectorAll("optgroup").length, 0, "Supertonic voices are one list");
   assert.equal(voices.options.length, 10);
-
-  option("Microphone mode", "open").click();
-  await settle();
-  assert.ok(host.querySelector(".voice-wake-input"));
+  orgTts = "phonon-40m";
 });
 
 test("removing the models stops the assistant and asks for the download again", async () => {
@@ -250,41 +229,38 @@ test("a gated model the server cannot fetch explains the missing token", async (
   host.querySelector<HTMLButtonElement>(".voice-models-download")!.click();
   await settle();
   failDownload = null;
-  assert.match(host.textContent ?? "", /Ask for HF_TOKEN to be configured/);
+  assert.match(host.textContent ?? "", /Ask an administrator to configure HF_TOKEN/);
 });
 
 test("a server without gated access says which speech engine is used instead", async () => {
   gatedMissing = true;
-  const tts = host.querySelector<HTMLSelectElement>(".voice-tts-select select")!;
-  tts.value = "phonon-40m";
-  tts.dispatchEvent(new win.Event("change"));
+  option("Microphone mode", "push").click();
   await settle();
   gatedMissing = false;
-  assert.match(host.textContent ?? "", /Phonon 40M is not available right now; Supertonic 3 is used instead\./);
-  tts.value = "supertonic-3";
-  tts.dispatchEvent(new win.Event("change"));
-  await settle();
-  assert.doesNotMatch(host.textContent ?? "", /Phonon 40M is not available/);
+  assert.equal(
+    host.querySelector(".voice-engine-note")!.textContent,
+    "Speech engine: Supertonic 3 (Phonon 40M is not available right now).",
+  );
 });
 
 test("turning it off persists and hides the details", async () => {
   option("Voice assistant", "off").click();
   await settle();
   assert.equal(puts.at(-1)!.value.enabled, false);
-  assert.equal(host.querySelector(".voice-wake-input"), null);
+  assert.equal(host.querySelector(".voice-models-row"), null);
 });
 
 test("a save merges its change over what another tab stored meanwhile", async () => {
   const record = stored.get("voice-assistant")!;
   stored.set("voice-assistant", {
-    value: { ...(record.value as Record<string, unknown>), wakePhrase: "Hola Omni" },
+    value: { ...(record.value as Record<string, unknown>), micMode: "off" },
     updatedAt: record.updatedAt + 1,
   });
   await store.saveVoiceSettings({ voice: "F2" });
   const saved = stored.get("voice-assistant")!.value as Record<string, unknown>;
-  assert.equal(saved.wakePhrase, "Hola Omni");
+  assert.equal(saved.micMode, "off");
   assert.equal(saved.voice, "F2");
-  assert.equal(store.currentVoiceSettings().wakePhrase, "Hola Omni");
+  assert.equal(store.currentVoicePreferences().micMode, "off");
 });
 
 test("a refused save retries over the stored value and gives up after repeated refusals", async () => {
@@ -294,7 +270,7 @@ test("a refused save retries over the stored value and gives up after repeated r
   refuseNext = 10;
   await assert.rejects(store.saveVoiceSettings({ voice: "M2" }), /voice_settings_conflict/);
   refuseNext = 0;
-  assert.equal(store.currentVoiceSettings().voice, "M1");
+  assert.equal(store.currentVoicePreferences().voice, "M1");
 });
 
 test("saves land in the order they were made even when an earlier one waits on a download", async () => {
@@ -305,7 +281,7 @@ test("saves land in the order they were made even when an earlier one waits on a
   finishFirst();
   await Promise.all([first, second]);
   assert.equal((stored.get("voice-assistant")!.value as Record<string, unknown>).voice, "F3");
-  assert.equal(store.currentVoiceSettings().voice, "F3");
+  assert.equal(store.currentVoicePreferences().voice, "F3");
 });
 
 test("sizes read in the voice language", () => {

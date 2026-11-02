@@ -22,6 +22,7 @@ import {
 import { isModelStatus, MODEL_STATUSES } from "../../model/model-classification.ts";
 import { resolveRuntimeChoiceDurable } from "../../harness/harness-router.ts";
 import { sanitizeBranding } from "../../resolution/branding.ts";
+import { parseVoiceOrgConfig, resolveVoiceOrgConfig, type VoiceOrgConfig } from "../../voice/voice-config.ts";
 import {
   credentialInjectionError,
   isValidCredentialSlug,
@@ -949,6 +950,25 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
       ctx.deps.config!.setBranding(scope, value ?? null);
       return { ok: true };
     },
+  },
+  {
+    id: "voice-assistant",
+    kind: "custom",
+    target: "org",
+    clearable: true,
+    label:
+      "Voice assistant engines, wake phrase, push-to-talk style and announcement scope (org-wide); { reset: true } restores the defaults.",
+    readKey: "voiceAssistant",
+    get: async (deps, scope) =>
+      parseScopeId(scope).kind === "org"
+        ? resolveVoiceOrgConfig(await deps.config!.getVoiceConfigDurable(scope))
+        : undefined,
+    apply: generic<VoiceOrgConfig | null>(
+      (body, { scope }) =>
+        orgOnly(scope, "the voice assistant settings are org-wide") ??
+        ((body as { reset?: unknown } | null)?.reset === true ? { value: null } : parseVoiceOrgConfig(body)),
+      (deps, scope, config) => deps.config!.setVoiceConfig(scope, config),
+    ),
   },
   {
     id: "turn-wall-clock",

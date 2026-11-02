@@ -116,8 +116,8 @@ import { trapDialogFocus } from "./dialog-focus";
 import { activeSessionForDocumentTitle, updateDocumentTitle } from "./document-title";
 import { VOICE_PERMISSION } from "./voice-assistant/protocol.ts";
 import {
-  currentVoiceSettings,
-  loadVoiceSettings,
+  currentVoicePreferences,
+  loadVoicePreferences,
   onVoiceSettingsChange,
   resetVoiceSettings,
 } from "./voice-assistant/settings-store.ts";
@@ -139,7 +139,7 @@ const VOICE_TOGGLE_COPY = {
 } as const;
 
 function voiceToggle(): TemplateResult {
-  const copy = VOICE_TOGGLE_COPY[currentVoiceSettings().language];
+  const copy = VOICE_TOGGLE_COPY[currentVoicePreferences().language];
   return html`<button
     class="icon-btn subtle voice-toggle ${voiceActive ? "active" : ""}"
     type="button"
@@ -153,7 +153,7 @@ function voiceToggle(): TemplateResult {
 }
 
 function voiceAvailable(): boolean {
-  return can(VOICE_PERMISSION) && currentVoiceSettings().enabled;
+  return can(VOICE_PERMISSION) && currentVoicePreferences().enabled;
 }
 
 async function syncVoiceAssistant(autoStart: boolean): Promise<void> {
@@ -175,7 +175,7 @@ async function syncVoiceAssistant(autoStart: boolean): Promise<void> {
 
 function bootVoiceAssistant(): void {
   if (!can(VOICE_PERMISSION)) return;
-  void loadVoiceSettings()
+  void loadVoicePreferences()
     .then(() => syncVoiceAssistant(true))
     .catch((error: unknown) => swallow("web-ui: voice assistant", error));
 }

@@ -3,6 +3,7 @@ import {
   VOICE_GENDERS,
   VOICE_LANGUAGES,
   VOICE_MAX_RUNNING_TASKS,
+  type VoicePreferences,
   type VoiceSettings,
   type VoiceTaskSummary,
   type VoiceToolCall,
@@ -20,6 +21,7 @@ export interface VoiceToolOutcome {
   content: string;
   isError?: boolean;
   confirm?: VoiceConfirmation;
+  ask?: true;
 }
 
 export interface TaskTail {
@@ -31,11 +33,12 @@ export interface TaskTail {
 export interface VoiceToolDeps {
   user: string;
   settings(): VoiceSettings;
-  saveSettings(patch: Partial<VoiceSettings>): Promise<VoiceSettings>;
+  saveSettings(patch: Partial<VoicePreferences>): Promise<VoiceSettings>;
   sessions(): Promise<CoreSession[]>;
   startTurn(body: { text: string; threadRef: string; idempotencyKey: string }): Promise<{
     runId?: string;
     status?: string;
+    steered?: boolean;
   }>;
   tail(sessionId: string): Promise<TaskTail>;
   approvals(sessionId: string): Promise<PendingApproval[]>;
@@ -48,6 +51,7 @@ export interface VoiceToolDeps {
 }
 
 const RESULT_CHARS = 2_500;
+const TASK_MESSAGE_CHARS = 2_000;
 const CONFIRM_SUMMARY_CHARS = 200;
 
 function voiceThreadRef(user: string, id: string): string {
@@ -191,6 +195,19 @@ export async function runVoiceTool(call: VoiceToolCall, deps: VoiceToolDeps): Pr
         await deps.abortRun(runId);
         return ok({ taskRef: call.args.taskRef, stopped: true });
       }
+      case "send_task_message": {
+        const text = String(call.args.text ?? "")
+          .trim()
+          .slice(0, TASK_MESSAGE_CHARS);
+        if (!text) return fail("empty_message");
+        const session = await findTask(deps, call.args.taskRef);
+        if (!session) return fail("task_not_found");
+        const submit = await deps.startTurn({ text, threadRef: session.threadRef, idempotencyKey: deps.newId() });
+        if (!submit.runId && submit.status !== "pending_approval") return fail("not_sent");
+        return ok({ taskRef: session.threadRef, status: submit.steered ? "queued" : "sent" });
+      }
+      case "ask_user":
+        return { ...ok({ status: "waiting_for_user" }), ask: true };
       case "open_task": {
         const session = await findTask(deps, call.args.taskRef);
         if (!session) return fail("task_not_found");
@@ -202,7 +219,7 @@ export async function runVoiceTool(call: VoiceToolCall, deps: VoiceToolDeps): Pr
         const language = args.language;
         if (Object.keys(args).length !== 1 || !(VOICE_LANGUAGES as readonly unknown[]).includes(language))
           return fail("invalid_language");
-        const saved = await deps.saveSettings({ language: language as VoiceSettings["language"] });
+        const saved = await deps.saveSettings({ language: language as VoicePreferences["language"] });
         return ok({ language: saved.language, voice: saved.voice });
       }
       case "set_voice": {

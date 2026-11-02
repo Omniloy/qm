@@ -104,6 +104,7 @@ import {
   type PersistedAckEmoji,
   type PersistedSlackEmojiCatalog,
   type PersistedBranding,
+  type PersistedVoiceConfig,
   type PersistedBrowseMaxSteps,
   type PersistedBrowseModel,
   type PersistedBrowserProvider,
@@ -146,6 +147,7 @@ import type {
   Webhook,
 } from "./types.ts";
 import { personalScope, scopeId } from "./types.ts";
+import type { VoiceTranscript } from "./voice/voice-transcript.ts";
 import { createAuditLog, type AuditLog } from "./audit/audit-log.ts";
 import { createPostgresAuditLog } from "./admin/postgres-audit-log.ts";
 import { createRateLimiter, type RateLimiter } from "./ratelimit/rate-limiter.ts";
@@ -606,6 +608,8 @@ export interface BuiltApp {
   fireDropResolution?: (drop: DropResolution) => Promise<unknown>;
   workspace: WorkspaceStore;
   memory: MemoryService;
+  memoryMaintain?: (scope: ScopeId) => Promise<void>;
+  voiceTranscripts: DurableMap<VoiceTranscript>;
   sandbox: Sandbox;
   advisoryLock: AdvisoryLock;
   sandboxMigration: SandboxMigrationRunner;
@@ -794,6 +798,7 @@ export function buildApp(
     ackEmoji: artifactMap<PersistedAckEmoji>("ack_emoji"),
     slackEmojiCatalog: artifactMap<PersistedSlackEmojiCatalog>("slack_emoji_catalog"),
     branding: artifactMap<PersistedBranding>("branding_configs"),
+    voiceConfigs: artifactMap<PersistedVoiceConfig>("voice_assistant_configs"),
     browseMaxSteps: artifactMap<PersistedBrowseMaxSteps>("browse_max_steps_configs"),
     browseModels: artifactMap<PersistedBrowseModel>("browse_model_configs"),
     browserProviders: artifactMap<PersistedBrowserProvider>("browser_provider_configs"),
@@ -3114,6 +3119,8 @@ export function buildApp(
     composioReturns,
     workspace,
     memory,
+    ...(memoryStrategy.maintain ? { memoryMaintain: (scope: ScopeId) => memoryStrategy.maintain!(scope) } : {}),
+    voiceTranscripts: artifactMap<VoiceTranscript>("voice_transcripts"),
     ...(keychain ? { keychain } : {}),
     serviceCreds: credentialStore,
     deliveries,
@@ -3279,6 +3286,9 @@ export function serverDeps(
     ...(built.fileUploads ? { fileUploads: built.fileUploads } : {}),
     filesDirectUploadsEnabled: config.filesDirectUploadsEnabled,
     memory: built.memory,
+    memoryPolicy: { recall: config.memoryRecall, capture: config.memoryCapture },
+    ...(built.memoryMaintain ? { memoryMaintain: built.memoryMaintain } : {}),
+    voiceTranscripts: built.voiceTranscripts,
     blobTransfer: built.blobTransfer,
     sandboxBackend: built.sandbox.profile.backend,
     egressDeclaredEnforcement: built.sandbox.profile.egressEnforcement ?? "none",

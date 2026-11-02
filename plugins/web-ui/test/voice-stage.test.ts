@@ -7,6 +7,13 @@ import type { VoiceChoice, VoiceStageHandlers, VoiceStageView } from "../src/voi
 registerHooks({
   load(url, context, nextLoad) {
     if (url.endsWith(".css")) return { format: "module", source: "", shortCircuit: true };
+    if (url.endsWith("/src/message-markdown.ts"))
+      return {
+        format: "module",
+        source:
+          'import { html } from "lit"; export const markdown = (text) => html`<qm-markdown .content=${text}></qm-markdown>`;',
+        shortCircuit: true,
+      };
     return nextLoad(url, context);
   },
 });
@@ -58,6 +65,8 @@ function view(over: Partial<VoiceStageView> = {}): VoiceStageView {
     muted: false,
     status: "",
     captions: { user: null, agent: null },
+    transcript: [],
+    awaitingUser: false,
     announcement: "",
     ...over,
   };
@@ -66,7 +75,9 @@ function view(over: Partial<VoiceStageView> = {}): VoiceStageView {
 function setup() {
   const calls: string[] = [];
   const typed: string[] = [];
+  const opened = { count: 0 };
   const handlers: VoiceStageHandlers = {
+    onOpen: () => void opened.count++,
     onOrbPress: () => calls.push("orb"),
     onToggleMute: () => calls.push("mute"),
     onTypeInstead: (text) => typed.push(text),
@@ -80,7 +91,7 @@ function setup() {
   const host = document.createElement("div");
   document.body.append(host);
   const stage = mountVoiceStage(host, handlers);
-  return { host, stage, calls, typed };
+  return { host, stage, calls, typed, opened };
 }
 
 function key(k: string, target: EventTarget = document.body) {
@@ -150,7 +161,7 @@ test("the open stage renders orb, status, aria-hidden captions, live announcer a
       muted: true,
       announcement: "Tu tarea ha terminado.",
       captions: {
-        user: { text: "¿Qué tal va la tarea?", final: true },
+        user: { text: "¿Qué tal va la tarea?", final: false },
         agent: { text: "Ya ha terminado. Todo correcto.", spokenChars: 8 },
       },
     }),
@@ -198,24 +209,89 @@ test("the open stage renders orb, status, aria-hidden captions, live announcer a
   stage.destroy();
 });
 
-test("partial user captions shimmer and a replaced reply recedes on its own layer", async () => {
+test("partial user captions shimmer and the spoken reply is a caption only while speaking", async () => {
   const { host, stage } = setup();
   stage.open();
-  stage.update(view({ state: "speaking", captions: { user: null, agent: { text: "Primera.", spokenChars: 8 } } }));
   stage.update(view({ state: "listening", captions: { user: { text: "y aho", final: false }, agent: null } }));
   await settle();
   assert.ok(host.querySelector(".voice-caption-user.is-partial"));
-  assert.equal(host.querySelector(".voice-caption-agent.is-past")?.textContent, "Primera.");
-  stage.update(view({ state: "speaking", captions: { user: null, agent: { text: "Segunda", spokenChars: 0 } } }));
   stage.update(
-    view({ state: "speaking", captions: { user: null, agent: { text: "Segunda parte.", spokenChars: 3 } } }),
+    view({
+      state: "thinking",
+      captions: { user: { text: "y ahora", final: true }, agent: { text: "", spokenChars: 0 } },
+    }),
   );
   await settle();
-  assert.equal(
-    host.querySelector(".voice-caption-agent.is-past")?.textContent,
-    "Primera.",
-    "a growing reply is not a new one",
+  assert.equal(host.querySelector(".voice-caption-user"), null, "what the person said moves to the transcript");
+  stage.update(view({ state: "speaking", captions: { user: null, agent: { text: "Hecho.", spokenChars: 2 } } }));
+  await settle();
+  assert.ok(host.querySelector(".voice-caption-agent"));
+  stage.update(view({ state: "listening", captions: { user: null, agent: { text: "Hecho.", spokenChars: 6 } } }));
+  await settle();
+  assert.equal(host.querySelector(".voice-caption-agent"), null);
+  assert.equal(host.querySelector(".is-past"), null, "there is no receding past caption any more");
+  stage.destroy();
+});
+
+test("the transcript panel shows what was written, with markdown, newest last", async () => {
+  const { host, stage, opened } = setup();
+  stage.update(view());
+  stage.open();
+  assert.equal(opened.count, 1, "opening the stage asks for the saved transcript");
+  await settle();
+  assert.equal(host.querySelector(".voice-transcript"), null, "an empty conversation shows no panel");
+  stage.update(
+    view({
+      transcript: [
+        { id: "u1", role: "user", text: "¿Cómo va el informe?", at: 1 },
+        { id: "a1", role: "assistant", text: "**Informe Q3**\n\n- tres conclusiones\n- dos riesgos", at: 2 },
+      ],
+    }),
   );
+  await settle();
+  const panel = host.querySelector(".voice-transcript")!;
+  assert.equal(panel.getAttribute("aria-label"), "Conversación con Omni");
+  const entries = [...panel.querySelectorAll(".voice-entry")];
+  assert.deepEqual(
+    entries.map((entry) => entry.classList.contains("voice-entry-user")),
+    [true, false],
+  );
+  assert.equal(entries[0]!.textContent, "¿Cómo va el informe?");
+  const rendered = entries[1]!.querySelector("qm-markdown") as (Element & { content?: string }) | null;
+  assert.ok(rendered, "assistant entries render through the chat markdown element");
+  assert.equal(rendered.content, "**Informe Q3**\n\n- tres conclusiones\n- dos riesgos");
+  stage.destroy();
+});
+
+test("with the mic off the dock has no mute button and the orb opens the type-in field", async () => {
+  const { host, stage, calls } = setup();
+  stage.update(view({ micMode: "off" }));
+  stage.open();
+  await settle();
+  assert.equal(host.querySelector(".voice-mute-toggle"), null);
+  const button = host.querySelector<HTMLButtonElement>(".voice-stage-orb qm-voice-orb button")!;
+  assert.equal(button.getAttribute("aria-label"), "Escribir");
+  key("m");
+  button.click();
+  await settle();
+  assert.ok(host.querySelector(".voice-type-input"), "pressing the orb starts typing");
+  assert.deepEqual(calls, []);
+  stage.update(view({ micMode: "off", state: "speaking" }));
+  await settle();
+  host.querySelector<HTMLButtonElement>(".voice-stage-orb qm-voice-orb button")!.click();
+  assert.deepEqual(calls, ["orb"], "while speaking the orb interrupts");
+  stage.destroy();
+});
+
+test("a question from the assistant opens the type-in field when the mic is off", async () => {
+  const { host, stage } = setup();
+  stage.update(view({ micMode: "off" }));
+  stage.open();
+  await settle();
+  assert.equal(host.querySelector(".voice-type-input"), null);
+  stage.update(view({ micMode: "off", awaitingUser: true, status: "Escribe tu respuesta" }));
+  await settle();
+  assert.ok(host.querySelector(".voice-type-input"));
   stage.destroy();
 });
 
@@ -376,7 +452,7 @@ test("the voice picker groups by accent, shows the active language first and can
   stage.destroy();
 });
 
-test("the dock switches between open mic and push to talk", async () => {
+test("the dock switches between open mic, push to talk and mic off", async () => {
   const { host, stage, calls } = setup();
   stage.update(view());
   stage.open();
@@ -389,12 +465,14 @@ test("the dock switches between open mic and push to talk", async () => {
     [
       ["Micrófono abierto", "true"],
       ["Pulsar para hablar", "false"],
+      ["Sin micrófono", "false"],
     ],
   );
   radios[0]!.click();
+  radios[2]!.click();
   radios[1]!.focus();
   radios[1]!.click();
-  assert.deepEqual(calls, ["mic:push"]);
+  assert.deepEqual(calls, ["mic:off", "mic:push"]);
   await settle();
   assert.equal(document.activeElement, host.querySelector(".voice-stage-orb .qm-voice-orb-button"));
   stage.destroy();

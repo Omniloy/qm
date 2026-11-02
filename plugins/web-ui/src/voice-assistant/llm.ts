@@ -1,7 +1,7 @@
 import { webFetch, withBase } from "../core-bridge.ts";
-import type { VoiceReplyErrorReason, VoiceReplyFrame, VoiceReplyRequest } from "./protocol.ts";
+import type { VoiceReplyErrorReason, VoiceReplyFrame, VoiceReplyRequest, VoiceTranscriptEntry } from "./protocol.ts";
 
-const FRAME_TYPES = new Set(["delta", "tool_call", "done", "error"]);
+const FRAME_TYPES = new Set(["delta", "text_end", "tool_call", "written", "done", "error"]);
 
 export class VoiceReplyError extends Error {
   readonly reason: VoiceReplyErrorReason;
@@ -83,4 +83,14 @@ export async function* streamVoiceReply(
     throw new VoiceReplyError(reasonOf(body?.error), response.status);
   }
   yield* readVoiceReply(response.body);
+}
+
+export function parseVoiceTranscript(value: unknown): VoiceTranscriptEntry[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((raw: unknown) => {
+    const entry = raw as Partial<VoiceTranscriptEntry> | null;
+    if (!entry || typeof entry.id !== "string" || typeof entry.text !== "string") return [];
+    if (entry.role !== "user" && entry.role !== "assistant") return [];
+    return [{ id: entry.id, role: entry.role, text: entry.text, at: typeof entry.at === "number" ? entry.at : 0 }];
+  });
 }

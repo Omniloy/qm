@@ -1,6 +1,7 @@
 import { SUBAGENT_THREAD_PREFIX, type CoreSession, type SessionStateEvent } from "../core-bridge.ts";
 import {
   VOICE_MAX_CONTENT_CHARS,
+  VOICE_MAX_FOLLOWUPS_PER_TASK,
   type AnnounceScope,
   type VoiceLanguage,
   type VoiceReplyFrame,
@@ -21,6 +22,15 @@ export interface Announcement {
   detail: string;
 }
 
+export interface TaskUpdate {
+  taskRef: string;
+  title: string;
+  kind: AnnouncementKind;
+  detail: string;
+}
+
+export type ReviewOutcome = "done" | "interrupted" | "unheard";
+
 export interface AnnouncerDeps {
   scope(): AnnounceScope;
   language(): VoiceLanguage;
@@ -30,6 +40,7 @@ export interface AnnouncerDeps {
   tail(sessionId: string): Promise<TaskTail>;
   pendingApproval(sessionId: string): Promise<string>;
   summarize(request: VoiceReplyRequest, signal: AbortSignal): AsyncIterable<VoiceReplyFrame>;
+  review(update: TaskUpdate): Promise<ReviewOutcome>;
   title?(threadRef: string): string | undefined;
   deliver(announcement: Announcement): void;
 }
@@ -87,12 +98,18 @@ async function collectText(frames: AsyncIterable<VoiceReplyFrame>): Promise<stri
 
 export function createAnnouncer(deps: AnnouncerDeps): Announcer {
   const states = new Map<string, TaskState>();
-  const inFlight = new Set<string>();
+  const inFlight = new Map<string, object>();
+  const followUps = new Map<string, number>();
   const controller = new AbortController();
   let chain: Promise<void> = Promise.resolve();
   let disposed = false;
 
-  const announce = async (threadRef: string, sessionId: string | undefined, next: TaskState): Promise<void> => {
+  const announce = async (
+    threadRef: string,
+    sessionId: string | undefined,
+    next: TaskState,
+    release: () => void,
+  ): Promise<void> => {
     const sessions = await deps.sessions();
     const session = sessions.find((s) => s.threadRef === threadRef || (sessionId && s.id === sessionId));
     const id = sessionId ?? session?.id;
@@ -103,6 +120,14 @@ export function createAnnouncer(deps: AnnouncerDeps): Announcer {
     const title = deps.title?.(threadRef)?.trim() || tail.title?.trim() || (session ? taskTitle(session) : "");
     const language = deps.language();
     const detail = kind === "approval" ? await deps.pendingApproval(id).catch(() => "") : tail.reply;
+    release();
+    const reviewed = followUps.get(threadRef) ?? 0;
+    if (reviewed < VOICE_MAX_FOLLOWUPS_PER_TASK) {
+      followUps.set(threadRef, reviewed + 1);
+      const outcome = await deps.review({ taskRef: threadRef, title, kind, detail }).catch(() => null);
+      if (outcome === "interrupted" || outcome === "unheard") followUps.set(threadRef, VOICE_MAX_FOLLOWUPS_PER_TASK);
+      if (outcome === "done" || outcome === "interrupted" || disposed) return;
+    }
     const text = await collectText(
       deps.summarize(announcePrompt(kind, title, detail, language), controller.signal),
     ).catch(() => "");
@@ -124,11 +149,15 @@ export function createAnnouncer(deps: AnnouncerDeps): Announcer {
     if (deps.foregroundThread() === threadRef) return;
     const key = `${threadRef}:${next}`;
     if (inFlight.has(key)) return;
-    inFlight.add(key);
+    const token = {};
+    inFlight.set(key, token);
+    const release = () => {
+      if (inFlight.get(key) === token) inFlight.delete(key);
+    };
     chain = chain
-      .then(() => announce(threadRef, sessionId, next))
+      .then(() => announce(threadRef, sessionId, next, release))
       .catch(() => undefined)
-      .finally(() => inFlight.delete(key));
+      .finally(release);
   };
 
   const seed = (sessions: readonly CoreSession[]) => {
@@ -161,6 +190,7 @@ export function createAnnouncer(deps: AnnouncerDeps): Announcer {
       disposed = true;
       controller.abort();
       states.clear();
+      followUps.clear();
     },
   };
 }

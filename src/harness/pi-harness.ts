@@ -1603,6 +1603,8 @@ async function* streamVoiceReplyOn(
       if (event.type === "text_delta") {
         firstAt ??= Date.now();
         yield { type: "delta", text: event.delta };
+      } else if (event.type === "text_end") {
+        yield { type: "text_end" };
       } else if (event.type === "toolcall_end") {
         firstAt ??= Date.now();
         yield { type: "tool_call", id: event.toolCall.id, name: event.toolCall.name, args: event.toolCall.arguments };

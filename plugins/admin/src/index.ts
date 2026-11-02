@@ -427,6 +427,12 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     if (!principal) return json(res, 401, { error: "signed_out" });
     return forward(req, res, principal, "GET", "/v1/admin/resources");
   }
+  if (method === "GET" && pathname === "/api/voice-models") {
+    if (!principal) return json(res, 401, { error: "signed_out" });
+    return json(res, 200, {
+      gatedModels: Boolean(process.env.HF_TOKEN?.trim() || process.env.VOICE_MODEL_DIR?.trim()),
+    });
+  }
   if (method === "GET" && pathname === "/api/connector-catalog") {
     if (!principal) return json(res, 401, { error: "signed_out" });
     return forward(req, res, principal, "GET", "/v1/connectors/catalog");

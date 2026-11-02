@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { CoreSession, PendingApproval } from "../src/core-bridge.ts";
-import { VoiceReplyError, parseSseEvent, streamVoiceReply } from "../src/voice-assistant/llm.ts";
+import { VoiceReplyError, parseSseEvent, parseVoiceTranscript, streamVoiceReply } from "../src/voice-assistant/llm.ts";
 import {
   DEFAULT_VOICE_SETTINGS,
   type VoiceReplyFrame,
   type VoiceReplyRequest,
   type VoiceSettings,
 } from "../src/voice-assistant/protocol.ts";
-import { parseVoiceSettings, runnableVoiceSettings } from "../src/voice-assistant/settings-store.ts";
+import { parseVoicePreferences, runnableVoiceSettings } from "../src/voice-assistant/settings-store.ts";
 import { isVoiceThread, runVoiceTool, taskSummaries, type VoiceToolDeps } from "../src/voice-assistant/tools.ts";
 
 const REQUEST: VoiceReplyRequest = {
@@ -101,7 +101,7 @@ function deps(sessions: CoreSession[], over: Partial<VoiceToolDeps> = {}) {
     user: "ana@example.com",
     settings: () => settings,
     saveSettings: async (patch) => {
-      settings = parseVoiceSettings({ ...settings, ...patch });
+      settings = { ...settings, ...parseVoicePreferences({ ...settings, ...patch }) };
       log.push(`settings:${settings.language}:${settings.voice}`);
       return settings;
     },
@@ -278,7 +278,7 @@ test("set_voice on the fallback engine picks from the voices the model was offer
   const { deps: d } = deps([], {
     settings: runtime,
     saveSettings: async (patch) => {
-      stored = parseVoiceSettings({ ...stored, ...patch });
+      stored = { ...stored, ...parseVoicePreferences({ ...stored, ...patch }) };
       return runtime();
     },
   });
@@ -289,4 +289,75 @@ test("set_voice on the fallback engine picks from the voices the model was offer
   assert.equal(JSON.parse(next.content).voice, "M4");
   assert.equal(stored.ttsEngine, "phonon-40m");
   assert.equal(runnableVoiceSettings(stored, true).ttsEngine, "phonon-40m");
+});
+
+test("written frames pass through the stream and transcript entries are validated", async () => {
+  const frames = await collect(
+    streamVoiceReply(
+      REQUEST,
+      new AbortController().signal,
+      async () =>
+        new Response(
+          sse(['data: {"type":"written","id":"e1","markdown":"**Hecho**"}\n\n', 'data: {"type":"done"}\n\n']),
+          { status: 200 },
+        ),
+    ),
+  );
+  assert.deepEqual(frames[0], { type: "written", id: "e1", markdown: "**Hecho**" });
+  assert.deepEqual(
+    parseVoiceTranscript([
+      { id: "a", role: "user", text: "hola", at: 1 },
+      { id: "b", role: "assistant", text: "**hola**" },
+      { id: "c", role: "system", text: "x", at: 2 },
+      { role: "user", text: "sin id" },
+      null,
+    ]),
+    [
+      { id: "a", role: "user", text: "hola", at: 1 },
+      { id: "b", role: "assistant", text: "**hola**", at: 0 },
+    ],
+  );
+  assert.deepEqual(parseVoiceTranscript({ entries: [] }), []);
+});
+
+test("send_task_message continues the existing task thread and says whether it was queued", async () => {
+  const { deps: d, log } = deps([session("web:ana@example.com:voice:t1"), session("web:ana@example.com:other")]);
+  const sent = await runVoiceTool(
+    { id: "c", name: "send_task_message", args: { taskRef: "web:ana@example.com:voice:t1", text: "  Añade Q4  " } },
+    d,
+  );
+  assert.deepEqual(JSON.parse(sent.content), {
+    ok: true,
+    taskRef: "web:ana@example.com:voice:t1",
+    status: "sent",
+  });
+  assert.deepEqual(log, ["turn:web:ana@example.com:voice:t1:Añade Q4:id1"]);
+  const byId = await runVoiceTool(
+    { id: "c", name: "send_task_message", args: { taskRef: "s-web:ana@example.com:other", text: "sigue" } },
+    { ...d, startTurn: async () => ({ status: "queued", runId: "run-2", steered: true }) },
+  );
+  assert.deepEqual(JSON.parse(byId.content), { ok: true, taskRef: "web:ana@example.com:other", status: "queued" });
+});
+
+test("send_task_message refuses unknown tasks and empty messages", async () => {
+  const { deps: d, log } = deps([session("web:ana@example.com:voice:t1")]);
+  const unknown = await runVoiceTool(
+    { id: "c", name: "send_task_message", args: { taskRef: "web:bob@example.com:x", text: "hola" } },
+    d,
+  );
+  assert.equal(unknown.isError, true);
+  assert.equal(JSON.parse(unknown.content).error, "task_not_found");
+  const empty = await runVoiceTool(
+    { id: "c", name: "send_task_message", args: { taskRef: "web:ana@example.com:voice:t1", text: "  " } },
+    d,
+  );
+  assert.equal(empty.isError, true);
+  assert.deepEqual(log, []);
+});
+
+test("ask_user waits for the person", async () => {
+  const { deps: d } = deps([]);
+  const outcome = await runVoiceTool({ id: "c", name: "ask_user", args: { question: "¿Qué trimestre?" } }, d);
+  assert.deepEqual(JSON.parse(outcome.content), { ok: true, status: "waiting_for_user" });
+  assert.equal(outcome.ask, true);
 });

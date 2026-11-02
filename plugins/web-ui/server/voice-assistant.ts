@@ -51,6 +51,12 @@ export function voiceAccessPath(user: string): string {
   return `/v1/voice/access?principalId=${encodeURIComponent(user)}`;
 }
 
+function voiceTranscriptPath(user: string): string {
+  return `/v1/voice/transcript?principalId=${encodeURIComponent(user)}`;
+}
+
+const VOICE_TRANSCRIPT_PATH = "/v1/voice/transcript";
+
 export function modelUpstreamUrl(file: ModelFile, origin: string): URL {
   const segments = (parts: string) => parts.split("/").map(encodeURIComponent).join("/");
   return new URL(
@@ -85,6 +91,31 @@ async function relayAccess(c: VoiceCtx, deps: VoiceAssistantDeps): Promise<void>
   const r = await deps.coreFetch("GET", voiceAccessPath(c.user));
   const access = r.status === 200 ? jsonObject(r.text) : null;
   relayText(c.res, r.status, access ? JSON.stringify({ ...access, gatedModels: gatedModelsServable(deps) }) : r.text);
+}
+
+async function relayTranscript(c: VoiceCtx, deps: VoiceAssistantDeps): Promise<void> {
+  const r = await deps.coreFetch("GET", voiceTranscriptPath(c.user));
+  relayText(c.res, r.status, r.text);
+}
+
+async function relayTranscriptAppend(c: VoiceCtx, deps: VoiceAssistantDeps): Promise<void> {
+  const body = await deps.readJson(c.req, c.res);
+  if (!body) return;
+  if (Array.isArray(body)) return json(c.res, 400, { error: "bad_request" });
+  const controller = abortOnClose(c.res);
+  try {
+    const upstream = await deps.coreStream(
+      "POST",
+      VOICE_TRANSCRIPT_PATH,
+      JSON.stringify({ entries: (body as { entries?: unknown }).entries, principalId: c.user }),
+      controller.signal,
+    );
+    const text = await upstream.text();
+    if (!controller.signal.aborted)
+      relayText(c.res, upstream.status, jsonObject(text) ? text : JSON.stringify({ error: "upstream_error" }));
+  } catch {
+    if (!controller.signal.aborted) json(c.res, 502, { error: "upstream_error" });
+  }
 }
 
 function pipeBody(body: ReadableStream<Uint8Array>, res: ServerResponse): void {
@@ -258,6 +289,16 @@ export function voiceAssistantRoutes(deps: VoiceAssistantDeps): VoiceRoute[] {
       method: "GET",
       path: "/api/voice/access",
       handle: (c) => relayAccess(c, deps),
+    },
+    {
+      method: "GET",
+      path: "/api/voice/transcript",
+      handle: (c) => relayTranscript(c, deps),
+    },
+    {
+      method: "POST",
+      path: "/api/voice/transcript",
+      handle: (c) => relayTranscriptAppend(c, deps),
     },
     {
       method: "POST",

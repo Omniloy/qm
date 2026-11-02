@@ -53,6 +53,8 @@ import type { MountStore } from "../mounts/mount-store.ts";
 import type { ListingCache } from "../mounts/listing-cache.ts";
 import type { FileArtifactStore } from "../files/file-artifact-store.ts";
 import type { MemoryService } from "../memory/memory-service.ts";
+import type { MemoryPolicy } from "../memory/policy.ts";
+import type { VoiceTranscript } from "../voice/voice-transcript.ts";
 import type { SandboxMigrationRunner } from "../sandbox/sandbox-migration-runner.ts";
 import type { EgressEnforcement, Sandbox } from "../sandbox/sandbox.ts";
 import type { EnvironmentStore } from "../environments/environment-store.ts";
@@ -198,6 +200,9 @@ export interface ServerDeps {
   fileUploads?: DirectFileUploads;
   filesDirectUploadsEnabled?: boolean;
   memory?: MemoryService;
+  memoryPolicy?: MemoryPolicy;
+  memoryMaintain?: (scope: ScopeId) => Promise<void>;
+  voiceTranscripts?: DurableMap<VoiceTranscript>;
   sandboxBackend?: string;
   egressDeclaredEnforcement?: EgressEnforcement;
   egressEnforcement?: EgressEnforcement;

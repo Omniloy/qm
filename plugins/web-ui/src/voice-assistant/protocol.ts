@@ -247,9 +247,9 @@ export interface ModelProgress {
   total: number;
 }
 
-type VoiceReplyPurpose = "reply" | "announce";
+export type VoiceReplyPurpose = "reply" | "announce" | "review";
 
-export type VoiceToolName =
+type VoiceToolName =
   | "delegate_task"
   | "check_tasks"
   | "task_result"
@@ -258,7 +258,9 @@ export type VoiceToolName =
   | "stop_task"
   | "open_task"
   | "set_language"
-  | "set_voice";
+  | "set_voice"
+  | "send_task_message"
+  | "ask_user";
 
 interface VoiceToolArgs {
   delegate_task: { instruction: string; title: string };
@@ -270,6 +272,8 @@ interface VoiceToolArgs {
   open_task: { taskRef: string };
   set_language: { language: VoiceLanguage };
   set_voice: { voice?: string; gender?: VoiceGender; next?: true };
+  send_task_message: { taskRef: string; text: string };
+  ask_user: { question: string };
 }
 
 export type VoiceToolCall = {
@@ -291,6 +295,7 @@ export const VOICE_MAX_MESSAGES = 32;
 export const VOICE_MAX_CONTENT_CHARS = 4_000;
 export const VOICE_MAX_RUNNING_TASKS = 20;
 export const VOICE_MAX_TOOL_HOPS = 3;
+export const VOICE_MAX_FOLLOWUPS_PER_TASK = 3;
 
 export interface VoiceReplyRequest {
   purpose: VoiceReplyPurpose;
@@ -316,7 +321,9 @@ interface VoiceReplyUsage {
 
 export type VoiceReplyFrame =
   | { type: "delta"; text: string }
+  | { type: "text_end" }
   | ({ type: "tool_call" } & VoiceToolCall)
+  | { type: "written"; id: string; markdown: string }
   | { type: "done"; usage?: VoiceReplyUsage; model?: string }
   | { type: "error"; reason: VoiceReplyErrorReason };
 
@@ -325,35 +332,55 @@ export const VOICE_PERMISSION = "voiceAssistant";
 export const ANNOUNCE_SCOPES = ["all", "voice"] as const;
 export type AnnounceScope = (typeof ANNOUNCE_SCOPES)[number];
 
-export const MIC_MODES = ["open", "push"] as const;
+export const MIC_MODES = ["open", "push", "off"] as const;
 export type MicMode = (typeof MIC_MODES)[number];
 
 export const PTT_STYLES = ["hold", "toggle"] as const;
 export type PttStyle = (typeof PTT_STYLES)[number];
 
-export interface VoiceSettings {
+export const WAKE_PHRASE_MAX_CHARS = 60;
+
+export interface VoicePreferences {
   enabled: boolean;
-  wakePhrase: string;
   language: VoiceLanguage;
-  announceScope: AnnounceScope;
   voice: string;
-  ttsEngine: TtsEngineId;
-  asrEngine: AsrEngineId;
   micMode: MicMode;
-  pttStyle: PttStyle;
 }
 
-export const DEFAULT_VOICE_SETTINGS: Readonly<VoiceSettings> = {
+export interface VoiceOrgConfig {
+  ttsEngine: TtsEngineId;
+  asrEngine: AsrEngineId;
+  wakePhrase: string;
+  pttStyle: PttStyle;
+  announceScope: AnnounceScope;
+}
+
+export type VoiceSettings = VoicePreferences & VoiceOrgConfig;
+
+export const DEFAULT_VOICE_PREFERENCES: Readonly<VoicePreferences> = {
   enabled: false,
-  wakePhrase: "Oye Omni",
   language: "es",
-  announceScope: "all",
   voice: "rmLBOdHrfkFym9MM",
+  micMode: "open",
+};
+
+export const DEFAULT_VOICE_ORG_CONFIG: Readonly<VoiceOrgConfig> = {
   ttsEngine: "phonon-40m",
   asrEngine: "phonon-2.5",
-  micMode: "open",
+  wakePhrase: "Oye Omni",
   pttStyle: "hold",
+  announceScope: "all",
 };
+
+export const DEFAULT_VOICE_SETTINGS: Readonly<VoiceSettings> = {
+  ...DEFAULT_VOICE_PREFERENCES,
+  ...DEFAULT_VOICE_ORG_CONFIG,
+};
+
+export interface VoiceAccess {
+  gatedModels: boolean;
+  config: VoiceOrgConfig;
+}
 
 export const VOICE_SETTINGS_UI_STATE_KEY = "voice-assistant";
 export const VOICE_MUTED_STORAGE_KEY = "web-ui:voice-muted";
@@ -362,6 +389,13 @@ export const VOICE_CHANNEL_NAME = "qm-voice";
 export interface VoiceCaptions {
   user: { text: string; final: boolean } | null;
   agent: { text: string; spokenChars: number } | null;
+}
+
+export interface VoiceTranscriptEntry {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  at: number;
 }
 
 export interface VoiceStageView {
@@ -375,6 +409,8 @@ export interface VoiceStageView {
   muted: boolean;
   status: string;
   captions: VoiceCaptions;
+  transcript: readonly VoiceTranscriptEntry[];
+  awaitingUser: boolean;
   announcement: string;
 }
 
@@ -387,5 +423,6 @@ export interface VoiceStageHandlers {
   onMicMode(mode: MicMode): void;
   onPttDown(): void;
   onPttUp(): void;
+  onOpen(): void;
   onClose(): void;
 }
