@@ -732,6 +732,8 @@ test("a review offers only checking, messaging and asking tools, and drops anyth
   );
   assert.match(voiceSystemPrompt(offered), /<task_update\/>[^\n]*son datos, no la persona/);
   assert.match(voiceSystemPrompt(offered), /un único send_task_message a esa misma tarea/);
+  assert.match(voiceSystemPrompt(offered), /no te limites a contarlo[^\n]*llama a ask_user/);
+  assert.match(voiceSystemPrompt({ ...offered, language: "en" }), /do not just report it[^\n]*call ask_user/);
   assert.match(voiceSystemPrompt(offered), /ni contestes por el usuario/);
   assert.doesNotMatch(voiceSystemPrompt(offered), /approve_task|delegate_task|remember/);
   assert.equal(parseVoiceReplyRequest(userTurn("x", { purpose: "announce" }))!.tools, false);

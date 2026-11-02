@@ -153,6 +153,13 @@ test("an automation block is explained as the site's choice, not a bug to retry"
   assert.match(SKILL, /not\*{0,2} about where the browser runs/i);
 });
 
+test("a page that fails to load says why, instead of leaving a bare chrome-error URL", () => {
+  const go = /if a\.cmd == "go":[\s\S]*?elif a\.cmd == "snapshot":/.exec(CLI)?.[0] ?? "";
+  assert.match(go, /nav = c\.call\("Page\.navigate", url=url\)/);
+  assert.match(go, /if nav\.get\("errorText"\):[\s\S]*The page did not load: \{nav\['errorText'\]\}/);
+  assert.match(go, /Tell the person what failed/);
+});
+
 test("the person types their own password, always", () => {
   assert.match(SKILL, /Never type someone's password yourself/);
   assert.match(SKILL, /Take control/);
