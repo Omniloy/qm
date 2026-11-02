@@ -1433,6 +1433,21 @@ export async function archiveDeployment(ctx: ApiCtx): Promise<void> {
   }
 }
 
+async function deleteDeploymentVersion(ctx: ApiCtx): Promise<void> {
+  const { res, app, params } = ctx;
+  const version = Number(params.version);
+  if (!/^\d+$/.test(params.version ?? "") || !Number.isSafeInteger(version))
+    return sendJson(res, 400, { error: "bad_request", message: "version must be an integer" });
+  const id = await deploymentId(app, params.id!);
+  if (!id) return sendJson(res, 404, { error: "not_found" });
+  if (!(await callerMayManageDeployment(ctx, id))) return sendJson(res, 403, { error: "forbidden" });
+  const result = await app.deleteDeploymentVersion(id, version, ctx.capability?.actorId ?? ctx.actor?.p);
+  if (result.status === "live")
+    return sendJson(res, 409, { error: "version_live", message: "the live version cannot be deleted" });
+  if (result.status === "not_found") return sendJson(res, 404, { error: "not_found" });
+  return sendJson(res, 200, { deleted: true, freedBytes: result.freedBytes });
+}
+
 export async function restoreDeployment(ctx: ApiCtx): Promise<void> {
   const { res, app, params, capability, body } = ctx;
   const id = await deploymentId(app, params.id!);
@@ -1677,6 +1692,12 @@ export const deploymentRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "POST", path: "/v1/deployments/:id/redeploy", auth: "source", handle: redeployDeployment },
   { method: "POST", path: "/v1/deployments/:id/archive", auth: "either", handle: archiveDeployment },
   { method: "POST", path: "/v1/deployments/:id/restore", auth: "either", handle: restoreDeployment },
+  {
+    method: "DELETE",
+    path: "/v1/deployments/:id/versions/:version",
+    auth: "either",
+    handle: deleteDeploymentVersion,
+  },
   { method: "POST", path: "/v1/deployments/:id/name", auth: "either", handle: renameDeployment },
   { method: "POST", path: "/v1/deployments/:id/display-name", auth: "either", handle: setDeploymentDisplayName },
   { method: "POST", path: "/v1/deployments/:id/always-on", auth: "either", handle: setDeploymentAlwaysOn },

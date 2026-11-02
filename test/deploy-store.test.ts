@@ -75,6 +75,7 @@ test("addVersionFromCommit registers a pushed commit as a new version inheriting
   assert.equal(v2.commit, pushed);
   assert.equal(v2.entrypoint, "node server.js");
   assert.deepEqual(v2.env, { FOO: "bar" });
+  assert.equal(v2.snapshotDir, "", "a pushed version has no copy of its own until it is applied");
   assert.equal((await s.get(d.id))!.currentVersion, 2);
 
   const v2bundle = await s.bundleOf(d.id, 2);
@@ -668,4 +669,90 @@ test("the push into the bare repo runs receive-pack through the configured binar
     `receive-pack did not run through the configured binary: ${spawns.join(" | ")}`,
   );
   assert.ok(spawns.every((s) => s.startsWith("-c gc.auto=0 ")));
+});
+
+test("deleteVersions removes old copies and their refs, refuses the live ones, and never reuses a number", async () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "delete-versions-"));
+  const s = createDeployStore({ git: { repoRoot } });
+  const d = await s.create({
+    ownerScopeId: scopeId("personal", "U1"),
+    createdBy: "U1",
+    entrypoint: "node server.js",
+    snapshotDir: "/snap/v1",
+    sizeBytes: 11,
+    files: [{ path: "server.js", data: "1" }],
+  });
+  await s.addVersion(d.id, {
+    entrypoint: "node server.js",
+    snapshotDir: "/snap/v2",
+    files: [{ path: "server.js", data: "1" }],
+  });
+  await s.addVersion(d.id, {
+    entrypoint: "node server.js",
+    snapshotDir: "/snap/v3",
+    files: [{ path: "server.js", data: "3" }],
+  });
+  await s.setAppliedVersion(d.id, 3);
+  const before = (await s.get(d.id))!;
+  assert.equal(before.versions[0]!.sizeBytes, 11);
+  const shared = before.versions[0]!.commit!;
+  assert.equal(before.versions[1]!.commit, shared, "an unchanged publish reuses its parent commit");
+
+  await assert.rejects(s.deleteVersions(d.id, [1, 3]), /cannot delete the live version/);
+  assert.equal((await s.get(d.id))!.versions.length, 3, "a refused delete removes nothing");
+
+  const removed = await s.deleteVersions(d.id, [1, 99]);
+  assert.deepEqual(
+    removed.map((v) => v.version),
+    [1],
+  );
+  assert.deepEqual(
+    (await s.get(d.id))!.versions.map((v) => v.version),
+    [2, 3],
+  );
+  assert.equal(await s.refOf(d.id, "refs/versions/1"), null);
+  assert.equal(await s.refOf(d.id, `refs/deploy-commits/${shared}`), shared, "v2 still needs the shared commit");
+
+  await s.deleteVersions(d.id, [2]);
+  assert.equal(await s.refOf(d.id, `refs/deploy-commits/${shared}`), null);
+  assert.ok(await s.filesOf(d.id, 3), "the surviving version still reads back");
+
+  const v4 = await s.addVersion(d.id, { entrypoint: "node server.js", snapshotDir: "/snap/v4" });
+  assert.equal(v4.version, 4, "numbering continues past deleted versions");
+  assert.deepEqual(await s.deleteVersions("nope", [1]), []);
+});
+
+test("setVersionSnapshot records a materialized copy and its size", async () => {
+  const s = createDeployStore();
+  const d = await s.create({
+    ownerScopeId: scopeId("personal", "U1"),
+    createdBy: "U1",
+    entrypoint: "x",
+    snapshotDir: "",
+  });
+  await s.setVersionSnapshot(d.id, 1, { snapshotDir: "/snap/fresh", sizeBytes: 42 });
+  const v = (await s.versionOf(d.id, 1))!;
+  assert.equal(v.snapshotDir, "/snap/fresh");
+  assert.equal(v.sizeBytes, 42);
+  await assert.rejects(s.setVersionSnapshot(d.id, 7, { snapshotDir: "/x", sizeBytes: 1 }), /no such version/);
+});
+
+test("delete forgets the deployment and drops its git repo and archive", async () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "delete-deployment-"));
+  const archiveStore = createMemoryMap<DeployGitArchive>();
+  const s = createDeployStore({ git: { repoRoot, archiveStore } });
+  const d = await s.create({
+    ownerScopeId: scopeId("personal", "U1"),
+    createdBy: "U1",
+    entrypoint: "x",
+    snapshotDir: "/snap/v1",
+    files: [{ path: "a.txt", data: "a" }],
+  });
+  const repo = await s.repoUrl(d.id);
+  assert.ok(existsSync(repo));
+  assert.ok(await archiveStore.get(d.id));
+  await s.delete(d.id);
+  assert.equal(await s.get(d.id), null);
+  assert.equal(existsSync(repo), false);
+  assert.equal(await archiveStore.get(d.id), null);
 });

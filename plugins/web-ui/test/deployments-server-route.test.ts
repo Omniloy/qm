@@ -206,3 +206,34 @@ test("deployment share bridge forwards an exact email without caller identity", 
   assert.deepEqual(request?.body, { email: "Invitee@Example.com", access: "view" });
   assert.equal(request?.capability, "signed-in-user-capability");
 });
+
+test("deleting a copy is relayed for a manager and refused for a read-only viewer", async () => {
+  let before = calls.length;
+  const deleted = await fetch(`${base}/api/deployments/d1/versions/1`, { method: "DELETE", headers });
+  assert.equal(deleted.status, 200);
+  const deleteCalls = calls
+    .slice(before)
+    .filter((call) => call.method === "DELETE" && isNoncedCoreCall(call.url, "/v1/deployments/d1/versions/1"));
+  assert.equal(deleteCalls.length, 1);
+
+  before = calls.length;
+  assert.equal((await fetch(`${base}/api/deployments/d1/versions/abc`, { method: "DELETE", headers })).status, 400);
+  assert.equal((await fetch(`${base}/api/deployments/missing/versions/1`, { method: "DELETE", headers })).status, 404);
+  assert.equal(
+    calls.slice(before).some((call) => call.method === "DELETE"),
+    false,
+  );
+
+  deployment.permission = "read";
+  try {
+    before = calls.length;
+    const refused = await fetch(`${base}/api/deployments/d1/versions/1`, { method: "DELETE", headers });
+    assert.equal(refused.status, 403);
+    assert.equal(
+      calls.slice(before).some((call) => call.method === "DELETE"),
+      false,
+    );
+  } finally {
+    deployment.permission = "write";
+  }
+});

@@ -4,7 +4,12 @@ import test from "node:test";
 import { stripTypeScriptTypes } from "node:module";
 import { createContext, runInContext } from "node:vm";
 import { JSDOM } from "jsdom";
-import { deploymentListRefreshCanRedraw, type DeploymentView } from "../src/deploy-view.ts";
+import {
+  deploymentCopiesLabel,
+  deploymentListRefreshCanRedraw,
+  deploymentVersionDeletable,
+  type DeploymentView,
+} from "../src/deploy-view.ts";
 import {
   withDeploymentListNotice,
   withDeploymentDetailNotice,
@@ -91,7 +96,7 @@ test("deployment mutations re-check their target after asynchronous work", () =>
   const source = readFileSync(new URL("../src/deploys.ts", import.meta.url), "utf8");
   assert.match(source, /const restoringActive = activeDeploy\?\.id === d\.id;/);
   assert.match(source, /function currentDeployActionView\(targetId: string\)/);
-  assert.equal(source.match(/currentDeployActionView\(d\.id\)/g)?.length, 6);
+  assert.equal(source.match(/currentDeployActionView\(d\.id\)/g)?.length, 8);
 });
 
 test("a restored deployment replaces its stale archived list row when refresh fails", () => {
@@ -234,6 +239,11 @@ for (const count of [0, 7, 23, 150]) {
     const context = createContext({
       d: deployment,
       nothing: "",
+      deployVersionNotice: null,
+      deploySaving: false,
+      deploymentCopiesLabel: (n: number) => `${n} copies`,
+      deploymentVersionDeletable: () => false,
+      formatBytes: (n: number) => `${n} B`,
       drawDeployDetail: (value: unknown) => redraws.push(value),
       html(strings: TemplateStringsArray, ...values: unknown[]) {
         const text = (value: unknown): string => {
@@ -314,6 +324,8 @@ test("detail redraws reuse the scroll container and retain focus", () => {
       ownerLabel: () => "",
       permissionBadge: () => "",
       canManage: () => false,
+      deployVersionNotice: null,
+      deploymentCopiesLabel: () => "",
     });
     runInContext(stripTypeScriptTypes(bodyOf("drawDeployDetail")), context);
     runInContext("drawDeployDetail(d)", context);
@@ -328,4 +340,102 @@ test("detail redraws reuse the scroll container and retain focus", () => {
   } finally {
     dom.window.close();
   }
+});
+
+function renderVersionHistory(deployment: DeploymentView): string {
+  const context = createContext({
+    d: deployment,
+    nothing: "",
+    deployVersionNotice: null,
+    deploySaving: false,
+    visibleVersionCount: 10,
+    deploymentCopiesLabel,
+    deploymentVersionDeletable,
+    formatBytes: (n: number) => `${Math.round(n / 1_000_000)} MB`,
+    icon: () => "",
+    Trash2: null,
+    drawDeployDetail() {},
+    html(strings: TemplateStringsArray, ...values: unknown[]) {
+      const text = (value: unknown): string => {
+        if (typeof value === "function") return "";
+        return Array.isArray(value) ? value.map(text).join("") : String(value);
+      };
+      return strings.reduce(
+        (result, part, index) => result + part + (index < values.length ? text(values[index]) : ""),
+        "",
+      );
+    },
+  });
+  const orderedVersions = bodyOf("drawDeployDetail").match(/const versions = [^;]+;/)?.[0];
+  const section = source.match(
+    /<section class="deploy-detail-section">\s*<h3>Version history<\/h3>[\s\S]*?<\/section>/,
+  )?.[0];
+  assert.ok(orderedVersions && section);
+  runInContext(stripTypeScriptTypes(orderedVersions), context);
+  return runInContext(stripTypeScriptTypes(`html\`${section}\``), context) as string;
+}
+
+const sizedDeployment: DeploymentView = {
+  id: "sized-app",
+  permission: "write",
+  currentVersion: 5,
+  appliedVersion: 4,
+  sizeBytes: 600_000_000,
+  maxVersions: 3,
+  versions: [
+    { version: 2, createdAt: 1000, sizeBytes: 148_000_000 },
+    { version: 3, createdAt: 2000, sizeBytes: 150_000_000 },
+    { version: 4, createdAt: 3000, sizeBytes: 151_000_000 },
+    { version: 5, createdAt: 4000, sizeBytes: 151_000_000 },
+  ],
+};
+
+test("version history shows each copy's size, the total and the retention hint", () => {
+  const rendered = renderVersionHistory(sizedDeployment);
+  assert.match(rendered, /4 copies · 600 MB/);
+  assert.match(rendered, /Only the 3 newest copies are kept; older ones are deleted automatically\./);
+  for (const size of ["148 MB", "150 MB", "151 MB"]) assert.ok(rendered.includes(`deploy-version-size">${size}`));
+});
+
+test("only managers see Delete, and never on the live or latest copy", () => {
+  const rendered = renderVersionHistory(sizedDeployment);
+  const deletable = [...rendered.matchAll(/aria-label=Delete copy v(\d+)/g)].map((match) => Number(match[1]));
+  assert.deepEqual(deletable, [3, 2]);
+  const viewer = renderVersionHistory({ ...sizedDeployment, permission: "read" });
+  assert.doesNotMatch(viewer, /deploy-version-delete/);
+});
+
+test("version history omits the retention hint and sizes a core without retention does not report", () => {
+  const rendered = renderVersionHistory({
+    id: "legacy-app",
+    permission: "write",
+    currentVersion: 1,
+    versions: [{ version: 1, createdAt: 1000 }],
+  });
+  assert.match(rendered, /1 copy/);
+  assert.doesNotMatch(rendered, /newest copies are kept|deploy-version-size| · /);
+});
+
+test("deleting a copy confirms with its size and re-checks the target before redrawing", () => {
+  const confirmText = bodyOf("deployVersionConfirmText");
+  const context = createContext({ formatBytes: (n: number) => `${Math.round(n / 1_000_000)} MB` });
+  runInContext(stripTypeScriptTypes(confirmText), context);
+  assert.equal(
+    runInContext(`deployVersionConfirmText({ version: 2, sizeBytes: 148000000 })`, context),
+    "Delete copy v2 (148 MB)? This cannot be undone.",
+  );
+  assert.equal(
+    runInContext(`deployVersionConfirmText({ version: 7 })`, context),
+    "Delete copy v7? This cannot be undone.",
+  );
+  const remove = bodyOf("deleteDeployVersion");
+  assert.match(remove, /window\.confirm\(deployVersionConfirmText\(version\)\)/);
+  assert.match(
+    remove,
+    /\/api\/deployments\/\$\{encodeURIComponent\(d\.id\)\}\/versions\/\$\{version\.version\}`, \{ method: "DELETE" \}/,
+  );
+  assert.match(
+    remove,
+    /deployVersionNotice = \{ id: d\.id, text: errMessage\(error, "Could not delete this copy\."\) \}/,
+  );
 });

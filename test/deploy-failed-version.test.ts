@@ -14,6 +14,7 @@ function harness() {
   const started: string[] = [];
   let refuse: string | null = null;
   let gone = false;
+  let resolving: Promise<void> | null = null;
   const deploy = createDeployService({
     deployStore: createDeployStore(),
     provider: {
@@ -30,7 +31,10 @@ function harness() {
       destroy: async () => {
         gone = true;
       },
-      resolveEndpoint: async (d) => (gone ? null : (d.endpoint ?? null)),
+      resolveEndpoint: async (d) => {
+        if (resolving) await resolving;
+        return gone ? null : (d.endpoint ?? null);
+      },
     },
     auditLog: { record() {}, events: async () => [], tail: async () => [] },
     acl: createAclStore(),
@@ -44,6 +48,16 @@ function harness() {
     },
     vanishContainer: () => {
       gone = true;
+    },
+    holdResolve: () => {
+      let release!: () => void;
+      resolving = new Promise<void>((resolve) => {
+        release = () => {
+          resolving = null;
+          resolve();
+        };
+      });
+      return release;
     },
   };
 }
@@ -206,10 +220,18 @@ test("a reap that lands while a request waits for the lock is not undone", async
   const startsBefore = h.started().length;
 
   h.vanishContainer();
+  const release = h.holdResolve();
+  const waiting = h.deploy.reachDeployment(d.id, "u1", { bypassAcl: true });
+  await new Promise((resolve) => setImmediate(resolve));
   await h.deploy.reapIdleDeployments(-1);
+  release();
 
-  const reach = await h.deploy.reachDeployment(d.id, "u1", { bypassAcl: true });
+  const reach = await waiting;
   assert.equal(reach.status, "not_found");
   assert.equal((await h.deploy.getDeployment(d.id))?.status, "stopped", "the reaper's decision should stand");
   assert.equal(h.started().length, startsBefore, "nothing should have been relaunched");
+
+  const visit = await h.deploy.reachDeployment(d.id, "u1", { bypassAcl: true });
+  assert.equal(visit.status, "ok", "a later visit wakes the stopped app");
+  assert.equal(h.started().length, startsBefore + 1);
 });

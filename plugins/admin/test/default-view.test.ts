@@ -65,6 +65,7 @@ test("admin shell groups control, logs, and artifacts like the reorganization", 
         "customize",
         "users",
         "spend",
+        "disk",
       ],
     },
     { label: "Logs", views: ["history", "slack", "judgments", "errors", "audit", "egress"] },
@@ -77,6 +78,14 @@ test("admin shell groups control, logs, and artifacts like the reorganization", 
     html,
     /const VIEWS = \[\.\.\.SECTIONS\.flatMap\(\(s\) => s\.views\), "onboarding", "user", "ackemoji", "keychain"\];/,
   );
+});
+
+test("disk management is an org-wide view painted by the disk module", () => {
+  assert.match(html, /disk: "Disk"/);
+  assert.match(html, /const ORG_WIDE = new Set\(\[[^\]]*"disk"/);
+  assert.match(html, /disk: renderDisk,/);
+  assert.match(html, /governanceUI\.disk\.disk\(root, d, \{/);
+  assert.match(html, /dataCache\.delete\("\/api\/disk"\)/);
 });
 
 test("deployment management is presented as Apps", () => {

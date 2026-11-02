@@ -42,7 +42,8 @@ export interface DeployGitStore {
   diff(deploymentId: string, fromCommit: string | undefined, toCommit: string): Promise<DeployGitDiff>;
   bundle(deploymentId: string, commitSha: string): Promise<Uint8Array>;
   setRefs(deploymentId: string, refs: Record<string, string>): Promise<void>;
-  deleteRef(deploymentId: string, ref: string): Promise<void>;
+  deleteRefs(deploymentId: string, refs: string[]): Promise<void>;
+  deleteRepo(deploymentId: string): Promise<void>;
   refOf(deploymentId: string, ref: string): Promise<string | null>;
   repoUrl(deploymentId: string): Promise<string>;
 }
@@ -85,7 +86,7 @@ export function createDeployGitStore(opts: DeployGitStoreOptions = {}): DeployGi
   const receivePack = `--receive-pack=${shq(gitBin)} ${NO_AUTO_GC.join(" ")} receive-pack`;
   const archiveStore = opts.archiveStore;
   const archiveBytes = opts.archiveBytes;
-  const repoPath = (deploymentId: string): string => join(repoRoot, `${safeRepoName(deploymentId)}.git`);
+  const repoPath = (deploymentId: string): string => deployRepoDir(repoRoot, deploymentId);
 
   async function gitResult(args: string[], options: GitOptions = {}): Promise<GitResult> {
     const ok = new Set(options.okExitCodes ?? [0]);
@@ -355,10 +356,20 @@ export function createDeployGitStore(opts: DeployGitStoreOptions = {}): DeployGi
       await git(["--git-dir", repo, "update-ref", "--stdin"], { stdin: updates.join("") });
       await persistArchive(deploymentId, repo);
     },
-    async deleteRef(deploymentId, ref) {
+    async deleteRefs(deploymentId, refs) {
+      if (!refs.length) return;
       const repo = await ensureRepo(deploymentId);
-      await git(["--git-dir", repo, "update-ref", "-d", ref]);
+      await git(["--git-dir", repo, "update-ref", "--stdin"], {
+        stdin: refs.map((ref) => `delete ${ref}\n`).join(""),
+      });
       await persistArchive(deploymentId, repo);
+    },
+    async deleteRepo(deploymentId) {
+      await rm(repoPath(deploymentId), { recursive: true, force: true });
+      if (!archiveStore) return;
+      const archive = await archiveStore.get(deploymentId);
+      await archiveStore.delete(deploymentId);
+      if (archive?.blobKey && archiveBytes) await archiveBytes.delete(archive.blobKey);
     },
     async refOf(deploymentId, ref) {
       const repo = await ensureRepo(deploymentId);
@@ -388,6 +399,10 @@ async function writeFiles(root: string, files: DeployGitInputFile[]): Promise<vo
     await mkdir(dirname(target), { recursive: true });
     await writeFile(target, typeof file.data === "string" ? file.data : Buffer.from(file.data));
   }
+}
+
+export function deployRepoDir(repoRoot: string, deploymentId: string): string {
+  return join(repoRoot, `${safeRepoName(deploymentId)}.git`);
 }
 
 function safeRepoName(deploymentId: string): string {

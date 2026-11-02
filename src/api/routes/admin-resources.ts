@@ -976,6 +976,31 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
     ),
   },
   {
+    id: "app-idle-stop",
+    kind: "string",
+    target: "org",
+    clearable: true,
+    label:
+      "Stop published apps nobody has opened for this many days. Empty turns it off. Apps are never deleted automatically.",
+    readKey: "appIdleStopDays",
+    get: (deps, scope) => deps.config!.getAppIdleStopDaysDurable(scope),
+    apply: generic<number | null>(
+      (body, { scope }) => {
+        const bad = orgOnly(scope, "the app idle-stop threshold is org-wide");
+        if (bad) return bad;
+        const raw = (body as { days?: unknown }).days;
+        const trimmed = typeof raw === "string" ? raw.trim() : raw;
+        if (trimmed === undefined || trimmed === null || trimmed === "") return { value: null };
+        const days = typeof trimmed === "number" ? trimmed : Number(trimmed);
+        if (!Number.isInteger(days) || days < 1 || days > 365) {
+          return { error: "app-idle-stop requires { days: integer 1-365 } (empty turns it off)" };
+        }
+        return { value: days };
+      },
+      (deps, scope, days) => deps.config!.setAppIdleStopDays(scope, days),
+    ),
+  },
+  {
     id: "browse-model",
     kind: "enum",
     target: "org",

@@ -255,3 +255,70 @@ test("an invalidated Docker endpoint is re-resolved instead of served from the c
   provider.invalidateEndpoint!(d.id);
   assert.equal(await provider.resolveEndpoint!(d, d.versions[0]!), null, "the stopped container is seen at once");
 });
+
+test("mountedDirs lists every bind source of the app containers, running or stopped, as host paths", async () => {
+  const calls: string[][] = [];
+  const dockerExec: DockerExec = async (args) => {
+    calls.push(args);
+    if (args[0] === "ps") return { code: 0, stdout: "abc\ndef\n", stderr: "" };
+    if (args[0] === "inspect")
+      return {
+        code: 0,
+        stdout: "/data/deployments/one/\n/var/lib/docker/volumes/x/_data\n\n/host_mnt/data/deployments/two\n",
+        stderr: "",
+      };
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  const mounted = await createDockerDeployProvider({ dockerExec }).mountedDirs!();
+  assert.deepEqual([...mounted].sort(), [
+    "/data/deployments/one",
+    "/data/deployments/two",
+    "/var/lib/docker/volumes/x/_data",
+  ]);
+  assert.deepEqual(calls[0], ["ps", "-a", "--filter", "name=agent-deploy-", "--format", "{{.ID}}"]);
+  assert.deepEqual(calls[1]!.slice(-2), ["abc", "def"]);
+});
+
+test("mountedDirs skips inspect without containers and throws rather than return a partial set", async () => {
+  let inspected = false;
+  const empty = createDockerDeployProvider({
+    dockerExec: async (args) => {
+      if (args[0] === "inspect") inspected = true;
+      return { code: 0, stdout: "", stderr: "" };
+    },
+  });
+  assert.equal((await empty.mountedDirs!()).size, 0);
+  assert.equal(inspected, false);
+  const broken = createDockerDeployProvider({
+    dockerExec: async (args) =>
+      args[0] === "ps" ? { code: 0, stdout: "abc\n", stderr: "" } : { code: 1, stdout: "", stderr: "No such object" },
+  });
+  await assert.rejects(broken.mountedDirs!(), /docker inspect failed/);
+  const down = createDockerDeployProvider({
+    dockerExec: async () => ({ code: 1, stdout: "", stderr: "Cannot connect to the Docker daemon" }),
+  });
+  await assert.rejects(down.mountedDirs!(), /docker ps failed/);
+});
+
+test("destroyData removes the app's data volume and tolerates one that is already gone", async () => {
+  const store = createDeployStore();
+  const d = await store.create({
+    ownerScopeId: scopeId("personal", "U1"),
+    createdBy: "U1",
+    entrypoint: "node server.js",
+    snapshotDir: "/snap/one",
+  });
+  const calls: string[][] = [];
+  const gone = createDockerDeployProvider({
+    dockerExec: async (args) => {
+      calls.push(args);
+      return { code: 1, stdout: "", stderr: "Error: No such volume: agent-deploy-data-x" };
+    },
+  });
+  await gone.destroyData!(d);
+  assert.deepEqual(calls, [["volume", "rm", `agent-deploy-data-${d.id.slice(0, 12)}`]]);
+  const busy = createDockerDeployProvider({
+    dockerExec: async () => ({ code: 1, stdout: "", stderr: "volume is in use" }),
+  });
+  await assert.rejects(busy.destroyData!(d), /volume is in use/);
+});

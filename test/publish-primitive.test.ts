@@ -225,8 +225,12 @@ test("publish by name keeps the previous version's env unless the call replaces 
   await ctx(s.deploy, { files }).publish({ dir: "app", name: "dash" });
   await ctx(s.deploy, { files }).publish({ dir: "app", name: "dash", env: { OTHER: "x" } });
   await ctx(s.deploy, { files }).publish({ dir: "app", name: "dash", env: {} });
-  const envs = (await s.deployStore.getByName("dash"))!.versions.map((v) => v.env);
-  assert.deepEqual(envs, [{ DB: "one" }, { DB: "one" }, { OTHER: "x" }, {}]);
+  const envs = (await s.deployStore.getByName("dash"))!.versions.map((v) => [v.version, v.env]);
+  assert.deepEqual(envs, [
+    [2, { DB: "one" }],
+    [3, { OTHER: "x" }],
+    [4, {}],
+  ]);
 });
 
 test("publish from a layer with split env stamps it on top of the previous version's env when env is omitted", async () => {

@@ -4,7 +4,7 @@ import { live } from "lit/directives/live.js";
 import { Archive, Check, Copy, ExternalLink, Plus, RotateCcw, Trash2, X } from "lucide";
 import { api, withBase } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
-import { copyText, icon, relTime } from "./ui";
+import { copyText, formatBytes, icon, relTime } from "./ui";
 import { listBackLink, listPageTpl } from "./list-page";
 import { contextsState, ensureContexts, scopeChip } from "./contexts";
 import { scopedSession, scopedViewTopbar } from "./session-scope";
@@ -22,6 +22,7 @@ import {
   deploymentArchiveUndoAvailable,
   deploymentCanManage as canManage,
   deploymentContextScope,
+  deploymentCopiesLabel,
   deploymentInScope,
   deploymentListRefreshCanRedraw,
   deploymentListAfterRestoreRefresh,
@@ -32,9 +33,11 @@ import {
   deploymentTab,
   deploymentTabEmptyMessage,
   deploymentTitle,
+  deploymentVersionDeletable,
   filterDeployments,
   friendlyPrincipal,
   type DeploymentTab,
+  type DeploymentVersionView,
   type DeploymentView,
 } from "./deploy-view";
 import { tip } from "./tooltip";
@@ -71,6 +74,7 @@ let archiveCandidate: DeploymentView | null = null;
 let restoreArchiveFocus = false;
 let deployToast: { deployment: DeploymentView; text: string; undo?: boolean } | null = null;
 let deployRefreshSeq = 0;
+let deployVersionNotice: { id: string; text: string } | null = null;
 
 function statusLabel(d: DeploymentView): string {
   if (
@@ -250,6 +254,7 @@ async function openDeploy(d: DeploymentView): Promise<void> {
   visibleVersionCount = 10;
   editingDeploy = null;
   deployDraft = "";
+  deployVersionNotice = null;
   deployNotices = withoutDeploymentDetailNotice(deployNotices);
   activeDeploy = d;
   history.replaceState(null, "", deepLinkPath(UI_BASE, "deploys", null, null, d.id));
@@ -365,6 +370,14 @@ function drawDeployDetail(d: DeploymentView, loading = false): void {
           <h3>Version history</h3>
           ${
             versions.length
+              ? html`<div class="deploy-version-summary">
+                  ${deploymentCopiesLabel(versions.length)}${d.sizeBytes !== undefined ? ` · ${formatBytes(d.sizeBytes)}` : nothing}${d.maxVersions !== undefined ? html`<span>Only the ${d.maxVersions} newest copies are kept; older ones are deleted automatically.</span>` : nothing}
+                </div>`
+              : nothing
+          }
+          ${deployVersionNotice?.id === d.id ? html`<div class="status deploy-version-notice" role="status">${deployVersionNotice.text}</div>` : nothing}
+          ${
+            versions.length
               ? html`<div class="deploy-version-list">
                   ${versions.slice(0, visibleVersionCount).map(
                     (version) => html`
@@ -374,7 +387,21 @@ function drawDeployDetail(d: DeploymentView, loading = false): void {
                           >${version.version === d.appliedVersion ? html`<span class="badge ok">Live</span>` : nothing}${version.version === d.currentVersion && version.version !== d.appliedVersion ? html`<span class="badge">Latest</span>` : nothing}
                         </div>
                         <div>
+                          ${version.sizeBytes !== undefined ? html`<span class="deploy-version-size">${formatBytes(version.sizeBytes)}</span>` : nothing}
                           <span>${new Date(version.createdAt).toLocaleString()}</span>
+                          ${
+                            deploymentVersionDeletable(d, version.version)
+                              ? html`<button
+                                  class="btn danger deploy-version-delete"
+                                  type="button"
+                                  aria-label=${`Delete copy v${version.version}`}
+                                  ?disabled=${deploySaving}
+                                  @click=${() => void deleteDeployVersion(d, version)}
+                                >
+                                  ${icon(Trash2, 14)}<span>Delete</span>
+                                </button>`
+                              : nothing
+                          }
                         </div>
                       </div>
                     `,
@@ -403,6 +430,29 @@ function drawDeployDetail(d: DeploymentView, loading = false): void {
     host,
   );
   if (host.parentElement !== appState.mainEl) appState.mainEl.replaceChildren(host);
+}
+
+function deployVersionConfirmText(version: DeploymentVersionView): string {
+  const size = version.sizeBytes !== undefined ? ` (${formatBytes(version.sizeBytes)})` : "";
+  return `Delete copy v${version.version}${size}? This cannot be undone.`;
+}
+
+async function deleteDeployVersion(d: DeploymentView, version: DeploymentVersionView): Promise<void> {
+  if (deploySaving || !window.confirm(deployVersionConfirmText(version))) return;
+  deploySaving = true;
+  deployVersionNotice = null;
+  drawDeployDetail(d);
+  try {
+    await api(`/api/deployments/${encodeURIComponent(d.id)}/versions/${version.version}`, { method: "DELETE" });
+    deploySaving = false;
+    if (currentDeployActionView(d.id) !== "target") return;
+    await openDeploy({ ...d, versions: d.versions?.filter((v) => v.version !== version.version) });
+  } catch (error) {
+    deploySaving = false;
+    if (currentDeployActionView(d.id) !== "target") return;
+    deployVersionNotice = { id: d.id, text: errMessage(error, "Could not delete this copy.") };
+    drawDeployDetail(activeDeploy ?? d);
+  }
 }
 
 function returnToDeploysList(): void {

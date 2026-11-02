@@ -72,7 +72,7 @@ test("deploy-service: redeploy inherits the current version's env and home files
     homeFiles: [{ path: ".npmrc", data: "token" }],
     env: { DB_URL: "postgres://one" },
   });
-  const versionAt = async (n: number) => (await s.deployStore.get(d.id))!.versions[n - 1]!;
+  const versionAt = async (n: number) => (await s.deployStore.get(d.id))!.versions.find((v) => v.version === n)!;
 
   await s.service.redeploy(d.id, { entrypoint: "node x", files: [] });
   assert.deepEqual((await versionAt(2)).env, { DB_URL: "postgres://one" }, "omitted env inherits");

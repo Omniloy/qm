@@ -30,8 +30,10 @@ isn't tied to any single vendor.
 - **Slack and web.** The same identity and configuration carries between Slack and the
   web app.
 - **Admin control.** Set org-level configuration, security and sharing postures. Choose which
-  harnesses and models are available.
-- **Web apps.** Spin up custom internal apps and publish them to the right people.
+  harnesses and models are available. A Disk view shows what fills the host and lets admins
+  stop or delete large apps and stopped sandbox containers.
+- **Web apps.** Spin up custom internal apps and publish them to the right people. Each app
+  keeps its three newest copies; older ones are deleted automatically.
 - **Shared skills.** Skills are scope-owned and shareable by grant, with admin-gated
   promotion to the whole org and skill packs imported from git repositories.
 - **Background work.** Crons, watches, and inbound webhooks work while you're away.

@@ -2218,3 +2218,86 @@ dialog.screening-trust-dialog {
   margin: 0;
   font-size: 12.5px;
 }
+
+.disk-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+.disk-summary .subline {
+  margin: 0;
+}
+.disk-bar {
+  display: inline-block;
+  width: 120px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+  vertical-align: middle;
+}
+.disk-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--text);
+}
+.disk-tables {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.disk-policy-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.disk-policy-row input {
+  width: 80px;
+  margin: 0 6px;
+}
+.disk-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-bottom: 12px;
+}
+.disk-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.disk-tabs {
+  display: flex;
+  gap: 4px;
+}
+#app-view #main .disk-tabs button[aria-pressed="true"],
+#app-view #main .disk-tabs button[aria-pressed="true"]:hover {
+  color: var(--bg);
+  background: var(--text);
+  border-color: var(--text);
+}
+.disk-owner-actions,
+.disk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+.disk-versions {
+  width: auto;
+  margin-left: 16px;
+}
+.disk-apps td,
+.disk-sandboxes td {
+  overflow-wrap: break-word;
+}
+@media (max-width: 600px) {
+  .disk-bar {
+    width: 64px;
+  }
+}

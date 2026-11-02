@@ -195,6 +195,10 @@ export interface PersistedTurnWallClock {
   scopeId: ScopeId;
   sec: number;
 }
+export interface PersistedAppIdleStop {
+  scopeId: ScopeId;
+  days: number;
+}
 interface ScopeConfigPresence {
   soul: boolean;
   commandPolicy: boolean;
@@ -322,6 +326,8 @@ export interface ScopedConfigStore {
   setAutoFlaggerConfig(config: AutoFlaggerConfig | null): void;
   getTurnWallClockSecDurable(id: ScopeId): Promise<number | null>;
   setTurnWallClockSec(id: ScopeId, sec: number | null): Promise<void>;
+  getAppIdleStopDaysDurable(id: ScopeId): Promise<number | null>;
+  setAppIdleStopDays(id: ScopeId, days: number | null): Promise<void>;
   setConnectorClient(id: ScopeId, provider: string, input: ConnectorClientInput): Promise<void>;
   listConnectorClients(id: ScopeId): Promise<PublicConnectorClient[]>;
   deleteConnectorClient(id: ScopeId, provider: string): Promise<void>;
@@ -408,6 +414,7 @@ export function createMemoryConfigStore(
     browserProviders?: DurableMap<PersistedBrowserProvider>;
     autoFlaggerConfigs?: DurableMap<PersistedAutoFlaggerConfig>;
     turnWallClocks?: DurableMap<PersistedTurnWallClock>;
+    appIdleStops?: DurableMap<PersistedAppIdleStop>;
     deploymentIdentity?: DurableMap<PersistedDeploymentIdentity>;
     connectorSecretKey?: Buffer | string;
     defaultSecurityPosture?: SecurityPosture;
@@ -509,6 +516,7 @@ export function createMemoryConfigStore(
     withCanonicalModel,
   );
   const turnWallClockStore = opts.turnWallClocks ?? createMemoryMap<PersistedTurnWallClock>();
+  const appIdleStopStore = opts.appIdleStops ?? createMemoryMap<PersistedAppIdleStop>();
   const deploymentIdentity = opts.deploymentIdentity ?? createMemoryMap<PersistedDeploymentIdentity>();
   const persistWarn = (what: string) => reportFailureAs(`config: persist ${what}`, undefined);
   const writeQueue = createKeyedQueue();
@@ -1297,6 +1305,12 @@ export function createMemoryConfigStore(
       if (sec === null) turnWallClocks.delete(id);
       else turnWallClocks.set(id, sec);
     },
+    getAppIdleStopDaysDurable: async (id) => (await appIdleStopStore.get(id))?.days ?? null,
+    async setAppIdleStopDays(id, days) {
+      await writeQueue(`appIdleStop:${id}`, () =>
+        days === null ? appIdleStopStore.delete(id) : appIdleStopStore.put(id, { scopeId: id, days }),
+      );
+    },
     async setConnectorClient(id, provider, input) {
       const rec: StoredConnectorClient = {
         scopeId: id,
@@ -1473,6 +1487,7 @@ export function createMemoryConfigStore(
         `externalSlack:${id}`,
         `model:${id}`,
         `turnWallClock:${id}`,
+        `appIdleStop:${id}`,
         `branding:${id}`,
         ...(id === org
           ? [`approvedHarnesses:${org}`, `orgAmbient:${org}`, `interactiveFastMode:${org}`, `autoFlagger:${org}`]

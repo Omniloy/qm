@@ -15,6 +15,8 @@ import type { ManagedSlack } from "../surfaces/slack-managed.ts";
 import type { InboxSourceRefresh } from "../loops/inbox-source-refresh.ts";
 import type { BrokerSessionStore } from "../auth/broker-sessions.ts";
 import type { DirectFileUploads } from "../files/direct-file-upload.ts";
+import type { DiskService } from "../disk/disk-service.ts";
+import type { ProjectStore } from "../projects/project-store.ts";
 import type { SandboxResources } from "../sandbox/sandbox-resources.ts";
 import type { ModelVerifier } from "../model/model-verification.ts";
 import type { DurableByteStore } from "../files/durable-byte-store.ts";
@@ -233,6 +235,9 @@ export interface ServerDeps {
   credentialServices?: () => readonly string[];
   brokeredServices?: () => readonly string[];
   deployDialTimeoutMs?: number;
+  disk?: DiskService;
+  diskPolicy?: { deployIdleTtlMs: number | null; managedScaleToZero: boolean };
+  projects?: Pick<ProjectStore, "recognizes" | "name">;
   deployAppsDomain?: string;
   deployGateSecret?: string;
   deployAppsSessionSecret?: string;

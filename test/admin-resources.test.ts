@@ -192,6 +192,65 @@ test("turn wall-clock governance validates, round-trips, clears, and is org-admi
   }
 });
 
+test("app idle-stop governance validates days, round-trips, clears, and is org-only", async () => {
+  const srv = start();
+  const url = `${srv.base}/v1/admin/scopes/org:default-org/app-idle-stop`;
+  const read = async () =>
+    (
+      (await (await fetch(`${srv.base}/v1/admin/scopes/org:default-org`, { headers: ADMIN })).json()) as {
+        appIdleStopDays: number | null;
+      }
+    ).appIdleStopDays;
+  try {
+    assert.equal(await read(), null);
+    assert.equal(
+      (
+        await fetch(url, {
+          method: "PUT",
+          headers: { "content-type": "application/json", "x-admin-actor": "nobody@default-org" },
+          body: JSON.stringify({ days: 7 }),
+        })
+      ).status,
+      403,
+    );
+    assert.equal(
+      (
+        await fetch(`${srv.base}/v1/admin/scopes/channel:C1/app-idle-stop`, {
+          method: "PUT",
+          headers: ADMIN,
+          body: JSON.stringify({ days: 7 }),
+        })
+      ).status,
+      400,
+    );
+    for (const days of [0, 366, 2.5, "soon", -1]) {
+      const r = await fetch(url, { method: "PUT", headers: ADMIN, body: JSON.stringify({ days }) });
+      assert.equal(r.status, 400, `days=${String(days)}`);
+      assert.match(((await r.json()) as { message: string }).message, /app-idle-stop requires/);
+    }
+    assert.equal(
+      (await fetch(url, { method: "PUT", headers: ADMIN, body: JSON.stringify({ days: "14" }) })).status,
+      200,
+    );
+    assert.equal(await read(), 14);
+    assert.equal(
+      (await fetch(url, { method: "PUT", headers: ADMIN, body: JSON.stringify({ days: 365 }) })).status,
+      200,
+    );
+    assert.equal(await read(), 365);
+    assert.equal((await fetch(url, { method: "PUT", headers: ADMIN, body: JSON.stringify({ days: "" }) })).status, 200);
+    assert.equal(await read(), null);
+    assert.equal((await fetch(url, { method: "PUT", headers: ADMIN, body: JSON.stringify({ days: 3 }) })).status, 200);
+    assert.equal(
+      (await fetch(url, { method: "PUT", headers: ADMIN, body: JSON.stringify({ days: null }) })).status,
+      200,
+    );
+    assert.equal(await read(), null);
+  } finally {
+    await srv.close();
+  }
+});
+
 test("branding governance validates, round-trips through surface-config, clears, and is org-admin-only", async () => {
   const srv = start();
   const url = `${srv.base}/v1/admin/scopes/org:default-org/branding`;

@@ -73,6 +73,14 @@ import {
   setScreeningReportStatus,
 } from "./admin/screening.ts";
 import { spend } from "./admin/spend.ts";
+import {
+  deleteDiskApp,
+  deleteDiskAppVersion,
+  getDisk,
+  measureDisk,
+  removeDiskSandboxContainer,
+  stopDiskApp,
+} from "./admin/disk.ts";
 import { createPrincipalLink, deletePrincipalLink, listPrincipalLinks } from "./admin/principal-links.ts";
 
 const timed =
@@ -149,6 +157,17 @@ const routes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/admin/retention", auth: "either", handle: retention },
   { method: "GET", path: "/v1/admin/metrics", auth: "either", handle: metrics },
   { method: "GET", path: "/v1/admin/spend", auth: "either", handle: spend },
+  { method: "GET", path: "/v1/admin/disk", auth: "either", handle: getDisk },
+  { method: "POST", path: "/v1/admin/disk/measure", auth: "either", handle: measureDisk },
+  { method: "POST", path: "/v1/admin/disk/apps/:id/stop", auth: "either", handle: stopDiskApp },
+  { method: "DELETE", path: "/v1/admin/disk/apps/:id", auth: "either", handle: deleteDiskApp },
+  { method: "DELETE", path: "/v1/admin/disk/apps/:id/versions/:version", auth: "either", handle: deleteDiskAppVersion },
+  {
+    method: "DELETE",
+    path: "/v1/admin/disk/sandbox-containers/:name",
+    auth: "either",
+    handle: removeDiskSandboxContainer,
+  },
   { method: "GET", path: "/v1/admin/egress", auth: "either", handle: egress },
   { method: "GET", path: "/v1/admin/sessions", auth: "either", handle: listAdminSessions },
   { method: "GET", path: "/v1/admin/sessions/:id/llm", auth: "either", handle: getAdminSessionLlm },

@@ -45,6 +45,10 @@ export function createDeploymentMethods(
   | "deploymentGitUrlFor"
   | "authorizesDeploymentGitAccess"
   | "reapIdleDeployments"
+  | "stopDeployment"
+  | "deleteDeployment"
+  | "deleteDeploymentVersion"
+  | "sweepDeploymentSnapshots"
   | "listEnvironments"
   | "createEnvironment"
   | "resolveEnvironmentByName"
@@ -222,6 +226,18 @@ export function createDeploymentMethods(
     },
     reapIdleDeployments(ttlMs, now) {
       return deps.deploy.reapIdleDeployments(ttlMs, now);
+    },
+    stopDeployment(id, actorId) {
+      return deps.deploy.stopDeployment(id, actorId);
+    },
+    deleteDeployment(id, actorId) {
+      return deps.deploy.deleteDeployment(id, actorId);
+    },
+    deleteDeploymentVersion(id, version, actorId) {
+      return deps.deploy.deleteDeploymentVersion(id, version, actorId);
+    },
+    sweepDeploymentSnapshots(now) {
+      return deps.deploy.sweepDeploymentSnapshots(now);
     },
 
     async listEnvironments() {

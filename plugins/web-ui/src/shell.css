@@ -7928,6 +7928,25 @@ a.connector-widget:focus-visible {
 .deploy-version-row code {
   color: var(--foreground);
 }
+.deploy-version-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-bottom: 4px;
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
+.deploy-version-notice {
+  margin-bottom: 8px;
+}
+.deploy-version-size {
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+}
+.deploy-version-delete {
+  padding: 2px 8px;
+  font-size: 12px;
+}
 .deploy-archive-dialog p {
   margin: 18px 0 0;
   color: var(--muted-foreground);

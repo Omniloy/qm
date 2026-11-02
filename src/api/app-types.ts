@@ -103,13 +103,16 @@ import type { AckEmojiPickStore } from "../surface-cache/ack-emoji-pick-store.ts
 import type { Deployment, DeploymentSource } from "../deploy/deploy-store.ts";
 import type { DeploymentLayerRuntime } from "../deployment/load-layer.ts";
 import { type ArtifactHome, type ArtifactType } from "./artifact-share.ts";
-import type {
-  DeployService,
-  DeployInput,
-  RedeployInput,
-  Reach,
-  ReachOptions,
-  DeploymentGrantee,
+import {
+  MAX_APP_VERSIONS,
+  type DeployService,
+  type DeployInput,
+  type RedeployInput,
+  type Reach,
+  type ReachOptions,
+  type DeploymentGrantee,
+  type SnapshotSweepResult,
+  type VersionDeleteResult,
 } from "../deploy/deploy-service.ts";
 import { type DurableMap } from "../persistence/durable-map.ts";
 import type { AdvisoryLock } from "../persistence/advisory-lock.ts";
@@ -123,6 +126,7 @@ import type { SearchHit } from "../search/core-search.ts";
 interface DeploymentVersionView {
   version: number;
   createdAt: number;
+  sizeBytes?: number;
   commit?: string;
   parentCommit?: string;
   source?: DeploymentSource;
@@ -145,6 +149,8 @@ export interface DeploymentView {
   lastAccessAt?: number;
   createdAt?: number;
   updatedAt?: number;
+  sizeBytes?: number;
+  maxVersions: number;
   versions: DeploymentVersionView[];
 }
 
@@ -153,9 +159,11 @@ export interface ViewerDeployment extends DeploymentView {
 }
 
 export function deploymentView(d: Deployment, url: string, includeSource: boolean): DeploymentView {
-  const versions = d.versions.map(({ version, createdAt, commit, parentCommit, source }) => ({
+  const sized = d.versions.filter((v) => v.sizeBytes !== undefined);
+  const versions = d.versions.map(({ version, createdAt, sizeBytes, commit, parentCommit, source }) => ({
     version,
     createdAt,
+    ...(sizeBytes !== undefined ? { sizeBytes } : {}),
     ...(commit ? { commit } : {}),
     ...(parentCommit ? { parentCommit } : {}),
     ...(includeSource && source ? { source } : {}),
@@ -177,8 +185,16 @@ export function deploymentView(d: Deployment, url: string, includeSource: boolea
     ...(d.lastAccessAt !== undefined ? { lastAccessAt: d.lastAccessAt } : {}),
     ...(versions[0] ? { createdAt: versions[0].createdAt } : {}),
     ...(versions.at(-1) ? { updatedAt: versions.at(-1)!.createdAt } : {}),
+    ...(sized.length ? { sizeBytes: snapshotBytes(d) } : {}),
+    maxVersions: MAX_APP_VERSIONS,
     versions,
   };
+}
+
+export function snapshotBytes(d: Pick<Deployment, "versions">): number {
+  const byDir = new Map<string, number>();
+  for (const v of d.versions) if (v.sizeBytes !== undefined) byDir.set(v.snapshotDir || `v${v.version}`, v.sizeBytes);
+  return [...byDir.values()].reduce((a, b) => a + b, 0);
 }
 interface ReachNowInput {
   senderId: string;
@@ -758,6 +774,10 @@ export interface App {
   ): Promise<DeploymentGitUrl | null>;
   authorizesDeploymentGitAccess(id: string, principalId: string, permission: "read" | "write"): Promise<boolean>;
   reapIdleDeployments(ttlMs: number, now?: number): Promise<number>;
+  stopDeployment(id: string, actorId?: string): Promise<boolean>;
+  deleteDeployment(id: string, actorId?: string): Promise<boolean>;
+  deleteDeploymentVersion(id: string, version: number, actorId?: string): Promise<VersionDeleteResult>;
+  sweepDeploymentSnapshots(now?: number): Promise<SnapshotSweepResult>;
   listEnvironments(): Promise<{ environment: Environment; attachments: EnvironmentAttachment[] }[]>;
   createEnvironment(input: { scopeId: ScopeId; name: string; actorId: string }): Promise<Environment>;
   resolveEnvironmentByName(name: string): Promise<Environment | null>;

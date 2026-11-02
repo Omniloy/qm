@@ -109,6 +109,7 @@ import {
   type PersistedBrowserProvider,
   type PersistedAutoFlaggerConfig,
   type PersistedTurnWallClock,
+  type PersistedAppIdleStop,
   type PersistedDeploymentIdentity,
 } from "./resolution/config-store.ts";
 import { createResolutionService } from "./resolution/resolution-service.ts";
@@ -200,11 +201,13 @@ import { createDeployStore, deployTouchDebounceMs, type Deployment } from "./dep
 import { viewerIdentityKey } from "./deploy/access-token.ts";
 import { deploymentCredentialSlugs } from "./deploy/deployment-credentials.ts";
 import { createDockerDeployProvider } from "./deploy/docker-deploy-provider.ts";
+import { createDiskService, type DiskRecord, type DiskService } from "./disk/disk-service.ts";
+import { createDockerApi } from "./disk/docker-api.ts";
 import { createAwsDeployProvider, type StoredDeployBody } from "./deploy/aws-deploy-provider.ts";
 import { createFlyDeployProvider, type FlyMachineConfig } from "./deploy/fly-deploy-provider.ts";
 import { createPorterDeployProvider, type StoredPorterDeployBody } from "./deploy/porter-deploy-provider.ts";
 import type { DeployProvider } from "./deploy/deploy-provider.ts";
-import { createDeployService } from "./deploy/deploy-service.ts";
+import { appIdleStopTtlMs, createDeployService } from "./deploy/deploy-service.ts";
 import {
   createCanReadScope,
   createCanManageScope,
@@ -610,6 +613,8 @@ export interface BuiltApp {
   advisoryLock: AdvisoryLock;
   sandboxMigration: SandboxMigrationRunner;
   sandboxResources: SandboxResources;
+  disk: DiskService;
+  diskPolicy: { deployIdleTtlMs: number | null; managedScaleToZero: boolean };
   blobTransfer: BlobTransferStore;
   files: FileArtifactStore;
   fileUploads?: DirectFileUploads;
@@ -799,6 +804,7 @@ export function buildApp(
     browserProviders: artifactMap<PersistedBrowserProvider>("browser_provider_configs"),
     autoFlaggerConfigs: artifactMap<PersistedAutoFlaggerConfig>("auto_flagger_configs"),
     turnWallClocks: artifactMap<PersistedTurnWallClock>("turn_wall_clock_configs"),
+    appIdleStops: artifactMap<PersistedAppIdleStop>("app_idle_stop_configs"),
     deploymentIdentity: artifactMap<PersistedDeploymentIdentity>("deployment_identity"),
     defaultSecurityPosture: config.securityPosture,
     defaultSharingPosture: config.sharingPosture,
@@ -1910,6 +1916,27 @@ export function buildApp(
     config.databaseUrl ? createPostgresDeliveryStore(config.databaseUrl) : createDeliveryStore(),
     sessions,
   );
+  const deployDir = join(config.dataDir, "deployments");
+  const localBytes = !(config.snapshotStore === "s3" && config.s3Bucket);
+  const disk = createDiskService({
+    dataDir: config.dataDir,
+    deployDir,
+    deployGitDir: config.deployGitDir,
+    paths: {
+      workspaces: join(config.dataDir, "workspaces"),
+      ...(localBytes
+        ? { docstore: join(config.dataDir, "docstore"), "session-shares": join(config.dataDir, "session-shares") }
+        : {}),
+      ...(config.transferStore === "s3" && config.s3Bucket ? {} : { transfer: join(config.dataDir, "transfer") }),
+    },
+    deployStore,
+    docker:
+      config.localSandbox.image || config.deployProvider === "docker"
+        ? createDockerApi(config.localSandbox.dockerSocket ?? "/var/run/docker.sock")
+        : null,
+    pg: pgArtifactMap?.pool ?? null,
+    store: artifactMap<DiskRecord>("disk_reports"),
+  });
   const deployService = createDeployService({
     deliveries,
     deployAppsDomain: config.awsDeploy.appsDomain,
@@ -1917,7 +1944,7 @@ export function buildApp(
     appPublished: productAnalytics.appPublished,
     deployStore,
     provider: deployProvider,
-    deployDir: join(config.dataDir, "deployments"),
+    deployDir,
     auditLog,
     acl,
     leaderLease,
@@ -2884,10 +2911,26 @@ export function buildApp(
     .catch((e) =>
       console.error("[blob-transfer] S3 lifecycle expiry install failed (sweep remains the fallback):", errMessage(e)),
     );
-  const idleSweeper =
-    deployIdleTtlMs && deployIdleTtlMs > 0
-      ? createSweeper(() => app.reapIdleDeployments(deployIdleTtlMs), Math.max(5_000, Math.floor(deployIdleTtlMs / 4)))
-      : null;
+  const idleSweeper = deployProvider.profile.managedScaleToZero
+    ? null
+    : createSweeper(
+        async () => {
+          const ttl = appIdleStopTtlMs(await configStore.getAppIdleStopDaysDurable(orgScope), deployIdleTtlMs);
+          if (ttl) await app.reapIdleDeployments(ttl);
+        },
+        deployIdleTtlMs ? Math.max(5_000, Math.min(300_000, Math.floor(deployIdleTtlMs / 4))) : 300_000,
+      );
+  const snapshotGcSweeper = createSweeper(() => app.sweepDeploymentSnapshots(), 3_600_000, {
+    label: "deployment-snapshot-gc",
+  });
+  const diskMeasureSweeper = createSweeper(
+    () => leaderLease.hold("disk:measure", () => disk.measure()),
+    6 * 3_600_000,
+    {
+      label: "disk-measure",
+      immediate: true,
+    },
+  );
   const KEEP_WARM_INTERVAL_MS = 5 * 60_000;
   const keepWarmSweeper = createSweeper(() => app.keepAlwaysOnWarm(), KEEP_WARM_INTERVAL_MS);
   const deepIdleMachineMs = config.deepIdleMachineMs;
@@ -2943,6 +2986,8 @@ export function buildApp(
       fileUploads?.start();
       idleSweeper?.start();
       keepWarmSweeper.start();
+      snapshotGcSweeper.start();
+      diskMeasureSweeper.start();
       deepIdleSweeper?.start();
       wakeSweep.start();
       swarms?.start();
@@ -2969,6 +3014,8 @@ export function buildApp(
       skillSyncEngine.stop(),
       idleSweeper?.stop(),
       keepWarmSweeper.stop(),
+      snapshotGcSweeper.stop(),
+      diskMeasureSweeper.stop(),
       deepIdleSweeper?.stop(),
       blobSweeper.stop(),
       composioReturnSweeper.stop(),
@@ -3122,6 +3169,11 @@ export function buildApp(
     sandbox,
     sandboxMigration,
     sandboxResources,
+    disk,
+    diskPolicy: {
+      deployIdleTtlMs: deployIdleTtlMs ?? null,
+      managedScaleToZero: deployProvider.profile.managedScaleToZero,
+    },
     advisoryLock,
     blobTransfer,
     files,
@@ -3316,5 +3368,8 @@ export function serverDeps(
     environments: built.environments,
     sandboxMigration: built.sandboxMigration,
     sandboxResources: built.sandboxResources,
+    disk: built.disk,
+    diskPolicy: built.diskPolicy,
+    projects: built.projects,
   };
 }
