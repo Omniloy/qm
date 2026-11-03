@@ -125,7 +125,7 @@ export function createSpeechPipeline(deps: SpeechPipelineDeps): SpeechPipeline {
         });
       } catch (error) {
         post({ type: "error", stage: "asr", reason: errMessage(error), fatal: false });
-        post({ type: "transcript", segmentId: id, purpose, text: "", language: request.language, ms: 0 });
+        post({ type: "transcript", segmentId: id, purpose, text: "", language: request.language, ms: 0, failed: true });
       }
     });
   };
@@ -161,8 +161,12 @@ export function createSpeechPipeline(deps: SpeechPipelineDeps): SpeechPipeline {
     if (!target) return;
     held = null;
     enqueue(() => {
-      if (!target.speech) {
-        post(target.peak === 0 ? { type: "speech-misfire", silent: true } : { type: "speech-misfire" });
+      if (target.peak === 0) {
+        post({ type: "speech-misfire", silent: true });
+        return;
+      }
+      if (!target.speech && !vadFailing) {
+        post({ type: "speech-misfire" });
         return;
       }
       const id = ++segmentId;

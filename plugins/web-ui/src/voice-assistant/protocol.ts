@@ -2,7 +2,7 @@ export const VOICE_LANGUAGES = ["es", "en"] as const;
 export type VoiceLanguage = (typeof VOICE_LANGUAGES)[number];
 
 export type VoiceState = "off" | "arming" | "sleeping" | "listening" | "thinking" | "speaking";
-export type MicrophoneHealth = "live" | "silent" | "lost";
+export type MicrophoneHealth = "live" | "silent" | "lost" | "blocked";
 
 export type OrbStatus = "idle" | "connecting" | "connected" | "ending" | "error";
 export type OrbMode = "idle" | "listening" | "thinking" | "speaking";
@@ -124,6 +124,7 @@ export type SpeechWorkerOut =
       language: VoiceLanguage;
       ms: number;
       truncated?: boolean;
+      failed?: true;
     }
   | { type: "error"; stage: "vad" | "asr" | "frames"; reason: string; fatal: boolean };
 

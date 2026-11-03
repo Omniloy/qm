@@ -244,7 +244,7 @@ test("asr and vad failures surface as non-fatal errors without stopping the pipe
   await pipeline.settled();
   assert.deepEqual(posted.slice(-2), [
     { type: "error", stage: "asr", reason: "decoder exploded", fatal: false },
-    { type: "transcript", segmentId: 1, purpose: "utterance", text: "", language: "es", ms: 0 },
+    { type: "transcript", segmentId: 1, purpose: "utterance", text: "", language: "es", ms: 0, failed: true },
   ]);
   fail = false;
   feed(SPEECH, framesFor(500));
@@ -281,6 +281,35 @@ test("a throwing vad reports one error per failure streak", async () => {
   pipeline.frame(frame(SPEECH));
   await pipeline.settled();
   assert.equal(posted.length, 2);
+});
+
+test("a held capture still reaches transcription while the vad is failing", async () => {
+  const posted: SpeechWorkerOut[] = [];
+  const heard: number[] = [];
+  const pipeline = createSpeechPipeline({
+    vad: {
+      process: async () => {
+        throw new Error("session lost");
+      },
+      endSegment: () => undefined,
+      setOptions: () => undefined,
+      reset: () => undefined,
+      resume: () => undefined,
+    },
+    language: "es",
+    mode: "paused",
+    post: (m) => posted.push(m),
+    transcribe: async (audio) => {
+      heard.push(audio.length);
+      return { text: "hola", tokens: 1, audioMs: 0, encodeMs: 0, decodeMs: 0 };
+    },
+  });
+  pipeline.setMode("held");
+  for (let i = 0; i < 10; i++) pipeline.frame(frame(SPEECH));
+  pipeline.endSegment();
+  await pipeline.settled();
+  assert.equal(heard.length, 1);
+  assert.equal(posted.at(-1)?.type, "transcript");
 });
 
 const PREROLL_FRAMES = framesFor(200);

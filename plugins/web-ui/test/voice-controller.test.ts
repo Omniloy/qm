@@ -5,6 +5,7 @@ import {
   HEARD_MS,
   mergeActivity,
   PTT_MIN_MS,
+  SPEECH_STALL_MS,
   SPEAKING_VAD,
   THINKING_CHIME_MS,
   createVoiceController,
@@ -112,7 +113,11 @@ function setup(scripts: Script[] = [], settings: Partial<VoiceSettings> = {}) {
   const attached: Array<{ entryId: string; activity: VoiceActivity[] }> = [];
   const outcomes: Partial<Record<VoiceToolCall["name"], VoiceActivity>> = {};
   const background: VoiceTaskSummary[] = [];
-  const mic: { health: MicrophoneHealth; reconnects: number } = { health: "live", reconnects: 0 };
+  const mic: { health: MicrophoneHealth; reconnects: number; stalls: number } = {
+    health: "live",
+    reconnects: 0,
+    stalls: 0,
+  };
   const deps: VoiceControllerDeps = {
     speech,
     tts,
@@ -149,6 +154,7 @@ function setup(scripts: Script[] = [], settings: Partial<VoiceSettings> = {}) {
     setMuted: (value) => void muted.push(value),
     microphone: () => mic.health,
     reconnectMicrophone: () => void mic.reconnects++,
+    onStalled: () => void mic.stalls++,
     render: (view) => void views.push(view),
     onFatal: (message) => void fatal.push(message),
     now: clock.now,
@@ -2395,7 +2401,10 @@ test("a push-to-talk capture with no speech says it did not hear, and a silent o
   assert.equal(t.view().status, "");
   t.controller.press();
   t.speech.emit({ type: "speech-misfire", silent: true });
-  assert.equal(t.view().status, "El micrófono no envía sonido. Puede que otra app lo esté usando.");
+  assert.equal(
+    t.view().status,
+    "No llega sonido del micrófono. Comprueba que esté conectado y que otra app no lo esté usando.",
+  );
 });
 
 test("a push-to-talk capture that transcribes to nothing says it did not hear", () => {
@@ -2411,23 +2420,33 @@ test("a push-to-talk capture that transcribes to nothing says it did not hear", 
   assert.equal(t.requests.length, 0);
 });
 
-test("a muted or lost microphone shows on the status line, and pressing reconnects a lost one", () => {
-  const t = setup([], { micMode: "push" });
+test("a muted, lost or blocked microphone shows on the status line ahead of other errors, and pressing reconnects it", () => {
+  const t = setup([], { micMode: "push", pttStyle: "toggle" });
   t.ready();
+  t.controller.press();
+  t.controller.press();
+  t.speech.emit({ type: "speech-misfire" });
+  assert.equal(t.view().status, "No te he oído. Inténtalo de nuevo.");
   t.mic.health = "silent";
   t.controller.microphoneChanged();
-  assert.equal(t.view().status, "El micrófono no envía sonido. Puede que otra app lo esté usando.");
-  t.controller.pttDown();
-  t.controller.pttUp();
-  assert.equal(t.mic.reconnects, 0);
+  assert.equal(
+    t.view().status,
+    "No llega sonido del micrófono. Comprueba que esté conectado y que otra app no lo esté usando.",
+  );
   t.mic.health = "lost";
   t.controller.microphoneChanged();
   assert.equal(t.view().status, "Se ha perdido el micrófono. Pulsa para reconectarlo.");
-  t.controller.pttDown();
-  assert.equal(t.mic.reconnects, 1);
+  const before = t.mic.reconnects;
+  t.controller.press();
+  assert.equal(t.mic.reconnects, before + 1);
+  t.controller.press();
+  t.speech.emit({ type: "speech-misfire" });
+  t.mic.health = "blocked";
+  t.controller.microphoneChanged();
+  assert.equal(t.view().status, "El navegador ha bloqueado el micrófono. Permítelo en los ajustes del sitio.");
   t.mic.health = "live";
   t.controller.microphoneChanged();
-  assert.notEqual(t.view().status, "Se ha perdido el micrófono. Pulsa para reconectarlo.");
+  assert.equal(t.view().status, "Pulsa la barra espaciadora o el orbe para hablar, y otra vez para enviar");
 });
 
 test("in open mode, waking a lost microphone by pressing reconnects it", () => {
@@ -2438,4 +2457,71 @@ test("in open mode, waking a lost microphone by pressing reconnects it", () => {
   assert.equal(t.view().status, "Se ha perdido el micrófono. Pulsa para reconectarlo.");
   t.controller.press();
   assert.equal(t.mic.reconnects, 1);
+});
+
+test("a failed transcription says so instead of blaming the user, and a second failure restarts speech", () => {
+  const t = setup([], { micMode: "push", pttStyle: "toggle" });
+  t.ready();
+  const fail = (segmentId: number) => {
+    t.controller.press();
+    t.speech.emit({ type: "speech-start" });
+    t.controller.press();
+    t.speech.emit({ type: "speech-end", segmentId, durationMs: 900, purpose: "utterance" });
+    t.speech.emit({
+      type: "transcript",
+      segmentId,
+      purpose: "utterance",
+      text: "",
+      language: "es",
+      ms: 0,
+      failed: true,
+    });
+  };
+  fail(1);
+  assert.equal(t.controller.state, "sleeping");
+  assert.equal(t.view().status, "No he podido transcribir eso. Inténtalo de nuevo.");
+  assert.equal(t.chimes.at(-1), "error");
+  assert.equal(t.mic.stalls, 0);
+  fail(2);
+  assert.equal(t.mic.stalls, 1);
+  assert.equal(t.requests.length, 0);
+});
+
+test("a successful transcription resets the failure count", async () => {
+  const t = setup([], { micMode: "push", pttStyle: "toggle" });
+  t.ready();
+  t.speech.emit({ type: "transcript", segmentId: 1, purpose: "wake", text: "", language: "es", ms: 0, failed: true });
+  t.transcript("algo", "wake", 2);
+  t.speech.emit({ type: "transcript", segmentId: 3, purpose: "wake", text: "", language: "es", ms: 0, failed: true });
+  assert.equal(t.mic.stalls, 0);
+});
+
+test("a capture that never comes back from the speech worker restarts speech after the stall limit", () => {
+  const t = setup([], { micMode: "push", pttStyle: "toggle" });
+  t.ready();
+  t.controller.press();
+  t.controller.press();
+  t.clock.advance(SPEECH_STALL_MS - 1);
+  assert.equal(t.mic.stalls, 0);
+  t.clock.advance(1);
+  assert.equal(t.mic.stalls, 1);
+});
+
+test("a segment whose transcript never arrives restarts speech, but one that answers in time does not", () => {
+  const t = setup([], { micMode: "push", pttStyle: "toggle" });
+  t.ready();
+  t.controller.press();
+  t.speech.emit({ type: "speech-start" });
+  t.controller.press();
+  t.speech.emit({ type: "speech-end", segmentId: 1, durationMs: 900, purpose: "utterance" });
+  t.clock.advance(SPEECH_STALL_MS / 2);
+  t.transcript("  ", "utterance", 1);
+  t.clock.advance(SPEECH_STALL_MS);
+  assert.equal(t.mic.stalls, 0);
+  t.controller.press();
+  t.speech.emit({ type: "speech-start" });
+  t.controller.press();
+  t.speech.emit({ type: "speech-end", segmentId: 2, durationMs: 900, purpose: "utterance" });
+  t.clock.advance(SPEECH_STALL_MS);
+  assert.equal(t.mic.stalls, 1);
 });

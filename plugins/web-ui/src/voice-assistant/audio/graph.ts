@@ -70,11 +70,12 @@ function connectCapture(context: AudioContext, stream: MediaStream, onHealth: ()
   let closed = false;
   let current: { stream: MediaStream; source: MediaStreamAudioSourceNode; listeners: AbortController } | null = null;
   let reconnecting: Promise<void> | null = null;
+  let blocked = false;
 
   const tracks = () => current?.stream.getAudioTracks() ?? [];
   const health = (): MicrophoneHealth => {
     const live = tracks().filter((track) => track.readyState === "live");
-    if (live.length === 0) return "lost";
+    if (live.length === 0) return blocked ? "blocked" : "lost";
     return live.every((track) => track.muted) ? "silent" : "live";
   };
 
@@ -94,7 +95,10 @@ function connectCapture(context: AudioContext, stream: MediaStream, onHealth: ()
           if (closed) stopStream(next);
           else use(next);
         },
-        () => onHealth(),
+        (error: unknown) => {
+          blocked = (error as { name?: unknown } | null)?.name === "NotAllowedError";
+          onHealth();
+        },
       )
       .finally(() => {
         reconnecting = null;
@@ -103,6 +107,7 @@ function connectCapture(context: AudioContext, stream: MediaStream, onHealth: ()
 
   const use = (next: MediaStream) => {
     release();
+    blocked = false;
     const listeners = new AbortController();
     for (const track of next.getAudioTracks()) {
       track.enabled = enabled;
@@ -133,7 +138,7 @@ function connectCapture(context: AudioContext, stream: MediaStream, onHealth: ()
       for (const track of tracks()) track.enabled = next;
     },
     reconnect() {
-      if (health() === "lost") reconnect();
+      if (health() !== "live") reconnect();
     },
     close() {
       closed = true;

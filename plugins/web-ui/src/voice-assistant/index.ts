@@ -504,6 +504,7 @@ export async function startVoice(takeover = true): Promise<void> {
       setMuted: (muted) => audio.setMuted(muted),
       microphone: () => audio.microphone(),
       reconnectMicrophone: () => audio.reconnectMicrophone(),
+      onStalled: restartVoice,
       onMutedChange: storeVoiceMuted,
       muted: storedVoiceMuted(),
       transcript,
