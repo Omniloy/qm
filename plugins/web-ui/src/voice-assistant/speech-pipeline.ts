@@ -59,7 +59,6 @@ const WAKE_SEGMENT_SAMPLES = (WAKE_SEGMENT_MAX_MS * SPEECH_SAMPLE_RATE) / 1000;
 
 const HELD_MAX_SAMPLES = (PTT_MAX_MS * SPEECH_SAMPLE_RATE) / 1000;
 const PREROLL_FRAMES = Math.ceil(200 / SPEECH_FRAME_MS);
-const SILENT_PEAK = 1e-4;
 
 interface HeldCapture {
   frames: Float32Array[];
@@ -163,7 +162,7 @@ export function createSpeechPipeline(deps: SpeechPipelineDeps): SpeechPipeline {
     held = null;
     enqueue(() => {
       if (!target.speech) {
-        post(target.peak < SILENT_PEAK ? { type: "speech-misfire", silent: true } : { type: "speech-misfire" });
+        post(target.peak === 0 ? { type: "speech-misfire", silent: true } : { type: "speech-misfire" });
         return;
       }
       const id = ++segmentId;
