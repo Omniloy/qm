@@ -137,11 +137,14 @@ test("a short wake check is not truncated, and retranscribing an unknown segment
   await pipeline.settled();
   const wake = posted.find((m) => m.type === "transcript" && m.purpose === "wake");
   assert.ok(wake?.type === "transcript" && wake.truncated === undefined);
+  const calls = asrCalls.length;
   pipeline.retranscribe(99);
   await pipeline.settled();
-  assert.equal(asrCalls.at(-1)!.samples, 0);
+  assert.equal(asrCalls.length, calls);
   const none = posted.at(-1);
   assert.ok(none?.type === "transcript" && none.segmentId === 99 && none.purpose === "utterance");
+  assert.equal(none.text, "");
+  assert.equal(none.failed, undefined);
 });
 
 test("a wake check that fills its token budget is truncated unless it ends a sentence", async () => {

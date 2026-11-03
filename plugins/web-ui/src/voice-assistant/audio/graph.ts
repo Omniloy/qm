@@ -17,7 +17,7 @@ export interface AudioGraph {
   readonly playback: AudioWorkletNode;
   readonly output: AudioNode;
   microphone(): MicrophoneHealth;
-  reconnectMicrophone(): void;
+  reconnectMicrophone(force: boolean): void;
   setMuted(muted: boolean): void;
   close(): Promise<void>;
 }
@@ -40,7 +40,7 @@ interface Capture {
   framePort: MessagePort;
   health(): MicrophoneHealth;
   setEnabled(enabled: boolean): void;
-  reconnect(): void;
+  reconnect(force: boolean): void;
   close(): void;
 }
 
@@ -137,8 +137,8 @@ function connectCapture(context: AudioContext, stream: MediaStream, onHealth: ()
       enabled = next;
       for (const track of tracks()) track.enabled = next;
     },
-    reconnect() {
-      if (health() !== "live") reconnect();
+    reconnect(force) {
+      if (force || health() !== "live") reconnect();
     },
     close() {
       closed = true;
@@ -192,7 +192,10 @@ export async function createAudioGraph(
       playback,
       output: destination,
       microphone: () => capture?.health() ?? "live",
-      reconnectMicrophone: () => capture?.reconnect(),
+      reconnectMicrophone(force) {
+        wake();
+        capture?.reconnect(force);
+      },
       setMuted: (muted) => capture?.setEnabled(!muted),
       async close() {
         if (closed) return;

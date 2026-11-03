@@ -113,10 +113,11 @@ function setup(scripts: Script[] = [], settings: Partial<VoiceSettings> = {}) {
   const attached: Array<{ entryId: string; activity: VoiceActivity[] }> = [];
   const outcomes: Partial<Record<VoiceToolCall["name"], VoiceActivity>> = {};
   const background: VoiceTaskSummary[] = [];
-  const mic: { health: MicrophoneHealth; reconnects: number; stalls: number } = {
+  const mic: { health: MicrophoneHealth; reconnects: number; stalls: number; forced: boolean[] } = {
     health: "live",
     reconnects: 0,
     stalls: 0,
+    forced: [],
   };
   const deps: VoiceControllerDeps = {
     speech,
@@ -153,7 +154,10 @@ function setup(scripts: Script[] = [], settings: Partial<VoiceSettings> = {}) {
     chime: (kind) => void chimes.push(kind),
     setMuted: (value) => void muted.push(value),
     microphone: () => mic.health,
-    reconnectMicrophone: () => void mic.reconnects++,
+    reconnectMicrophone: (force) => {
+      mic.reconnects++;
+      mic.forced.push(force);
+    },
     onStalled: () => void mic.stalls++,
     render: (view) => void views.push(view),
     onFatal: (message) => void fatal.push(message),
@@ -2439,6 +2443,7 @@ test("a muted, lost or blocked microphone shows on the status line ahead of othe
   const before = t.mic.reconnects;
   t.controller.press();
   assert.equal(t.mic.reconnects, before + 1);
+  assert.equal(t.mic.forced.at(-1), false);
   t.controller.press();
   t.speech.emit({ type: "speech-misfire" });
   t.mic.health = "blocked";
@@ -2446,7 +2451,7 @@ test("a muted, lost or blocked microphone shows on the status line ahead of othe
   assert.equal(t.view().status, "El navegador ha bloqueado el micrófono. Permítelo en los ajustes del sitio.");
   t.mic.health = "live";
   t.controller.microphoneChanged();
-  assert.equal(t.view().status, "Pulsa la barra espaciadora o el orbe para hablar, y otra vez para enviar");
+  assert.equal(t.view().status, "No te he oído. Inténtalo de nuevo.");
 });
 
 test("in open mode, waking a lost microphone by pressing reconnects it", () => {
@@ -2524,4 +2529,45 @@ test("a segment whose transcript never arrives restarts speech, but one that ans
   t.speech.emit({ type: "speech-end", segmentId: 2, durationMs: 900, purpose: "utterance" });
   t.clock.advance(SPEECH_STALL_MS);
   assert.equal(t.mic.stalls, 1);
+});
+
+test("a silent capture forces the next press to re-acquire the microphone", () => {
+  const t = setup([], { micMode: "push", pttStyle: "toggle" });
+  t.ready();
+  t.controller.press();
+  t.controller.press();
+  t.speech.emit({ type: "speech-misfire", silent: true });
+  t.controller.press();
+  assert.equal(t.mic.forced.at(-1), true);
+  t.controller.press();
+  t.speech.emit({ type: "speech-misfire" });
+  t.controller.press();
+  assert.equal(t.mic.forced.at(-1), false);
+});
+
+test("retrying while the speech worker is stuck does not postpone the restart, and slow answers keep it waiting", () => {
+  const t = setup([], { micMode: "push", pttStyle: "toggle" });
+  t.ready();
+  t.controller.press();
+  t.controller.press();
+  t.clock.advance(SPEECH_STALL_MS / 2);
+  t.controller.press();
+  t.controller.press();
+  t.clock.advance(SPEECH_STALL_MS / 2);
+  assert.equal(t.mic.stalls, 1);
+
+  const u = setup([], { micMode: "push", pttStyle: "toggle" });
+  u.ready();
+  u.controller.press();
+  u.speech.emit({ type: "speech-start" });
+  u.controller.press();
+  u.speech.emit({ type: "speech-end", segmentId: 1, durationMs: 900, purpose: "utterance" });
+  u.clock.advance(SPEECH_STALL_MS - 1);
+  u.transcript("  ", "utterance", 1);
+  u.controller.press();
+  u.speech.emit({ type: "speech-start" });
+  u.controller.press();
+  u.speech.emit({ type: "speech-end", segmentId: 2, durationMs: 900, purpose: "utterance" });
+  u.clock.advance(SPEECH_STALL_MS - 1);
+  assert.equal(u.mic.stalls, 0);
 });

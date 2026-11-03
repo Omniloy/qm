@@ -236,9 +236,10 @@ export function createSpeechPipeline(deps: SpeechPipelineDeps): SpeechPipeline {
       });
     },
     retranscribe(id) {
-      const audio = lastWake?.id === id ? lastWake.audio : new Float32Array(0);
+      const audio = lastWake?.id === id ? lastWake.audio : null;
       lastWake = null;
-      transcribe(id, "utterance", audio);
+      if (audio) transcribe(id, "utterance", audio);
+      else post({ type: "transcript", segmentId: id, purpose: "utterance", text: "", language, ms: 0 });
     },
     async settled() {
       let pending: [Promise<void>, Promise<void>] | null = null;

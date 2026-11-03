@@ -101,6 +101,8 @@ type LockManager = {
 };
 
 const WORKER_GRACE_MS = 1_000;
+const STALL_RESTART_LIMIT = 2;
+const STALL_WINDOW_MS = 10 * 60_000;
 
 let host: HTMLElement | null = null;
 let stage: VoiceStage | null = null;
@@ -114,6 +116,7 @@ let idleView: VoiceStageView | null = null;
 let access: VoiceAccess = { gatedModels: true, config: { ...DEFAULT_VOICE_ORG_CONFIG } };
 let transcript: readonly VoiceTranscriptEntry[] = [];
 let spaceDown = false;
+let stallRestarts: number[] = [];
 
 function runtimeSettings(): VoiceSettings {
   return effectiveVoiceSettings(currentVoicePreferences(), access);
@@ -408,6 +411,17 @@ function restartVoice(): void {
   void startVoice(true);
 }
 
+function restartStalledVoice(): void {
+  const at = Date.now();
+  stallRestarts = [...stallRestarts.filter((earlier) => at - earlier < STALL_WINDOW_MS), at];
+  if (stallRestarts.length > STALL_RESTART_LIMIT) {
+    stallRestarts = [];
+    stopVoice(voiceCopy(currentVoicePreferences().language).fatal);
+    return;
+  }
+  restartVoice();
+}
+
 export function stopVoice(status = ""): void {
   starting?.abort();
   starting = null;
@@ -503,8 +517,8 @@ export async function startVoice(takeover = true): Promise<void> {
       chime: (kind) => playChime(audio.context, audio.output, kind),
       setMuted: (muted) => audio.setMuted(muted),
       microphone: () => audio.microphone(),
-      reconnectMicrophone: () => audio.reconnectMicrophone(),
-      onStalled: restartVoice,
+      reconnectMicrophone: (force) => audio.reconnectMicrophone(force),
+      onStalled: restartStalledVoice,
       onMutedChange: storeVoiceMuted,
       muted: storedVoiceMuted(),
       transcript,

@@ -64,7 +64,7 @@ export interface VoiceControllerDeps {
   chime(kind: ChimeKind): void;
   setMuted(muted: boolean): void;
   microphone?(): MicrophoneHealth;
-  reconnectMicrophone?(): void;
+  reconnectMicrophone?(force: boolean): void;
   onStalled?(): void;
   render(view: VoiceStageView): void;
   onFatal(message: string, stage?: "asr" | "tts"): void;
@@ -399,6 +399,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
   let pttClosing = 0;
   let stallTimer: unknown = null;
   let asrFailures = 0;
+  let micSuspect = false;
   let awaitingUser = false;
   let transcript: VoiceTranscriptEntry[] = [...(deps.transcript ?? [])];
   let writtenSeq = 0;
@@ -1068,23 +1069,34 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
     if (captions.user && !captions.user.final) captions = { ...captions, user: null };
   };
 
-  const reviveMicrophone = () => deps.reconnectMicrophone?.();
+  const reviveMicrophone = () => {
+    deps.reconnectMicrophone?.(micSuspect);
+    micSuspect = false;
+  };
 
   const clearStall = () => {
     if (stallTimer !== null) timers.clear(stallTimer);
     stallTimer = null;
   };
 
-  const watchSpeech = () => {
-    clearStall();
+  const awaitingWorker = () => pttClosing > 0 || inFlight.size > 0;
+
+  const armStall = () => {
+    if (stallTimer !== null || !awaitingWorker()) return;
     stallTimer = timers.set(() => {
       stallTimer = null;
-      if (!disposed && (pttClosing > 0 || inFlight.size > 0)) deps.onStalled?.();
+      if (!disposed && awaitingWorker()) deps.onStalled?.();
     }, SPEECH_STALL_MS);
+  };
+
+  const workerAnswered = () => {
+    clearStall();
+    armStall();
   };
 
   const missed = (silent: boolean) => {
     setState("sleeping");
+    micSuspect = silent;
     errorStatus = silent ? copy().micSilent : copy().notHeard;
     render();
   };
@@ -1117,7 +1129,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
     pttConfirmed = false;
     pttClosing++;
     deps.speech.post({ type: "end-segment" });
-    watchSpeech();
+    armStall();
     syncMode();
     armIdle();
     render();
@@ -1152,10 +1164,12 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
         render();
         return;
       }
-      case "speech-misfire":
+      case "speech-misfire": {
         speechActive = false;
         lastSpeechAt = now();
-        if (heldCaptureEnded()) {
+        const ended = heldCaptureEnded();
+        workerAnswered();
+        if (ended) {
           if (state === "listening" && !pttActive) {
             captions = { ...captions, user: null };
             missed(message.silent === true);
@@ -1169,16 +1183,18 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
         }
         drainAnnouncements();
         return;
+      }
       case "speech-end":
         speechActive = false;
         lastSpeechAt = now();
         inFlight.add(message.segmentId);
-        watchSpeech();
         if (message.purpose === "utterance") {
           pendingSegments.add(message.segmentId);
-          if (!heldCaptureEnded()) render();
+          if (heldCaptureEnded()) workerAnswered();
+          else render();
           clearIdle();
         }
+        armStall();
         drainAnnouncements();
         return;
       case "transcript":
@@ -1217,6 +1233,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
 
   const handleTranscript = (message: Extract<SpeechWorkerOut, { type: "transcript" }>) => {
     inFlight.delete(message.segmentId);
+    workerAnswered();
     if (message.failed) {
       transcriptionFailed(message);
       return;
@@ -1234,7 +1251,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
         pendingSegments.add(message.segmentId);
         deps.speech.post({ type: "retranscribe", segmentId: message.segmentId });
         inFlight.add(message.segmentId);
-        watchSpeech();
+        armStall();
         setState("listening");
       } else if (wake.remainder) respondHeard(wake.remainder);
       else setState("listening");
@@ -1395,12 +1412,10 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
       render();
     },
     tasksChanged: render,
-    microphoneChanged() {
-      errorStatus = "";
-      render();
-    },
+    microphoneChanged: render,
     applySettings() {
       deps.speech.post({ type: "config", language: deps.settings().language });
+      if (!pushMode()) pttClosing = 0;
       if (!pushMode() && pttActive) {
         dropHold();
         armIdle();
