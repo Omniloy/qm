@@ -461,7 +461,7 @@ export async function startVoice(takeover = true): Promise<void> {
       return;
     }
     releaseLock = release;
-    graph = await createAudioGraph(microphone);
+    graph = await createAudioGraph(microphone, () => session?.controller.microphoneChanged());
     if (abort.signal.aborted) throw new DOMException("aborted", "AbortError");
     const audio = graph;
     const speechWorker = microphone
@@ -502,6 +502,8 @@ export async function startVoice(takeover = true): Promise<void> {
           .slice(0, VOICE_MAX_RUNNING_TASKS),
       chime: (kind) => playChime(audio.context, audio.output, kind),
       setMuted: (muted) => audio.setMuted(muted),
+      microphone: () => audio.microphone(),
+      reconnectMicrophone: () => audio.reconnectMicrophone(),
       onMutedChange: storeVoiceMuted,
       muted: storedVoiceMuted(),
       transcript,

@@ -59,10 +59,12 @@ const WAKE_SEGMENT_SAMPLES = (WAKE_SEGMENT_MAX_MS * SPEECH_SAMPLE_RATE) / 1000;
 
 const HELD_MAX_SAMPLES = (PTT_MAX_MS * SPEECH_SAMPLE_RATE) / 1000;
 const PREROLL_FRAMES = Math.ceil(200 / SPEECH_FRAME_MS);
+const SILENT_PEAK = 1e-4;
 
 interface HeldCapture {
   frames: Float32Array[];
   samples: number;
+  peak: number;
   speech: boolean;
   dropped: boolean;
 }
@@ -75,6 +77,12 @@ function joined(frames: readonly Float32Array[], samples: number): Float32Array 
     offset += frame.length;
   }
   return audio;
+}
+
+function peakOf(frame: Float32Array): number {
+  let peak = 0;
+  for (const sample of frame) peak = Math.max(peak, Math.abs(sample));
+  return peak;
 }
 
 function wakeSegment(audio: Float32Array): Float32Array {
@@ -155,7 +163,7 @@ export function createSpeechPipeline(deps: SpeechPipelineDeps): SpeechPipeline {
     held = null;
     enqueue(() => {
       if (!target.speech) {
-        post({ type: "speech-misfire" });
+        post(target.peak < SILENT_PEAK ? { type: "speech-misfire", silent: true } : { type: "speech-misfire" });
         return;
       }
       const id = ++segmentId;
@@ -168,6 +176,7 @@ export function createSpeechPipeline(deps: SpeechPipelineDeps): SpeechPipeline {
   const capture = (target: HeldCapture, frame: Float32Array) => {
     target.frames.push(frame);
     target.samples += frame.length;
+    target.peak = Math.max(target.peak, peakOf(frame));
     enqueue(() =>
       vad.process(frame, (event) => {
         if (target.dropped || target.speech) return;
@@ -180,7 +189,7 @@ export function createSpeechPipeline(deps: SpeechPipelineDeps): SpeechPipeline {
   };
 
   const startHeld = () => {
-    const target: HeldCapture = { frames: [], samples: 0, speech: false, dropped: false };
+    const target: HeldCapture = { frames: [], samples: 0, peak: 0, speech: false, dropped: false };
     held = target;
     enqueue(() => vad.reset());
     for (const frame of preroll.splice(0)) capture(target, frame);

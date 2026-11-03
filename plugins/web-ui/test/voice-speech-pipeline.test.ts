@@ -316,6 +316,16 @@ test("a held capture without speech is a misfire and is never transcribed", asyn
   feed(SILENCE, framesFor(1_000));
   pipeline.endSegment();
   await pipeline.settled();
+  assert.deepEqual(posted, [{ type: "speech-misfire", silent: true }]);
+  assert.equal(asrCalls.length, 0);
+});
+
+test("a held capture with sound but no speech is a plain misfire, not a silent microphone", async () => {
+  const { pipeline, posted, asrCalls, feed } = setup({ mode: "paused" });
+  pipeline.setMode("held");
+  feed(0.01, framesFor(1_000));
+  pipeline.endSegment();
+  await pipeline.settled();
   assert.deepEqual(posted, [{ type: "speech-misfire" }]);
   assert.equal(asrCalls.length, 0);
 });

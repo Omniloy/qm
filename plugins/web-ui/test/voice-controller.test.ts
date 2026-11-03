@@ -36,6 +36,7 @@ import {
   type VoiceStageView,
   type VoiceTaskSummary,
   type VoiceToolCall,
+  type MicrophoneHealth,
 } from "../src/voice-assistant/protocol.ts";
 import { stepsForChunk } from "../src/voice-assistant/text-chunker.ts";
 
@@ -111,6 +112,7 @@ function setup(scripts: Script[] = [], settings: Partial<VoiceSettings> = {}) {
   const attached: Array<{ entryId: string; activity: VoiceActivity[] }> = [];
   const outcomes: Partial<Record<VoiceToolCall["name"], VoiceActivity>> = {};
   const background: VoiceTaskSummary[] = [];
+  const mic: { health: MicrophoneHealth; reconnects: number } = { health: "live", reconnects: 0 };
   const deps: VoiceControllerDeps = {
     speech,
     tts,
@@ -145,6 +147,8 @@ function setup(scripts: Script[] = [], settings: Partial<VoiceSettings> = {}) {
     backgroundTasks: () => background,
     chime: (kind) => void chimes.push(kind),
     setMuted: (value) => void muted.push(value),
+    microphone: () => mic.health,
+    reconnectMicrophone: () => void mic.reconnects++,
     render: (view) => void views.push(view),
     onFatal: (message) => void fatal.push(message),
     now: clock.now,
@@ -184,6 +188,7 @@ function setup(scripts: Script[] = [], settings: Partial<VoiceSettings> = {}) {
     attached,
     outcomes,
     background,
+    mic,
     ready,
     modes,
     speaks,
@@ -2376,4 +2381,61 @@ test("a review turn can never approve, release or keep blocked, even if the mode
     ["user_turn_only", "user_turn_only"],
   );
   c.dispose();
+});
+
+test("a push-to-talk capture with no speech says it did not hear, and a silent one blames the microphone", () => {
+  const t = setup([], { micMode: "push", pttStyle: "toggle" });
+  t.ready();
+  t.controller.press();
+  t.controller.press();
+  t.speech.emit({ type: "speech-misfire" });
+  assert.equal(t.controller.state, "sleeping");
+  assert.equal(t.view().status, "No te he oído. Inténtalo de nuevo.");
+  t.controller.press();
+  assert.equal(t.view().status, "");
+  t.controller.press();
+  t.speech.emit({ type: "speech-misfire", silent: true });
+  assert.equal(t.view().status, "El micrófono no envía sonido. Puede que otra app lo esté usando.");
+});
+
+test("a push-to-talk capture that transcribes to nothing says it did not hear", () => {
+  const t = setup([], { micMode: "push", pttStyle: "toggle" });
+  t.ready();
+  t.controller.press();
+  t.speech.emit({ type: "speech-start" });
+  t.controller.press();
+  t.speech.emit({ type: "speech-end", segmentId: 1, durationMs: 800, purpose: "utterance" });
+  t.transcript("  ");
+  assert.equal(t.controller.state, "sleeping");
+  assert.equal(t.view().status, "No te he oído. Inténtalo de nuevo.");
+  assert.equal(t.requests.length, 0);
+});
+
+test("a muted or lost microphone shows on the status line, and pressing reconnects a lost one", () => {
+  const t = setup([], { micMode: "push" });
+  t.ready();
+  t.mic.health = "silent";
+  t.controller.microphoneChanged();
+  assert.equal(t.view().status, "El micrófono no envía sonido. Puede que otra app lo esté usando.");
+  t.controller.pttDown();
+  t.controller.pttUp();
+  assert.equal(t.mic.reconnects, 0);
+  t.mic.health = "lost";
+  t.controller.microphoneChanged();
+  assert.equal(t.view().status, "Se ha perdido el micrófono. Pulsa para reconectarlo.");
+  t.controller.pttDown();
+  assert.equal(t.mic.reconnects, 1);
+  t.mic.health = "live";
+  t.controller.microphoneChanged();
+  assert.notEqual(t.view().status, "Se ha perdido el micrófono. Pulsa para reconectarlo.");
+});
+
+test("in open mode, waking a lost microphone by pressing reconnects it", () => {
+  const t = setup();
+  t.ready();
+  t.mic.health = "lost";
+  t.controller.microphoneChanged();
+  assert.equal(t.view().status, "Se ha perdido el micrófono. Pulsa para reconectarlo.");
+  t.controller.press();
+  assert.equal(t.mic.reconnects, 1);
 });

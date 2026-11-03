@@ -8,6 +8,7 @@ import {
   VOICE_MAX_CONTENT_CHARS,
   VOICE_MAX_MESSAGES,
   VOICE_MAX_TOOL_HOPS,
+  type MicrophoneHealth,
   type PlaybackWorkletIn,
   type PttStyle,
   type PlaybackWorkletOut,
@@ -62,6 +63,8 @@ export interface VoiceControllerDeps {
   backgroundTasks(): VoiceTaskSummary[];
   chime(kind: ChimeKind): void;
   setMuted(muted: boolean): void;
+  microphone?(): MicrophoneHealth;
+  reconnectMicrophone?(): void;
   render(view: VoiceStageView): void;
   onFatal(message: string, stage?: "asr" | "tts"): void;
   onMutedChange?(muted: boolean): void;
@@ -87,6 +90,7 @@ export interface VoiceController {
   setStatus(text: string): void;
   taskUnavailable(): void;
   tasksChanged(): void;
+  microphoneChanged(): void;
   applySettings(): void;
   dispose(): void;
 }
@@ -141,6 +145,9 @@ const COPY = {
     downloading: (percent: number) => `Descargando modelos ${percent}%`,
     storage: "No hay espacio suficiente para los modelos de voz.",
     muted: "Micrófono apagado",
+    micSilent: "El micrófono no envía sonido. Puede que otra app lo esté usando.",
+    micLost: "Se ha perdido el micrófono. Pulsa para reconectarlo.",
+    notHeard: "No te he oído. Inténtalo de nuevo.",
     wakeHint: (phrase: string) => `Di «${phrase}»`,
     pttHint: {
       hold: "Mantén pulsada la barra espaciadora o el orbe para hablar",
@@ -197,6 +204,9 @@ const COPY = {
     downloading: (percent: number) => `Downloading models ${percent}%`,
     storage: "There is not enough storage for the voice models.",
     muted: "Microphone off",
+    micSilent: "The microphone is not sending any sound. Another app may be using it.",
+    micLost: "The microphone was disconnected. Press to reconnect it.",
+    notHeard: "I did not hear you. Please try again.",
     wakeHint: (phrase: string) => `Say “${phrase}”`,
     pttHint: {
       hold: "Hold Space or the orb to talk",
@@ -405,6 +415,8 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
       return awaitingUser ? words.typeAnswerHint : words.typeHint;
     }
     if (muted) return words.muted;
+    const microphone = deps.microphone?.() ?? "live";
+    if (microphone !== "live") return microphone === "lost" ? words.micLost : words.micSilent;
     if (settings.micMode === "open" && state === "listening") return awaitingUser ? words.answerHint : "";
     if (state !== "sleeping") return "";
     if (settings.micMode === "open") return words.wakeHint(settings.wakePhrase);
@@ -1045,8 +1057,19 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
     if (captions.user && !captions.user.final) captions = { ...captions, user: null };
   };
 
+  const reviveMicrophone = () => {
+    if (deps.microphone?.() === "lost") deps.reconnectMicrophone?.();
+  };
+
+  const missed = (silent: boolean) => {
+    setState("sleeping");
+    errorStatus = silent ? copy().micSilent : copy().notHeard;
+    render();
+  };
+
   const pttDown = () => {
     if (!pushMode() || pttActive || muted || state === "off" || state === "arming") return;
+    reviveMicrophone();
     pttActive = true;
     pttConfirmed = false;
     pttAt = now();
@@ -1112,7 +1135,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
         if (heldCaptureEnded()) {
           if (state === "listening" && !pttActive) {
             captions = { ...captions, user: null };
-            setState("sleeping");
+            missed(message.silent === true);
           }
           return;
         }
@@ -1175,7 +1198,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
     const woken = afterWake ? matchWake(heard, phrase) : null;
     const text = woken?.matched ? woken.remainder : heard;
     if (!text) {
-      if (state === "listening" && pushMode() && !pttActive) setState("sleeping");
+      if (state === "listening" && pushMode() && !pttActive) missed(false);
       else if (state === "listening") {
         captions = { ...captions, user: null };
         armIdle();
@@ -1244,6 +1267,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
       else if (micOff()) {
         if (state === "thinking" || state === "speaking") interrupt();
       } else if (state === "sleeping") {
+        reviveMicrophone();
         deps.chime("wake");
         setState("listening");
       } else if (state === "listening") {
@@ -1322,6 +1346,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
       render();
     },
     tasksChanged: render,
+    microphoneChanged: render,
     applySettings() {
       deps.speech.post({ type: "config", language: deps.settings().language });
       if (!pushMode() && pttActive) {
