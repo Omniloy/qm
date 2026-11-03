@@ -2571,3 +2571,35 @@ test("retrying while the speech worker is stuck does not postpone the restart, a
   u.clock.advance(SPEECH_STALL_MS - 1);
   assert.equal(u.mic.stalls, 0);
 });
+
+test("retries the speech detector answers do not postpone the restart while a transcription is stuck", () => {
+  const t = setup([], { micMode: "push", pttStyle: "toggle" });
+  t.ready();
+  t.controller.press();
+  t.speech.emit({ type: "speech-start" });
+  t.controller.press();
+  t.speech.emit({ type: "speech-end", segmentId: 1, durationMs: 900, purpose: "utterance" });
+  t.clock.advance(SPEECH_STALL_MS / 3);
+  t.controller.press();
+  t.controller.press();
+  t.speech.emit({ type: "speech-misfire" });
+  t.clock.advance(SPEECH_STALL_MS / 3);
+  t.controller.press();
+  t.speech.emit({ type: "speech-start" });
+  t.controller.press();
+  t.speech.emit({ type: "speech-end", segmentId: 2, durationMs: 900, purpose: "utterance" });
+  t.clock.advance(SPEECH_STALL_MS / 3);
+  assert.equal(t.mic.stalls, 1);
+});
+
+test("open-mode noise does not postpone the restart while a transcription is stuck", () => {
+  const t = setup();
+  t.ready();
+  t.speech.emit({ type: "speech-end", segmentId: 1, durationMs: 900, purpose: "wake" });
+  for (let i = 0; i < 3; i++) {
+    t.clock.advance(SPEECH_STALL_MS / 4);
+    t.speech.emit({ type: "speech-misfire" });
+  }
+  t.clock.advance(SPEECH_STALL_MS / 4);
+  assert.equal(t.mic.stalls, 1);
+});

@@ -1168,7 +1168,7 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
         speechActive = false;
         lastSpeechAt = now();
         const ended = heldCaptureEnded();
-        workerAnswered();
+        if (ended && inFlight.size === 0) workerAnswered();
         if (ended) {
           if (state === "listening" && !pttActive) {
             captions = { ...captions, user: null };
@@ -1184,19 +1184,21 @@ export function createVoiceController(deps: VoiceControllerDeps): VoiceControlle
         drainAnnouncements();
         return;
       }
-      case "speech-end":
+      case "speech-end": {
         speechActive = false;
         lastSpeechAt = now();
+        const answeredAll = inFlight.size === 0;
         inFlight.add(message.segmentId);
         if (message.purpose === "utterance") {
           pendingSegments.add(message.segmentId);
-          if (heldCaptureEnded()) workerAnswered();
-          else render();
+          if (!heldCaptureEnded()) render();
+          else if (answeredAll) workerAnswered();
           clearIdle();
         }
         armStall();
         drainAnnouncements();
         return;
+      }
       case "transcript":
         handleTranscript(message);
         return;
