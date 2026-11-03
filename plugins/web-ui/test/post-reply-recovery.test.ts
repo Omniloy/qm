@@ -687,6 +687,33 @@ test("post replies remain visible in new and continuing conversations", async (t
       conv!.resumeIfIdle(row.threadRef);
       await until(() => host.querySelector(".queued-text") !== null);
       assert.equal(host.querySelector(".queued-text")!.textContent?.trim(), "Envíaselo a Noé cuando esté listo");
+      let release: (() => void) | undefined;
+      const slow = new Promise<void>((resolve) => (release = resolve));
+      let fetches = 0;
+      intercept = (path) => {
+        if (!path.includes("/api/runs/active")) return;
+        fetches++;
+        const answer = fetches === 1 ? [{ runId: "stale", text: "Respuesta antigua" }] : queued;
+        const body = Response.json({ runId: "r1", run: { status: "running" }, queued: answer });
+        return fetches === 1 ? slow.then(() => body) : Promise.resolve(body);
+      };
+      conv!.resumeIfIdle(row.threadRef);
+      await settle();
+      queued = [{ runId: "local", text: "Mensaje propio" }];
+      conv!.composer.setQueuedRuns(row.threadRef, queued);
+      release!();
+      await until(() => fetches === 2);
+      await settle();
+      assert.deepEqual(
+        [...host.querySelectorAll(".queued-text")].map((el) => el.textContent?.trim()),
+        ["Mensaje propio"],
+      );
+      intercept = (path) => {
+        if (path.includes("/api/runs/active"))
+          return Promise.resolve(
+            Response.json({ runId: runLive ? "r1" : null, run: runLive ? { status: "running" } : null, queued }),
+          );
+      };
       runLive = false;
       queued = [];
       run.emit("done", { status: "done", result: { status: "ok", reply: "Listo" } });

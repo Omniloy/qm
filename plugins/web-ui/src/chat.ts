@@ -800,9 +800,14 @@ export function createChatSurface(
   }
 
   function refreshQueuedRuns(agent: Agent, threadRef: string): void {
+    const revision = ctx.composer.queueRevision();
     void activeRunForThread(threadRef).then(
       (active) => {
-        if (agent !== chatState.agent || threadRef !== chatState.threadRef) return;
+        if (agent !== chatState.agent || threadRef !== chatState.threadRef || !agent.state.isStreaming) return;
+        if (revision !== ctx.composer.queueRevision()) {
+          refreshQueuedRuns(agent, threadRef);
+          return;
+        }
         ctx.composer.setQueuedRuns(threadRef, active.queued);
         drawActiveChat();
       },

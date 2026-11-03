@@ -133,6 +133,7 @@ export interface ComposerSurface {
   queuedStrip(agent: Agent): TemplateResult | typeof import("lit").nothing;
   queuedRunsFor(threadRef: string | null): QueuedRun[];
   setQueuedRuns(threadRef: string, runs: QueuedRun[]): void;
+  queueRevision(): number;
   resetComposer(): void;
   focusComposerEnd(): void;
   fillSuggestedPrompt(prompt: string, agent: Agent): void;
