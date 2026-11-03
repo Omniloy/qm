@@ -5,6 +5,7 @@ import {
   HEARD_MS,
   mergeActivity,
   PTT_MIN_MS,
+  SPEECH_STALL_MS,
   SPEAKING_VAD,
   THINKING_CHIME_MS,
   createVoiceController,
@@ -36,6 +37,7 @@ import {
   type VoiceStageView,
   type VoiceTaskSummary,
   type VoiceToolCall,
+  type MicrophoneHealth,
 } from "../src/voice-assistant/protocol.ts";
 import { stepsForChunk } from "../src/voice-assistant/text-chunker.ts";
 
@@ -111,6 +113,12 @@ function setup(scripts: Script[] = [], settings: Partial<VoiceSettings> = {}) {
   const attached: Array<{ entryId: string; activity: VoiceActivity[] }> = [];
   const outcomes: Partial<Record<VoiceToolCall["name"], VoiceActivity>> = {};
   const background: VoiceTaskSummary[] = [];
+  const mic: { health: MicrophoneHealth; reconnects: number; stalls: number; forced: boolean[] } = {
+    health: "live",
+    reconnects: 0,
+    stalls: 0,
+    forced: [],
+  };
   const deps: VoiceControllerDeps = {
     speech,
     tts,
@@ -145,6 +153,12 @@ function setup(scripts: Script[] = [], settings: Partial<VoiceSettings> = {}) {
     backgroundTasks: () => background,
     chime: (kind) => void chimes.push(kind),
     setMuted: (value) => void muted.push(value),
+    microphone: () => mic.health,
+    reconnectMicrophone: (force) => {
+      mic.reconnects++;
+      mic.forced.push(force);
+    },
+    onStalled: () => void mic.stalls++,
     render: (view) => void views.push(view),
     onFatal: (message) => void fatal.push(message),
     now: clock.now,
@@ -184,6 +198,7 @@ function setup(scripts: Script[] = [], settings: Partial<VoiceSettings> = {}) {
     attached,
     outcomes,
     background,
+    mic,
     ready,
     modes,
     speaks,
@@ -2376,4 +2391,215 @@ test("a review turn can never approve, release or keep blocked, even if the mode
     ["user_turn_only", "user_turn_only"],
   );
   c.dispose();
+});
+
+test("a push-to-talk capture with no speech says it did not hear, and a silent one blames the microphone", () => {
+  const t = setup([], { micMode: "push", pttStyle: "toggle" });
+  t.ready();
+  t.controller.press();
+  t.controller.press();
+  t.speech.emit({ type: "speech-misfire" });
+  assert.equal(t.controller.state, "sleeping");
+  assert.equal(t.view().status, "No te he oído. Inténtalo de nuevo.");
+  t.controller.press();
+  assert.equal(t.view().status, "");
+  t.controller.press();
+  t.speech.emit({ type: "speech-misfire", silent: true });
+  assert.equal(
+    t.view().status,
+    "No llega sonido del micrófono. Comprueba que esté conectado y que otra app no lo esté usando.",
+  );
+});
+
+test("a push-to-talk capture that transcribes to nothing says it did not hear", () => {
+  const t = setup([], { micMode: "push", pttStyle: "toggle" });
+  t.ready();
+  t.controller.press();
+  t.speech.emit({ type: "speech-start" });
+  t.controller.press();
+  t.speech.emit({ type: "speech-end", segmentId: 1, durationMs: 800, purpose: "utterance" });
+  t.transcript("  ");
+  assert.equal(t.controller.state, "sleeping");
+  assert.equal(t.view().status, "No te he oído. Inténtalo de nuevo.");
+  assert.equal(t.requests.length, 0);
+});
+
+test("a muted, lost or blocked microphone shows on the status line ahead of other errors, and pressing reconnects it", () => {
+  const t = setup([], { micMode: "push", pttStyle: "toggle" });
+  t.ready();
+  t.controller.press();
+  t.controller.press();
+  t.speech.emit({ type: "speech-misfire" });
+  assert.equal(t.view().status, "No te he oído. Inténtalo de nuevo.");
+  t.mic.health = "silent";
+  t.controller.microphoneChanged();
+  assert.equal(
+    t.view().status,
+    "No llega sonido del micrófono. Comprueba que esté conectado y que otra app no lo esté usando.",
+  );
+  t.mic.health = "lost";
+  t.controller.microphoneChanged();
+  assert.equal(t.view().status, "Se ha perdido el micrófono. Pulsa para reconectarlo.");
+  const before = t.mic.reconnects;
+  t.controller.press();
+  assert.equal(t.mic.reconnects, before + 1);
+  assert.equal(t.mic.forced.at(-1), false);
+  t.controller.press();
+  t.speech.emit({ type: "speech-misfire" });
+  t.mic.health = "blocked";
+  t.controller.microphoneChanged();
+  assert.equal(t.view().status, "El navegador ha bloqueado el micrófono. Permítelo en los ajustes del sitio.");
+  t.mic.health = "live";
+  t.controller.microphoneChanged();
+  assert.equal(t.view().status, "No te he oído. Inténtalo de nuevo.");
+});
+
+test("in open mode, waking a lost microphone by pressing reconnects it", () => {
+  const t = setup();
+  t.ready();
+  t.mic.health = "lost";
+  t.controller.microphoneChanged();
+  assert.equal(t.view().status, "Se ha perdido el micrófono. Pulsa para reconectarlo.");
+  t.controller.press();
+  assert.equal(t.mic.reconnects, 1);
+});
+
+test("a failed transcription says so instead of blaming the user, and a second failure restarts speech", () => {
+  const t = setup([], { micMode: "push", pttStyle: "toggle" });
+  t.ready();
+  const fail = (segmentId: number) => {
+    t.controller.press();
+    t.speech.emit({ type: "speech-start" });
+    t.controller.press();
+    t.speech.emit({ type: "speech-end", segmentId, durationMs: 900, purpose: "utterance" });
+    t.speech.emit({
+      type: "transcript",
+      segmentId,
+      purpose: "utterance",
+      text: "",
+      language: "es",
+      ms: 0,
+      failed: true,
+    });
+  };
+  fail(1);
+  assert.equal(t.controller.state, "sleeping");
+  assert.equal(t.view().status, "No he podido transcribir eso. Inténtalo de nuevo.");
+  assert.equal(t.chimes.at(-1), "error");
+  assert.equal(t.mic.stalls, 0);
+  fail(2);
+  assert.equal(t.mic.stalls, 1);
+  assert.equal(t.requests.length, 0);
+});
+
+test("a successful transcription resets the failure count", async () => {
+  const t = setup([], { micMode: "push", pttStyle: "toggle" });
+  t.ready();
+  t.speech.emit({ type: "transcript", segmentId: 1, purpose: "wake", text: "", language: "es", ms: 0, failed: true });
+  t.transcript("algo", "wake", 2);
+  t.speech.emit({ type: "transcript", segmentId: 3, purpose: "wake", text: "", language: "es", ms: 0, failed: true });
+  assert.equal(t.mic.stalls, 0);
+});
+
+test("a capture that never comes back from the speech worker restarts speech after the stall limit", () => {
+  const t = setup([], { micMode: "push", pttStyle: "toggle" });
+  t.ready();
+  t.controller.press();
+  t.controller.press();
+  t.clock.advance(SPEECH_STALL_MS - 1);
+  assert.equal(t.mic.stalls, 0);
+  t.clock.advance(1);
+  assert.equal(t.mic.stalls, 1);
+});
+
+test("a segment whose transcript never arrives restarts speech, but one that answers in time does not", () => {
+  const t = setup([], { micMode: "push", pttStyle: "toggle" });
+  t.ready();
+  t.controller.press();
+  t.speech.emit({ type: "speech-start" });
+  t.controller.press();
+  t.speech.emit({ type: "speech-end", segmentId: 1, durationMs: 900, purpose: "utterance" });
+  t.clock.advance(SPEECH_STALL_MS / 2);
+  t.transcript("  ", "utterance", 1);
+  t.clock.advance(SPEECH_STALL_MS);
+  assert.equal(t.mic.stalls, 0);
+  t.controller.press();
+  t.speech.emit({ type: "speech-start" });
+  t.controller.press();
+  t.speech.emit({ type: "speech-end", segmentId: 2, durationMs: 900, purpose: "utterance" });
+  t.clock.advance(SPEECH_STALL_MS);
+  assert.equal(t.mic.stalls, 1);
+});
+
+test("a silent capture forces the next press to re-acquire the microphone", () => {
+  const t = setup([], { micMode: "push", pttStyle: "toggle" });
+  t.ready();
+  t.controller.press();
+  t.controller.press();
+  t.speech.emit({ type: "speech-misfire", silent: true });
+  t.controller.press();
+  assert.equal(t.mic.forced.at(-1), true);
+  t.controller.press();
+  t.speech.emit({ type: "speech-misfire" });
+  t.controller.press();
+  assert.equal(t.mic.forced.at(-1), false);
+});
+
+test("retrying while the speech worker is stuck does not postpone the restart, and slow answers keep it waiting", () => {
+  const t = setup([], { micMode: "push", pttStyle: "toggle" });
+  t.ready();
+  t.controller.press();
+  t.controller.press();
+  t.clock.advance(SPEECH_STALL_MS / 2);
+  t.controller.press();
+  t.controller.press();
+  t.clock.advance(SPEECH_STALL_MS / 2);
+  assert.equal(t.mic.stalls, 1);
+
+  const u = setup([], { micMode: "push", pttStyle: "toggle" });
+  u.ready();
+  u.controller.press();
+  u.speech.emit({ type: "speech-start" });
+  u.controller.press();
+  u.speech.emit({ type: "speech-end", segmentId: 1, durationMs: 900, purpose: "utterance" });
+  u.clock.advance(SPEECH_STALL_MS - 1);
+  u.transcript("  ", "utterance", 1);
+  u.controller.press();
+  u.speech.emit({ type: "speech-start" });
+  u.controller.press();
+  u.speech.emit({ type: "speech-end", segmentId: 2, durationMs: 900, purpose: "utterance" });
+  u.clock.advance(SPEECH_STALL_MS - 1);
+  assert.equal(u.mic.stalls, 0);
+});
+
+test("retries the speech detector answers do not postpone the restart while a transcription is stuck", () => {
+  const t = setup([], { micMode: "push", pttStyle: "toggle" });
+  t.ready();
+  t.controller.press();
+  t.speech.emit({ type: "speech-start" });
+  t.controller.press();
+  t.speech.emit({ type: "speech-end", segmentId: 1, durationMs: 900, purpose: "utterance" });
+  t.clock.advance(SPEECH_STALL_MS / 3);
+  t.controller.press();
+  t.controller.press();
+  t.speech.emit({ type: "speech-misfire" });
+  t.clock.advance(SPEECH_STALL_MS / 3);
+  t.controller.press();
+  t.speech.emit({ type: "speech-start" });
+  t.controller.press();
+  t.speech.emit({ type: "speech-end", segmentId: 2, durationMs: 900, purpose: "utterance" });
+  t.clock.advance(SPEECH_STALL_MS / 3);
+  assert.equal(t.mic.stalls, 1);
+});
+
+test("open-mode noise does not postpone the restart while a transcription is stuck", () => {
+  const t = setup();
+  t.ready();
+  t.speech.emit({ type: "speech-end", segmentId: 1, durationMs: 900, purpose: "wake" });
+  for (let i = 0; i < 3; i++) {
+    t.clock.advance(SPEECH_STALL_MS / 4);
+    t.speech.emit({ type: "speech-misfire" });
+  }
+  t.clock.advance(SPEECH_STALL_MS / 4);
+  assert.equal(t.mic.stalls, 1);
 });

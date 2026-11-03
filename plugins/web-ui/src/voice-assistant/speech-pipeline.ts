@@ -63,6 +63,7 @@ const PREROLL_FRAMES = Math.ceil(200 / SPEECH_FRAME_MS);
 interface HeldCapture {
   frames: Float32Array[];
   samples: number;
+  peak: number;
   speech: boolean;
   dropped: boolean;
 }
@@ -75,6 +76,12 @@ function joined(frames: readonly Float32Array[], samples: number): Float32Array 
     offset += frame.length;
   }
   return audio;
+}
+
+function peakOf(frame: Float32Array): number {
+  let peak = 0;
+  for (const sample of frame) peak = Math.max(peak, Math.abs(sample));
+  return peak;
 }
 
 function wakeSegment(audio: Float32Array): Float32Array {
@@ -118,7 +125,7 @@ export function createSpeechPipeline(deps: SpeechPipelineDeps): SpeechPipeline {
         });
       } catch (error) {
         post({ type: "error", stage: "asr", reason: errMessage(error), fatal: false });
-        post({ type: "transcript", segmentId: id, purpose, text: "", language: request.language, ms: 0 });
+        post({ type: "transcript", segmentId: id, purpose, text: "", language: request.language, ms: 0, failed: true });
       }
     });
   };
@@ -154,7 +161,11 @@ export function createSpeechPipeline(deps: SpeechPipelineDeps): SpeechPipeline {
     if (!target) return;
     held = null;
     enqueue(() => {
-      if (!target.speech) {
+      if (target.peak === 0) {
+        post({ type: "speech-misfire", silent: true });
+        return;
+      }
+      if (!target.speech && !vadFailing) {
         post({ type: "speech-misfire" });
         return;
       }
@@ -168,6 +179,7 @@ export function createSpeechPipeline(deps: SpeechPipelineDeps): SpeechPipeline {
   const capture = (target: HeldCapture, frame: Float32Array) => {
     target.frames.push(frame);
     target.samples += frame.length;
+    target.peak = Math.max(target.peak, peakOf(frame));
     enqueue(() =>
       vad.process(frame, (event) => {
         if (target.dropped || target.speech) return;
@@ -180,7 +192,7 @@ export function createSpeechPipeline(deps: SpeechPipelineDeps): SpeechPipeline {
   };
 
   const startHeld = () => {
-    const target: HeldCapture = { frames: [], samples: 0, speech: false, dropped: false };
+    const target: HeldCapture = { frames: [], samples: 0, peak: 0, speech: false, dropped: false };
     held = target;
     enqueue(() => vad.reset());
     for (const frame of preroll.splice(0)) capture(target, frame);
@@ -224,9 +236,10 @@ export function createSpeechPipeline(deps: SpeechPipelineDeps): SpeechPipeline {
       });
     },
     retranscribe(id) {
-      const audio = lastWake?.id === id ? lastWake.audio : new Float32Array(0);
+      const audio = lastWake?.id === id ? lastWake.audio : null;
       lastWake = null;
-      transcribe(id, "utterance", audio);
+      if (audio) transcribe(id, "utterance", audio);
+      else post({ type: "transcript", segmentId: id, purpose: "utterance", text: "", language, ms: 0 });
     },
     async settled() {
       let pending: [Promise<void>, Promise<void>] | null = null;
