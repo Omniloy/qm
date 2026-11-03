@@ -101,7 +101,7 @@ export const THINKING_CHIME_MS = 2_500;
 export const PTT_MIN_MS = 250;
 export const HEARD_MS = 1_500;
 export const SPEECH_STALL_MS = 30_000;
-export const ASR_FAILURE_LIMIT = 2;
+const ASR_FAILURE_LIMIT = 2;
 
 const TRANSCRIPT_LIMIT = 100;
 const TASK_UPDATE_DETAIL_CHARS = 2_500;
