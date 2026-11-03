@@ -106,7 +106,7 @@ export interface ChatSurface {
   notePendingSessionOnSend(): void;
   syncPaneState(): void;
   onDelivery(threadRef: string): void;
-  resumeIfIdle(): void;
+  resumeIfIdle(threadRef?: string): void;
   redraw(): void;
   dispose(): void;
 }

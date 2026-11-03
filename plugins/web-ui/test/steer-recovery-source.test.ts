@@ -16,7 +16,10 @@ test("signalLiveRun reports a terminal/vanished run as an outcome instead of thr
 });
 
 test("a server-side run starting for an open conversation attaches the view (working event, not just visibilitychange)", () => {
-  assert.match(conversations, /if \(event\.state === "working"\) for \(const conv of live\) conv\.resumeIfIdle\(\);/);
+  assert.match(
+    conversations,
+    /if \(event\.state === "working"\) for \(const conv of live\) conv\.resumeIfIdle\(event\.threadRef\);/,
+  );
 });
 
 test("resuming a tracked run pulls the transcript first so the triggering message is on screen", () => {

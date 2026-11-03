@@ -658,6 +658,41 @@ test("post replies remain visible in new and continuing conversations", async (t
         },
       );
     }
+    await t.test("a message queued from elsewhere while the run streams shows in the queued strip", async (sub) => {
+      sub.after(() => {
+        intercept = undefined;
+      });
+      await mount();
+      const agent = conv!.state.agent!;
+      let runLive = true;
+      let queued: Array<{ runId: string; text: string }> = [];
+      intercept = (path) => {
+        if (path.includes("/api/runs/active"))
+          return Promise.resolve(
+            Response.json({ runId: runLive ? "r1" : null, run: runLive ? { status: "running" } : null, queued }),
+          );
+      };
+      const before = FakeEventSource.instances.length;
+      conv!.resumeIfIdle();
+      await until(() => FakeEventSource.instances.length > before);
+      const turn = agent.waitForIdle();
+      const run = FakeEventSource.instances.findLast((es) => es.url === "/api/runs/r1/events")!;
+      run.onopen?.();
+      await settle();
+      assert.equal(agent.state.isStreaming, true);
+      queued = [{ runId: "voice", text: "Envíaselo a Noé cuando esté listo" }];
+      conv!.resumeIfIdle("web:someone-else");
+      await settle();
+      assert.equal(host.querySelector(".queued-text"), null);
+      conv!.resumeIfIdle(row.threadRef);
+      await until(() => host.querySelector(".queued-text") !== null);
+      assert.equal(host.querySelector(".queued-text")!.textContent?.trim(), "Envíaselo a Noé cuando esté listo");
+      runLive = false;
+      queued = [];
+      run.emit("done", { status: "done", result: { status: "ok", reply: "Listo" } });
+      await turn;
+      await settle();
+    });
     if (conv) {
       disposeConversation(conv);
       conv = undefined;

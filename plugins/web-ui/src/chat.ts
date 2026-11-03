@@ -799,8 +799,23 @@ export function createChatSurface(
     }
   }
 
-  function resumeIfIdle(): void {
+  function refreshQueuedRuns(agent: Agent, threadRef: string): void {
+    void activeRunForThread(threadRef).then(
+      (active) => {
+        if (agent !== chatState.agent || threadRef !== chatState.threadRef) return;
+        ctx.composer.setQueuedRuns(threadRef, active.queued);
+        drawActiveChat();
+      },
+      () => undefined,
+    );
+  }
+
+  function resumeIfIdle(threadRef?: string): void {
     const agent = chatState.agent;
+    if (agent?.state.isStreaming && threadRef && threadRef === chatState.threadRef) {
+      refreshQueuedRuns(agent, threadRef);
+      return;
+    }
     if (!agent || agent.state.isStreaming || !chatState.threadRef || !chatState.normalStreamFn || !chatState.onWork)
       return;
     void resumeTrackedRun(agent, chatState.threadRef, chatState.normalStreamFn, chatState.onWork);
