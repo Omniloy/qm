@@ -296,7 +296,10 @@ export function createComposerSurface(ctx: ConvCtx, options: ComposerOptions = {
     return (threadRef ? queuedRuns.get(threadRef) : undefined) ?? [];
   }
 
+  let queueRevision = 0;
+
   function setQueuedRuns(threadRef: string, runs: QueuedRun[]): void {
+    queueRevision++;
     if (runs.length) queuedRuns.set(threadRef, runs);
     else queuedRuns.delete(threadRef);
   }
@@ -1985,6 +1988,7 @@ export function createComposerSurface(ctx: ConvCtx, options: ComposerOptions = {
     queuedStrip,
     queuedRunsFor,
     setQueuedRuns,
+    queueRevision: () => queueRevision,
     resetComposer,
     focusComposerEnd,
     fillSuggestedPrompt,

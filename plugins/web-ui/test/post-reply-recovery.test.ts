@@ -658,6 +658,68 @@ test("post replies remain visible in new and continuing conversations", async (t
         },
       );
     }
+    await t.test("a message queued from elsewhere while the run streams shows in the queued strip", async (sub) => {
+      sub.after(() => {
+        intercept = undefined;
+      });
+      await mount();
+      const agent = conv!.state.agent!;
+      let runLive = true;
+      let queued: Array<{ runId: string; text: string }> = [];
+      intercept = (path) => {
+        if (path.includes("/api/runs/active"))
+          return Promise.resolve(
+            Response.json({ runId: runLive ? "r1" : null, run: runLive ? { status: "running" } : null, queued }),
+          );
+      };
+      const before = FakeEventSource.instances.length;
+      conv!.resumeIfIdle();
+      await until(() => FakeEventSource.instances.length > before);
+      const turn = agent.waitForIdle();
+      const run = FakeEventSource.instances.findLast((es) => es.url === "/api/runs/r1/events")!;
+      run.onopen?.();
+      await settle();
+      assert.equal(agent.state.isStreaming, true);
+      queued = [{ runId: "voice", text: "Envíaselo a Noé cuando esté listo" }];
+      conv!.resumeIfIdle("web:someone-else");
+      await settle();
+      assert.equal(host.querySelector(".queued-text"), null);
+      conv!.resumeIfIdle(row.threadRef);
+      await until(() => host.querySelector(".queued-text") !== null);
+      assert.equal(host.querySelector(".queued-text")!.textContent?.trim(), "Envíaselo a Noé cuando esté listo");
+      let release: (() => void) | undefined;
+      const slow = new Promise<void>((resolve) => (release = resolve));
+      let fetches = 0;
+      intercept = (path) => {
+        if (!path.includes("/api/runs/active")) return;
+        fetches++;
+        const answer = fetches === 1 ? [{ runId: "stale", text: "Respuesta antigua" }] : queued;
+        const body = Response.json({ runId: "r1", run: { status: "running" }, queued: answer });
+        return fetches === 1 ? slow.then(() => body) : Promise.resolve(body);
+      };
+      conv!.resumeIfIdle(row.threadRef);
+      await settle();
+      queued = [{ runId: "local", text: "Mensaje propio" }];
+      conv!.composer.setQueuedRuns(row.threadRef, queued);
+      release!();
+      await until(() => fetches === 2);
+      await settle();
+      assert.deepEqual(
+        [...host.querySelectorAll(".queued-text")].map((el) => el.textContent?.trim()),
+        ["Mensaje propio"],
+      );
+      intercept = (path) => {
+        if (path.includes("/api/runs/active"))
+          return Promise.resolve(
+            Response.json({ runId: runLive ? "r1" : null, run: runLive ? { status: "running" } : null, queued }),
+          );
+      };
+      runLive = false;
+      queued = [];
+      run.emit("done", { status: "done", result: { status: "ok", reply: "Listo" } });
+      await turn;
+      await settle();
+    });
     if (conv) {
       disposeConversation(conv);
       conv = undefined;

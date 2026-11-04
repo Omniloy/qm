@@ -115,7 +115,7 @@ export function ensureDeliveryStream(): void {
       } else {
         void refreshSessions({ silent: true });
       }
-      if (event.state === "working") for (const conv of live) conv.resumeIfIdle();
+      if (event.state === "working") for (const conv of live) conv.resumeIfIdle(event.threadRef);
       else for (const conv of live) conv.onDelivery(event.threadRef);
     },
     () => {
