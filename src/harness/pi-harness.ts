@@ -2583,16 +2583,14 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           const modelCalls = entry.ref.modelCalls ?? 0;
           const cacheUsage = sumCacheUsage(callStats);
           const silent = entry.ref.silentRequested ? { silent: true as const } : {};
-          const base = pendingApprovals.length
-            ? {
-                reply,
-                pendingApprovals,
-                ...(entry.ref.pausedOnApproval ? { pausedOnApproval: true as const } : {}),
-                modelCalls,
-                ...silent,
-                compileMs,
-              }
-            : { reply, modelCalls, ...silent, compileMs };
+          const base = {
+            reply,
+            ...(pendingApprovals.length ? { pendingApprovals } : {}),
+            ...(entry.ref.pausedOnApproval ? { pausedOnApproval: true as const } : {}),
+            modelCalls,
+            ...silent,
+            compileMs,
+          };
           return cacheUsage ? { ...base, cacheUsage } : base;
         } finally {
           removeIsolatedDirs(entry);
