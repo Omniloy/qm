@@ -297,13 +297,15 @@ export const VOICE_MAX_MESSAGES = 32;
 export const VOICE_MAX_CONTENT_CHARS = 4_000;
 const VOICE_RESULT_CHARS = 2_500;
 const RESULT_TAIL_CHARS = 1_000;
+const OMITTED_MARK = "\n\n[…]\n\n";
 
-export function resultExcerpt(text: string): { result: string; omittedChars?: number } {
-  if (text.length <= VOICE_RESULT_CHARS) return { result: text };
+export function resultExcerpt(text: string): { omittedChars?: number; result: string } {
+  if (text.length <= VOICE_RESULT_CHARS + OMITTED_MARK.length) return { result: text };
   const head = text.slice(0, VOICE_RESULT_CHARS - RESULT_TAIL_CHARS);
+  const tail = text.slice(-RESULT_TAIL_CHARS);
   return {
-    result: `${head}\n\n[…]\n\n${text.slice(-RESULT_TAIL_CHARS)}`,
-    omittedChars: text.length - VOICE_RESULT_CHARS,
+    omittedChars: text.length - head.length - tail.length,
+    result: `${head}${OMITTED_MARK}${tail}`.toWellFormed(),
   };
 }
 export const VOICE_MAX_RUNNING_TASKS = 20;

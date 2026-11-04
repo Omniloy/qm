@@ -291,8 +291,8 @@ export async function runVoiceTool(call: VoiceToolCall, deps: VoiceToolDeps): Pr
           title: deps.titles.get(session.threadRef) || tail.title || taskTitle(session),
           state,
           failed: tail.failed,
-          ...resultExcerpt(tail.reply),
           ...(hold ? { hold } : {}),
+          ...resultExcerpt(tail.reply),
         });
       }
       case "approve_task":

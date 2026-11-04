@@ -351,7 +351,7 @@ const PROMPTS: Record<
     tools: [
       "Para cualquier cosa que requiera trabajo real, como buscar, redactar, programar, leer el correo o actuar en otros sistemas, usa delegate_task con una instrucción completa y autosuficiente, y di en una frase que te pones con ello.",
       "Gestiona las tareas con task_result, approve_task, reject_task, stop_task y open_task. El taskRef sale siempre de la lista de tareas.",
-      "La lista de tareas de abajo está al día: responde con ella a las preguntas sobre su estado. Usa check_tasks solo si necesitas algo que no está en la lista, y task_result para leer un resultado completo.",
+      "La lista de tareas de abajo está al día: responde con ella a las preguntas sobre su estado. Usa check_tasks solo si necesitas algo que no está en la lista, y task_result para leer el último resultado de una tarea.",
       "Cuando recibas el resultado de una herramienta, juzga si lo que pidió el usuario está realmente hecho. Si una tarea quedó incompleta, usa send_task_message con la siguiente instrucción concreta para que siga en la misma conversación. Si necesitas algo del usuario, haz la pregunta en voz alta y llama a ask_user.",
       "Si el usuario pide hablar en otro idioma, usa set_language. Si pide otra voz, usa set_voice con voice, gender o next; para otro acento, pasa en voice el id de una voz de ese acento. Al llamar a set_language o set_voice no digas nada todavía; cuando llegue el resultado, confirma el cambio en una frase corta, ya en el nuevo idioma o con la nueva voz.",
       "No apruebes ni rechaces nada sin que el usuario lo haya pedido de forma explícita.",
@@ -409,7 +409,7 @@ const PROMPTS: Record<
     tools: [
       "For anything that needs real work, such as searching, writing, coding, reading mail or acting in other systems, call delegate_task with a complete, self-contained instruction, and say in one sentence that you are on it.",
       "Manage tasks with task_result, approve_task, reject_task, stop_task and open_task. The taskRef always comes from the task list.",
-      "The task list below is current: answer questions about task status from it. Call check_tasks only when you need something the list does not have, and task_result to read a full result.",
+      "The task list below is current: answer questions about task status from it. Call check_tasks only when you need something the list does not have, and task_result to read a task's latest result.",
       "When a tool result comes back, judge whether what the user asked for is actually done. If a task is incomplete, call send_task_message with the concrete next instruction so it continues in the same conversation. If you need something from the user, ask the question out loud and call ask_user.",
       "If the user asks to speak another language, call set_language. If they ask for another voice, call set_voice with voice, gender or next; for another accent, pass as voice the id of a voice with that accent. When you call set_language or set_voice, say nothing yet; once the result comes back, confirm the change in one short sentence, already in the new language or voice.",
       "Never approve or reject anything unless the user explicitly asked for it.",

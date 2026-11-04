@@ -7,6 +7,7 @@ import {
   type VoiceReplyFrame,
   type VoiceReplyRequest,
   type VoiceSettings,
+  resultExcerpt,
 } from "../src/voice-assistant/protocol.ts";
 import { parseVoicePreferences, runnableVoiceSettings } from "../src/voice-assistant/settings-store.ts";
 import {
@@ -685,4 +686,16 @@ test("activity frames and stored activity are validated, and old entries without
       },
     ],
   );
+});
+
+test("resultExcerpt leaves near-limit replies whole, keeps omittedChars ahead of the text and never splits a character", () => {
+  const near = "y".repeat(2_507);
+  assert.deepEqual(resultExcerpt(near), { result: near });
+  const split = `${"a".repeat(1_499)}😀${"b".repeat(3_000)}`;
+  const excerpt = resultExcerpt(split);
+  assert.deepEqual(Object.keys(excerpt), ["omittedChars", "result"]);
+  assert.ok(excerpt.result.isWellFormed());
+  const quoted = '"1","a"\n'.repeat(600);
+  const clipped = JSON.stringify({ ok: true, ...resultExcerpt(quoted) }).slice(0, 4_000);
+  assert.match(clipped, /^\{"ok":true,"omittedChars":\d+,"result":/);
 });
