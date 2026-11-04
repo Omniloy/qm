@@ -295,6 +295,17 @@ export interface VoiceTaskSummary {
 
 export const VOICE_MAX_MESSAGES = 32;
 export const VOICE_MAX_CONTENT_CHARS = 4_000;
+const VOICE_RESULT_CHARS = 2_500;
+const RESULT_TAIL_CHARS = 1_000;
+
+export function resultExcerpt(text: string): { result: string; omittedChars?: number } {
+  if (text.length <= VOICE_RESULT_CHARS) return { result: text };
+  const head = text.slice(0, VOICE_RESULT_CHARS - RESULT_TAIL_CHARS);
+  return {
+    result: `${head}\n\n[…]\n\n${text.slice(-RESULT_TAIL_CHARS)}`,
+    omittedChars: text.length - VOICE_RESULT_CHARS,
+  };
+}
 export const VOICE_MAX_RUNNING_TASKS = 20;
 export const VOICE_MAX_TOOL_HOPS = 3;
 export const VOICE_MAX_FOLLOWUPS_PER_TASK = 3;

@@ -159,6 +159,20 @@ test("delegate_task starts a real agent turn on a new web thread of the user", a
   assert.ok(!isVoiceThread("ana@example.com", "web:bob@example.com:voice:id1"));
 });
 
+test("task_result keeps the ending of a long reply and says how much of the middle it left out", async () => {
+  const reply = `Tabla:${"x".repeat(5_000)}Recomiendo este escenario.`;
+  const { deps: d } = deps([session("web:ana:1", { title: "Informe" })], {
+    tail: async () => ({ title: "Informe", reply, failed: false }),
+  });
+  const result = JSON.parse(
+    (await runVoiceTool({ id: "c", name: "task_result", args: { taskRef: "web:ana:1" } }, d)).content,
+  );
+  assert.ok(result.result.startsWith("Tabla:"));
+  assert.ok(result.result.endsWith("Recomiendo este escenario."));
+  assert.match(result.result, /\n\n\[…\]\n\n/);
+  assert.equal(result.omittedChars, reply.length - 2_500);
+});
+
 test("task tools resolve the taskRef against the user's sessions", async () => {
   const sessions = [
     session("web:ana:1", { working: true, title: "Informe" }),

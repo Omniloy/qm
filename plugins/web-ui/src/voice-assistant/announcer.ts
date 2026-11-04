@@ -11,6 +11,7 @@ import {
   type VoiceLanguage,
   type VoiceReplyFrame,
   type VoiceReplyRequest,
+  resultExcerpt,
 } from "./protocol.ts";
 import { withoutClosingPunctuation } from "./text-chunker.ts";
 import { heldOutput, heldSubagents, taskState, taskTitle, type HeldOutput, type TaskTail } from "./tools.ts";
@@ -113,7 +114,7 @@ function announcePrompt(kind: ReviewedKind, title: string, detail: string, langu
     purpose: "announce",
     language,
     tools: false,
-    messages: [{ role: "user", content: (head + detail).slice(0, VOICE_MAX_CONTENT_CHARS) }],
+    messages: [{ role: "user", content: (head + resultExcerpt(detail).result).slice(0, VOICE_MAX_CONTENT_CHARS) }],
   };
 }
 

@@ -33,6 +33,7 @@ import {
   type VoiceToolCall,
   type VoiceTranscriptEntry,
   type VoiceWork,
+  resultExcerpt,
 } from "./protocol.ts";
 import { createTextChunker, stepsForChunk, withoutClosingPunctuation, type TextChunker } from "./text-chunker.ts";
 import type { VoiceConfirmation, VoiceToolOutcome } from "./tools.ts";
@@ -104,7 +105,6 @@ export const SPEECH_STALL_MS = 30_000;
 const ASR_FAILURE_LIMIT = 2;
 
 const TRANSCRIPT_LIMIT = 100;
-const TASK_UPDATE_DETAIL_CHARS = 2_500;
 export const TASK_UPDATE_MARKER = "<task_update/>";
 
 export type VoiceTranscriptNote = Pick<VoiceTranscriptEntry, "role" | "text" | "activity">;
@@ -338,7 +338,7 @@ export function taskUpdateMessages(update: TaskUpdate, callId: string): VoiceMes
     title: update.title,
     state: update.kind === "approval" ? "awaiting_approval" : "idle",
     failed: update.kind === "failed",
-    result: update.detail.slice(0, TASK_UPDATE_DETAIL_CHARS),
+    ...resultExcerpt(update.detail),
   };
   return [
     { role: "user", content: TASK_UPDATE_MARKER },

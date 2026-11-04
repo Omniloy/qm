@@ -9,6 +9,7 @@ import {
   type VoiceSettings,
   type VoiceTaskSummary,
   type VoiceToolCall,
+  resultExcerpt,
 } from "./protocol.ts";
 import { pickVoice, voiceLabel } from "./voices.ts";
 
@@ -62,7 +63,6 @@ export interface VoiceToolDeps {
   newId(): string;
 }
 
-const RESULT_CHARS = 2_500;
 const TASK_MESSAGE_CHARS = 2_000;
 const CONFIRM_SUMMARY_CHARS = 200;
 
@@ -291,7 +291,7 @@ export async function runVoiceTool(call: VoiceToolCall, deps: VoiceToolDeps): Pr
           title: deps.titles.get(session.threadRef) || tail.title || taskTitle(session),
           state,
           failed: tail.failed,
-          result: tail.reply.slice(0, RESULT_CHARS),
+          ...resultExcerpt(tail.reply),
           ...(hold ? { hold } : {}),
         });
       }

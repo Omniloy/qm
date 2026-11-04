@@ -1545,9 +1545,12 @@ test("a background review runs a review turn with the task update and resolves w
     failed: false,
     result: "Tres conclusiones.",
   });
-  const approval = taskUpdateMessages({ ...UPDATE, kind: "approval", detail: "x".repeat(3_000) }, "c").at(-1)!;
-  assert.equal(JSON.parse(approval.content).state, "awaiting_approval");
-  assert.equal(JSON.parse(approval.content).result.length, 2_500);
+  const long = `${"a".repeat(2_000)}${"m".repeat(1_000)}${"z".repeat(1_000)}`;
+  const approval = JSON.parse(taskUpdateMessages({ ...UPDATE, kind: "approval", detail: long }, "c").at(-1)!.content);
+  assert.equal(approval.state, "awaiting_approval");
+  assert.equal(approval.omittedChars, 1_500);
+  assert.ok(approval.result.startsWith("a".repeat(1_500)) && approval.result.endsWith("z".repeat(1_000)));
+  assert.ok(approval.result.includes("[…]"), "a long result keeps its ending and marks the omitted middle");
   assert.ok(t.chimes.includes("announce"));
   assert.deepEqual(
     t.view().transcript.map((entry) => entry.text),

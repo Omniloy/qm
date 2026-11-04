@@ -943,6 +943,17 @@ test("transcript notes from the client are appended for the signed-in person and
   }
 });
 
+test("replies and reviews read an excerpted task result as whole, never as a cut-off task", () => {
+  for (const language of ["es", "en"] as const)
+    for (const purpose of ["reply", "review"] as const) {
+      const prompt = voiceSystemPrompt(parseVoiceReplyRequest(userTurn("<task_update/>", { language, purpose }))!);
+      assert.match(
+        prompt,
+        language === "es" ? /omittedChars, el resultado es un extracto/ : /omittedChars, the result is an excerpt/,
+      );
+    }
+});
+
 test("the prompt asks the model to confirm a language or voice change itself", () => {
   for (const language of ["es", "en"] as const) {
     const request = parseVoiceReplyRequest(userTurn("x", { language }))!;
