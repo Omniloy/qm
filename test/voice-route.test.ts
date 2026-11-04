@@ -951,7 +951,15 @@ test("replies and reviews read an excerpted task result as whole, never as a cut
         prompt,
         language === "es" ? /omittedChars, el resultado es un extracto/ : /omittedChars, the result is an excerpt/,
       );
+      assert.match(
+        prompt,
+        language === "es" ? /si no hace falta, no lo leas/ : /if you do not need it, do not read it/,
+      );
     }
+  const taskResult = voiceTools(parseVoiceReplyRequest(userTurn("x"))!).find((tool) => tool.name === "task_result")!
+    .parameters as { properties: Record<string, unknown>; required: string[] };
+  assert.deepEqual(Object.keys(taskResult.properties), ["taskRef", "from"]);
+  assert.deepEqual(taskResult.required, ["taskRef"]);
 });
 
 test("the prompt asks the model to confirm a language or voice change itself", () => {

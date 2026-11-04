@@ -10,6 +10,7 @@ import {
   type VoiceTaskSummary,
   type VoiceToolCall,
   resultExcerpt,
+  resultPart,
 } from "./protocol.ts";
 import { pickVoice, voiceLabel } from "./voices.ts";
 
@@ -155,6 +156,10 @@ export function taskSummaries(
     .map(({ taskRef, title, state }) => ({ taskRef, title, state }));
 }
 
+function validFrom(from: unknown): from is number {
+  return typeof from === "number" && Number.isInteger(from) && from >= 0;
+}
+
 function ok(value: Record<string, unknown>): VoiceToolOutcome {
   return { content: JSON.stringify({ ok: true, ...value }) };
 }
@@ -292,7 +297,7 @@ export async function runVoiceTool(call: VoiceToolCall, deps: VoiceToolDeps): Pr
           state,
           failed: tail.failed,
           ...(hold ? { hold } : {}),
-          ...resultExcerpt(tail.reply),
+          ...(validFrom(call.args.from) ? resultPart(tail.reply, call.args.from) : resultExcerpt(tail.reply)),
         });
       }
       case "approve_task":

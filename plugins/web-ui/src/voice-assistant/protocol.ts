@@ -267,7 +267,7 @@ type VoiceToolName =
 interface VoiceToolArgs {
   delegate_task: { instruction: string; title: string };
   check_tasks: Record<string, never>;
-  task_result: { taskRef: string };
+  task_result: { taskRef: string; from?: number };
   approve_task: { taskRef: string };
   reject_task: { taskRef: string };
   stop_task: { taskRef: string };
@@ -299,13 +299,24 @@ const VOICE_RESULT_CHARS = 2_500;
 const RESULT_TAIL_CHARS = 1_000;
 const OMITTED_MARK = "\n\n[…]\n\n";
 
-export function resultExcerpt(text: string): { omittedChars?: number; result: string } {
+export function resultExcerpt(text: string): { omittedChars?: number; omittedFrom?: number; result: string } {
   if (text.length <= VOICE_RESULT_CHARS + OMITTED_MARK.length) return { result: text };
   const head = text.slice(0, VOICE_RESULT_CHARS - RESULT_TAIL_CHARS);
   const tail = text.slice(-RESULT_TAIL_CHARS);
   return {
     omittedChars: text.length - head.length - tail.length,
+    omittedFrom: head.length,
     result: `${head}${OMITTED_MARK}${tail}`.toWellFormed(),
+  };
+}
+
+export function resultPart(text: string, from: number): { from: number; nextFrom?: number; result: string } {
+  const start = Math.min(from, text.length);
+  const end = start + VOICE_RESULT_CHARS;
+  return {
+    from: start,
+    ...(end < text.length ? { nextFrom: end } : {}),
+    result: text.slice(start, end).toWellFormed(),
   };
 }
 export const VOICE_MAX_RUNNING_TASKS = 20;

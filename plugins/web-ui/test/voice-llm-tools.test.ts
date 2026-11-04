@@ -693,9 +693,33 @@ test("resultExcerpt leaves near-limit replies whole, keeps omittedChars ahead of
   assert.deepEqual(resultExcerpt(near), { result: near });
   const split = `${"a".repeat(1_499)}😀${"b".repeat(3_000)}`;
   const excerpt = resultExcerpt(split);
-  assert.deepEqual(Object.keys(excerpt), ["omittedChars", "result"]);
+  assert.deepEqual(Object.keys(excerpt), ["omittedChars", "omittedFrom", "result"]);
   assert.ok(excerpt.result.isWellFormed());
   const quoted = '"1","a"\n'.repeat(600);
   const clipped = JSON.stringify({ ok: true, ...resultExcerpt(quoted) }).slice(0, 4_000);
-  assert.match(clipped, /^\{"ok":true,"omittedChars":\d+,"result":/);
+  assert.match(clipped, /^\{"ok":true,"omittedChars":\d+,"omittedFrom":\d+,"result":/);
+});
+
+test("task_result reads the part an excerpt left out only when asked with from, page by page", async () => {
+  const reply = `${"h".repeat(1_500)}${"m".repeat(3_000)}${"t".repeat(1_000)}`;
+  const { deps: d } = deps([session("web:ana:1", { title: "Informe" })], {
+    tail: async () => ({ title: "Informe", reply, failed: false }),
+  });
+  const read = async (args: { taskRef: string; from?: number }) =>
+    JSON.parse((await runVoiceTool({ id: "c", name: "task_result", args }, d)).content);
+  const excerpt = await read({ taskRef: "web:ana:1" });
+  assert.equal(excerpt.omittedFrom, 1_500);
+  const first = await read({ taskRef: "web:ana:1", from: excerpt.omittedFrom });
+  assert.equal(first.result, "m".repeat(2_500));
+  assert.equal(first.nextFrom, 4_000);
+  assert.equal(first.omittedChars, undefined);
+  const last = await read({ taskRef: "web:ana:1", from: first.nextFrom });
+  assert.equal(last.result, `${"m".repeat(500)}${"t".repeat(1_000)}`);
+  assert.equal(last.nextFrom, undefined);
+  assert.equal((await read({ taskRef: "web:ana:1", from: 99_999 })).result, "");
+  assert.equal(
+    (await read({ taskRef: "web:ana:1", from: -1 })).omittedFrom,
+    1_500,
+    "an invalid from falls back to the excerpt",
+  );
 });
