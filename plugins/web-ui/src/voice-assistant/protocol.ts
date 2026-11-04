@@ -299,21 +299,68 @@ const VOICE_RESULT_CHARS = 2_500;
 const RESULT_TAIL_CHARS = 1_000;
 const OMITTED_MARK = "\n\n[…]\n\n";
 
-export function resultExcerpt(text: string): { omittedChars?: number; omittedFrom?: number; result: string } {
-  if (text.length <= VOICE_RESULT_CHARS + OMITTED_MARK.length) return { result: text };
-  const head = text.slice(0, VOICE_RESULT_CHARS - RESULT_TAIL_CHARS);
-  const tail = text.slice(-RESULT_TAIL_CHARS);
+function encodedChars(code: number): number {
+  if (
+    code === 0x22 ||
+    code === 0x5c ||
+    code === 0x0a ||
+    code === 0x0d ||
+    code === 0x09 ||
+    code === 0x08 ||
+    code === 0x0c
+  )
+    return 2;
+  return code < 0x20 ? 6 : 1;
+}
+
+function isHighSurrogate(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
+function fitForward(text: string, start: number, budget: number): number {
+  let end = start;
+  for (let used = 0; end < text.length; end++) {
+    used += encodedChars(text.charCodeAt(end));
+    if (used > budget) break;
+  }
+  return end > start && end < text.length && isHighSurrogate(text.charCodeAt(end - 1)) ? end - 1 : end;
+}
+
+function fitBackward(text: string, budget: number): number {
+  let start = text.length;
+  for (let used = 0; start > 0; start--) {
+    used += encodedChars(text.charCodeAt(start - 1));
+    if (used > budget) break;
+  }
+  return start > 0 && start < text.length && isHighSurrogate(text.charCodeAt(start - 1)) ? start + 1 : start;
+}
+
+export function resultExcerpt(text: string): {
+  chars: number;
+  omittedChars?: number;
+  omittedFrom?: number;
+  result: string;
+} {
+  if (fitForward(text, 0, VOICE_RESULT_CHARS + OMITTED_MARK.length) === text.length)
+    return { chars: text.length, result: text };
+  const headEnd = fitForward(text, 0, VOICE_RESULT_CHARS - RESULT_TAIL_CHARS);
+  const tailStart = fitBackward(text, RESULT_TAIL_CHARS);
   return {
-    omittedChars: text.length - head.length - tail.length,
-    omittedFrom: head.length,
-    result: `${head}${OMITTED_MARK}${tail}`.toWellFormed(),
+    chars: text.length,
+    omittedChars: tailStart - headEnd,
+    omittedFrom: headEnd,
+    result: `${text.slice(0, headEnd)}${OMITTED_MARK}${text.slice(tailStart)}`.toWellFormed(),
   };
 }
 
-export function resultPart(text: string, from: number): { from: number; nextFrom?: number; result: string } {
+export function resultPart(
+  text: string,
+  from: number,
+): { chars: number; from: number; nextFrom?: number; result: string } {
   const start = Math.min(from, text.length);
-  const end = start + VOICE_RESULT_CHARS;
+  const end = fitForward(text, start, VOICE_RESULT_CHARS);
   return {
+    chars: text.length,
     from: start,
     ...(end < text.length ? { nextFrom: end } : {}),
     result: text.slice(start, end).toWellFormed(),

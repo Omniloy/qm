@@ -1543,6 +1543,7 @@ test("a background review runs a review turn with the task update and resolves w
     title: "Informe",
     state: "idle",
     failed: false,
+    chars: 18,
     result: "Tres conclusiones.",
   });
   const long = `${"a".repeat(2_000)}${"m".repeat(1_000)}${"z".repeat(1_000)}`;

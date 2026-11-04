@@ -8,6 +8,7 @@ import {
   type VoiceReplyRequest,
   type VoiceSettings,
   resultExcerpt,
+  resultPart,
 } from "../src/voice-assistant/protocol.ts";
 import { parseVoicePreferences, runnableVoiceSettings } from "../src/voice-assistant/settings-store.ts";
 import {
@@ -690,14 +691,21 @@ test("activity frames and stored activity are validated, and old entries without
 
 test("resultExcerpt leaves near-limit replies whole, keeps omittedChars ahead of the text and never splits a character", () => {
   const near = "y".repeat(2_507);
-  assert.deepEqual(resultExcerpt(near), { result: near });
+  assert.deepEqual(resultExcerpt(near), { chars: 2_507, result: near });
   const split = `${"a".repeat(1_499)}😀${"b".repeat(3_000)}`;
   const excerpt = resultExcerpt(split);
-  assert.deepEqual(Object.keys(excerpt), ["omittedChars", "omittedFrom", "result"]);
+  assert.deepEqual(Object.keys(excerpt), ["chars", "omittedChars", "omittedFrom", "result"]);
   assert.ok(excerpt.result.isWellFormed());
-  const quoted = '"1","a"\n'.repeat(600);
-  const clipped = JSON.stringify({ ok: true, ...resultExcerpt(quoted) }).slice(0, 4_000);
-  assert.match(clipped, /^\{"ok":true,"omittedChars":\d+,"omittedFrom":\d+,"result":/);
+  const quoted = '"1","a"\n'.repeat(1_200);
+  assert.ok(JSON.stringify(resultExcerpt(quoted)).length < 3_000, "escaping counts toward the excerpt size");
+  const page = resultPart(quoted, 1_500);
+  assert.ok(JSON.stringify(page).length < 3_000);
+  const next = resultPart(quoted, page.nextFrom!);
+  assert.equal(quoted.slice(1_500, next.from + next.result.length), page.result + next.result, "pages leave no gap");
+  const emoji = `${"a".repeat(2_499)}😀${"b".repeat(10)}`;
+  const first = resultPart(emoji, 0);
+  assert.ok(first.result.isWellFormed() && first.result.length === 2_499);
+  assert.equal(resultPart(emoji, first.nextFrom!).result, `😀${"b".repeat(10)}`);
 });
 
 test("task_result reads the part an excerpt left out only when asked with from, page by page", async () => {

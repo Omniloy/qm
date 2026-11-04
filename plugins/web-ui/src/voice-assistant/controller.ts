@@ -332,13 +332,15 @@ const INTERRUPTED: VoiceToolOutcome = {
 };
 
 export function taskUpdateMessages(update: TaskUpdate, callId: string): VoiceMessage[] {
+  const { chars, omittedFrom, ...excerpt } = resultExcerpt(update.detail);
   const result = {
     ok: true,
     taskRef: update.taskRef,
     title: update.title,
     state: update.kind === "approval" ? "awaiting_approval" : "idle",
     failed: update.kind === "failed",
-    ...resultExcerpt(update.detail),
+    ...(update.kind === "approval" ? {} : { chars, omittedFrom }),
+    ...excerpt,
   };
   return [
     { role: "user", content: TASK_UPDATE_MARKER },
