@@ -554,6 +554,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           isError = true;
           if (releaseRequested) {
             onCommit.push(async () => {
+              ref.pausedOnApproval = true;
               if (screen.hold) await screen.hold();
               else
                 ref.pendingApprovals!.push({
@@ -563,7 +564,6 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
                   approvalKey: `security-screen-release:${toolLabelOf(tool)}`,
                   grantModes: { session: false, always: false },
                 });
-              ref.pausedOnApproval = true;
             });
             (ret as { terminate?: boolean }).terminate = true;
           }
@@ -600,9 +600,9 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         if (abandoned()) return ret;
         if (screen?.outcome === "quarantine") {
           onCommit.push(async () => {
+            ref.pausedOnApproval = true;
             await screen.hold?.();
             quarantinedMessages.add(message.id);
-            ref.pausedOnApproval = true;
           });
           (ret as { terminate?: boolean }).terminate = true;
           const notice = "[An internal agent message is quarantined pending human approval.]";

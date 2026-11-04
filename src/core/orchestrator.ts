@@ -4313,8 +4313,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const outcome = deriveTurnOutcome({
           ...(reply !== undefined ? { reply } : {}),
           attachments: stagedAttachments.length,
-          pendingApprovals: result.pendingApprovals ?? [],
-          terminatedOnApproval: result.pausedOnApproval === true,
+          pendingApprovals: [
+            ...(result.pendingApprovals ?? []),
+            ...quarantineReleaseApprovals.map(() => ({ kind: "approval" })),
+          ],
+          terminatedOnApproval: result.pausedOnApproval === true || quarantineReleaseApprovals.length > 0,
         });
         const turnCompleted = outcome.completed;
         const pausing = outcome.paused;

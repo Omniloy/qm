@@ -32,6 +32,7 @@ const READ_ONLY_BLOCKED_PREFIXES = [
   "!collect-approval ",
   "!collect-exec ",
   "!screened-run ",
+  "!screened-run-unflagged ",
   "!screened-skill ",
   "!double-exec ",
   "!read ",
@@ -409,8 +410,9 @@ export function createMockHarness(): Harness {
             usedTool = true;
             reply = result.stdout.trim() || result.stderr.trim() || `(exit ${result.code})`;
           }
-        } else if (command0.startsWith("!screened-run ")) {
-          const command = cmd.slice(cmd.indexOf("!screened-run ") + "!screened-run ".length);
+        } else if (command0.startsWith("!screened-run ") || command0.startsWith("!screened-run-unflagged ")) {
+          const tag = command0.startsWith("!screened-run ") ? "!screened-run " : "!screened-run-unflagged ";
+          const command = cmd.slice(cmd.indexOf(tag) + tag.length);
           await turn.emit({ type: "tool_call", payload: { tool: "execute", command }, scopeLabel: turn.scopeLabel });
           const result = await turn.tools.execute(command);
           const output = result.stdout.trim() || result.stderr.trim() || `(exit ${result.code})`;
@@ -439,7 +441,7 @@ export function createMockHarness(): Harness {
               scopeLabel: turn.scopeLabel,
             });
             await screen.hold?.();
-            pausedOnApproval = true;
+            if (tag === "!screened-run ") pausedOnApproval = true;
             reply = stub;
           } else {
             await turn.emit({ type: "tool_result", payload: result, scopeLabel: turn.scopeLabel });
