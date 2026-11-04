@@ -451,6 +451,26 @@ test("a scheduled task's hold goes to its owner, and the owner's decision resume
   }
 });
 
+test("a security hold pauses the turn and blocks new messages even when the harness does not report the pause", async () => {
+  const s = start();
+  try {
+    const events: { threadRef: string; state: string; heldFor?: string[] }[] = [];
+    s.built.sessionStateBus.subscribe((event) => events.push(event));
+    const unflagged = RISKY.replace("!screened-run ", "!screened-run-unflagged ");
+    const held = await s.built.app.turn(dm(unflagged, "unflagged"));
+    assert.equal(held.pendingApprovals?.[0]?.blocksInput, true);
+    const settle = events.filter((event) => event.threadRef === "dm:U1:unflagged").at(-1);
+    assert.equal(settle?.state, "awaiting_approval");
+    assert.deepEqual(settle?.heldFor, ["U1"]);
+    const row = (await s.built.app.listSessions("U1")).find((session) => session.id === held.sessionId);
+    assert.equal(row?.securityHeld, true);
+    const next = await s.built.app.turn(dm("Completa la revisión", "unflagged"));
+    assert.equal(next.status, "pending_approval", "a new message waits behind the hold instead of starting a turn");
+  } finally {
+    await s.close();
+  }
+});
+
 test("a held turn settles as held by security in both the pushed state and the session list", async () => {
   const s = start();
   try {
