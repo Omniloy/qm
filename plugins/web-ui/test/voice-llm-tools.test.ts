@@ -7,6 +7,8 @@ import {
   type VoiceReplyFrame,
   type VoiceReplyRequest,
   type VoiceSettings,
+  resultExcerpt,
+  resultPart,
 } from "../src/voice-assistant/protocol.ts";
 import { parseVoicePreferences, runnableVoiceSettings } from "../src/voice-assistant/settings-store.ts";
 import {
@@ -157,6 +159,20 @@ test("delegate_task starts a real agent turn on a new web thread of the user", a
   assert.ok(isVoiceThread("ana@example.com", "web:ana@example.com:voice:id1"));
   assert.ok(!isVoiceThread("ana@example.com", "web:ana@example.com:id1"));
   assert.ok(!isVoiceThread("ana@example.com", "web:bob@example.com:voice:id1"));
+});
+
+test("task_result keeps the ending of a long reply and says how much of the middle it left out", async () => {
+  const reply = `Tabla:${"x".repeat(5_000)}Recomiendo este escenario.`;
+  const { deps: d } = deps([session("web:ana:1", { title: "Informe" })], {
+    tail: async () => ({ title: "Informe", reply, failed: false }),
+  });
+  const result = JSON.parse(
+    (await runVoiceTool({ id: "c", name: "task_result", args: { taskRef: "web:ana:1" } }, d)).content,
+  );
+  assert.ok(result.result.startsWith("Tabla:"));
+  assert.ok(result.result.endsWith("Recomiendo este escenario."));
+  assert.match(result.result, /\n\n\[…\]\n\n/);
+  assert.equal(result.omittedChars, reply.length - 2_500);
 });
 
 test("task tools resolve the taskRef against the user's sessions", async () => {
@@ -670,5 +686,48 @@ test("activity frames and stored activity are validated, and old entries without
         activity: [{ kind: "memory_saved" }, { kind: "approved", title: "Correo" }],
       },
     ],
+  );
+});
+
+test("resultExcerpt leaves near-limit replies whole, keeps omittedChars ahead of the text and never splits a character", () => {
+  const near = "y".repeat(2_507);
+  assert.deepEqual(resultExcerpt(near), { chars: 2_507, result: near });
+  const split = `${"a".repeat(1_499)}😀${"b".repeat(3_000)}`;
+  const excerpt = resultExcerpt(split);
+  assert.deepEqual(Object.keys(excerpt), ["chars", "omittedChars", "omittedFrom", "result"]);
+  assert.ok(excerpt.result.isWellFormed());
+  const quoted = '"1","a"\n'.repeat(1_200);
+  assert.ok(JSON.stringify(resultExcerpt(quoted)).length < 3_000, "escaping counts toward the excerpt size");
+  const page = resultPart(quoted, 1_500);
+  assert.ok(JSON.stringify(page).length < 3_000);
+  const next = resultPart(quoted, page.nextFrom!);
+  assert.equal(quoted.slice(1_500, next.from + next.result.length), page.result + next.result, "pages leave no gap");
+  const emoji = `${"a".repeat(2_499)}😀${"b".repeat(10)}`;
+  const first = resultPart(emoji, 0);
+  assert.ok(first.result.isWellFormed() && first.result.length === 2_499);
+  assert.equal(resultPart(emoji, first.nextFrom!).result, `😀${"b".repeat(10)}`);
+});
+
+test("task_result reads the part an excerpt left out only when asked with from, page by page", async () => {
+  const reply = `${"h".repeat(1_500)}${"m".repeat(3_000)}${"t".repeat(1_000)}`;
+  const { deps: d } = deps([session("web:ana:1", { title: "Informe" })], {
+    tail: async () => ({ title: "Informe", reply, failed: false }),
+  });
+  const read = async (args: { taskRef: string; from?: number }) =>
+    JSON.parse((await runVoiceTool({ id: "c", name: "task_result", args }, d)).content);
+  const excerpt = await read({ taskRef: "web:ana:1" });
+  assert.equal(excerpt.omittedFrom, 1_500);
+  const first = await read({ taskRef: "web:ana:1", from: excerpt.omittedFrom });
+  assert.equal(first.result, "m".repeat(2_500));
+  assert.equal(first.nextFrom, 4_000);
+  assert.equal(first.omittedChars, undefined);
+  const last = await read({ taskRef: "web:ana:1", from: first.nextFrom });
+  assert.equal(last.result, `${"m".repeat(500)}${"t".repeat(1_000)}`);
+  assert.equal(last.nextFrom, undefined);
+  assert.equal((await read({ taskRef: "web:ana:1", from: 99_999 })).result, "");
+  assert.equal(
+    (await read({ taskRef: "web:ana:1", from: -1 })).omittedFrom,
+    1_500,
+    "an invalid from falls back to the excerpt",
   );
 });
