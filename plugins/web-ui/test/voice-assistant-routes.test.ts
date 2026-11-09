@@ -146,7 +146,17 @@ interface UpstreamHit {
 const hfHits: UpstreamHit[] = [];
 const cdnHits: UpstreamHit[] = [];
 const evilHits: UpstreamHit[] = [];
-let hfMode: "redirect" | "relative" | "evil" | "direct" | "missing" | "short" | "loop" | "unauthorized" = "redirect";
+let hfMode:
+  | "redirect"
+  | "relative"
+  | "evil"
+  | "direct"
+  | "missing"
+  | "short"
+  | "loop"
+  | "unauthorized"
+  | "forbidden"
+  | "expired" = "redirect";
 
 function serveBytes(req: IncomingMessage, res: ServerResponse): void {
   const range = /^bytes=(\d+)-(\d+)$/.exec(req.headers.range ?? "");
@@ -179,6 +189,10 @@ function serveBytes(req: IncomingMessage, res: ServerResponse): void {
 
 const cdn = createServer((req, res) => {
   cdnHits.push({ url: req.url ?? "", headers: req.headers });
+  if (req.url?.startsWith("/expired")) {
+    res.writeHead(403);
+    return void res.end("Request has expired");
+  }
   serveBytes(req, res);
 });
 const cdnBase = await listen(cdn);
@@ -189,7 +203,13 @@ const evil = createServer((req, res) => {
 const evilBase = await listen(evil);
 const hf = createServer((req, res) => {
   hfHits.push({ url: req.url ?? "", headers: req.headers });
-  if (req.url?.startsWith("/cache/")) return serveBytes(req, res);
+  if (req.url?.startsWith("/cache/")) {
+    if (req.url.includes(GATED.repo) && req.headers.authorization !== `Bearer ${FAKE_TOKEN}`) {
+      res.writeHead(401);
+      return void res.end("Access to model is restricted");
+    }
+    return serveBytes(req, res);
+  }
   if (hfMode === "direct") return serveBytes(req, res);
   if (hfMode === "missing") {
     res.writeHead(404);
@@ -199,15 +219,20 @@ const hf = createServer((req, res) => {
     res.writeHead(401);
     return void res.end("Access to model is restricted");
   }
+  if (hfMode === "forbidden") {
+    res.writeHead(403);
+    return void res.end("Access to model is not granted");
+  }
   if (hfMode === "short") {
     res.writeHead(200, { "content-length": "3" });
     return void res.end("abc");
   }
   const locations: Record<string, string> = {
-    relative: "/cache/blob",
+    relative: `/cache${req.url}`,
     evil: `${evilBase}/steal`,
     loop: req.url ?? "/",
     redirect: `${cdnBase}/xet/blob?sig=1`,
+    expired: `${cdnBase}/expired?sig=1`,
   };
   const location = locations[hfMode]!;
   res.writeHead(302, { location });
@@ -479,7 +504,7 @@ test("the model proxy refuses redirects off the allowed hosts and bad upstream a
   assert.equal((await fetch(modelUrl)).status, 200);
 });
 
-test("gated models send the token only on the first Hugging Face hop and are cached privately", async () => {
+test("gated models send the token on every Hugging Face hop, never to the CDN, and are cached privately", async () => {
   for (const mode of ["redirect", "relative"] as const) {
     hfMode = mode;
     hfHits.length = 0;
@@ -489,16 +514,15 @@ test("gated models send the token only on the first Hugging Face hop and are cac
     assert.equal(response.headers.get("cache-control"), "private, max-age=31536000, immutable");
     assert.deepEqual(Buffer.from(await response.arrayBuffer()), PAYLOAD);
     assert.equal(hfHits[0]?.url, `/${GATED.repo}/resolve/${GATED.revision}/${GATED.path}`);
-    assert.equal(hfHits[0]?.headers.authorization, `Bearer ${FAKE_TOKEN}`);
-    const later = [...hfHits.slice(1), ...cdnHits];
-    assert.equal(later.length, 1, mode);
-    for (const hit of later) assert.equal(hit.headers.authorization, undefined, mode);
+    assert.equal(hfHits.length + cdnHits.length, 2, mode);
+    for (const hit of hfHits) assert.equal(hit.headers.authorization, `Bearer ${FAKE_TOKEN}`, mode);
+    for (const hit of cdnHits) assert.equal(hit.headers.authorization, undefined, mode);
     const text = JSON.stringify([...response.headers]);
     assert.ok(!text.includes(FAKE_TOKEN));
   }
 });
 
-test("gated models answer 503 without a token and 502 when Hugging Face refuses the token", async () => {
+test("gated models answer 503 model_unavailable without a token or when Hugging Face refuses it", async () => {
   hfMode = "direct";
   for (const hfToken of [undefined, "", "  "]) {
     const base = await startProxy({ hfToken });
@@ -509,12 +533,30 @@ test("gated models answer 503 without a token and 502 when Hugging Face refuses 
     assert.equal(hfHits.length, 0);
     assert.equal((await fetch(`${base}${MODEL_PROXY_PREFIX}${modelFileKey(FILE)}`)).status, 200);
   }
-  hfMode = "unauthorized";
-  const refused = await fetch(gatedUrl);
-  assert.equal(refused.status, 502);
-  const body = await refused.text();
-  assert.deepEqual(JSON.parse(body), { error: "upstream_error" });
-  assert.ok(!body.includes(FAKE_TOKEN));
+  for (const mode of ["unauthorized", "forbidden"] as const) {
+    hfMode = mode;
+    hfHits.length = 0;
+    const refused = await fetch(gatedUrl);
+    assert.equal(refused.status, 503, mode);
+    assert.equal(hfHits[0]?.headers.authorization, `Bearer ${FAKE_TOKEN}`);
+    const body = await refused.text();
+    assert.equal(JSON.parse(body).error, "model_unavailable");
+    assert.ok(!body.includes(FAKE_TOKEN));
+  }
+});
+
+test("refusals of ungated files or from the CDN stay ordinary upstream errors", async () => {
+  for (const [mode, url] of [
+    ["unauthorized", modelUrl],
+    ["forbidden", modelUrl],
+    ["expired", modelUrl],
+    ["expired", gatedUrl],
+  ] as const) {
+    hfMode = mode;
+    const response = await fetch(url);
+    assert.equal(response.status, 502, `${mode} ${url}`);
+    assert.deepEqual(await response.json(), { error: "upstream_error" });
+  }
 });
 
 test("a local model directory serves exact-size files before upstream and falls back otherwise", async () => {

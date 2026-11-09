@@ -147,7 +147,7 @@ async function fetchModelUpstream(
 ): Promise<Response | null> {
   let target = start;
   for (let hop = 0; hop <= MAX_MODEL_REDIRECTS; hop++) {
-    const authorized = token !== undefined && hop === 0 && target.origin === upstream.origin;
+    const authorized = token !== undefined && target.origin === upstream.origin;
     const response = await fetch(target, {
       headers: {
         "accept-encoding": "identity",
@@ -166,6 +166,10 @@ async function fetchModelUpstream(
     target = next;
   }
   return null;
+}
+
+function refusedByUpstream(response: Response, upstream: ModelUpstream): boolean {
+  return (response.status === 401 || response.status === 403) && new URL(response.url).origin === upstream.origin;
 }
 
 function modelHeaders(file: ModelFile): Record<string, string> {
@@ -215,6 +219,13 @@ async function serveModel(c: VoiceCtx, deps: VoiceAssistantDeps): Promise<void> 
     if (controller.signal.aborted) {
       await response?.body?.cancel();
       return;
+    }
+    if (file.gated && response && refusedByUpstream(response, upstream)) {
+      await response.body?.cancel();
+      return json(res, 503, {
+        error: "model_unavailable",
+        message: "Hugging Face refused this server access to the voice model. Check HF_TOKEN.",
+      });
     }
     const encoded = (response?.headers.get("content-encoding") ?? "identity") !== "identity";
     const length = response?.headers.get("content-length") ?? null;
