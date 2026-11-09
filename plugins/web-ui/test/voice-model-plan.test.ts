@@ -12,8 +12,10 @@ globalThis.fetch = (async (input: RequestInfo | URL) => {
   return new Response(JSON.stringify(next.body), { status: next.status });
 }) as typeof fetch;
 
-const { effectiveVoiceSettings, forgetVoiceAccess, voiceAccess, voiceModelFiles } =
+const { deleteVoiceModels, effectiveVoiceSettings, forgetVoiceAccess, voiceAccess, voiceModelFiles } =
   await import("../src/voice-assistant/model-plan.ts");
+const { VOICE_MODEL_FILES } = await import("../src/voice-assistant/models.ts");
+const { modelCacheRequest } = await import("../src/voice-assistant/model-cache.ts");
 
 const GPU = { webgpu: true, shaderF16: true };
 const preferences = { ...DEFAULT_VOICE_PREFERENCES, enabled: true };
@@ -53,6 +55,35 @@ test("the engine fallbacks still apply on top of the org engines", async () => {
   const settings = effectiveVoiceSettings(preferences, await voiceAccess());
   assert.equal(settings.ttsEngine, "supertonic-3", "no HF_TOKEN means Supertonic");
   assert.equal(settings.asrEngine, "phonon-2.5");
+});
+
+test("gated engines stay on when the server cannot serve them but this browser already holds every gated file", async (t) => {
+  const cached = new Set<string>();
+  Object.assign(globalThis, {
+    caches: {
+      open: async () => ({ match: async (request: Request) => (cached.has(request.url) ? new Response() : undefined) }),
+    },
+  });
+  t.after(() => Reflect.deleteProperty(globalThis, "caches"));
+  const gated = VOICE_MODEL_FILES.filter((file) => file.gated);
+  for (const [held, ttsEngine] of [
+    [gated.slice(1), "supertonic-3"],
+    [gated, "phonon-40m"],
+  ] as const) {
+    cached.clear();
+    for (const file of held) cached.add(modelCacheRequest(file).url);
+    accessBodies.push({ status: 200, body: { enabled: true, gatedModels: false, config: DEFAULT_VOICE_ORG_CONFIG } });
+    forgetVoiceAccess();
+    assert.equal(effectiveVoiceSettings(preferences, await voiceAccess()).ttsEngine, ttsEngine);
+  }
+  Object.assign(globalThis.caches, { delete: async () => cached.clear() });
+  accessBodies.push({ status: 200, body: { enabled: true, gatedModels: false, config: DEFAULT_VOICE_ORG_CONFIG } });
+  await deleteVoiceModels();
+  assert.equal(
+    effectiveVoiceSettings(preferences, await voiceAccess()).ttsEngine,
+    "supertonic-3",
+    "removing the models asks again instead of trusting the files that were just deleted",
+  );
 });
 
 test("a failed access check uses the defaults and is retried next time", async () => {

@@ -99,10 +99,29 @@ test("voice assistant card warns when gated models are not servable", () => {
     f.ui.settings.load({ voiceAssistant: stored }, "org:acme", "voice-assistant");
     const status = () => f.document.getElementById("voice-gated-models")?.textContent?.trim() ?? "";
     assert.equal(status(), "");
-    f.ui.settings.voiceModels(false);
-    assert.match(status(), /No HF_TOKEN on the web UI service — Phonon-40m falls back to Supertonic 3/);
-    f.ui.settings.voiceModels(true);
-    assert.equal(status(), "Gated models are servable on the web UI service");
+    const warned = () => f.document.querySelector("#voice-gated-models > .flag-warn") !== null;
+    for (const [access, text, warn] of [
+      [
+        "no_token",
+        "No HF_TOKEN on the web UI service — browsers without Phonon-40m already downloaded use Supertonic 3",
+        true,
+      ],
+      [
+        "token_refused",
+        "Hugging Face refuses the HF_TOKEN on the web UI service — browsers without Phonon-40m already downloaded use Supertonic 3",
+        true,
+      ],
+      ["unchecked", "Could not verify the HF_TOKEN on the web UI service with Hugging Face", true],
+      ["servable", "Gated models are servable on the web UI service", false],
+    ] as const) {
+      f.ui.settings.voiceModels(access);
+      assert.equal(status(), text, access);
+      assert.equal(warned(), warn, access);
+    }
+    for (const unknown of ["true", "constructor", null]) {
+      f.ui.settings.voiceModels(unknown);
+      assert.equal(status(), "", String(unknown));
+    }
   } finally {
     f.dom.window.close();
   }

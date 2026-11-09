@@ -74,8 +74,7 @@ import { onFirstActivation } from "./activation.ts";
 import { asrVariantFor } from "./asr/models.ts";
 import { ttsEngineFiles, ttsFilesFor } from "./tts/models.ts";
 
-export { deleteVoiceModels } from "./model-cache.ts";
-export { downloadVoiceModels, voiceModelStatus } from "./model-plan.ts";
+export { deleteVoiceModels, downloadVoiceModels, voiceModelStatus } from "./model-plan.ts";
 
 export interface VoiceMountOptions {
   autoStart: boolean;

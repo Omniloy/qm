@@ -11,6 +11,7 @@ import { json, readBody, cookie, gzipAccepted } from "../../chassis/src/http.ts"
 import { createBrandingCache, injectBranding, type OrgBranding } from "../../chassis/src/branding.ts";
 import { verifyPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
 import { errMessage } from "../../chassis/src/errors.ts";
+import { gatedModelAccess } from "../../chassis/src/hugging-face.ts";
 import { principalInAllowlist } from "../../chassis/src/principal-allowlist.ts";
 import {
   CORE_API_URL as CORE,
@@ -432,7 +433,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   if (method === "GET" && pathname === "/api/voice-models") {
     if (!principal) return json(res, 401, { error: "signed_out" });
     return json(res, 200, {
-      gatedModels: Boolean(process.env.HF_TOKEN?.trim() || process.env.VOICE_MODEL_DIR?.trim()),
+      gatedModelAccess: await gatedModelAccess(process.env.HF_TOKEN, process.env.VOICE_MODEL_DIR),
     });
   }
   if (method === "GET" && pathname === "/api/connector-catalog") {

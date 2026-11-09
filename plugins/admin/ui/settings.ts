@@ -31,7 +31,7 @@ export class SettingsState extends SettingState {
   selected = "";
   editing = false;
   history: Data[] = [];
-  gatedModels: boolean | null = null;
+  gatedModelAccess: string | null = null;
   collect(_validate = true): Data {
     if (_validate && this.key === "soul" && (this.draft.content || "").length > 100000)
       throw new Error("Maximum length reached");
@@ -185,9 +185,9 @@ export function load(data: Data, scope: string, only?: string) {
     capture(key);
   }
 }
-export function voiceModels(gatedModels: boolean | null) {
+export function voiceModels(gatedModelAccess: string | null) {
   const s = states.get("voice-assistant")!;
-  s.gatedModels = gatedModels;
+  s.gatedModelAccess = gatedModelAccess;
   s.render();
 }
 export function updateCatalog(data: Data) {

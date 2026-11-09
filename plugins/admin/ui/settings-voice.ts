@@ -1,6 +1,7 @@
 import { html } from "lit";
 import { classMap } from "lit/directives/class-map.js";
 import { saveFooter } from "./setting-controls.ts";
+import type { GatedModelAccess } from "../../chassis/src/hugging-face.ts";
 import type { SettingsState } from "./settings.ts";
 
 const VOICE_ASSISTANT_FIELDS = ["ttsEngine", "asrEngine", "wakePhrase", "pttStyle", "announceScope"] as const;
@@ -57,13 +58,20 @@ export function voiceAssistantBody(draft: Record<string, any>, validate: boolean
   return body;
 }
 
-function gatedStatus(gatedModels: boolean | null) {
-  if (gatedModels === null) return null;
-  return gatedModels
-    ? html`<p class="hint" id="voice-gated-models">Gated models are servable on the web UI service</p>`
-    : html`<p class="hint warn" id="voice-gated-models">
-        No HF_TOKEN on the web UI service — Phonon-40m falls back to Supertonic 3
-      </p>`;
+const GATED_STATUS: Record<GatedModelAccess, string> = {
+  servable: "Gated models are servable on the web UI service",
+  no_token: "No HF_TOKEN on the web UI service — browsers without Phonon-40m already downloaded use Supertonic 3",
+  token_refused:
+    "Hugging Face refuses the HF_TOKEN on the web UI service — browsers without Phonon-40m already downloaded use Supertonic 3",
+  unchecked: "Could not verify the HF_TOKEN on the web UI service with Hugging Face",
+};
+
+function gatedStatus(access: string | null) {
+  if (access === null || !Object.hasOwn(GATED_STATUS, access)) return null;
+  const text = GATED_STATUS[access as GatedModelAccess];
+  return html`<p class="hint" id="voice-gated-models">
+    ${access === "servable" ? text : html`<span class="flag-warn">${text}</span>`}
+  </p>`;
 }
 
 function select(s: SettingsState, field: string) {
@@ -94,7 +102,7 @@ export function voiceAssistantCard(s: SettingsState) {
       </p>
     </div>
     <div class="body">
-      ${select(s, "ttsEngine")} ${select(s, "asrEngine")} ${gatedStatus(s.gatedModels)}
+      ${select(s, "ttsEngine")} ${select(s, "asrEngine")} ${gatedStatus(s.gatedModelAccess)}
       <label for="voice-wakePhrase" style="margin-top: 12px">Wake phrase</label>
       <input
         type="text"

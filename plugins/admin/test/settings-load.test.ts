@@ -361,8 +361,9 @@ test("customize view loads the voice assistant card and its gated-model status",
     f.root.innerHTML = '<template data-settings-card="card-voice-assistant"></template>';
     f.ui.settings.mountCards();
     for (const [response, expected] of [
-      [{ ok: true, data: { gatedModels: false } }, /No HF_TOKEN/],
-      [{ ok: true, data: { gatedModels: true } }, /Gated models are servable/],
+      [{ ok: true, data: { gatedModelAccess: "no_token" } }, /No HF_TOKEN/],
+      [{ ok: true, data: { gatedModelAccess: "token_refused" } }, /Hugging Face refuses the HF_TOKEN/],
+      [{ ok: true, data: { gatedModelAccess: "servable" } }, /Gated models are servable/],
     ] as const) {
       const requests: unknown[][] = [];
       const context = vm.createContext({

@@ -45,7 +45,11 @@ Env (see `.env.example`): `CORE_API_URL` (default `http://localhost:8080`),
 and `CORE_SIGNING_SECRET` (same value as the core when source-auth is enabled).
 `HF_TOKEN` is a read-only Hugging Face token the voice model proxy sends upstream for gated
 model files only (requests to `huggingface.co` itself, never to the CDN or the browser);
-without it, or when Hugging Face refuses it, those files answer 503. `VOICE_MODEL_DIR`
+without it, or when Hugging Face refuses it, those files answer 503. The server asks
+Hugging Face about the token with a `HEAD` on one pinned gated file, at most every five
+minutes per process; while the token is refused, `/api/voice/access` reports
+`gatedModels: false` so a browser that does not already hold the gated files starts on
+Supertonic, and the admin voice card says Hugging Face refuses the token. `VOICE_MODEL_DIR`
 (development only) serves files laid out as `<dir>/<repo>/<revision>/<path>` before asking
 Hugging Face, for unpublished exports.
 

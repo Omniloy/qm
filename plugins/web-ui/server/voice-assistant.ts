@@ -3,6 +3,7 @@ import { stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
 import { Readable } from "node:stream";
+import { HUGGING_FACE_ORIGIN, gatedModelAccess, sendableToken } from "../../chassis/src/hugging-face.ts";
 import { json, sendBuffered } from "../../chassis/src/http.ts";
 import { MODEL_PROXY_PREFIX, type ModelFile } from "../src/voice-assistant/protocol.ts";
 
@@ -43,7 +44,7 @@ export function isModelHost(hostname: string): boolean {
 }
 
 export const HUGGING_FACE_UPSTREAM: ModelUpstream = {
-  origin: "https://huggingface.co",
+  origin: HUGGING_FACE_ORIGIN,
   allowRedirect: (target) => target.protocol === "https:" && target.port === "" && isModelHost(target.hostname),
 };
 
@@ -81,17 +82,22 @@ function jsonObject(text: string): Record<string, unknown> | null {
 }
 
 function hfToken(deps: VoiceAssistantDeps): string | undefined {
-  return deps.hfToken?.trim() || undefined;
+  const token = deps.hfToken?.trim();
+  return token && sendableToken(token) ? token : undefined;
 }
 
-function gatedModelsServable(deps: VoiceAssistantDeps): boolean {
-  return Boolean(hfToken(deps) || deps.localModelDir);
+function modelUpstream(deps: VoiceAssistantDeps): ModelUpstream {
+  return deps.modelUpstream ?? HUGGING_FACE_UPSTREAM;
 }
 
 async function relayAccess(c: VoiceCtx, deps: VoiceAssistantDeps): Promise<void> {
-  const r = await deps.coreFetch("GET", voiceAccessPath(c.user));
+  const [r, gated] = await Promise.all([
+    deps.coreFetch("GET", voiceAccessPath(c.user)),
+    gatedModelAccess(deps.hfToken, deps.localModelDir, modelUpstream(deps).origin),
+  ]);
   const access = r.status === 200 ? jsonObject(r.text) : null;
-  relayText(c.res, r.status, access ? JSON.stringify({ ...access, gatedModels: gatedModelsServable(deps) }) : r.text);
+  const gatedModels = gated !== "no_token" && gated !== "token_refused";
+  relayText(c.res, r.status, access ? JSON.stringify({ ...access, gatedModels }) : r.text);
 }
 
 async function relayTranscript(c: VoiceCtx, deps: VoiceAssistantDeps): Promise<void> {
@@ -201,10 +207,10 @@ async function serveModel(c: VoiceCtx, deps: VoiceAssistantDeps): Promise<void> 
   if (file.gated && !token) {
     return json(res, 503, {
       error: "model_unavailable",
-      message: "This voice model is gated and the server has no HF_TOKEN configured.",
+      message: "This voice model is gated and the server has no usable HF_TOKEN configured.",
     });
   }
-  const upstream = deps.modelUpstream ?? HUGGING_FACE_UPSTREAM;
+  const upstream = modelUpstream(deps);
   const rawRange = req.headers.range;
   const range = /^bytes=\d*-\d*$/.test(rawRange ?? "") ? rawRange : undefined;
   const controller = abortOnClose(res);
