@@ -44,9 +44,10 @@ Env (see `.env.example`): `CORE_API_URL` (default `http://localhost:8080`),
 `WEB_UI_PRINCIPALS` (csv allowlist; empty = any id, **dev only**),
 and `CORE_SIGNING_SECRET` (same value as the core when source-auth is enabled).
 `HF_TOKEN` is a read-only Hugging Face token the voice model proxy sends upstream for gated
-model files only (first hop to `huggingface.co`, never on redirects or to the browser);
-without it those files answer 503. `VOICE_MODEL_DIR` (development only) serves files laid
-out as `<dir>/<repo>/<revision>/<path>` before asking Hugging Face, for unpublished exports.
+model files only (requests to `huggingface.co` itself, never to the CDN or the browser);
+without it, or when Hugging Face refuses it, those files answer 503. `VOICE_MODEL_DIR`
+(development only) serves files laid out as `<dir>/<repo>/<revision>/<path>` before asking
+Hugging Face, for unpublished exports.
 
 ## Suggested activities
 

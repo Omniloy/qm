@@ -340,13 +340,20 @@ at `${PUBLIC_URL}/admin` once the stack is up.
 | ---------- | ------------------------------------------------------------------------------------------------------ |
 | `HF_TOKEN` | a read-only Hugging Face token whose account has accepted the gated voice model repos (Phonon 40M TTS) |
 
-Only `web-ui` receives it. Its model proxy at `/api/voice/models/` sends the token to
-`huggingface.co` on the first request for a gated file and never on the redirect to the
+Only `web-ui` receives it. Its model proxy at `/api/voice/models/` sends the token on
+requests for a gated file to `huggingface.co` itself and never on the redirect to the
 CDN, and it never reaches the browser or the logs. Without it, gated files answer `503
-model_unavailable` and the voice assistant cannot download its default speech model;
-ungated files (Supertonic, the Phonon voices, the speech-recognition models) still
-work. Confirm it landed with `docker exec <appName>-web-ui-1 printenv HF_TOKEN | wc -c`
-rather than printing the value.
+model_unavailable` and the voice assistant uses Supertonic. A token Hugging Face refuses
+(revoked, expired, or from an account that has not accepted the repo's gate) gets the same
+503: the assistant falls back to Supertonic when it starts, and the voice settings page
+asks for an administrator to configure `HF_TOKEN`. Ungated files (Supertonic, the Phonon
+voices, the speech-recognition models) still work. Confirm the token can read the gated
+repo without printing it; a `2xx` or `3xx` status means it works, `401` or `403` means
+Hugging Face refuses it:
+
+```bash
+docker exec <appName>-web-ui-1 node -e 'fetch("https://huggingface.co/gradium/phonon-40m-multilingual/resolve/main/config.json",{method:"HEAD",redirect:"manual",headers:{authorization:"Bearer "+(process.env.HF_TOKEN??"").trim()}}).then(r=>console.log(r.status))'
+```
 
 ### First-boot feature flags
 
