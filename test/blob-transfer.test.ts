@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   AbortMultipartUploadCommand,
   CompleteMultipartUploadCommand,
@@ -119,6 +120,19 @@ function fakeS3(now: () => number = () => Date.now(), hooks: { onAbort?: () => v
 }
 
 const localDir = (): string => mkdtempSync(join(tmpdir(), "blob-xfer-"));
+
+test("local-fs: a destination open failure rejects a delayed stream put", async () => {
+  const dir = localDir();
+  const store = createLocalBlobTransferStore(dir);
+  await store.put(Buffer.from("first"));
+  rmSync(dir, { recursive: true });
+  const delayed = (async function* () {
+    await delay(30);
+    yield Buffer.from("second");
+  })();
+  await assert.rejects(store.put(delayed), { code: "ENOENT" });
+});
+
 const stores = (): Array<[string, BlobTransferStore, string | null]> => {
   const dir = localDir();
   return [

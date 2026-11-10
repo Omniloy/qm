@@ -1,7 +1,6 @@
-import { createHash, randomUUID } from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { mkdir, mkdtemp, rename, rm, stat } from "node:fs/promises";
-import { pipeline } from "node:stream/promises";
 import { tmpdir } from "node:os";
 import { Readable } from "node:stream";
 import { join } from "node:path";
@@ -15,7 +14,7 @@ import {
   UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import { swallowAs } from "../util/errors.ts";
-import { asChunks, collectBytes, type ByteSource } from "../util/bytes.ts";
+import { collectBytes, spoolBytes, type ByteSource } from "../util/bytes.ts";
 import { bodyToReadable, isNoSuchKey, s3Client, type S3Send } from "../persistence/s3.ts";
 
 export type { ByteSource } from "../util/bytes.ts";
@@ -90,7 +89,10 @@ export function createLocalDurableByteStore(dir: string): DurableByteStore {
       await ensureDir();
       const partPath = join(base, `${randomUUID()}.part`);
       try {
-        const { sha256, sizeBytes } = await spoolBytes(source, partPath, opts?.maxBytes);
+        const { sha256, sizeBytes } = await spoolBytes(source, partPath, {
+          ...(opts?.maxBytes != null ? { maxBytes: opts.maxBytes } : {}),
+          tooLarge: () => new ByteSourceTooLargeError(),
+        });
         await opts?.beforeCommit?.(keyFor(sha256));
         await rename(partPath, join(base, sha256));
         return { blobKey: keyFor(sha256), sizeBytes, sha256 };
@@ -142,7 +144,10 @@ export function createS3DurableByteStore(options: S3DurableByteOptions): Durable
       let uploadId: string | undefined;
       let Key: string | undefined;
       try {
-        const { sha256, sizeBytes } = await spoolBytes(source, path, opts?.maxBytes);
+        const { sha256, sizeBytes } = await spoolBytes(source, path, {
+          ...(opts?.maxBytes != null ? { maxBytes: opts.maxBytes } : {}),
+          tooLarge: () => new ByteSourceTooLargeError(),
+        });
         const blobKey = keyFor(sha256);
         await opts?.beforeCommit?.(blobKey);
         Key = s3Key(blobKey);
@@ -218,23 +223,4 @@ export function createS3DurableByteStore(options: S3DurableByteOptions): Durable
       await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: s3Key(blobKey) }));
     },
   };
-}
-
-async function spoolBytes(
-  source: ByteSource,
-  path: string,
-  maxBytes?: number,
-): Promise<{ sha256: string; sizeBytes: number }> {
-  const hash = createHash("sha256");
-  let sizeBytes = 0;
-  async function* checked(): AsyncIterable<Uint8Array> {
-    for await (const chunk of asChunks(source)) {
-      sizeBytes += chunk.byteLength;
-      if (maxBytes != null && sizeBytes > maxBytes) throw new ByteSourceTooLargeError();
-      hash.update(chunk);
-      yield chunk;
-    }
-  }
-  await pipeline(Readable.from(checked()), createWriteStream(path, { flags: "wx", mode: 0o600 }));
-  return { sha256: hash.digest("hex"), sizeBytes };
 }

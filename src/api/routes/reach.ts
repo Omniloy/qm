@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { sendJson } from "../http.ts";
 import { isObj } from "./shared.ts";
 import { type ApiCtx, type Route } from "./route.ts";
-import { collectNamedOutbound, MAX_OUTBOUND_FILES, type ArtifactRegistration } from "../../core/attachments.ts";
+import { collectOutboundFiles, MAX_OUTBOUND_FILES, type ArtifactRegistration } from "../../core/attachments.ts";
 import { hasParentPathSegment } from "../../sandbox/sandbox.ts";
 import { resolveEnvironmentId } from "../../environments/environment-store.ts";
 import { errMessage } from "../../util/errors.ts";
@@ -23,7 +23,7 @@ type ReachBody = {
 
 function parseFiles(v: unknown): { ok: true; files: string[] } | { ok: false; message: string } {
   if (v === undefined) return { ok: true, files: [] };
-  if (!Array.isArray(v) || v.some((p) => typeof p !== "string" || !p.trim())) {
+  if (!Array.isArray(v) || v.some((p) => typeof p !== "string" || !p.trim() || p.includes("\0"))) {
     return {
       ok: false,
       message: 'files must be an array of workspace-relative path strings, e.g. ["work/report.pdf"]',
@@ -167,9 +167,15 @@ async function reachNow(ctx: ApiCtx): Promise<void> {
             ),
         }
       : undefined;
-    const handle = await sandbox.provision([{ scopeId: envScope, mountPath: "", mode: "rw" }]);
+    const running = await sandbox.openRunningWorkspace?.(envScope);
+    const handle = running ? undefined : await sandbox.provision([{ scopeId: envScope, mountPath: "", mode: "rw" }]);
     try {
-      const r = await collectNamedOutbound(sandbox, handle, files, blobTransfer, register);
+      const r = await collectOutboundFiles(
+        running ?? ((path) => sandbox.readFileBytes(handle!, path)),
+        files,
+        blobTransfer,
+        register,
+      );
       const bad = [
         ...r.missing.map((p) => `${p} (not found)`),
         ...r.empty.map((p) => `${p} (empty)`),
@@ -183,7 +189,7 @@ async function reachNow(ctx: ApiCtx): Promise<void> {
       }
       attachments = r.attachments;
     } finally {
-      await sandbox.teardown(handle, { keepWarm: true }).catch(() => {});
+      if (handle) await sandbox.teardown(handle, { keepWarm: true }).catch(() => {});
     }
   }
   const result = await app.reachNow({

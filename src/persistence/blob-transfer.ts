@@ -1,7 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
+import { createReadStream } from "node:fs";
 import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
-import { once } from "node:events";
 import { Readable } from "node:stream";
 import { join } from "node:path";
 import {
@@ -18,7 +17,7 @@ import {
   type LifecycleRule,
 } from "@aws-sdk/client-s3";
 import { swallow, swallowAs } from "../util/errors.ts";
-import { asChunks, collectBytes, type ByteSource } from "../util/bytes.ts";
+import { asChunks, collectBytes, spoolBytes, type ByteSource } from "../util/bytes.ts";
 import { bodyToReadable, isNoSuchKey, isNoSuchLifecycleConfiguration, s3Client, type S3Send } from "./s3.ts";
 
 export const MAX_BLOB_BYTES = 1_000_000_000;
@@ -89,31 +88,18 @@ export function createLocalBlobTransferStore(dir: string): BlobTransferStore {
       const blobId = newBlobId();
       const partPath = join(dir, `${blobId}.part`);
       const finalPath = join(dir, blobId);
-      const hash = createHash("sha256");
-      const out = createWriteStream(partPath);
-      let size = 0;
       try {
-        for await (const chunk of asChunks(source)) {
-          const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-          size += buf.length;
-          if (opts?.maxBytes != null && size > opts.maxBytes) throw new BlobTooLargeError();
-          hash.update(buf);
-          if (!out.write(buf)) await once(out, "drain");
-        }
-        await new Promise<void>((res, rej) => out.end((err?: Error | null) => (err ? rej(err) : res())));
+        const { sha256, sizeBytes } = await spoolBytes(source, partPath, {
+          ...(opts?.maxBytes != null ? { maxBytes: opts.maxBytes } : {}),
+          tooLarge: () => new BlobTooLargeError(),
+        });
+        if (opts?.expectedSha256 && opts.expectedSha256 !== sha256) throw new BlobHashMismatchError();
+        await rename(partPath, finalPath);
+        return { blobId, sizeBytes, sha256 };
       } catch (err) {
-        out.destroy();
-        await once(out, "close").catch(swallowAs("blob-transfer: write-stream close", undefined));
         await rm(partPath, { force: true }).catch(swallowAs("blob-transfer: partial-file cleanup", undefined));
         throw err;
       }
-      const sha256 = hash.digest("hex");
-      if (opts?.expectedSha256 && opts.expectedSha256 !== sha256) {
-        await rm(partPath, { force: true }).catch(swallowAs("blob-transfer: partial-file cleanup", undefined));
-        throw new BlobHashMismatchError();
-      }
-      await rename(partPath, finalPath);
-      return { blobId, sizeBytes: size, sha256 };
     },
 
     async open(blobId) {

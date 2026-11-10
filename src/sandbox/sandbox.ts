@@ -1,4 +1,5 @@
 import type { EgressPolicy, WorkspaceLayer } from "../types.ts";
+import type { ByteSource } from "../util/bytes.ts";
 
 export interface SandboxHandle {
   resourceId?: string;
@@ -12,6 +13,8 @@ export interface SandboxHandle {
   backend?: string;
   scopeId?: string;
 }
+
+export type WorkspaceFileReader = (relPath: string, maxBytes: number) => Promise<ByteSource | "too_large" | null>;
 
 export function hasParentPathSegment(path: string): boolean {
   return path.split("/").includes("..");
@@ -193,6 +196,7 @@ export interface Sandbox {
   writeFile(handle: SandboxHandle, relPath: string, data: string): Promise<void>;
   writeFileBytes(handle: SandboxHandle, relPath: string, data: Uint8Array): Promise<void>;
   readFileBytes(handle: SandboxHandle, relPath: string): Promise<Uint8Array | null>;
+  openRunningWorkspace?(scopeId: string): Promise<WorkspaceFileReader | null>;
   stageIn?(handle: SandboxHandle, destRelPath: string, blobId: string, opts?: StageOptions): Promise<void>;
   stageOut?(handle: SandboxHandle, srcRelPath: string, opts?: StageOptions): Promise<string>;
   importFiles?(handle: SandboxHandle, entries: ReadonlyArray<{ path: string; data: Uint8Array }>): Promise<void>;

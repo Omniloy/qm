@@ -206,6 +206,32 @@ export function createSandboxRouter(opts: RoutingSandboxOptions): Sandbox {
     readFileBytes(handle, relPath) {
       return useHandle(handle, () => forHandle(handle).readFileBytes(handle, relPath));
     },
+    ...(some((s) => !!s.openRunningWorkspace)
+      ? {
+          async openRunningWorkspace(scopeId: string) {
+            const target = await computerTarget(scopeId);
+            const { resourceId } = target;
+            const { resources } = opts;
+            const read = await target.sandbox.openRunningWorkspace?.(target.scopeId);
+            if (!read || !resourceId || !resources) return read ?? null;
+            const checkActive = async () => {
+              if ((await resources.get(resourceId)).state === "retired") throw new Error("sandbox has been retired");
+            };
+            await checkActive();
+            return async (path, maxBytes) => {
+              const file = await read(path, maxBytes);
+              if (file === null || file === "too_large" || file instanceof Uint8Array) {
+                await checkActive();
+                return file;
+              }
+              return (async function* () {
+                yield* file;
+                await checkActive();
+              })();
+            };
+          },
+        }
+      : {}),
     listDir(handle, relDir) {
       return useHandle(handle, () => forHandle(handle).listDir(handle, relDir));
     },
