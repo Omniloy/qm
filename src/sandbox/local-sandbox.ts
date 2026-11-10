@@ -12,7 +12,7 @@ import { nonInteractiveShellPrefix } from "./sandbox-env.ts";
 import { createExecProcessSessions, type ExecProcessIo } from "./exec-process-session.ts";
 import { materializeRoLayers, RO_LAYERS_MANIFEST } from "./ro-layers.ts";
 import { createExecExport, createExecFileOps, posixJoin } from "./exec-file-ops.ts";
-import { spawnDockerExec, type DockerExec } from "./docker-exec.ts";
+import { spawnDockerExec, spawnDockerFileRead, type DockerExec, type DockerFileRead } from "./docker-exec.ts";
 import { createDockerNetworkPool } from "./docker-network-pool.ts";
 import { ephemeralCredLinkScript } from "../credentials/resident-paths.ts";
 import { ephemeralCredLinkPaths } from "../credentials/resident-paths.ts";
@@ -51,6 +51,7 @@ export interface LocalSandboxOptions {
   homeDir?: string;
   repoRoot?: string;
   dockerExec?: DockerExec;
+  dockerFileRead?: DockerFileRead;
   fetchImpl?: typeof fetch;
   onError?: (e: { category: string; code: string; message: string; scopeLabel?: string }) => void;
 }
@@ -94,6 +95,7 @@ function localSlug(id: string): string {
 export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandboxOptions = {}): Sandbox {
   const image = opts.image ?? DEFAULT_LOCAL_SANDBOX_IMAGE;
   const dexec = opts.dockerExec ?? spawnDockerExec(opts.dockerBin ?? "docker");
+  const readDockerFile = opts.dockerFileRead ?? spawnDockerFileRead(opts.dockerBin ?? "docker");
   const fetchImpl = opts.fetchImpl ?? fetch;
   const defaultTimeoutSec = opts.defaultTimeoutSec ?? 600;
   const homeDir = opts.homeDir ?? HOME_DIR;
@@ -502,6 +504,29 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
     },
     async readFileBytes(handle, relPath): Promise<Uint8Array | null> {
       return readAbsBytes(handle.id, posixJoin(handle.rootDir, relPath));
+    },
+    async openRunningWorkspace(scopeId) {
+      const name = localContainerName(scopeId);
+      const result = await dexec([
+        "inspect",
+        "--type",
+        "container",
+        "-f",
+        "{{.State.Running}} {{.Id}} {{json .Config.Labels}}",
+        name,
+      ]);
+      if (result.code !== 0) {
+        if (/no such (object|container)/i.test(result.stderr)) return null;
+        throw new Error(`cannot inspect sandbox ${name}: ${result.stderr.trim()}`);
+      }
+      const match = /^(true|false) ([0-9a-f]{64}) (.+)$/.exec(result.stdout.trim());
+      if (!match) throw new Error(`invalid Docker state for sandbox ${name}`);
+      const labels = JSON.parse(match[3]!) as Record<string, string> | null;
+      if (labels?.["qm.scope"] !== scopeId || labels["qm.org"] !== configOrgId())
+        throw new Error(`sandbox ${name} does not match its workspace`);
+      if (match[1] === "false") return null;
+      const id = match[2]!;
+      return (path, maxBytes) => readDockerFile(id, posixJoin(workspaceDir, path), maxBytes);
     },
     async readFile(handle, relPath): Promise<string | null> {
       const bytes = await sandbox.readFileBytes(handle, relPath);

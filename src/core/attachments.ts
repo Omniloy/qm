@@ -10,12 +10,23 @@ import {
   type SessionEntry,
 } from "../types.ts";
 import { revokeAllGrants, type AclStore } from "../acl/acl-store.ts";
-import { hasParentPathSegment, type Sandbox, type SandboxHandle } from "../sandbox/sandbox.ts";
-import { MAX_BLOB_BYTES, collectBlob, type BlobTransferStore } from "../persistence/blob-transfer.ts";
+import {
+  hasParentPathSegment,
+  type Sandbox,
+  type SandboxHandle,
+  type WorkspaceFileReader,
+} from "../sandbox/sandbox.ts";
+import {
+  BlobTooLargeError,
+  MAX_BLOB_BYTES,
+  collectBlob,
+  type BlobTransferStore,
+} from "../persistence/blob-transfer.ts";
 import { fileArtifactId, type FileArtifactStore, type FileDirection } from "../files/file-artifact-store.ts";
 import { encodeRef, fileRef, parseRef } from "../acl/resource-ref.ts";
 import { swallowAs } from "../util/errors.ts";
 import { hashId } from "../util/crypto.ts";
+import type { ByteSource } from "../util/bytes.ts";
 import type { SecurityScreenVerdict } from "../security/security-posture.ts";
 import { downscaleVisionImage } from "./image-downscale.ts";
 import { NoDefaultSandboxError } from "../sandbox/sandbox-routing.ts";
@@ -162,7 +173,7 @@ async function registerArtifact(
   batchIndex: number,
   name: string,
   mimetype: string,
-  bytes: Uint8Array,
+  bytes: ByteSource,
 ): Promise<
   { id: string; path: string; ownerScopeId: ScopeId; direction: FileDirection; created: boolean } | undefined
 > {
@@ -444,9 +455,19 @@ export function legacyDeliveryNoteManifest(text: string): string | null {
   return m ? m[1]! : null;
 }
 
-export async function collectNamedOutbound(
+export function collectNamedOutbound(
   sandbox: Sandbox,
   handle: SandboxHandle,
+  paths: readonly string[],
+  transfer: BlobTransferStore,
+  register?: ArtifactRegistration,
+  reservedNames: readonly string[] = [],
+) {
+  return collectOutboundFiles((path) => sandbox.readFileBytes(handle, path), paths, transfer, register, reservedNames);
+}
+
+export async function collectOutboundFiles(
+  readFile: WorkspaceFileReader,
   paths: readonly string[],
   transfer: BlobTransferStore,
   register?: ArtifactRegistration,
@@ -468,38 +489,7 @@ export async function collectNamedOutbound(
   const usedNames = new Set<string>(reservedNames);
   const doomed = () => missing.length > 0 || empty.length > 0 || oversized.length > 0;
   const createdArtifacts = new Map<string, string>();
-  let i = 0;
-  for (const p of paths) {
-    const bytes = await sandbox.readFileBytes(handle, p);
-    if (bytes === null) {
-      missing.push(p);
-      continue;
-    }
-    const name = uniqueName(safeAttachmentName(basename(p)), usedNames);
-    usedNames.add(name);
-    if (bytes.length === 0) {
-      empty.push(p);
-      continue;
-    }
-    if (bytes.length > MAX_ATTACHMENT_BYTES) {
-      oversized.push(p);
-      continue;
-    }
-    if (doomed()) continue;
-    const mimetype = mimeFromName(name);
-    const { blobId } = await transfer.put(bytes);
-    const artifact = register ? await registerArtifact(register, "out", i, name, mimetype, bytes) : undefined;
-    if (artifact?.created) createdArtifacts.set(artifact.id, artifact.path);
-    i += 1;
-    attachments.push({
-      name,
-      mimetype,
-      sizeBytes: bytes.length,
-      blobId,
-      ...(artifact ? { artifactId: artifact.id, artifactViewerId: register!.createdBy } : {}),
-    });
-  }
-  if (doomed() && attachments.length) {
+  const rollback = async () => {
     await Promise.all(
       attachments.map(async (a) => {
         await transfer.delete(a.blobId).catch(swallowAs("attachments: rollback blob delete", undefined));
@@ -522,7 +512,63 @@ export async function collectNamedOutbound(
     );
     attachments.length = 0;
     createdArtifacts.clear();
+  };
+  try {
+    for (const p of paths) {
+      const source = await readFile(p, MAX_ATTACHMENT_BYTES);
+      if (source === null) {
+        missing.push(p);
+        continue;
+      }
+      if (source === "too_large" || (source instanceof Uint8Array && source.length > MAX_ATTACHMENT_BYTES)) {
+        oversized.push(p);
+        continue;
+      }
+      const name = uniqueName(safeAttachmentName(basename(p)), usedNames);
+      usedNames.add(name);
+      if (source instanceof Uint8Array) {
+        if (source.length === 0) empty.push(p);
+        if (doomed()) continue;
+      }
+      const blob = await transfer.put(source, { maxBytes: MAX_ATTACHMENT_BYTES }).catch((error: unknown) => {
+        if (!(error instanceof BlobTooLargeError)) throw error;
+        return null;
+      });
+      if (!blob) {
+        oversized.push(p);
+        continue;
+      }
+      const { blobId, sizeBytes } = blob;
+      if (sizeBytes === 0) empty.push(p);
+      if (doomed()) {
+        await transfer.delete(blobId).catch(swallowAs("attachments: rollback blob delete", undefined));
+        continue;
+      }
+      const mimetype = mimeFromName(name);
+      const index = attachments.length;
+      const attachment: OutgoingAttachment = { name, mimetype, sizeBytes, blobId };
+      attachments.push(attachment);
+      if (register) {
+        const stored = source instanceof Uint8Array ? null : await transfer.open(blobId);
+        const data = source instanceof Uint8Array ? source : stored?.stream;
+        if (!data) throw new Error("staged attachment is unavailable");
+        try {
+          const artifact = await registerArtifact(register, "out", index, name, mimetype, data);
+          if (artifact) {
+            attachment.artifactId = artifact.id;
+            attachment.artifactViewerId = register.createdBy;
+            if (artifact.created) createdArtifacts.set(artifact.id, artifact.path);
+          }
+        } finally {
+          stored?.stream.destroy();
+        }
+      }
+    }
+  } catch (error) {
+    await rollback();
+    throw error;
   }
+  if (doomed()) await rollback();
   return { attachments, missing, empty, oversized, createdArtifactIds: new Set(createdArtifacts.keys()) };
 }
 

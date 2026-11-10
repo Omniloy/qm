@@ -8,7 +8,14 @@ import type { Server } from "node:http";
 import { buildApp, type BuiltApp } from "../src/wiring.ts";
 import { createServer } from "../src/api/server.ts";
 import { createDeliveryStore } from "../src/delivery/delivery-store.ts";
+import { createMemoryMap } from "../src/persistence/durable-map.ts";
+import { createMemoryAdvisoryLock } from "../src/persistence/advisory-lock.ts";
+import { MAX_ATTACHMENT_BYTES } from "../src/core/attachments.ts";
+import { orgId } from "../src/config.ts";
 import { reachEnqueue } from "../src/reach/reach.ts";
+import { createLocalSandbox, localContainerName } from "../src/sandbox/local-sandbox.ts";
+import { createSandboxResources, type SandboxResource } from "../src/sandbox/sandbox-resources.ts";
+import { createSandboxRouter, type SandboxRoute } from "../src/sandbox/sandbox-routing.ts";
 import { scopeId } from "../src/types.ts";
 import { mintCapabilityToken, CAPABILITY_TTL_MS } from "../src/auth/capability-token.ts";
 import { testConfig } from "./support/test-config.ts";
@@ -28,11 +35,12 @@ describe("POST /v1/reach with files", () => {
       SECRET,
     );
 
-  const post = (b: string, path: string, body: unknown, headers: Record<string, string> = {}) =>
+  const post = (b: string, path: string, body: unknown, headers: Record<string, string> = {}, signal?: AbortSignal) =>
     fetch(`${b}${path}`, {
       method: "POST",
       headers: { "content-type": "application/json", ...headers },
       body: JSON.stringify(body),
+      signal,
     });
 
   const seedFile = async (actorId: string, relPath: string, data: string) => {
@@ -93,6 +101,103 @@ describe("POST /v1/reach with files", () => {
     const chunks: Buffer[] = [];
     for await (const c of opened!.stream) chunks.push(c as Buffer);
     assert.equal(Buffer.concat(chunks).toString(), "# hello Alice\n");
+  });
+
+  it("reads the running Docker workspace while its command holds the resource lock", async () => {
+    const scope = scopeId("personal", "U-carol");
+    const containerId = "a".repeat(64);
+    const bytes = Buffer.from([0x00, 0xff, 0x8f, 0x0a]);
+    const resource: SandboxResource = {
+      id: "reach-test",
+      ownerScopeId: scope,
+      backingScopeId: "sandbox-reach-test",
+      backend: "local",
+      name: "Reach test",
+      createdBy: "U-carol",
+      createdAt: new Date().toISOString(),
+      legacy: false,
+      state: "ready",
+    };
+    const records = createMemoryMap<SandboxResource>();
+    await records.put(resource.id, resource);
+    const local = createLocalSandbox(built.workspace, {
+      async dockerExec(args) {
+        assert.equal(args[0], "inspect");
+        assert.equal(args.at(-1), localContainerName(resource.backingScopeId));
+        return {
+          code: 0,
+          stdout: `true ${containerId} ${JSON.stringify({ "qm.scope": resource.backingScopeId, "qm.org": orgId() })}`,
+          stderr: "",
+        };
+      },
+      async dockerFileRead(id, path, maxBytes) {
+        assert.equal(id, containerId);
+        assert.equal(maxBytes, MAX_ATTACHMENT_BYTES);
+        if (path === "/root/workspace/reports/oversized.pdf") return "too_large";
+        return (async function* () {
+          yield bytes;
+          if (path === "/root/workspace/reports/retired.pdf") await records.merge(resource.id, { state: "retired" });
+        })();
+      },
+    });
+    const lock = createMemoryAdvisoryLock();
+    const routes = createMemoryMap<SandboxRoute>();
+    const defaults = createMemoryMap<{ sandboxId: string | null }>();
+    const rollout = createMemoryMap<{ activatedAt: string }>();
+    await defaults.put(scope, { sandboxId: resource.id });
+    await rollout.put("explicit-defaults", { activatedAt: resource.createdAt });
+    const routing = { backends: { local }, routes, defaultBackend: "local" } as const;
+    const resources = createSandboxResources({
+      ...routing,
+      enabled: true,
+      rollout,
+      records,
+      defaults,
+      lock,
+      canUseScope: async () => true,
+    });
+    const sandbox = createSandboxRouter({ ...routing, resources });
+    const running = createServer(built.app, {
+      signingSecret: SECRET,
+      sandbox,
+      blobTransfer: built.blobTransfer,
+      files: built.files,
+    });
+    await new Promise<void>((resolve) => running.listen(0, resolve));
+    try {
+      const headers = { "x-agent-capability": await capDm("U-carol") };
+      const send = (files: string[]) =>
+        post(
+          `http://localhost:${(running.address() as AddressInfo).port}`,
+          "/v1/reach",
+          { text: "Docker report", recipient: "Alice", files },
+          headers,
+          AbortSignal.timeout(10_000),
+        );
+      const res = await resources.use(resource.id, () => send(["reports/running.pdf"]));
+      assert.equal(res.status, 200);
+      const { deliveryId } = (await res.json()) as { deliveryId: string };
+      const [attachment] = (await built.deliveries.get(deliveryId))?.attachments ?? [];
+      assert.equal(attachment?.name, "running.pdf");
+      assert.equal(attachment?.sizeBytes, bytes.length);
+      assert.ok(attachment?.artifactId);
+      const opened = await built.blobTransfer.open(attachment!.blobId);
+      assert.deepEqual(await opened?.stream.toArray(), [bytes]);
+
+      const beforeCount = (await built.app.pendingDeliveries("principal")).length;
+      await built.blobTransfer.sweep(0);
+      const oversized = await send(["reports/oversized.pdf"]);
+      assert.equal(oversized.status, 400);
+      assert.match(((await oversized.json()) as { message: string }).message, /oversized\.pdf \(too large\)/);
+      const retired = await send(["reports/first.pdf", "reports/retired.pdf"]);
+      assert.equal(retired.status, 500);
+      assert.equal((await built.app.pendingDeliveries("principal")).length, beforeCount);
+      assert.equal(await built.blobTransfer.sweep(0), 0);
+      const owned = await built.files.listOwnedByScopes([scope]);
+      assert.ok(!owned.files.some((f) => f.name === "first.pdf"));
+    } finally {
+      await new Promise<void>((resolve) => running.close(() => resolve()));
+    }
   });
 
   it("is all-or-nothing: a missing path refuses the WHOLE call and enqueues nothing", async () => {
@@ -177,6 +282,13 @@ describe("POST /v1/reach with files", () => {
       { "x-agent-capability": await capDm("U-carol") },
     );
     assert.equal(res2.status, 400);
+    const res3 = await post(
+      base,
+      "/v1/reach",
+      { text: "x", recipient: "Alice", files: ["reports/nul\0.txt"] },
+      { "x-agent-capability": await capDm("U-carol") },
+    );
+    assert.equal(res3.status, 400);
   });
 
   it("rejects a path that climbs out of the workspace (.. segments)", async () => {
