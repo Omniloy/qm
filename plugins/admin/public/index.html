@@ -8255,7 +8255,7 @@
           governanceUI.settings.load(r.data, scope, "voice-assistant");
           void api("GET", "/api/voice-models").then((models) => {
             if (requestedScope === scope)
-              governanceUI.settings.voiceModels(models.ok ? models.data.gatedModels === true : null);
+              governanceUI.settings.voiceModels(models.ok ? String(models.data.gatedModelAccess) : null);
           });
         }
 

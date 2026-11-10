@@ -1,6 +1,12 @@
 import { api, withBase } from "../core-bridge.ts";
 import { asrFilesFor, asrVariantFor } from "./asr/models.ts";
-import { ensureModelFiles, missingModelFiles, requestPersistentStorage, voiceStorageEstimate } from "./model-cache.ts";
+import {
+  deleteVoiceModels as deleteCachedVoiceModels,
+  ensureModelFiles,
+  missingModelFiles,
+  requestPersistentStorage,
+  voiceStorageEstimate,
+} from "./model-cache.ts";
 import {
   DEFAULT_VOICE_ORG_CONFIG,
   MODEL_PROXY_PREFIX,
@@ -19,6 +25,7 @@ import {
   parseVoiceOrgConfig,
   runnableVoiceSettings,
 } from "./settings-store.ts";
+import { VOICE_MODEL_FILES } from "./models.ts";
 import { ttsFilesFor } from "./tts/models.ts";
 
 export interface VoiceModelStatus {
@@ -32,11 +39,22 @@ export interface VoiceModelStatus {
 
 const failedEngines = new Set<AsrEngineId | TtsEngineId>();
 const FALLBACK_ACCESS: VoiceAccess = { gatedModels: true, config: { ...DEFAULT_VOICE_ORG_CONFIG } };
+const GATED_MODEL_FILES = VOICE_MODEL_FILES.filter((file) => file.gated);
 let access: Promise<VoiceAccess> | null = null;
+
+function gatedModelsCached(): Promise<boolean> {
+  return missingModelFiles(GATED_MODEL_FILES).then(
+    (missing) => missing.length === 0,
+    () => false,
+  );
+}
 
 export function voiceAccess(): Promise<VoiceAccess> {
   access ??= api<{ gatedModels?: unknown; config?: unknown }>("/api/voice/access").then(
-    (body) => ({ gatedModels: body.gatedModels !== false, config: parseVoiceOrgConfig(body.config) }),
+    async (body) => ({
+      gatedModels: body.gatedModels !== false || (await gatedModelsCached()),
+      config: parseVoiceOrgConfig(body.config),
+    }),
     () => {
       access = null;
       return FALLBACK_ACCESS;
@@ -47,6 +65,11 @@ export function voiceAccess(): Promise<VoiceAccess> {
 
 export function forgetVoiceAccess(): void {
   access = null;
+}
+
+export async function deleteVoiceModels(): Promise<void> {
+  await deleteCachedVoiceModels();
+  forgetVoiceAccess();
 }
 
 export function fallBackFrom(engine: AsrEngineId | TtsEngineId): boolean {

@@ -8,6 +8,8 @@ import type { AddressInfo } from "node:net";
 import { mintPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
 import { canonicalPayload, signRequest } from "../../chassis/src/source-auth-sign.ts";
 import { findRoute } from "../../chassis/src/router.ts";
+import { GATED_MODEL_PROBE_PATH } from "../../chassis/src/hugging-face.ts";
+import { VOICE_MODEL_FILES } from "../src/voice-assistant/models.ts";
 import { MODEL_PROXY_PREFIX, VOICE_PERMISSION, modelFileKey, type ModelFile } from "../src/voice-assistant/protocol.ts";
 import {
   HUGGING_FACE_UPSTREAM,
@@ -114,6 +116,8 @@ process.env.CORE_API_URL = coreBase;
 process.env.CORE_ORG_ID = "acme";
 process.env.CORE_SIGNING_SECRET = SECRET;
 process.env.WEB_UI_PRINCIPALS = "alice,bob";
+delete process.env.HF_TOKEN;
+delete process.env.VOICE_MODEL_DIR;
 
 const { handler } = await import("../server/index.ts");
 const surface = createServer((req, res) => void handler(req, res));
@@ -144,6 +148,13 @@ interface UpstreamHit {
 }
 
 const hfHits: UpstreamHit[] = [];
+const probeHits: Array<{ method?: string; authorization?: string }> = [];
+const PROBE_STATUS: Record<string, number> = {
+  [`Bearer ${FAKE_TOKEN}`]: 200,
+  "Bearer redirected-token": 302,
+  "Bearer revoked-token": 401,
+  "Bearer ungranted-token": 403,
+};
 const cdnHits: UpstreamHit[] = [];
 const evilHits: UpstreamHit[] = [];
 let hfMode:
@@ -202,6 +213,13 @@ const evil = createServer((req, res) => {
 });
 const evilBase = await listen(evil);
 const hf = createServer((req, res) => {
+  if (req.url === GATED_MODEL_PROBE_PATH) {
+    probeHits.push({ method: req.method, authorization: req.headers.authorization });
+    if (req.headers.authorization === "Bearer hung-token") return;
+    const status = PROBE_STATUS[req.headers.authorization ?? ""] ?? 500;
+    res.writeHead(status, status === 302 ? { location: `${evilBase}/probe` } : {});
+    return void res.end();
+  }
   hfHits.push({ url: req.url ?? "", headers: req.headers });
   if (req.url?.startsWith("/cache/")) {
     if (req.url.includes(GATED.repo) && req.headers.authorization !== `Bearer ${FAKE_TOKEN}`) {
@@ -301,11 +319,7 @@ test("the SPA CSP allows same-origin and blob media", async () => {
 test("voice access relays core's answer for the signed-in user", async () => {
   const response = await fetch(`${base}/api/voice/access`, { headers: identity("alice") });
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), {
-    enabled: true,
-    config: ORG_CONFIG,
-    gatedModels: Boolean(process.env.HF_TOKEN?.trim()),
-  });
+  assert.deepEqual(await response.json(), { enabled: true, config: ORG_CONFIG, gatedModels: false });
   assert.equal((await fetch(`${base}/api/voice/access`)).status, 401);
 });
 
@@ -378,6 +392,67 @@ test("voice access tells the browser whether gated models can be served", async 
   );
   assert.equal(denied.status, 403);
   assert.equal(await denied.text(), "nope");
+});
+
+async function probedAccess(overrides: Partial<VoiceAssistantDeps>) {
+  const coreFetch: VoiceAssistantDeps["coreFetch"] = async () => ({ status: 200, text: '{"enabled":true}' });
+  const text = await (await fetch(`${await startProxy({ coreFetch, ...overrides })}/api/voice/access`)).text();
+  assert.ok(!text.includes(String(overrides.hfToken).trim()));
+  return JSON.parse(text);
+}
+
+test("voice access withholds gated models only when Hugging Face refuses the token, asking once per window", async () => {
+  evilHits.length = 0;
+  for (const [hfToken, gatedModels] of [
+    ["redirected-token", true],
+    ["revoked-token", false],
+    ["ungranted-token", false],
+    ["unexpected-token", true],
+  ] as const) {
+    probeHits.length = 0;
+    const answers = await Promise.all([probedAccess({ hfToken: ` ${hfToken}\n` }), probedAccess({ hfToken })]);
+    assert.deepEqual(answers, [
+      { enabled: true, gatedModels },
+      { enabled: true, gatedModels },
+    ]);
+    assert.deepEqual(await probedAccess({ hfToken }), { enabled: true, gatedModels }, hfToken);
+    assert.deepEqual(probeHits, [{ method: "HEAD", authorization: `Bearer ${hfToken}` }], hfToken);
+  }
+  assert.equal(evilHits.length, 0, "the probe never follows a redirect");
+  const offline = { origin: "http://127.0.0.1:9", allowRedirect: () => false };
+  assert.deepEqual(await probedAccess({ hfToken: "offline-token", modelUpstream: offline }), {
+    enabled: true,
+    gatedModels: true,
+  });
+  probeHits.length = 0;
+  assert.deepEqual(await probedAccess({ hfToken: "hf_pasted\u200btoken" }), { enabled: true, gatedModels: false });
+  assert.equal(probeHits.length, 0, "a token that cannot be sent as a header is refused without sending it");
+});
+
+test(
+  "a Hugging Face that never answers leaves gated models on after the probe times out",
+  { timeout: 10_000 },
+  async () => {
+    assert.deepEqual(await probedAccess({ hfToken: "hung-token" }), { enabled: true, gatedModels: true });
+  },
+);
+
+test("a refused token is asked about again once the window passes", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  PROBE_STATUS["Bearer regranted-token"] = 403;
+  assert.equal((await probedAccess({ hfToken: "regranted-token" })).gatedModels, false);
+  PROBE_STATUS["Bearer regranted-token"] = 200;
+  t.mock.timers.tick(4 * 60_000);
+  assert.equal((await probedAccess({ hfToken: "regranted-token" })).gatedModels, false);
+  t.mock.timers.tick(60_000);
+  assert.equal((await probedAccess({ hfToken: "regranted-token" })).gatedModels, true);
+});
+
+test("the token probe asks for a gated file the model proxy serves", () => {
+  const probed = VOICE_MODEL_FILES.filter(
+    (file) => file.gated && modelUpstreamUrl(file, HUGGING_FACE_UPSTREAM.origin).pathname === GATED_MODEL_PROBE_PATH,
+  );
+  assert.equal(probed.length, 1);
 });
 
 test("voice reply streams core SSE, signs the request and pins the principal to the session user", async () => {
@@ -524,7 +599,7 @@ test("gated models send the token on every Hugging Face hop, never to the CDN, a
 
 test("gated models answer 503 model_unavailable without a token or when Hugging Face refuses it", async () => {
   hfMode = "direct";
-  for (const hfToken of [undefined, "", "  "]) {
+  for (const hfToken of [undefined, "", "  ", "hf_pasted\u200btoken"]) {
     const base = await startProxy({ hfToken });
     hfHits.length = 0;
     const response = await fetch(`${base}${MODEL_PROXY_PREFIX}${modelFileKey(GATED)}`);
