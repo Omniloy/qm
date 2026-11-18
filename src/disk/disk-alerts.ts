@@ -5,7 +5,7 @@ import { personIds, personKey } from "../directory/person.ts";
 import type { DurableMap } from "../persistence/durable-map.ts";
 import { principalDestination } from "../reach/reach.ts";
 import { adminDiskUrl } from "../util/admin-links.ts";
-import { swallow } from "../util/errors.ts";
+import { swallowAs } from "../util/errors.ts";
 import { sizeLabel, type DiskFilesystem, type FilesystemRole } from "./disk-service.ts";
 
 export const DISK_ALERT_LEVELS = [85, 90, 95] as const;
@@ -14,7 +14,7 @@ const ROLE_LABELS: Record<FilesystemRole, string> = { data: "QM data", docker: "
 
 export interface DiskAlertRecord {
   level: number;
-  at: number;
+  since: number;
 }
 
 export interface DiskAlertDeps {
@@ -58,49 +58,51 @@ function diskAlertMessage(fs: DiskFilesystem, deps: Instance): { subject: string
   };
 }
 
-async function notifyAdmins(deps: DiskAlertDeps, fs: DiskFilesystem, level: number, at: number): Promise<boolean> {
+async function notifyAdmins(deps: DiskAlertDeps, fs: DiskFilesystem, level: number, episode: number): Promise<boolean> {
   const message = diskAlertMessage(fs, deps);
   const key = fs.holds.map((h) => h.role).join("+");
-  const admins = new Map((await deps.admins()).map((id) => [personKey(id), id]));
-  let reached = false;
+  const admins = new Map<string, string>();
+  for (const id of await deps.admins()) {
+    const person = personKey(id);
+    if (person && !admins.has(person)) admins.set(person, personIds(id)[0] ?? id);
+  }
+  let told = false;
   for (const [person, id] of admins) {
-    if (!person) continue;
-    try {
-      await deps.deliveries.enqueue({
+    const queued = await deps.deliveries
+      .enqueue({
         destination: principalDestination(id, id),
         text: message.text,
-        idempotencyKey: `disk-alert:${key}:${level}:${at}:${person}`,
-      });
-      reached = true;
-    } catch (e) {
-      swallow(`disk alert: message ${id}`, e);
-    }
+        idempotencyKey: `disk-alert:${key}:${level}:${episode}:${person}`,
+      })
+      .then(() => true, swallowAs(`disk alert: message ${id}`, false));
     const email = personIds(id).find((x) => x.includes("@"));
-    if (!deps.mailer || !email) continue;
-    try {
-      await deps.mailer.send({ to: email, subject: message.subject, text: message.text, html: message.html });
-      reached = true;
-    } catch (e) {
-      swallow(`disk alert: email ${email}`, e);
+    if (!deps.mailer || !email) {
+      told ||= queued;
+      continue;
     }
+    const sent = await deps.mailer
+      .send({ to: email, subject: message.subject, text: message.text, html: message.html })
+      .then(() => true, swallowAs(`disk alert: email ${email}`, false));
+    told ||= sent;
   }
-  return reached;
+  return told;
 }
 
 export async function checkDiskAlerts(deps: DiskAlertDeps): Promise<void> {
   const now = deps.now ?? Date.now;
   for (const fs of await deps.filesystems()) {
     const roles = fs.holds.map((h) => h.role);
+    const records = await Promise.all(roles.map((role) => deps.store.get(role)));
     if (fs.usedPercent < REARM_BELOW_PERCENT) {
-      await Promise.all(roles.map((role) => deps.store.delete(role)));
+      await Promise.all(roles.filter((_, i) => records[i]).map((role) => deps.store.delete(role)));
       continue;
     }
-    const level = DISK_ALERT_LEVELS.findLast((l) => fs.usedPercent >= l);
-    if (level === undefined) continue;
-    const alerted = await Promise.all(roles.map(async (role) => (await deps.store.get(role))?.level ?? 0));
-    if (Math.min(...alerted) >= level) continue;
-    const at = now();
-    if (!(await notifyAdmins(deps, fs, level, at))) continue;
-    await Promise.all(roles.map((role) => deps.store.put(role, { level, at })));
+    const started = Math.min(...records.map((r) => r?.since ?? Infinity));
+    const episode = Number.isFinite(started) ? started : now();
+    const alerted = Math.max(...records.map((r) => r?.level ?? 0));
+    const level = DISK_ALERT_LEVELS.findLast((l) => fs.usedPercent >= l) ?? 0;
+    const reached = level > alerted && (await notifyAdmins(deps, fs, level, episode));
+    if (!reached && records.every(Boolean)) continue;
+    await Promise.all(roles.map((role) => deps.store.put(role, { level: reached ? level : alerted, since: episode })));
   }
 }

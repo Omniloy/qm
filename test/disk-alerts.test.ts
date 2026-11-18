@@ -64,12 +64,12 @@ test("crossing 85% messages and emails each org admin once, naming the disk, wha
   await h.at(disk(["data", "docker"], 86.2));
   assert.deepEqual(
     h.dms.map((m) => m.to),
-    ["ENRIQUE@omniloy.test", "U0SLACK"],
+    ["enrique@omniloy.test", "U0SLACK"],
     "one message per person, with case-folded duplicates merged",
   );
   assert.deepEqual(
     h.emails.map((m) => m.to),
-    ["ENRIQUE@omniloy.test"],
+    ["enrique@omniloy.test"],
     "only admins known by an email address get an email",
   );
   const [email] = h.emails;
@@ -133,16 +133,10 @@ test("after Docker moves to its own disk, each disk is judged on its own", async
   );
 });
 
-test("an alert nobody could be told about is retried on the next check", async () => {
+test("an alert whose emails all failed is retried, reusing the queued message's outbox key", async () => {
   let fail = true;
   const h = harness({
     admins: async () => ["ops@omniloy.test"],
-    deliveries: {
-      enqueue: async () => {
-        if (fail) throw new Error("outbox down");
-        return {} as never;
-      },
-    },
     mailer: {
       send: async () => {
         if (fail) throw new Error("Resend rejected the message: HTTP 500");
@@ -151,10 +145,58 @@ test("an alert nobody could be told about is retried on the next check", async (
     },
   });
   await h.at(disk(["data"], 90));
-  assert.equal(await h.store.get("data"), null);
+  assert.equal((await h.store.get("data"))?.level, 0, "a queued Slack message alone does not count when email failed");
   fail = false;
   await h.at(disk(["data"], 90));
   assert.equal((await h.store.get("data"))?.level, 90);
+  assert.equal(h.dms.length, 2);
+  assert.equal(h.dms[0]!.key, h.dms[1]!.key, "the outbox drops the retried message as a duplicate");
+  await h.at(disk(["data"], 91));
+  assert.equal(h.dms.length, 2);
+});
+
+test("an admin known only by Slack id counts as told once the message is queued", async () => {
+  const h = harness({
+    admins: async () => ["ops@omniloy.test", "U0SLACK"],
+    mailer: {
+      send: async () => {
+        throw new Error("Resend rejected the message: HTTP 500");
+      },
+    },
+  });
+  await h.at(disk(["data"], 90));
+  assert.equal((await h.store.get("data"))?.level, 90);
+});
+
+test("nothing is recorded when no admin could be told at all", async () => {
+  const h = harness({
+    admins: async () => ["ops@omniloy.test"],
+    deliveries: {
+      enqueue: async () => {
+        throw new Error("outbox down");
+      },
+    },
+    mailer: {
+      send: async () => {
+        throw new Error("Resend rejected the message: HTTP 500");
+      },
+    },
+  });
+  await h.at(disk(["data"], 90));
+  assert.equal((await h.store.get("data"))?.level, 0);
+});
+
+test("a check that misses Docker on a shared disk does not make the next full check alert again", async () => {
+  const h = harness({ admins: async () => ["ops@omniloy.test"] });
+  await h.at(disk(["data"], 86));
+  await h.at(disk(["data", "docker"], 86));
+  assert.equal(h.emails.length, 1);
+  assert.equal((await h.store.get("docker"))?.level, 85, "docker inherits what was already said about its disk");
+  await h.at(disk(["data", "docker"], 91));
+  assert.deepEqual(
+    h.emails.map((m) => m.subject),
+    ["Disk 86% full on mo.example.com", "Disk 91% full on mo.example.com"],
+  );
 });
 
 test("without a public URL or a mailer the alert still goes out as a message naming the org", async () => {

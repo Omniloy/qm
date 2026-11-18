@@ -2331,7 +2331,4 @@ dialog.screening-trust-dialog {
   .disk-bar {
     width: 64px;
   }
-  .disk-fs .disk-bar {
-    width: 100%;
-  }
 }

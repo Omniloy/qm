@@ -170,7 +170,7 @@ export class DiskView {
     const docker = report?.docker;
     this.services.defaultShell({
       stats: [
-        ...this.filesystems.map((fs) => [`${Math.round(fs.usedPercent)}%`, `${filesystemLabel(fs)} disk used`]),
+        ...this.filesystems.map((fs) => [`${Math.floor(fs.usedPercent)}%`, `${filesystemLabel(fs)} disk used`]),
         ...(report
           ? [
               [docker?.available ? fmtBytes(docker.totalBytes) : "n/a", "Docker"],
@@ -276,7 +276,7 @@ export class DiskView {
     if (!this.filesystems.length) return nothing;
     return html`<div class="disk-filesystems">
       ${this.filesystems.map((fs) => {
-        const percent = Math.round(fs.usedPercent);
+        const percent = Math.floor(fs.usedPercent);
         const tone = this.usedTone(fs.usedPercent);
         return html`<div class="disk-fs" data-holds=${fs.holds.map((h: any) => h.role).join(" ")}>
           <div class="disk-fs-head">
