@@ -270,12 +270,13 @@ const SLACK_USER_ID = /^[UW][A-Z0-9]+$/;
 
 export async function slackUserIdFor(client: any, principalId: string): Promise<string> {
   if (SLACK_USER_ID.test(principalId)) return principalId;
-  for (const id of personIds(principalId)) {
-    if (SLACK_USER_ID.test(id)) return id;
-    if (!id.includes("@")) continue;
-    const member = await slackMemberByEmail(client, id);
+  const ids = personIds(principalId);
+  for (const email of ids.filter((id) => id.includes("@"))) {
+    const member = await slackMemberByEmail(client, email);
     if (member) return member;
   }
+  const linked = ids.find((id) => SLACK_USER_ID.test(id));
+  if (linked) return linked;
   if (principalId.includes("@")) throw new Error(`no Slack member found for ${principalId}`);
   return principalId;
 }

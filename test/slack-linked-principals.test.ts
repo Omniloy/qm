@@ -44,18 +44,19 @@ function slackClient(members: Record<string, string>) {
   };
 }
 
-async function link(alias: string, canonical: string): Promise<void> {
+async function link(canonical: string, ...aliases: string[]): Promise<void> {
   const links = createPrincipalLinkService();
-  await links.link({
-    principalId: alias,
-    canonicalId: canonical,
-    evidence: "admin confirmed both identities belong to one member",
-    linkedBy: "admin@acme.test",
-  });
+  for (const alias of aliases)
+    await links.link({
+      principalId: alias,
+      canonicalId: canonical,
+      evidence: "admin confirmed both identities belong to one member",
+      linkedBy: "admin@acme.test",
+    });
   installPrincipalLinks(links);
 }
 
-const linkSlackEmail = () => link(SLACK_EMAIL, LOGIN);
+const linkSlackEmail = () => link(LOGIN, SLACK_EMAIL);
 
 describe("Slack resolves a linked member through any of their linked identities", () => {
   afterEach(() => installPrincipalLinks(null));
@@ -69,19 +70,25 @@ describe("Slack resolves a linked member through any of their linked identities"
     assert.deepEqual(client.opened, ["U0DANA", "U0DANA,U0KAI"]);
   });
 
-  it("uses a linked Slack member id directly once the login email misses", async () => {
-    await link("U0DANA", LOGIN);
-    const client = slackClient({});
-    assert.equal(await slackUserIdFor(client, LOGIN), "U0DANA");
-    assert.equal(await slackUserIdFor(client, "U0DANA"), "U0DANA");
-    assert.deepEqual(client.lookups, [LOGIN]);
+  it("falls back to a linked Slack member id only after every linked email misses", async () => {
+    await link(LOGIN, "U0DANA", SLACK_EMAIL);
+    const workspace = slackClient({ [SLACK_EMAIL]: "U0SLACK" });
+    assert.equal(await slackUserIdFor(workspace, LOGIN), "U0SLACK");
+    assert.deepEqual(workspace.lookups, [LOGIN, SLACK_EMAIL]);
+    const empty = slackClient({});
+    assert.equal(await slackUserIdFor(empty, LOGIN), "U0DANA");
+    assert.equal(await slackUserIdFor(empty, "U0DANA"), "U0DANA");
+    assert.deepEqual(empty.lookups, [LOGIN, SLACK_EMAIL]);
   });
 
-  it("reaches a sign-in without an email through its linked Slack email", async () => {
-    await link(SLACK_EMAIL, OIDC_LOGIN);
+  it("reaches a sign-in without an email through its linked Slack email, else passes it through", async () => {
+    await link(OIDC_LOGIN, SLACK_EMAIL);
     const client = slackClient({ [SLACK_EMAIL]: "U0DANA" });
     assert.equal(await slackUserIdFor(client, OIDC_LOGIN), "U0DANA");
     assert.deepEqual(client.lookups, [SLACK_EMAIL]);
+    const empty = slackClient({});
+    assert.equal(await slackUserIdFor(empty, OIDC_LOGIN), OIDC_LOGIN);
+    assert.deepEqual(empty.lookups, [SLACK_EMAIL]);
   });
 
   it("prefers the canonical email's member when both emails resolve, from either principal", async () => {
