@@ -1,6 +1,5 @@
 import { errMessage, swallowAs } from "../util/errors.ts";
 import { personIds } from "../directory/person.ts";
-import { slackErrorCode } from "./payloads.ts";
 import { safeChunks, safeClip } from "./safe-cut.ts";
 import { sleep } from "./util.ts";
 import { isExternallyShared, isMpim, type ChannelMeta } from "./identity.ts";
@@ -261,7 +260,7 @@ async function slackMemberByEmail(client: any, email: string): Promise<string | 
     const res = (await client.users.lookupByEmail({ email })) as { user?: { id?: string } };
     return res?.user?.id;
   } catch (err) {
-    if (slackErrorCode(err) === "users_not_found") return undefined;
+    if ((err as { data?: { error?: string } })?.data?.error === "users_not_found") return undefined;
     throw err;
   }
 }
