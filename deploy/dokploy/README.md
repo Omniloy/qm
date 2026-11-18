@@ -81,28 +81,27 @@ The image carries three separate things, and it is worth knowing which is which:
   `pip install --uploaded-prior-to <seven days ago>` (the same cool-down `.npmrc` applies) and
   replace the file with that venv's `pip freeze`.
 
-Because `PLAYWRIGHT_BROWSERS_PATH` and `HF_HUB_CACHE` point into the image, anything Playwright
-or Hugging Face downloads at runtime — another browser revision for a different Playwright
-version, a Node Playwright project's browsers, a Whisper model other than `small` — now lands in
-the container's writable layer instead of the home volume, so it is downloaded again after the
+Because `PLAYWRIGHT_BROWSERS_PATH` and `HF_HUB_CACHE` point into the image, the browsers and model
+files Playwright or Hugging Face download at runtime — another browser revision for a different
+Playwright version, a Node Playwright project's browsers, a Whisper model other than `small` — land in
+the container's writable layer instead of the home volume, so they are downloaded again after the
 container is recreated. Browsers and models already in a home's `~/.cache` are no longer read.
 
 All three land **once, in the shared image layer** — not per sandbox. The `qm-home-*` volumes hold
 `/root`, not image layers, so image size does not multiply by the number of scopes. Keep anything
 baked out of `/root`: Docker copies an image's `/root` into every new home volume on first mount.
 
-**A rebuilt image reaches sandboxes only when they are recreated.** Core reads the image ID of
-`LOCAL_SANDBOX_IMAGE` once per process and starts every container from that ID, so until it
-restarts, new sandboxes keep using the old image. Redeploy after a rebuild: that restarts core and
-moves `sandbox-keepalive` onto the new image, which otherwise keeps the old one's layers alive
-(compare `docker inspect -f '{{.Image}}' qm-omniloy-sandbox-keepalive-1` with
-`docker image inspect -f '{{.Id}}' qm-sandbox-local:latest`). From then on, each
-scope's next turn finds its `qm-sbx-*` container on the old image ID, removes it, and starts a
-fresh one from the new image on the same `qm-home-*` volume. That drops the old container's
-writable layer — anything an agent installed or downloaded at runtime outside `/root`, and
-anything in its `/tmp` — but nothing under `/root`. A stopped `qm-sbx-*` container can be removed
-by hand at any time for the same reason. The old image's layers are freed once no container uses them and the nightly cleanup
-prunes the untagged image.
+**A rebuilt image reaches each sandbox the next time it is idle.** Core resolves
+`LOCAL_SANDBOX_IMAGE` to an image ID on every provision, so no restart is needed. A scope's next
+turn finds its `qm-sbx-*` container on the old image ID and, unless another turn is still using
+it, removes it and starts a fresh one from the new image on the same `qm-home-*` volume. That
+drops the old container's writable layer — anything an agent installed or downloaded at runtime
+outside `/root`, any process still running in it, and anything in its `/tmp` — but nothing under
+`/root`. A stopped `qm-sbx-*` container can be removed by hand at any time for the same reason.
+`sandbox-keepalive` keeps the old image's layers alive until it is recreated on the new one; a
+Dokploy redeploy does that (compare `docker inspect -f '{{.Image}}' qm-omniloy-sandbox-keepalive-1`
+with `docker image inspect -f '{{.Id}}' qm-sandbox-local:latest`). Once no container uses the old
+image, the nightly cleanup prunes it.
 
 **Agent computers are bounded by `LOCAL_SANDBOX_CPUS` and `LOCAL_SANDBOX_MEMORY_MB`,** set in
 the Compose file. `docker run` omits `--cpus`/`--memory` entirely when they are unset, which

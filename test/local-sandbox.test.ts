@@ -168,21 +168,28 @@ test("a stale-image container is recreated while its home volume survives", asyn
   assert.equal(h2.coldStart, false, "existing volume means a warm home");
 });
 
-test("a tag rebuilt under a running core does not churn containers until core restarts", async () => {
+test("a rebuilt tag moves an idle sandbox onto the new image without a core restart, and never a busy one", async () => {
   const fake = installFakeDocker(daemonPort);
   const sb = makeSandbox(fake);
-  await sb.provision(rw(scopeId("personal", "U_OLD")));
+  const layers = rw(scopeId("personal", "U_REBUILD"));
+  const busy = await sb.provision(layers);
 
   fake.imageId = "sha256:image-v2";
-  const layers = rw(scopeId("personal", "U_NEW"));
-  const h1 = await sb.provision(layers);
-  assert.equal(fake.containers.get(h1.id)!.imageId, "sha256:image-v1", "runs the image core compares against");
-  await sb.teardown(h1);
-  const runsBefore = fake.runCount;
+  const alongside = await sb.provision(layers);
+  assert.equal(fake.runCount, 1, "a container with a live handle is not recreated under it");
+  assert.equal(fake.containers.get(busy.id)!.imageId, "sha256:image-v1");
+  await sb.teardown(alongside);
+  await sb.teardown(busy);
 
-  const h2 = await sb.provision(layers);
-  assert.equal(fake.runCount, runsBefore, "the parked container is reused, not recreated");
-  assert.equal(h2.coldStart, false);
+  const moved = await sb.provision(layers);
+  assert.equal(fake.runCount, 2, "the idle container is recreated on the rebuilt image");
+  assert.equal(fake.containers.get(moved.id)!.imageId, "sha256:image-v2");
+  assert.equal(moved.coldStart, false, "the home volume is kept");
+  await sb.teardown(moved);
+
+  const again = await sb.provision(layers);
+  assert.equal(fake.runCount, 2, "and stays put on later turns");
+  assert.equal(again.coldStart, false);
 });
 
 test("a sandbox network pruned while parked is repaired in place: same container, pool subnet, home kept", async () => {

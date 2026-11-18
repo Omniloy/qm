@@ -41,7 +41,9 @@ RUN pip install -c /tmp/agent-constraints.txt \
       tabulate \
       xlsxwriter \
   && pip check \
-  && rm /tmp/agent-constraints.txt
+  && pip freeze > /tmp/agent-freeze.txt \
+  && diff /tmp/agent-freeze.txt /tmp/agent-constraints.txt \
+  && rm /tmp/agent-constraints.txt /tmp/agent-freeze.txt
 
 RUN playwright install --with-deps chromium \
   && rm -rf /var/lib/apt/lists/* \

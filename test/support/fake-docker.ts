@@ -80,9 +80,7 @@ export function installFakeDocker(daemonPort: number): FakeDocker {
     networks.has(net) && c.attached?.name === net && c.attached.gen === netGen.get(net);
 
   function parseRun(args: string[]): FakeContainer {
-    const ref = args.at(-1) ?? "";
-    const imageId = ref.startsWith("sha256:") ? ref : self.imageId;
-    const c: FakeContainer = { name: "", imageId, running: true, labels: {}, args };
+    const c: FakeContainer = { name: "", imageId: self.imageId, running: true, labels: {}, args };
     for (let i = 0; i < args.length; i++) {
       const a = args[i]!;
       if (a === "--name") c.name = args[++i]!;
