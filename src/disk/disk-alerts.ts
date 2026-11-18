@@ -101,8 +101,9 @@ export async function checkDiskAlerts(deps: DiskAlertDeps): Promise<void> {
     const episode = Number.isFinite(started) ? started : now();
     const alerted = Math.max(...records.map((r) => r?.level ?? 0));
     const level = DISK_ALERT_LEVELS.findLast((l) => fs.usedPercent >= l) ?? 0;
-    const reached = level > alerted && (await notifyAdmins(deps, fs, level, episode));
-    if (!reached && records.every(Boolean)) continue;
-    await Promise.all(roles.map((role) => deps.store.put(role, { level: reached ? level : alerted, since: episode })));
+    const record = (reached: number) =>
+      Promise.all(roles.map((role) => deps.store.put(role, { level: reached, since: episode })));
+    if (!records.every(Boolean)) await record(alerted);
+    if (level > alerted && (await notifyAdmins(deps, fs, level, episode))) await record(level);
   }
 }

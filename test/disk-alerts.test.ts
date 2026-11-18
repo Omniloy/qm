@@ -186,6 +186,25 @@ test("nothing is recorded when no admin could be told at all", async () => {
   assert.equal((await h.store.get("data"))?.level, 0);
 });
 
+test("the episode is recorded before anyone is told, so a lost write after the alert keeps the outbox key", async () => {
+  const h = harness({ admins: async () => ["U0SLACK"] });
+  const put = h.store.put.bind(h.store);
+  let failNextAlertWrite = true;
+  h.store.put = async (id, value) => {
+    if (value.level > 0 && failNextAlertWrite) {
+      failNextAlertWrite = false;
+      throw new Error("connection terminated");
+    }
+    return put(id, value);
+  };
+  await assert.rejects(h.at(disk(["data"], 97)), /connection terminated/);
+  assert.equal((await h.store.get("data"))?.level, 0);
+  await h.at(disk(["data"], 97));
+  assert.equal(h.dms.length, 2);
+  assert.equal(h.dms[0]!.key, h.dms[1]!.key, "the outbox keeps the first message and drops the repeat");
+  assert.equal((await h.store.get("data"))?.level, 95);
+});
+
 test("a check that misses Docker on a shared disk does not make the next full check alert again", async () => {
   const h = harness({ admins: async () => ["ops@omniloy.test"] });
   await h.at(disk(["data"], 86));
