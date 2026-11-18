@@ -2242,6 +2242,37 @@ dialog.screening-trust-dialog {
   height: 100%;
   background: var(--text);
 }
+.disk-bar.warn > span {
+  background: var(--warn);
+}
+.disk-bar.err > span {
+  background: var(--danger);
+}
+.disk-filesystems {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.disk-fs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.disk-fs-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+.disk-fs .disk-bar {
+  width: 100%;
+  height: 10px;
+}
+.disk-filesystems .subline {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
 .disk-tables {
   margin: 6px 0 0;
   padding-left: 16px;

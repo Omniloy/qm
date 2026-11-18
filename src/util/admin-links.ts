@@ -14,3 +14,7 @@ export function adminCronHistoryUrl(publicWebUrl: string, ownerScopeId: string, 
   }
   return `${trimBase(publicWebUrl)}/admin/history/scopes/${scopeSegment}?${cronQuery}`;
 }
+
+export function adminDiskUrl(publicWebUrl: string): string {
+  return `${trimBase(publicWebUrl)}/admin/disk`;
+}

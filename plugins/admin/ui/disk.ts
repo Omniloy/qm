@@ -7,8 +7,16 @@ type SortKey = "size" | "lastUsed" | "created";
 
 const POLL_INTERVAL_MS = 5_000;
 const POLL_ATTEMPTS = 360;
-const LOW_FREE_RATIO = 0.1;
 const DAY_MS = 86_400_000;
+const ROLE_LABELS: Record<string, string> = { data: "QM data", docker: "Docker" };
+const DOCKER_COMPONENTS = new Set([
+  "postgres",
+  "sandbox-volumes",
+  "sandbox-containers",
+  "app-volumes",
+  "images",
+  "build-cache",
+]);
 
 const memory = {
   q: "",
@@ -68,6 +76,13 @@ function sandboxState(r: any) {
 
 const fmtDate = (ts: number | null | undefined) => (ts ? new Date(ts).toLocaleDateString() : "n/a");
 
+const filesystemLabel = (fs: any) => fs.holds.map((h: any) => ROLE_LABELS[h.role] || h.role).join(" and ");
+
+function listLevels(levels: number[]): string {
+  const parts = levels.map((l) => `${l}%`);
+  return parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : (parts[0] ?? "");
+}
+
 function fmtDuration(ms: number): string {
   if (ms >= DAY_MS) return `${Math.round(ms / DAY_MS)} d`;
   if (ms >= 3_600_000) return `${Math.round(ms / 3_600_000)} h`;
@@ -122,6 +137,20 @@ export class DiskView {
     return this.data.report;
   }
 
+  get filesystems(): any[] {
+    return this.data.filesystems || [];
+  }
+
+  usedTone(percent: number): string {
+    const levels: number[] = this.data.alertLevels || [];
+    if (!levels.length || percent < Math.min(...levels)) return "";
+    return percent >= Math.max(...levels) ? "err" : "warn";
+  }
+
+  diskHolding(role: string): any {
+    return this.filesystems.find((fs) => fs.holds.some((h: any) => h.role === role));
+  }
+
   scopeLabel(id: string | null | undefined): string {
     if (!id) return "";
     return this.scopeLabels.get(id)?.label || id;
@@ -138,17 +167,17 @@ export class DiskView {
 
   renderShell() {
     const report = this.report;
-    const fs = report?.filesystem;
     const docker = report?.docker;
     this.services.defaultShell({
-      stats: report
-        ? [
-            [fs ? `${fmtBytes(fs.usedBytes)} / ${fmtBytes(fs.totalBytes)}` : "n/a", "Filesystem used"],
-            [fs ? fmtBytes(fs.availableBytes) : "n/a", "Available"],
-            [docker?.available ? fmtBytes(docker.totalBytes) : "n/a", "Docker"],
-            [report.postgres ? fmtBytes(report.postgres.totalBytes) : "n/a", "Postgres"],
-          ]
-        : [],
+      stats: [
+        ...this.filesystems.map((fs) => [`${Math.floor(fs.usedPercent)}%`, `${filesystemLabel(fs)} disk used`]),
+        ...(report
+          ? [
+              [docker?.available ? fmtBytes(docker.totalBytes) : "n/a", "Docker"],
+              [report.postgres ? fmtBytes(report.postgres.totalBytes) : "n/a", "Postgres"],
+            ]
+          : []),
+      ],
       search: {
         value: memory.q,
         placeholder: "app, owner or scope",
@@ -242,6 +271,35 @@ export class DiskView {
     await this.services.refresh();
   }
 
+  disks() {
+    const levels: number[] = this.data.alertLevels || [];
+    if (!this.filesystems.length) return nothing;
+    return html`<div class="disk-filesystems">
+      ${this.filesystems.map((fs) => {
+        const percent = Math.floor(fs.usedPercent);
+        const tone = this.usedTone(fs.usedPercent);
+        return html`<div class="disk-fs" data-holds=${fs.holds.map((h: any) => h.role).join(" ")}>
+          <div class="disk-fs-head">
+            <strong>${filesystemLabel(fs)}</strong>
+            <span class="subline mono">${fs.holds.map((h: any) => h.path).join(" · ")}</span>
+            ${badge(`${percent}% used`, tone || "ok")}
+          </div>
+          <span class=${`disk-bar ${tone}`} title=${`${percent}% used`}
+            ><span style=${`width:${Math.min(100, Math.max(0, fs.usedPercent)).toFixed(2)}%`}></span
+          ></span>
+          <p class="subline">${fmtBytes(fs.availableBytes)} free of ${fmtBytes(fs.totalBytes)}</p>
+        </div>`;
+      })}
+      ${
+        levels.length
+          ? html`<p class="subline disk-alert-note">
+              Org admins get a message when a disk passes ${listLevels(levels)} full.
+            </p>`
+          : nothing
+      }
+    </div>`;
+  }
+
   summary() {
     const s = this.services;
     const report = this.report;
@@ -250,38 +308,34 @@ export class DiskView {
       ${busy ? "Measuring…" : "Measure now"}
     </button>`;
     if (!report) {
-      return html`<div class="disk-summary">
-        <p class="subline">Not measured yet. Measuring walks every folder and can take a few minutes.</p>
+      return html`${this.disks()}
+        <div class="disk-summary">
+          <p class="subline">Not measured yet. Measuring walks every folder and can take a few minutes.</p>
+          ${button}
+        </div>`;
+    }
+    return html`${this.disks()}
+      <div class="disk-summary">
+        <p class="subline">Breakdown measured ${s.relTime(report.measuredAt)}</p>
+        ${
+          report.docker?.available
+            ? nothing
+            : html`<p class="subline disk-docker-note">Docker not available: ${report.docker?.reason || "unknown"}</p>`
+        }
+        ${
+          report.docker?.available && !this.diskHolding("docker")
+            ? html`<p class="subline disk-docker-note">
+                Docker's own disk cannot be measured from here, so it is not watched.
+              </p>`
+            : nothing
+        }
         ${button}
       </div>`;
-    }
-    const fs = report.filesystem;
-    const freeRatio = fs && fs.totalBytes > 0 ? fs.availableBytes / fs.totalBytes : null;
-    return html`<div class="disk-summary">
-      <p class="subline">
-        Measured ${s.relTime(report.measuredAt)}${fs ? html` · ${fs.path}` : nothing}
-        ${
-          freeRatio == null
-            ? nothing
-            : badge(
-                `${fmtBytes(fs.availableBytes)} free (${Math.round(freeRatio * 100)}%)`,
-                freeRatio < LOW_FREE_RATIO ? "err" : "ok",
-              )
-        }
-      </p>
-      ${
-        report.docker?.available
-          ? nothing
-          : html`<p class="subline disk-docker-note">Docker not available: ${report.docker?.reason || "unknown"}</p>`
-      }
-      ${button}
-    </div>`;
   }
 
   components() {
     const report = this.report;
     if (!report) return nothing;
-    const total = report.filesystem?.totalBytes || 0;
     const rows: any[] = [...(report.components || [])];
     if (report.orphanSnapshotBytes != null) {
       rows.push({
@@ -291,16 +345,18 @@ export class DiskView {
       });
     }
     rows.sort((a, b) => (b.bytes ?? -1) - (a.bytes ?? -1));
-    const bar = (bytes: number | null) =>
-      total > 0 && bytes != null
+    const bar = (id: string, bytes: number | null) => {
+      const total = this.diskHolding(DOCKER_COMPONENTS.has(id) ? "docker" : "data")?.totalBytes || 0;
+      return total > 0 && bytes != null
         ? html`<span class="disk-bar" title=${`${((bytes / total) * 100).toFixed(1)}% of the disk`}
             ><span style=${`width:${Math.min(100, (bytes / total) * 100).toFixed(2)}%`}></span
           ></span>`
         : nothing;
+    };
     const tables = report.postgres?.tables || [];
     return card(
       "Components",
-      "What is using the disk, largest first. The bar shows each part's share of the whole filesystem.",
+      "What is using the disk, largest first. The bar shows each part's share of the disk that holds it.",
       html`<div class="tablewrap">
         <table class="disk-components">
           <thead>
@@ -330,7 +386,7 @@ export class DiskView {
                   <td class="num">
                     ${fmtBytes(c.bytes)}${c.count != null ? html` <span class="subline">(${c.count})</span>` : nothing}
                   </td>
-                  <td>${bar(c.bytes)}</td>
+                  <td>${bar(c.id, c.bytes)}</td>
                   <td class="subline">${c.note || ""}</td>
                 </tr>`,
             )}

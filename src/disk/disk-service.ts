@@ -1,4 +1,4 @@
-import { readdir } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { DurableMap } from "../persistence/durable-map.ts";
 import type { PgPool } from "../persistence/pg-pool.ts";
@@ -41,10 +41,19 @@ interface DiskSandbox {
   lastUsedAt: number | null;
 }
 
+export type FilesystemRole = "data" | "docker";
+
+export interface DiskFilesystem {
+  holds: Array<{ role: FilesystemRole; path: string }>;
+  totalBytes: number;
+  usedBytes: number;
+  availableBytes: number;
+  usedPercent: number;
+}
+
 export interface DiskReport {
   measuredAt: number;
   durationMs: number;
-  filesystem: FsUsage | null;
   components: DiskComponent[];
   postgres: { totalBytes: number; tables: Array<{ name: string; bytes: number }> } | null;
   docker: { available: true; totalBytes: number } | { available: false; reason: string };
@@ -55,6 +64,7 @@ export interface DiskReport {
 }
 
 export interface DiskService {
+  filesystems(): Promise<DiskFilesystem[]>;
   latest(): Promise<DiskReport | null>;
   measure(): Promise<DiskReport>;
   measuring(): Promise<boolean>;
@@ -70,6 +80,7 @@ export interface DiskServiceDeps {
   docker: DockerApi | null;
   pg: PgPool | null;
   store: DurableMap<DiskRecord>;
+  mountinfoPath?: string;
 }
 
 export type DiskRecord = DiskReport | { startedAt: number };
@@ -99,6 +110,9 @@ const SANDBOX_CONTAINER_PREFIX = "qm-sbx-";
 const SANDBOX_VOLUME_PREFIX = "qm-home-";
 const APP_VOLUME_PREFIX = "agent-deploy-data-";
 const NO_DOCKER = "docker is not configured for this deployment";
+const MOUNTINFO = "/proc/self/mountinfo";
+const DOCKER_INFO_TIMEOUT_MS = 10_000;
+const SAME_FILESYSTEM_TOLERANCE = 0.001;
 const PATH_LABELS: Record<PathComponentId, string> = {
   docstore: "Uploaded files",
   "session-shares": "Shared conversations",
@@ -109,7 +123,7 @@ const PATH_LABELS: Record<PathComponentId, string> = {
 const positive = (n: number | undefined | null): number => (typeof n === "number" && n > 0 ? n : 0);
 const sum = (xs: number[]): number => xs.reduce((a, b) => a + b, 0);
 
-function sizeLabel(bytes: number): string {
+export function sizeLabel(bytes: number): string {
   const power = Math.min(3, Math.max(1, Math.floor(Math.log(Math.max(bytes, 1)) / Math.log(1024))));
   return `${(bytes / 1024 ** power).toFixed(1)} ${["KB", "MB", "GB"][power - 1]}`;
 }
@@ -126,6 +140,41 @@ async function safely<T>(label: string, fallback: T, run: () => Promise<T>): Pro
     swallow(`disk: ${label}`, e);
     return fallback;
   }
+}
+
+export function rootOverlayUnder(mountinfo: string, dir: string): boolean {
+  const root = mountinfo
+    .split("\n")
+    .map((line) => line.split(" "))
+    .findLast((fields) => fields[4] === "/");
+  const separator = root?.indexOf("-") ?? -1;
+  if (!root || separator < 0) return false;
+  const upper = `upperdir=${dir.replace(/\/+$/, "")}/`;
+  return (root[separator + 3] ?? "").split(",").some((option) => option.startsWith(upper));
+}
+
+export function distinctFilesystems(measured: Array<{ role: FilesystemRole; usage: FsUsage }>): DiskFilesystem[] {
+  const out: DiskFilesystem[] = [];
+  for (const { role, usage } of measured) {
+    const same = out.find(
+      (f) =>
+        f.totalBytes === usage.totalBytes &&
+        Math.abs(f.availableBytes - usage.availableBytes) <= f.totalBytes * SAME_FILESYSTEM_TOLERANCE,
+    );
+    if (same) {
+      same.holds.push({ role, path: usage.path });
+      continue;
+    }
+    const capacity = usage.usedBytes + usage.availableBytes;
+    out.push({
+      holds: [{ role, path: usage.path }],
+      totalBytes: usage.totalBytes,
+      usedBytes: usage.usedBytes,
+      availableBytes: usage.availableBytes,
+      usedPercent: capacity > 0 ? (usage.usedBytes / capacity) * 100 : 0,
+    });
+  }
+  return out;
 }
 
 export function createDiskService(deps: DiskServiceDeps): DiskService {
@@ -291,6 +340,15 @@ export function createDiskService(deps: DiskServiceDeps): DiskService {
     };
   }
 
+  async function dockerRootUsage(docker: DockerApi): Promise<FsUsage | null> {
+    const root = (await docker.get<{ DockerRootDir?: string }>("/info", DOCKER_INFO_TIMEOUT_MS)).DockerRootDir;
+    if (!root) return null;
+    const mountinfo = await readFile(deps.mountinfoPath ?? MOUNTINFO, "utf8").catch(() => "");
+    if (!rootOverlayUnder(mountinfo, root)) return null;
+    const usage = await fsUsage("/");
+    return usage && { ...usage, path: root };
+  }
+
   function dockerUnavailable(reason: string): DiskComponent[] {
     return [
       { id: "sandbox-volumes", label: "Sandbox home volumes", bytes: null, note: reason },
@@ -303,7 +361,6 @@ export function createDiskService(deps: DiskServiceDeps): DiskService {
 
   async function run(started: number): Promise<DiskReport> {
     const deployments = await safely("list deployments", [], () => deps.deployStore.list());
-    const filesystem = await fsUsage(deps.dataDir);
     const deployed = await safely(
       "app copies",
       {
@@ -359,7 +416,6 @@ export function createDiskService(deps: DiskServiceDeps): DiskService {
     return {
       measuredAt: started,
       durationMs: Date.now() - started,
-      filesystem,
       components,
       postgres: pg.postgres,
       docker,
@@ -391,6 +447,17 @@ export function createDiskService(deps: DiskServiceDeps): DiskService {
   }
 
   return {
+    async filesystems() {
+      const docker = deps.docker;
+      const [data, dockerRoot] = await Promise.all([
+        fsUsage(deps.dataDir),
+        docker ? safely("docker root filesystem", null, () => dockerRootUsage(docker)) : null,
+      ]);
+      return distinctFilesystems([
+        ...(data ? [{ role: "data" as const, usage: data }] : []),
+        ...(dockerRoot ? [{ role: "docker" as const, usage: dockerRoot }] : []),
+      ]);
+    },
     async latest() {
       const record = await deps.store.get(LATEST);
       return record && "measuredAt" in record ? record : null;

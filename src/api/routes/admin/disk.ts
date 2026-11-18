@@ -1,5 +1,6 @@
 import { MAX_APP_VERSIONS } from "../../../deploy/deploy-service.ts";
 import type { Deployment } from "../../../deploy/deploy-store.ts";
+import { DISK_ALERT_LEVELS } from "../../../disk/disk-alerts.ts";
 import type { DiskReport } from "../../../disk/disk-service.ts";
 import { personIds, personKey } from "../../../directory/person.ts";
 import { parseScopeId, scopeId as makeScopeId } from "../../../types.ts";
@@ -89,8 +90,9 @@ export async function getDisk(ctx: ApiCtx): Promise<void> {
   const { res, app, deps } = ctx;
   if (!(await admitted(ctx, "disk.read", "disk"))) return;
   const org = orgScope(deps);
-  const [report, deployments, days] = await Promise.all([
+  const [report, filesystems, deployments, days] = await Promise.all([
     deps.disk?.latest() ?? null,
+    deps.disk?.filesystems() ?? [],
     app.listDeployments(),
     deps.config?.getAppIdleStopDaysDurable(org) ?? null,
   ]);
@@ -112,6 +114,8 @@ export async function getDisk(ctx: ApiCtx): Promise<void> {
   }
   sendJson(res, 200, {
     report,
+    filesystems,
+    alertLevels: DISK_ALERT_LEVELS,
     measuring: (await deps.disk?.measuring()) ?? false,
     orgScopeId: org,
     retention: { maxVersions: MAX_APP_VERSIONS },
