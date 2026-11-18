@@ -10,38 +10,44 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       poppler-utils ffmpeg libatomic1 \
   && rm -rf /var/lib/apt/lists/* \
   && soffice --version \
-  && tesseract --list-langs \
-  && ffmpeg -hide_banner -version | head -n 1
+  && tesseract --list-langs 2>&1 | grep -qx spa \
+  && pdftotext -v \
+  && ffmpeg -hide_banner -version >/dev/null
 
 ENV PIP_NO_CACHE_DIR=1
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 ENV HF_HUB_CACHE=/opt/hf-cache
 
-RUN pip install \
-      beautifulsoup4==4.15.0 \
-      faster-whisper==1.2.1 \
-      httpx==0.28.1 \
-      lxml==6.1.3 \
-      numpy==2.4.6 \
-      openpyxl==3.1.5 \
-      pdfplumber==0.11.10 \
-      pillow==13.0.0 \
-      playwright==1.65.2 \
-      psutil==7.2.2 \
-      pymupdf==2.1 \
-      pymupdf4llm==2.1 \
-      pypdf==7.1.0 \
-      python-docx==1.2.0 \
-      python-pptx==1.0.2 \
-      pyyaml==6.0.3 \
-      reportlab==5.0.1 \
-      requests==2.34.2 \
-      tabulate==0.10.0 \
-      xlsxwriter==3.3.1
+COPY local/agent-constraints.txt /tmp/agent-constraints.txt
+RUN pip install -c /tmp/agent-constraints.txt \
+      beautifulsoup4 \
+      faster-whisper \
+      httpx \
+      lxml \
+      numpy \
+      openpyxl \
+      pdfplumber \
+      pillow \
+      playwright \
+      psutil \
+      pymupdf \
+      pymupdf4llm \
+      pypdf \
+      python-docx \
+      python-pptx \
+      pyyaml \
+      reportlab \
+      requests \
+      tabulate \
+      xlsxwriter \
+  && pip check \
+  && rm /tmp/agent-constraints.txt
 
 RUN playwright install --with-deps chromium \
   && rm -rf /var/lib/apt/lists/* \
+  && python -c "from playwright.sync_api import sync_playwright; p = sync_playwright().start(); p.chromium.launch().close(); p.stop()" \
   && python -c "from faster_whisper import download_model; download_model('small')" \
+  && HF_HUB_OFFLINE=1 python -c "from faster_whisper import WhisperModel; WhisperModel('small', device='cpu', compute_type='int8')" \
   && rm -rf /root/.cache
 
 COPY aws/microvm-agent/agent.mjs /opt/microvm-agent/agent.mjs

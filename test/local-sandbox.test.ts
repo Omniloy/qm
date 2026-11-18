@@ -168,6 +168,23 @@ test("a stale-image container is recreated while its home volume survives", asyn
   assert.equal(h2.coldStart, false, "existing volume means a warm home");
 });
 
+test("a tag rebuilt under a running core does not churn containers until core restarts", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const sb = makeSandbox(fake);
+  await sb.provision(rw(scopeId("personal", "U_OLD")));
+
+  fake.imageId = "sha256:image-v2";
+  const layers = rw(scopeId("personal", "U_NEW"));
+  const h1 = await sb.provision(layers);
+  assert.equal(fake.containers.get(h1.id)!.imageId, "sha256:image-v1", "runs the image core compares against");
+  await sb.teardown(h1);
+  const runsBefore = fake.runCount;
+
+  const h2 = await sb.provision(layers);
+  assert.equal(fake.runCount, runsBefore, "the parked container is reused, not recreated");
+  assert.equal(h2.coldStart, false);
+});
+
 test("a sandbox network pruned while parked is repaired in place: same container, pool subnet, home kept", async () => {
   const fake = installFakeDocker(daemonPort);
   const recovered: Reported[] = [];

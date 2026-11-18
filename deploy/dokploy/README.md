@@ -45,12 +45,12 @@ widening access.
 ## Prerequisite: the sandbox image
 
 `core` refuses to start a sandbox unless the local image exists on the host. Build it
-once, on the server, and rebuild it whenever `fly/Dockerfile`, `local/Dockerfile`,
-`aws/microvm-agent/agent.mjs`, or `fly/tools/*` change:
+once, on the server, and rebuild it whenever `fly/Dockerfile`, `local/*`,
+`aws/microvm-agent/agent.mjs`, or `fly/tools/*` change. The script builds the base from
+`fly/Dockerfile` first, then the local layer on top:
 
 ```bash
 git clone https://github.com/Omniloy/qm.git && cd qm
-docker build --platform linux/amd64 -f fly/Dockerfile -t qm-sandbox-base:dev .
 npm ci   # needed only to compute the staleness fingerprint
 LOCAL_SANDBOX_IMAGE=qm-sandbox-local:latest bash scripts/local-sandbox-build.sh
 ```
@@ -76,22 +76,32 @@ The image carries three separate things, and it is worth knowing which is which:
   nearly every sandbox. A runtime `pip install` or `apt-get install` lands in that container's
   own writable layer, so the same 1–2.5GB was repeated per scope, and Playwright and Hugging
   Face downloads went into every `qm-home-*` volume. `PIP_NO_CACHE_DIR=1` stops pip from keeping
-  a wheel cache in each home.
+  a wheel cache in each home. Every Python version, transitive ones included, comes from
+  `local/agent-constraints.txt`; to change the set, resolve it in a clean base venv with
+  `pip install --uploaded-prior-to <seven days ago>` (the same cool-down `.npmrc` applies) and
+  replace the file with that venv's `pip freeze`.
+
+Because `PLAYWRIGHT_BROWSERS_PATH` and `HF_HUB_CACHE` point into the image, anything Playwright
+or Hugging Face downloads at runtime — another browser revision for a different Playwright
+version, a Node Playwright project's browsers, a Whisper model other than `small` — now lands in
+the container's writable layer instead of the home volume, so it is downloaded again after the
+container is recreated. Browsers and models already in a home's `~/.cache` are no longer read.
 
 All three land **once, in the shared image layer** — not per sandbox. The `qm-home-*` volumes hold
 `/root`, not image layers, so image size does not multiply by the number of scopes. Keep anything
 baked out of `/root`: Docker copies an image's `/root` into every new home volume on first mount.
 
 **A rebuilt image reaches sandboxes only when they are recreated.** Core reads the image ID of
-`LOCAL_SANDBOX_IMAGE` once per process, so redeploy after a rebuild: that restarts core and
+`LOCAL_SANDBOX_IMAGE` once per process and starts every container from that ID, so until it
+restarts, new sandboxes keep using the old image. Redeploy after a rebuild: that restarts core and
 moves `sandbox-keepalive` onto the new image, which otherwise keeps the old one's layers alive
 (compare `docker inspect -f '{{.Image}}' qm-omniloy-sandbox-keepalive-1` with
 `docker image inspect -f '{{.Id}}' qm-sandbox-local:latest`). From then on, each
 scope's next turn finds its `qm-sbx-*` container on the old image ID, removes it, and starts a
 fresh one from the new image on the same `qm-home-*` volume. That drops the old container's
-writable layer — anything an agent installed at runtime and anything in its `/tmp` — but nothing
-under `/root`. A stopped `qm-sbx-*` container can be removed by hand at any time for the same
-reason. The old image's layers are freed once no container uses them and the nightly cleanup
+writable layer — anything an agent installed or downloaded at runtime outside `/root`, and
+anything in its `/tmp` — but nothing under `/root`. A stopped `qm-sbx-*` container can be removed
+by hand at any time for the same reason. The old image's layers are freed once no container uses them and the nightly cleanup
 prunes the untagged image.
 
 **Agent computers are bounded by `LOCAL_SANDBOX_CPUS` and `LOCAL_SANDBOX_MEMORY_MB`,** set in

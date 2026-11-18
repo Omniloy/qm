@@ -56,12 +56,15 @@ export interface LocalSandboxOptions {
   onError?: (e: { category: string; code: string; message: string; scopeLabel?: string }) => void;
 }
 
-const FINGERPRINT_FIXED_SOURCES = ["fly/Dockerfile", "local/Dockerfile", "aws/microvm-agent/agent.mjs"];
+const FINGERPRINT_FIXED_SOURCES = ["fly/Dockerfile", "aws/microvm-agent/agent.mjs"];
+const FINGERPRINT_SOURCE_DIRS = ["fly/tools", "local"];
 
 export async function computeSandboxImageFingerprint(repoRoot: string): Promise<string | null> {
   try {
-    const tools = (await readdir(join(repoRoot, "fly/tools"))).sort().map((f) => `fly/tools/${f}`);
-    const paths = [...FINGERPRINT_FIXED_SOURCES, ...tools].sort();
+    const listed = await Promise.all(
+      FINGERPRINT_SOURCE_DIRS.map(async (dir) => (await readdir(join(repoRoot, dir))).map((f) => `${dir}/${f}`)),
+    );
+    const paths = [...FINGERPRINT_FIXED_SOURCES, ...listed.flat()].sort();
     const fp = createHash("sha256");
     for (const p of paths) {
       fp.update(p);
@@ -290,6 +293,7 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
   }
 
   async function runContainer(name: string, scope: string | undefined, withVolume: boolean): Promise<void> {
+    const imageId = await preflight();
     const net = await ensureNetwork(name);
     const args = [
       "run",
@@ -310,7 +314,7 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
       "--add-host=host.docker.internal:host-gateway",
       ...(opts.cpus ? ["--cpus", String(opts.cpus)] : []),
       ...(opts.memoryMb ? ["--memory", `${opts.memoryMb}m`] : []),
-      image,
+      imageId,
     ];
     const r = await dexec(args, 120_000);
     if (r.code !== 0) {
@@ -384,8 +388,25 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
     egressEnforcement: "none",
     spec: {
       os: `Debian 12 (bookworm), glibc — local Docker container on a ${arch()} host`,
-      runtimes: ["Node 24", "Python 3 (venv on PATH — `pip install` just works)"],
-      tools: ["git", "curl", "wget", "jq", "unzip", "gnupg", "python3", "gh", "aws (CLI v2)"],
+      runtimes: [
+        "Node 24",
+        "Python 3 (venv on PATH — `pip install` just works; already installed: python-docx, python-pptx, openpyxl, xlsxwriter, pypdf, pymupdf, pymupdf4llm, pdfplumber, reportlab, playwright with its chromium, faster-whisper with the `small` model, requests, httpx, beautifulsoup4, lxml, numpy, pillow, pyyaml, tabulate, psutil)",
+      ],
+      tools: [
+        "git",
+        "curl",
+        "wget",
+        "jq",
+        "unzip",
+        "gnupg",
+        "python3",
+        "gh",
+        "aws (CLI v2)",
+        "soffice (LibreOffice writer, calc, impress; run with --headless)",
+        "tesseract (eng, spa)",
+        "pdftotext and pdftoppm (poppler)",
+        "ffmpeg",
+      ],
       notInstalled: ["gcloud", "kubectl", "flyctl", "glab"],
       ...(opts.cpus ? { cpus: opts.cpus } : {}),
       ...(opts.memoryMb ? { memoryMb: opts.memoryMb } : {}),
