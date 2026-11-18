@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import type { EntryType, ScopeId, Session, SessionEntry, SessionType, SpawnMeta } from "../types.ts";
 import { sleep } from "../util/async.ts";
 
+export const LLM_CAPTURE_RETENTION_MS = 30 * 24 * 60 * 60_000;
+
 export function promptEnvelopeBody(envelope: unknown): { hash: string; body: string } | null {
   if (envelope == null) return null;
   let body: string;
@@ -408,7 +410,6 @@ export interface LlmRequestRecord {
   model: string;
   scopeLabel: ScopeId;
   createdAt: number;
-  request: unknown;
   promptHash: string | null;
   promptEnvelope?: unknown;
   truncated: boolean;
@@ -750,6 +751,7 @@ export interface SessionStore {
   listLlmRequests(sessionId: string, opts?: ListLlmRequestsOptions): Promise<LlmRequestRecord[]>;
   /** The most recent security screenings across every scope, newest first. */
   listScreenSamples(limit: number): Promise<ScreenSample[]>;
+  purgeLlmCaptures?(cutoff: number, opts?: { deadline?: number; stop?: () => boolean }): Promise<number>;
 
   addParticipant(sessionId: string, principalId: string, title?: string, opts?: AddParticipantOptions): Promise<void>;
   removeParticipant(sessionId: string, principalId: string): Promise<void>;

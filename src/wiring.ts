@@ -354,7 +354,7 @@ import { setCustomProviders } from "./model/custom-providers.ts";
 import { createCustomProviderStore, type CustomProviderStore } from "./model/custom-provider-store.ts";
 import { createMemorySessionStore } from "./sessions/memory-session-store.ts";
 import { createPostgresSessionStore } from "./sessions/postgres-session-store.ts";
-import type { SessionStore } from "./sessions/session-store.ts";
+import { LLM_CAPTURE_RETENTION_MS, type SessionStore } from "./sessions/session-store.ts";
 import { createMockHarness } from "./harness/mock-harness.ts";
 import { createOpenCodeHarness, openCodeHarnessConfigOptions } from "./harness/opencode-harness.ts";
 import { createCodexHarness, codexHarnessConfigOptions } from "./harness/codex-harness.ts";
@@ -2880,11 +2880,29 @@ export function buildApp(
       })
     : null;
   const MONITOR_RETENTION_SWEEP_MS = 24 * 60 * 60_000;
+  const LLM_CAPTURE_SWEEP_MS = 5 * 60_000;
+  const LLM_CAPTURE_SWEEP_BUDGET_MS = 30_000;
   const spendSweeper = sessions.refreshSpendRollup
     ? createSweeper(() => leaderLease.hold("spend:refresh", () => sessions.refreshSpendRollup!()), 60_000, {
         label: "spend-refresh",
         immediate: true,
       })
+    : null;
+  const llmCaptureSweeper = sessions.purgeLlmCaptures
+    ? createSweeper(
+        () =>
+          leaderLease.hold("llm-capture:retention", async (lost) => {
+            let leaseLost = false;
+            void lost.then(() => (leaseLost = true));
+            const purged = await sessions.purgeLlmCaptures!(Date.now() - LLM_CAPTURE_RETENTION_MS, {
+              deadline: Date.now() + LLM_CAPTURE_SWEEP_BUDGET_MS,
+              stop: () => leaseLost,
+            });
+            if (purged) console.log(`[llm-capture] purged ${purged} prompt envelope(s) past retention`);
+          }),
+        LLM_CAPTURE_SWEEP_MS,
+        { label: "llm-capture-retention" },
+      )
     : null;
   const monitorRetentionSweeper = createSweeper(
     () => leaderLease.hold("monitor:retention:sweep", () => monitors.deleteDefunct(Date.now())),
@@ -2988,6 +3006,7 @@ export function buildApp(
         .catch(swallowAs("wiring: monitor resume failed", undefined));
       monitorRetentionSweeper.start();
       spendSweeper?.start();
+      llmCaptureSweeper?.start();
       if (config.skillSyncPollMs > 0) skillSyncEngine.start(config.skillSyncPollMs);
       blobSweeper.start();
       composioReturnSweeper.start();
@@ -3020,6 +3039,7 @@ export function buildApp(
       processReaper?.stop(),
       monitorRetentionSweeper.stop(),
       spendSweeper?.stop(),
+      llmCaptureSweeper?.stop(),
       skillSyncEngine.stop(),
       idleSweeper?.stop(),
       keepWarmSweeper.stop(),
