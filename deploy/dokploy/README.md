@@ -49,7 +49,7 @@ once, on the server, and rebuild it whenever `fly/Dockerfile`, `local/Dockerfile
 `aws/microvm-agent/agent.mjs`, or `fly/tools/*` change:
 
 ```bash
-git clone https://github.com/yc-software/qm.git && cd qm
+git clone https://github.com/Omniloy/qm.git && cd qm
 docker build --platform linux/amd64 -f fly/Dockerfile -t qm-sandbox-base:dev .
 npm ci   # needed only to compute the staleness fingerprint
 LOCAL_SANDBOX_IMAGE=qm-sandbox-local:latest bash scripts/local-sandbox-build.sh
@@ -58,7 +58,7 @@ LOCAL_SANDBOX_IMAGE=qm-sandbox-local:latest bash scripts/local-sandbox-build.sh
 A fingerprint mismatch only logs `[local-sandbox] sandbox image … is stale`; a missing
 image is a hard failure.
 
-The image carries two separate things, and it is worth knowing which is which:
+The image carries three separate things, and it is worth knowing which is which:
 
 - The **browse client** (`/opt/browser-engine/venv`, ~308MB), in every build. `skills-seed/browse`
   drives a _remote_ browser over CDP and its runner imports `browser_use`, so the client is needed
@@ -68,9 +68,31 @@ The image carries two separate things, and it is worth knowing which is which:
   it: `taste-skill` and `popular-web-designs` screenshot a dev server on the sandbox's own loopback,
   which a remote browser cannot reach, and `browse` itself says to fall back to the local binary for
   loopback URLs.
+- The **document and media toolset** from `local/Dockerfile`: LibreOffice (writer, calc, impress),
+  Tesseract with Spanish, poppler, ffmpeg, the Python packages agents install most often into
+  `/opt/agent-venv` (python-docx, openpyxl, pypdf, PyMuPDF, Playwright, faster-whisper and the
+  rest of that list), Playwright's chromium under `/opt/ms-playwright`, and faster-whisper's
+  `small` model under `/opt/hf-cache`. It is there because agents installed it themselves in
+  nearly every sandbox. A runtime `pip install` or `apt-get install` lands in that container's
+  own writable layer, so the same 1–2.5GB was repeated per scope, and Playwright and Hugging
+  Face downloads went into every `qm-home-*` volume. `PIP_NO_CACHE_DIR=1` stops pip from keeping
+  a wheel cache in each home.
 
-Both costs land **once, in the shared image layer** — not per sandbox. The `qm-home-*` volumes hold
-`/root`, not image layers, so image size does not multiply by the number of scopes.
+All three land **once, in the shared image layer** — not per sandbox. The `qm-home-*` volumes hold
+`/root`, not image layers, so image size does not multiply by the number of scopes. Keep anything
+baked out of `/root`: Docker copies an image's `/root` into every new home volume on first mount.
+
+**A rebuilt image reaches sandboxes only when they are recreated.** Core reads the image ID of
+`LOCAL_SANDBOX_IMAGE` once per process, so redeploy after a rebuild: that restarts core and
+moves `sandbox-keepalive` onto the new image, which otherwise keeps the old one's layers alive
+(compare `docker inspect -f '{{.Image}}' qm-omniloy-sandbox-keepalive-1` with
+`docker image inspect -f '{{.Id}}' qm-sandbox-local:latest`). From then on, each
+scope's next turn finds its `qm-sbx-*` container on the old image ID, removes it, and starts a
+fresh one from the new image on the same `qm-home-*` volume. That drops the old container's
+writable layer — anything an agent installed at runtime and anything in its `/tmp` — but nothing
+under `/root`. A stopped `qm-sbx-*` container can be removed by hand at any time for the same
+reason. The old image's layers are freed once no container uses them and the nightly cleanup
+prunes the untagged image.
 
 **Agent computers are bounded by `LOCAL_SANDBOX_CPUS` and `LOCAL_SANDBOX_MEMORY_MB`,** set in
 the Compose file. `docker run` omits `--cpus`/`--memory` entirely when they are unset, which
