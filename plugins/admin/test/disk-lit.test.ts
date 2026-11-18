@@ -209,8 +209,13 @@ test("disk view: components are sorted by size with unknown sizes last, and Post
   const tables = r.f.root.querySelector('.disk-components tr[data-component="postgres"] .disk-tables')!;
   assert.match(tables.textContent!, /session_llm_requests\s+9.0 GB/);
   assert.equal(
-    r.f.root.querySelector<HTMLElement>('tr[data-component="postgres"] .disk-bar > span')!.style.width,
-    "18%",
+    r.f.root.querySelector<HTMLElement>('tr[data-component="deployments"] .disk-bar > span')!.style.width,
+    "14%",
+  );
+  assert.equal(
+    r.f.root.querySelector('tr[data-component="postgres"] .disk-bar'),
+    null,
+    "a part kept on Docker's disk has no share while that disk is unmeasured",
   );
   reset(r);
 });

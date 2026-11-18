@@ -147,10 +147,8 @@ export class DiskView {
     return percent >= Math.max(...levels) ? "err" : "warn";
   }
 
-  diskHolding(componentId: string): any {
-    const role = DOCKER_COMPONENTS.has(componentId) ? "docker" : "data";
-    const holding = (r: string) => this.filesystems.find((fs) => fs.holds.some((h: any) => h.role === r));
-    return holding(role) ?? holding("data");
+  diskHolding(role: string): any {
+    return this.filesystems.find((fs) => fs.holds.some((h: any) => h.role === role));
   }
 
   scopeLabel(id: string | null | undefined): string {
@@ -325,7 +323,7 @@ export class DiskView {
             : html`<p class="subline disk-docker-note">Docker not available: ${report.docker?.reason || "unknown"}</p>`
         }
         ${
-          report.docker?.available && !this.filesystems.some((fs) => fs.holds.some((h: any) => h.role === "docker"))
+          report.docker?.available && !this.diskHolding("docker")
             ? html`<p class="subline disk-docker-note">
                 Docker's own disk cannot be measured from here, so it is not watched.
               </p>`
@@ -348,7 +346,7 @@ export class DiskView {
     }
     rows.sort((a, b) => (b.bytes ?? -1) - (a.bytes ?? -1));
     const bar = (id: string, bytes: number | null) => {
-      const total = this.diskHolding(id)?.totalBytes || 0;
+      const total = this.diskHolding(DOCKER_COMPONENTS.has(id) ? "docker" : "data")?.totalBytes || 0;
       return total > 0 && bytes != null
         ? html`<span class="disk-bar" title=${`${((bytes / total) * 100).toFixed(1)}% of the disk`}
             ><span style=${`width:${Math.min(100, (bytes / total) * 100).toFixed(2)}%`}></span

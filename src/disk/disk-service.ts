@@ -123,7 +123,7 @@ const PATH_LABELS: Record<PathComponentId, string> = {
 const positive = (n: number | undefined | null): number => (typeof n === "number" && n > 0 ? n : 0);
 const sum = (xs: number[]): number => xs.reduce((a, b) => a + b, 0);
 
-function sizeLabel(bytes: number): string {
+export function sizeLabel(bytes: number): string {
   const power = Math.min(3, Math.max(1, Math.floor(Math.log(Math.max(bytes, 1)) / Math.log(1024))));
   return `${(bytes / 1024 ** power).toFixed(1)} ${["KB", "MB", "GB"][power - 1]}`;
 }

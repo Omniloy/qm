@@ -6,7 +6,7 @@ import type { DurableMap } from "../persistence/durable-map.ts";
 import { principalDestination } from "../reach/reach.ts";
 import { adminDiskUrl } from "../util/admin-links.ts";
 import { swallow } from "../util/errors.ts";
-import type { DiskFilesystem, FilesystemRole } from "./disk-service.ts";
+import { sizeLabel, type DiskFilesystem, type FilesystemRole } from "./disk-service.ts";
 
 export const DISK_ALERT_LEVELS = [85, 90, 95] as const;
 const REARM_BELOW_PERCENT = 80;
@@ -28,8 +28,6 @@ export interface DiskAlertDeps {
   now?: () => number;
 }
 
-const gigabytes = (bytes: number): string => `${(bytes / 1024 ** 3).toFixed(1)} GB`;
-
 type Instance = Pick<DiskAlertDeps, "orgId" | "publicWebUrl">;
 
 function instanceName(deps: Instance): string {
@@ -47,7 +45,7 @@ function diskAlertMessage(fs: DiskFilesystem, deps: Instance): { subject: string
   const paths = fs.holds.map((h) => h.path).join(", ");
   const url = deps.publicWebUrl ? adminDiskUrl(deps.publicWebUrl) : null;
   const lines = [
-    `Disk alert on ${instance}: the disk holding ${holds} (${paths}) is ${percent}% full, with ${gigabytes(fs.availableBytes)} free of ${gigabytes(fs.totalBytes)}.`,
+    `Disk alert on ${instance}: the disk holding ${holds} (${paths}) is ${percent}% full, with ${sizeLabel(fs.availableBytes)} free of ${sizeLabel(fs.totalBytes)}.`,
     "When it fills up, QM stops working.",
     url
       ? `See what is using it and free space in the Disk tab: ${url}`
