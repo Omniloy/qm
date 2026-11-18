@@ -107,7 +107,6 @@ function rowToLlmRequest(r: Record<string, unknown>): LlmRequestRecord {
     model: r.model as string,
     scopeLabel: r.scope_label as ScopeId,
     createdAt: Number(r.created_at),
-    request: r.request != null ? JSON.parse(r.request as string) : null,
     promptHash: r.prompt_hash == null ? null : (r.prompt_hash as string),
     ...(r.prompt_body != null ? { promptEnvelope: JSON.parse(r.prompt_body as string) } : {}),
     truncated: Boolean(r.truncated),
@@ -191,6 +190,8 @@ function rowToSpendRow(r: Record<string, unknown>): SpendRow {
 
 const LAST_ACTIVITY_DEBOUNCE_MS = 60_000;
 const SEARCH_TIMEOUT_MS = 10_000;
+const LLM_CAPTURE_PURGE_BATCH = 100;
+const ENVELOPE_TOUCH_MS = 24 * 60 * 60_000;
 const SPEND_INDEXABLE = `(spend_usage_json(usage_json) IS NOT NULL
   AND octet_length(session_id) + octet_length(model) + octet_length(usage_json) <= 2000)`;
 
@@ -307,7 +308,7 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
           OR s.turns IS DISTINCT FROM c.turns
           OR s.last_activity IS DISTINCT FROM c.last_activity)`;
 
-  const { pool, q } = createPgPool(
+  const { pool, q, query } = createPgPool(
     connectionString,
     [
       {
@@ -749,6 +750,26 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
            ON CONFLICT DO NOTHING`,
         ],
       },
+      {
+        id: "sessions/store/fork-0001-drop-inline-llm-request",
+        statements: [`SET LOCAL lock_timeout = '3s'`, `ALTER TABLE session_llm_requests DROP COLUMN IF EXISTS request`],
+      },
+      {
+        id: "sessions/store/fork-0002-llm-prompt-envelopes-created-at",
+        statements: [
+          `CREATE INDEX CONCURRENTLY IF NOT EXISTS llm_prompt_envelopes_created_at
+             ON llm_prompt_envelopes(created_at)`,
+        ],
+      },
+      {
+        id: "sessions/store/fork-0003-llm-prompt-envelope-last-use",
+        statements: [
+          `UPDATE llm_prompt_envelopes e SET created_at = r.last_used
+             FROM (SELECT prompt_hash, max(created_at) AS last_used FROM session_llm_requests
+                    WHERE prompt_hash IS NOT NULL GROUP BY prompt_hash) r
+            WHERE e.hash = r.prompt_hash AND e.created_at < r.last_used - 86400000`,
+        ],
+      },
     ],
     [
       {
@@ -1180,7 +1201,9 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
       const envelope = promptEnvelopeBody(rec.promptEnvelope);
       if (envelope) {
         await q(
-          "INSERT INTO llm_prompt_envelopes(hash, body, created_at) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING",
+          `INSERT INTO llm_prompt_envelopes(hash, body, created_at) VALUES ($1,$2,$3)
+           ON CONFLICT (hash) DO UPDATE SET created_at = EXCLUDED.created_at
+            WHERE llm_prompt_envelopes.created_at < EXCLUDED.created_at - ${ENVELOPE_TOUCH_MS}`,
           [envelope.hash, envelope.body, now()],
           { signal },
         );
@@ -1193,7 +1216,6 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
         model: rec.model,
         scopeLabel: rec.scopeLabel as ScopeId,
         createdAt: now(),
-        request: null,
         promptHash: envelope?.hash ?? null,
         ...(rec.promptEnvelope !== undefined ? { promptEnvelope: rec.promptEnvelope } : {}),
         truncated: rec.truncated ?? false,
@@ -1292,6 +1314,23 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
         beforeId = last.id as string;
       }
       return samples;
+    },
+
+    async purgeLlmCaptures(cutoff, opts) {
+      const deadline = opts?.deadline ?? Infinity;
+      let envelopes = 0;
+      while (Date.now() < deadline && !opts?.stop?.()) {
+        const deleted = await query(
+          `DELETE FROM llm_prompt_envelopes
+            WHERE hash IN (SELECT hash FROM llm_prompt_envelopes WHERE created_at < $1
+                            ORDER BY created_at LIMIT $2 FOR UPDATE SKIP LOCKED)
+              AND created_at < $1`,
+          [cutoff, LLM_CAPTURE_PURGE_BATCH],
+        );
+        envelopes += deleted.rowCount;
+        if (deleted.rowCount < LLM_CAPTURE_PURGE_BATCH) break;
+      }
+      return envelopes;
     },
 
     async addParticipant(sessionId, principalId, title, opts): Promise<void> {
