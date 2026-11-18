@@ -1004,7 +1004,7 @@ const FAMILIES: AgentApiFamily[] = [
         method: "GET",
         path: "/v1/admin/disk",
         summary:
-          "disk usage report: filesystem, components, apps with copies and sizes, sandboxes, files by scope; POST /v1/admin/disk/measure re-measures in the background",
+          "disk usage report: live usage of each disk holding QM data or Docker (org admins are alerted at alertLevels percent full), components, apps with copies and sizes, sandboxes, files by scope; POST /v1/admin/disk/measure re-measures the components in the background",
       },
       {
         method: "POST|DELETE",

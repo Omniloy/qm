@@ -80,7 +80,7 @@ import {
 import type { SlackAccountLink, ComposioReturn } from "./api/routes/composio.ts";
 import { installPrincipalLinks, samePerson } from "./directory/person.ts";
 import type { ExternalMember } from "./identity/external-members.ts";
-import { createResendMailer } from "./admin/invite-email.ts";
+import { createResendMailer, type InviteMailer } from "./admin/invite-email.ts";
 import {
   createMemoryConfigStore,
   type ScopedConfigStore,
@@ -203,6 +203,7 @@ import { createDeployStore, deployTouchDebounceMs, type Deployment } from "./dep
 import { viewerIdentityKey } from "./deploy/access-token.ts";
 import { deploymentCredentialSlugs } from "./deploy/deployment-credentials.ts";
 import { createDockerDeployProvider } from "./deploy/docker-deploy-provider.ts";
+import { checkDiskAlerts, type DiskAlertRecord } from "./disk/disk-alerts.ts";
 import { createDiskService, type DiskRecord, type DiskService } from "./disk/disk-service.ts";
 import { createDockerApi } from "./disk/docker-api.ts";
 import { createAwsDeployProvider, type StoredDeployBody } from "./deploy/aws-deploy-provider.ts";
@@ -619,6 +620,7 @@ export interface BuiltApp {
   sandboxResources: SandboxResources;
   disk: DiskService;
   diskPolicy: { deployIdleTtlMs: number | null; managedScaleToZero: boolean };
+  inviteMailer?: InviteMailer;
   blobTransfer: BlobTransferStore;
   files: FileArtifactStore;
   fileUploads?: DirectFileUploads;
@@ -1942,6 +1944,8 @@ export function buildApp(
     pg: pgArtifactMap?.pool ?? null,
     store: artifactMap<DiskRecord>("disk_reports"),
   });
+  const inviteMailer =
+    config.resendApiKey && config.emailFrom ? createResendMailer(config.resendApiKey, config.emailFrom) : undefined;
   const deployService = createDeployService({
     deliveries,
     deployAppsDomain: config.awsDeploy.appsDomain,
@@ -2224,9 +2228,7 @@ export function buildApp(
     ...(config.relayPublicUrl ? { relayPublicUrl: config.relayPublicUrl } : {}),
     ...(config.publicWebUrl ? { publicWebUrl: config.publicWebUrl } : {}),
     ...(config.deployAppsDomain ? { deployAppsDomain: config.deployAppsDomain } : {}),
-    ...(config.resendApiKey && config.emailFrom
-      ? { inviteMailer: createResendMailer(config.resendApiKey, config.emailFrom) }
-      : {}),
+    ...(inviteMailer ? { inviteMailer } : {}),
     ...(config.publicUrl ? { webhookPublicUrl: config.publicUrl } : {}),
     memoryPolicy: { recall: config.memoryRecall, capture: config.memoryCapture },
     memoryStrategy,
@@ -2940,6 +2942,24 @@ export function buildApp(
       immediate: true,
     },
   );
+  const diskAlertStore = artifactMap<DiskAlertRecord>("disk_alerts");
+  const diskAlertSweeper = createSweeper(
+    () =>
+      leaderLease.hold("disk:alerts", () =>
+        checkDiskAlerts({
+          filesystems: () => disk.filesystems(),
+          admins: async () =>
+            (await admin.listGrants()).filter((g) => g.role === "org_admin").map((g) => g.principalId),
+          store: diskAlertStore,
+          deliveries,
+          ...(inviteMailer ? { mailer: inviteMailer } : {}),
+          orgId: config.orgId,
+          ...(config.publicWebUrl ? { publicWebUrl: config.publicWebUrl } : {}),
+        }),
+      ),
+    10 * 60_000,
+    { label: "disk-alerts", immediate: true },
+  );
   const KEEP_WARM_INTERVAL_MS = 5 * 60_000;
   const keepWarmSweeper = createSweeper(() => app.keepAlwaysOnWarm(), KEEP_WARM_INTERVAL_MS);
   const deepIdleMachineMs = config.deepIdleMachineMs;
@@ -2997,6 +3017,7 @@ export function buildApp(
       keepWarmSweeper.start();
       snapshotGcSweeper.start();
       diskMeasureSweeper.start();
+      diskAlertSweeper.start();
       deepIdleSweeper?.start();
       wakeSweep.start();
       swarms?.start();
@@ -3025,6 +3046,7 @@ export function buildApp(
       keepWarmSweeper.stop(),
       snapshotGcSweeper.stop(),
       diskMeasureSweeper.stop(),
+      diskAlertSweeper.stop(),
       deepIdleSweeper?.stop(),
       blobSweeper.stop(),
       composioReturnSweeper.stop(),
@@ -3185,6 +3207,7 @@ export function buildApp(
       deployIdleTtlMs: deployIdleTtlMs ?? null,
       managedScaleToZero: deployProvider.profile.managedScaleToZero,
     },
+    ...(inviteMailer ? { inviteMailer } : {}),
     advisoryLock,
     blobTransfer,
     files,
@@ -3298,9 +3321,7 @@ export function serverDeps(
     ...(config.emailAuthPrincipals ? { emailAuthPrincipals: config.emailAuthPrincipals } : {}),
     ...(config.emailAuthDomain ? { emailAuthDomain: config.emailAuthDomain } : {}),
     ...(config.slack ? { slackAllowFrom: config.slack.allowFrom ?? [] } : {}),
-    ...(config.resendApiKey && config.emailFrom
-      ? { inviteMailer: createResendMailer(config.resendApiKey, config.emailFrom) }
-      : {}),
+    ...(built.inviteMailer ? { inviteMailer: built.inviteMailer } : {}),
     rateLimiter: built.rateLimiter,
     budget: built.budget,
     modelGateway: built.modelGateway,

@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createDiskService, type DiskRecord } from "../src/disk/disk-service.ts";
-import type { DockerApi } from "../src/disk/docker-api.ts";
+import { createDiskService, distinctFilesystems, rootOverlayUnder, type DiskRecord } from "../src/disk/disk-service.ts";
+import { createDockerApi, type DockerApi } from "../src/disk/docker-api.ts";
 import { createDeployStore } from "../src/deploy/deploy-store.ts";
 import { deployRepoDir } from "../src/deploy/deploy-git-store.ts";
 import { localVolumeName } from "../src/sandbox/local-sandbox.ts";
@@ -20,7 +21,7 @@ function fill(dir: string, bytes: number): string {
   return dir;
 }
 
-async function fixture(docker: DockerApi | null, pg: PgPool | null = null) {
+async function fixture(docker: DockerApi | null, pg: PgPool | null = null, mountinfo?: string) {
   const dataDir = mkdtempSync(join(tmpdir(), "disk-service-"));
   const deployDir = join(dataDir, "deployments");
   const deployGitDir = join(dataDir, "deploy-git");
@@ -44,14 +45,27 @@ async function fixture(docker: DockerApi | null, pg: PgPool | null = null) {
     docker,
     pg,
     store,
+    ...(mountinfo === undefined ? {} : { mountinfoPath: writeMountinfo(dataDir, mountinfo) }),
   });
   return { disk, store, dataDir, deployment: d };
 }
+
+function writeMountinfo(dir: string, content: string): string {
+  const path = join(dir, "mountinfo");
+  writeFileSync(path, content);
+  return path;
+}
+
+const CONTAINER_ROOT =
+  "5984 4105 0:808 / / rw,relatime master:1395 - overlay overlay rw,lowerdir=/var/lib/docker/overlay2/l/C5LH:/var/lib/docker/overlay2/l/AMVP,upperdir=/var/lib/docker/overlay2/2129170c/diff,workdir=/var/lib/docker/overlay2/2129170c/work,nouserxattr";
+const DATA_BIND = "6020 5984 8:1 /opt/qm/data /opt/qm/data rw,relatime - ext4 /dev/sda1 rw,discard,errors=remount-ro";
+const HOST_ROOT = "29 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw,discard,errors=remount-ro";
 
 function fakeDocker(appId: string, deleted: string[] = []): DockerApi {
   const scope = scopeId("personal", "U1");
   return {
     async get<T>(path: string): Promise<T> {
+      if (path === "/info") return { DockerRootDir: "/var/lib/docker" } as T;
       if (path === "/system/df")
         return {
           LayersSize: 1000,
@@ -90,14 +104,12 @@ function fakeDocker(appId: string, deleted: string[] = []): DockerApi {
   };
 }
 
-test("a report sizes the filesystem, components, apps, sandboxes and files, and is stored", async () => {
+test("a report sizes components, apps, sandboxes and files, and is stored", async () => {
   const f = await fixture(fakeDocker("another-app-id"));
   assert.equal(await f.disk.latest(), null);
   const report = await f.disk.measure();
   assert.equal(await f.disk.measuring(), false);
   assert.deepEqual(await f.disk.latest(), report);
-  assert.ok(report.filesystem && report.filesystem.totalBytes > 0);
-  assert.ok(report.filesystem.availableBytes <= report.filesystem.totalBytes);
 
   const byId = new Map(report.components.map((c) => [c.id, c]));
   assert.equal(byId.get("deployments")?.count, 2);
@@ -158,7 +170,13 @@ test("without docker the report still covers disk and says why docker is missing
     assert.equal(report.components.find((c) => c.id === id)?.bytes, null, id);
   }
   assert.deepEqual(report.sandboxes, []);
-  assert.ok(report.filesystem);
+  const filesystems = await f.disk.filesystems();
+  assert.deepEqual(
+    filesystems.map((fs) => fs.holds),
+    [[{ role: "data", path: f.dataDir }]],
+  );
+  assert.ok(filesystems[0]!.totalBytes > 0);
+  assert.ok(filesystems[0]!.availableBytes <= filesystems[0]!.totalBytes);
   assert.equal(await f.disk.removeStoppedContainer("qm-sbx-old"), "unavailable");
 });
 
@@ -261,4 +279,102 @@ test("removing a sandbox container keeps its home volume and refuses running or 
   );
   const containers = after.components.find((c) => c.id === "sandbox-containers");
   assert.deepEqual([containers?.bytes, containers?.count, containers?.note], [30, 1, undefined]);
+});
+
+test("Docker's disk is measured through core's own container root when that overlay lives under Docker's root", async () => {
+  const f = await fixture(fakeDocker("x"), null, `${CONTAINER_ROOT}\n${DATA_BIND}\n`);
+  const holds = (await f.disk.filesystems()).flatMap((fs) => fs.holds);
+  assert.deepEqual(
+    holds.sort((a, b) => a.role.localeCompare(b.role)),
+    [
+      { role: "data", path: f.dataDir },
+      { role: "docker", path: "/var/lib/docker" },
+    ],
+  );
+});
+
+test("Docker's disk is left unmeasured when core does not run as a container of that Docker", async () => {
+  const roles = async (mountinfo: string, docker: DockerApi = fakeDocker("x")) =>
+    (await (await fixture(docker, null, mountinfo)).disk.filesystems()).flatMap((fs) => fs.holds.map((h) => h.role));
+  assert.deepEqual(await roles(HOST_ROOT), ["data"], "core on the host, not in a container");
+  assert.deepEqual(
+    await roles(CONTAINER_ROOT.replaceAll("/var/lib/docker/", "/var/lib/containerd/")),
+    ["data"],
+    "a container root kept outside Docker's root",
+  );
+  assert.deepEqual(
+    await roles(CONTAINER_ROOT, {
+      get: async () => {
+        throw new Error("connect ENOENT /var/run/docker.sock");
+      },
+      del: async () => 500,
+    }),
+    ["data"],
+    "docker does not answer",
+  );
+});
+
+test("the container root is matched on its upper directory under exactly Docker's root", () => {
+  assert.equal(rootOverlayUnder(`${CONTAINER_ROOT}\n${DATA_BIND}`, "/var/lib/docker"), true);
+  assert.equal(rootOverlayUnder(CONTAINER_ROOT, "/var/lib/docker/"), true);
+  assert.equal(rootOverlayUnder(CONTAINER_ROOT, "/var/lib/dock"), false);
+  assert.equal(rootOverlayUnder(CONTAINER_ROOT, "/mnt/HC_Volume_107339617/docker"), false);
+  assert.equal(rootOverlayUnder(`${CONTAINER_ROOT}\n${HOST_ROOT}`, "/var/lib/docker"), false, "the last / mount wins");
+  assert.equal(rootOverlayUnder("garbage / / without a separator", "/var/lib/docker"), false);
+  assert.equal(rootOverlayUnder("", "/var/lib/docker"), false);
+});
+
+test("two paths on one filesystem become one entry, and used percent leaves out space reserved for root", () => {
+  const GB = 1024 ** 3;
+  const usage = (path: string, totalBytes: number, usedBytes: number, availableBytes: number) => ({
+    path,
+    totalBytes,
+    usedBytes,
+    availableBytes,
+  });
+  const [shared] = distinctFilesystems([
+    { role: "data", usage: usage("/opt/qm/data", 225 * GB, 208 * GB, 8 * GB) },
+    { role: "docker", usage: usage("/var/lib/docker", 225 * GB, 208.1 * GB, 7.9 * GB) },
+  ]);
+  assert.deepEqual(shared!.holds, [
+    { role: "data", path: "/opt/qm/data" },
+    { role: "docker", path: "/var/lib/docker" },
+  ]);
+  assert.equal(Math.round(shared!.usedPercent * 10) / 10, 96.3);
+
+  const split = distinctFilesystems([
+    { role: "data", usage: usage("/opt/qm/data", 225 * GB, 45 * GB, 168 * GB) },
+    { role: "docker", usage: usage("/var/lib/docker", 455 * GB, 165 * GB, 290 * GB) },
+  ]);
+  assert.deepEqual(
+    split.map((fs) => [fs.holds.map((h) => h.role), Math.round(fs.usedPercent)]),
+    [
+      [["data"], 21],
+      [["docker"], 36],
+    ],
+  );
+  const twins = distinctFilesystems([
+    { role: "data", usage: usage("/a", 100 * GB, 10 * GB, 90 * GB) },
+    { role: "docker", usage: usage("/b", 100 * GB, 60 * GB, 40 * GB) },
+  ]);
+  assert.equal(twins.length, 2, "same size but different free space are two disks");
+  assert.equal(distinctFilesystems([{ role: "data", usage: usage("/x", 0, 0, 0) }])[0]!.usedPercent, 0);
+});
+
+test("a Docker daemon that accepts but never answers /info gives up after the short timeout", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "docker-sock-"));
+  const socketPath = join(dir, "d.sock");
+  const held: Socket[] = [];
+  const server = createServer((socket) => {
+    held.push(socket);
+  });
+  await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+  try {
+    const started = Date.now();
+    await assert.rejects(createDockerApi(socketPath).get("/info", 100), /timed out/);
+    assert.ok(Date.now() - started < 5_000);
+  } finally {
+    for (const socket of held) socket.destroy();
+    await new Promise((resolve) => server.close(resolve));
+  }
 });

@@ -35,7 +35,6 @@ const app = (id: string, over: Record<string, any> = {}) => ({
 const REPORT = {
   measuredAt: NOW - 60_000,
   durationMs: 1200,
-  filesystem: { path: "/opt/qm/data", totalBytes: 100 * GB, usedBytes: 95 * GB, availableBytes: 5 * GB },
   components: [
     { id: "deployments", label: "App copies", bytes: 14 * GB, count: 242, path: "/opt/qm/data/deployments" },
     { id: "postgres", label: "Postgres", bytes: 18 * GB },
@@ -80,8 +79,18 @@ const REPORT = {
   orphanSnapshotBytes: 6 * GB,
 };
 
+const dataDisk = (usedPercent: number, totalBytes = 100 * GB) => ({
+  holds: [{ role: "data", path: "/opt/qm/data" }],
+  totalBytes,
+  usedBytes: (totalBytes * usedPercent) / 100,
+  availableBytes: totalBytes - (totalBytes * usedPercent) / 100,
+  usedPercent,
+});
+
 const DATA = {
   report: REPORT,
+  filesystems: [dataDisk(95)],
+  alertLevels: [85, 90, 95],
   measuring: false,
   orgScopeId: "org:acme",
   retention: { maxVersions: 3 },
@@ -149,19 +158,27 @@ function reset(r: ReturnType<typeof render>) {
   r.f.window.close();
 }
 
-test("disk view: stats, free-space badge and the docker note render from the report", () => {
+test("disk view: stats, the disk bar, the alert note and the docker note render", () => {
   const r = render();
   assert.deepEqual(JSON.parse(JSON.stringify(r.calls.shell.stats)), [
-    ["95.0 GB / 100 GB", "Filesystem used"],
-    ["5.0 GB", "Available"],
+    ["95%", "QM data disk used"],
     ["n/a", "Docker"],
     ["18.0 GB", "Postgres"],
   ]);
+  const disks = [...r.f.root.querySelectorAll<HTMLElement>(".disk-fs")];
+  assert.equal(disks.length, 1);
+  assert.equal(disks[0]!.dataset.holds, "data");
+  assert.match(disks[0]!.textContent!, /QM data\s+\/opt\/qm\/data\s+95% used/);
+  assert.match(disks[0]!.textContent!, /5\.0 GB free of 100 GB/);
+  assert.ok(disks[0]!.querySelector(".badge")!.classList.contains("err"), "at the top alert level it is red");
+  assert.ok(disks[0]!.querySelector(".disk-bar")!.classList.contains("err"));
+  assert.equal(disks[0]!.querySelector<HTMLElement>(".disk-bar > span")!.style.width, "95%");
+  assert.equal(
+    r.f.root.querySelector(".disk-alert-note")!.textContent!.trim(),
+    "Org admins get a message when a disk passes 85%, 90% and 95% full.",
+  );
   const summary = r.f.root.querySelector(".disk-summary")!;
-  assert.match(summary.textContent!, new RegExp(`Measured rel\\(${REPORT.measuredAt}\\)`));
-  const free = summary.querySelector(".badge")!;
-  assert.match(free.textContent!, /5.0 GB free \(5%\)/);
-  assert.ok(free.classList.contains("err"), "under 10% free is red");
+  assert.match(summary.textContent!, new RegExp(`Breakdown measured rel\\(${REPORT.measuredAt}\\)`));
   assert.match(
     r.f.root.querySelector(".disk-docker-note")!.textContent!,
     /Docker not available: docker is not configured/,
@@ -170,9 +187,10 @@ test("disk view: stats, free-space badge and the docker note render from the rep
   reset(r);
 });
 
-test("disk view: a null report says it was not measured and still offers the button", () => {
+test("disk view: a null report says it was not measured and still shows live disk usage", () => {
   const r = render({ ...DATA, report: null });
-  assert.equal(r.calls.shell.stats.length, 0);
+  assert.deepEqual(JSON.parse(JSON.stringify(r.calls.shell.stats)), [["95%", "QM data disk used"]]);
+  assert.equal(r.f.root.querySelectorAll(".disk-fs").length, 1);
   assert.match(r.f.root.textContent!, /Not measured yet/);
   assert.ok(r.f.root.querySelector(".disk-measure"));
   assert.equal(r.f.root.querySelector(".disk-components"), null);
@@ -437,17 +455,64 @@ test("disk view: Measure now stops polling when the view is left", async () => {
   reset(after);
 });
 
-test("disk view: with docker available the stat shows its total and there is no docker note", () => {
+test("disk view: Docker on its own disk gets its own bar, and Docker parts are shared against that disk", () => {
   const r = render({
     ...DATA,
-    report: {
-      ...REPORT,
-      filesystem: { ...REPORT.filesystem, usedBytes: 50 * GB, availableBytes: 50 * GB },
-      docker: { available: true, totalBytes: 40 * GB },
-    },
+    filesystems: [
+      dataDisk(21),
+      {
+        holds: [{ role: "docker", path: "/mnt/HC_Volume_107339617/docker" }],
+        totalBytes: 400 * GB,
+        usedBytes: 144 * GB,
+        availableBytes: 256 * GB,
+        usedPercent: 36,
+      },
+    ],
+    report: { ...REPORT, docker: { available: true, totalBytes: 40 * GB } },
   });
-  assert.equal(r.calls.shell.stats[2][0], "40.0 GB");
+  assert.deepEqual(JSON.parse(JSON.stringify(r.calls.shell.stats)), [
+    ["21%", "QM data disk used"],
+    ["36%", "Docker disk used"],
+    ["40.0 GB", "Docker"],
+    ["18.0 GB", "Postgres"],
+  ]);
+  const disks = [...r.f.root.querySelectorAll<HTMLElement>(".disk-fs")];
+  assert.deepEqual(
+    disks.map((d) => d.dataset.holds),
+    ["data", "docker"],
+  );
+  assert.match(disks[1]!.textContent!, /Docker\s+\/mnt\/HC_Volume_107339617\/docker\s+36% used/);
+  assert.ok(disks.every((d) => d.querySelector(".badge")!.classList.contains("ok")));
+  assert.ok(disks.every((d) => !/warn|err/.test(d.querySelector(".disk-bar")!.className)));
   assert.equal(r.f.root.querySelector(".disk-docker-note"), null);
-  assert.ok(r.f.root.querySelector(".disk-summary .badge")!.classList.contains("ok"));
+  const share = (id: string) =>
+    r.f.root.querySelector<HTMLElement>(`tr[data-component="${id}"] .disk-bar > span`)!.style.width;
+  assert.equal(share("postgres"), "4.5%", "the Postgres volume lives in Docker");
+  assert.equal(share("deployments"), "14%");
+  reset(r);
+});
+
+test("disk view: one disk holding both data and Docker is one bar, amber between the first and last alert level", () => {
+  const r = render({
+    ...DATA,
+    filesystems: [
+      {
+        holds: [
+          { role: "data", path: "/opt/qm/data" },
+          { role: "docker", path: "/var/lib/docker" },
+        ],
+        totalBytes: 225 * GB,
+        usedBytes: 198 * GB,
+        availableBytes: 27 * GB,
+        usedPercent: 88,
+      },
+    ],
+  });
+  const disks = [...r.f.root.querySelectorAll<HTMLElement>(".disk-fs")];
+  assert.equal(disks.length, 1);
+  assert.equal(disks[0]!.dataset.holds, "data docker");
+  assert.match(disks[0]!.textContent!, /QM data and Docker\s+\/opt\/qm\/data · \/var\/lib\/docker\s+88% used/);
+  assert.ok(disks[0]!.querySelector(".badge")!.classList.contains("warn"));
+  assert.equal(r.calls.shell.stats[0][1], "QM data and Docker disk used");
   reset(r);
 });

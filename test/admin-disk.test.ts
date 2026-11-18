@@ -11,19 +11,32 @@ import type { App } from "../src/api/app.ts";
 import { buildApp } from "../src/wiring.ts";
 import { createDeployService } from "../src/deploy/deploy-service.ts";
 import { createDeployStore } from "../src/deploy/deploy-store.ts";
-import type { DiskReport, DiskService } from "../src/disk/disk-service.ts";
+import type { DiskFilesystem, DiskReport, DiskService } from "../src/disk/disk-service.ts";
 import { scopeId } from "../src/types.ts";
 import { testConfig } from "./support/test-config.ts";
 
 const ALICE = { "content-type": "application/json", "x-admin-actor": "admin-alice@default-org" };
 const RANDO = { "content-type": "application/json", "x-admin-actor": "rando@default-org" };
 const ORG = "org:default-org";
+const DISKS: DiskFilesystem[] = [
+  {
+    holds: [
+      { role: "data", path: "/opt/qm/data" },
+      { role: "docker", path: "/var/lib/docker" },
+    ],
+    totalBytes: 1000,
+    usedBytes: 900,
+    availableBytes: 50,
+    usedPercent: 94.7,
+  },
+];
 
 function fakeDisk(report: DiskReport | null = null) {
   let measured = 0;
   let busy = false;
   const removed: string[] = [];
   const disk: DiskService = {
+    filesystems: async () => DISKS,
     latest: async () => report,
     measure: async () => {
       measured++;
@@ -138,6 +151,7 @@ test("the disk view joins live apps with the cached report before anything is me
     assert.equal(r.status, 200);
     const view = (await r.json()) as {
       report: unknown;
+      filesystems: DiskFilesystem[];
       measuring: boolean;
       orgScopeId: string;
       retention: { maxVersions: number };
@@ -146,6 +160,7 @@ test("the disk view joins live apps with the cached report before anything is me
       apps: Array<Record<string, unknown> & { versions: Array<Record<string, unknown>> }>;
     };
     assert.equal(view.report, null);
+    assert.deepEqual(view.filesystems, DISKS);
     assert.equal(view.measuring, false);
     assert.equal(view.orgScopeId, ORG);
     assert.deepEqual(view.retention, { maxVersions: 3 });
@@ -192,15 +207,23 @@ test("measure starts in the background and needs a disk service", async () => {
     fake.busy(true);
     assert.equal((await s.call("POST", "/v1/admin/disk/measure")).status, 202);
     assert.equal(fake.measured, 1, "a measurement already running elsewhere is not started twice");
-    const view = (await (await s.call("GET", "/v1/admin/disk")).json()) as { measuring: boolean };
+    const view = (await (await s.call("GET", "/v1/admin/disk")).json()) as {
+      measuring: boolean;
+      filesystems: DiskFilesystem[];
+      alertLevels: number[];
+    };
     assert.equal(view.measuring, true);
+    assert.deepEqual(view.filesystems, DISKS, "disk usage is read live, not from the last report");
+    assert.deepEqual(view.alertLevels, [85, 90, 95]);
   } finally {
     await s.close();
   }
   const none = await start({ disk: null });
   try {
     assert.equal((await none.call("POST", "/v1/admin/disk/measure")).status, 503);
-    assert.equal((await none.call("GET", "/v1/admin/disk")).status, 200);
+    const bare = await none.call("GET", "/v1/admin/disk");
+    assert.equal(bare.status, 200);
+    assert.deepEqual(((await bare.json()) as { filesystems: unknown }).filesystems, []);
     assert.equal((await none.call("DELETE", "/v1/admin/disk/sandbox-containers/qm-sbx-old")).status, 503);
   } finally {
     await none.close();
