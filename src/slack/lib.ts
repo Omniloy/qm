@@ -134,6 +134,7 @@ export {
   encodeDeliveryTarget,
   parseDeliveryTarget,
   openConversationFor,
+  slackUserIdFor,
   deliveryCandidatesFor,
   createDeliveryTracker,
   deliverWithRetry,
