@@ -492,6 +492,15 @@ test("disk view: Docker on its own disk gets its own bar, and Docker parts are s
   reset(r);
 });
 
+test("disk view: Docker that answers but whose disk is unmeasured says it is not watched", () => {
+  const r = render({ ...DATA, report: { ...REPORT, docker: { available: true, totalBytes: 40 * GB } } });
+  assert.match(
+    r.f.root.querySelector(".disk-docker-note")!.textContent!,
+    /Docker's own disk cannot be measured from here, so it is not watched\./,
+  );
+  reset(r);
+});
+
 test("disk view: one disk holding both data and Docker is one bar, amber between the first and last alert level", () => {
   const r = render({
     ...DATA,

@@ -324,6 +324,13 @@ export class DiskView {
             ? nothing
             : html`<p class="subline disk-docker-note">Docker not available: ${report.docker?.reason || "unknown"}</p>`
         }
+        ${
+          report.docker?.available && !this.filesystems.some((fs) => fs.holds.some((h: any) => h.role === "docker"))
+            ? html`<p class="subline disk-docker-note">
+                Docker's own disk cannot be measured from here, so it is not watched.
+              </p>`
+            : nothing
+        }
         ${button}
       </div>`;
   }
