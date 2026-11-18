@@ -149,9 +149,10 @@ checks (`is the hint present in session_llm_requests?`). So:
   of the model-context store, and captures per-step envelope drift (cache splits,
   toolset churn) that a per-turn annotation would flatten.
 - `session_llm_requests` retires its per-step message-array bodies (the real
-  O(turns²) storage cost) and keeps usage/latency/gap-phase telemetry. Existing
-  pre-migration rows are frozen, not dropped — they're the only faithful record of
-  the pre-tape corpus.
+  O(turns²) storage cost) and keeps usage/latency/gap-phase telemetry. The
+  pre-migration inline `request` column is dropped, and prompt envelopes are purged
+  30 days after they were last used; the rows and their telemetry stay, so spend and
+  latency reporting keep their full history.
 
 ### Images
 
@@ -295,8 +296,9 @@ is the reconstruction of entries ≤ W." Idempotent and re-runnable by construct
    being _read_ but keep being _written_ for one more release (rollback depth = 1
    phase, enforced by keeping the previous phase's write path alive one release
    past its read cutover); then a cleanup PR retires entry writes and
-   `session_llm_requests.request` for new rows. Pre-migration request bodies and
-   entries are frozen, never dropped.
+   `session_llm_requests.request` for new rows. Pre-migration entries are frozen,
+   never dropped; the pre-migration inline request bodies are dropped with the
+   `request` column.
 
 ## Resolved questions
 

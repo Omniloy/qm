@@ -12,6 +12,8 @@ import {
   rowToSession,
 } from "../src/sessions/postgres-session-store.ts";
 import { SECURITY_SCREEN_STEP } from "../src/security/security-posture.ts";
+import { promptEnvelopeBody } from "../src/sessions/session-store.ts";
+import { setTimeout as delay } from "node:timers/promises";
 import { createPostgresRunStore } from "../src/runs/postgres-run-store.ts";
 import { createPostgresRunSignalStore } from "../src/runs/postgres-run-signal-store.ts";
 import { scopeId, type Principal, type TurnRequest, type TurnResult } from "../src/types.ts";
@@ -645,7 +647,7 @@ test("pg session store: one-per-thread, TTL/fenced lease, monotonic log, visibil
   const metaOnly = await s.listLlmRequests(a.id, { omitRequest: true });
   assert.equal(metaOnly.length, 2, "every row still listed");
   assert.ok(
-    metaOnly.every((r) => r.request === null),
+    metaOnly.every((r) => r.promptEnvelope === undefined),
     "bodies omitted from the projection",
   );
   assert.equal(metaOnly[1]!.ttftMs, 1200, "metadata (timing) still selected");
@@ -3165,5 +3167,155 @@ test("pg unstarted withdrawal preserves claimed and released turns atomically", 
     assert.equal(await store.runs.get(fresh.id), null);
   } finally {
     await store.close();
+  }
+});
+
+test("pg LLM capture retention drops old prompt envelopes and keeps request rows", { skip }, async () => {
+  const day = 86_400_000;
+  let at = Date.UTC(2025, 0, 1);
+  const store = createPostgresSessionStore(URL!, { now: () => at });
+  const pg = (await import("pg")).default;
+  const raw = new pg.Pool({ connectionString: URL });
+  const tag = randomUUID();
+  const scope = scopeId("personal", `retention-${tag}`);
+  const session = await store.getOrCreateByThread(`retention-${tag}`, "dm", scope);
+  const record = (text: string) =>
+    store.recordLlmRequest(session.id, {
+      turnSeq: 1,
+      step: 0,
+      model: "retention",
+      scopeLabel: scope,
+      promptEnvelope: { messages: [{ role: "user", content: `${tag} ${text}` }] },
+      usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, totalTokens: 10, costUsd: 0.5 },
+    });
+  try {
+    const old = await record("old");
+    const reused = await record("reused");
+    for (let i = 0; i < 250; i++) await record(`bulk ${i}`);
+    at += 40 * day;
+    const kept = await record("recent");
+    await record("reused");
+    const range = { from: Date.UTC(2025, 0, 1), to: Date.UTC(2025, 0, 1) + 41 * day };
+    await store.refreshSpendRollup!();
+    const spendBefore = (await store.spendReport!(range)).rows;
+    const dirtyBefore = Number((await raw.query("SELECT count(*) AS n FROM session_spend_dirty")).rows[0].n);
+
+    assert.equal(await store.purgeLlmCaptures!(at - 30 * day, { stop: () => true }), 0);
+    assert.equal(await store.purgeLlmCaptures!(at - 30 * day), 251);
+    assert.equal(await store.purgeLlmCaptures!(at - 30 * day), 0);
+
+    const rows = new Map((await store.listLlmRequests(session.id)).map((r) => [r.id, r]));
+    assert.equal(rows.size, 254);
+    assert.equal(rows.get(old.id)!.promptEnvelope, undefined);
+    assert.ok(rows.get(old.id)!.usage, "usage survives the purge");
+    assert.ok(rows.get(reused.id)!.promptEnvelope, "an envelope reused within retention survives");
+    assert.ok(rows.get(kept.id)!.promptEnvelope);
+    assert.equal(
+      Number((await raw.query("SELECT count(*) AS n FROM session_spend_dirty")).rows[0].n),
+      dirtyBefore,
+      "purging prompts does not dirty spend days",
+    );
+    assert.deepEqual((await store.spendReport!(range)).rows, spendBefore);
+    assert.deepEqual(await store.spendRollup(range), spendBefore);
+    assert.equal(
+      (
+        await raw.query(
+          "SELECT count(*) AS n FROM information_schema.columns WHERE table_name = 'session_llm_requests' AND column_name = 'request'",
+        )
+      ).rows[0].n,
+      "0",
+    );
+  } finally {
+    await raw.end();
+  }
+});
+
+test("pg LLM capture retention skips an envelope whose reuse is in flight during a purge", { skip }, async () => {
+  const day = 86_400_000;
+  let at = Date.UTC(2025, 3, 1);
+  const store = createPostgresSessionStore(URL!, { now: () => at });
+  const pg = (await import("pg")).default;
+  const raw = new pg.Pool({ connectionString: URL });
+  const tag = randomUUID();
+  const scope = scopeId("personal", `retention-race-${tag}`);
+  const session = await store.getOrCreateByThread(`retention-race-${tag}`, "dm", scope);
+  const promptEnvelope = { messages: [{ role: "user", content: `${tag} racing reuse` }] };
+  const hash = promptEnvelopeBody(promptEnvelope)!.hash;
+  const reuse = await raw.connect();
+  try {
+    await store.recordLlmRequest(session.id, { turnSeq: 1, step: 0, model: "race", scopeLabel: scope, promptEnvelope });
+    at += 40 * day;
+    await reuse.query("BEGIN");
+    await reuse.query("UPDATE llm_prompt_envelopes SET created_at = $2 WHERE hash = $1", [hash, at]);
+    const purge = store.purgeLlmCaptures!(at - 30 * day);
+    await delay(200);
+    await reuse.query("COMMIT");
+    await purge;
+    assert.equal(
+      Number(
+        (await raw.query("SELECT created_at FROM llm_prompt_envelopes WHERE hash = $1", [hash])).rows[0]?.created_at,
+      ),
+      at,
+    );
+  } finally {
+    reuse.release();
+    await raw.end();
+  }
+});
+
+test("pg envelope stamps backfill to their last use so in-window rows keep their prompts", { skip }, async () => {
+  const pg = (await import("pg")).default;
+  const admin = new pg.Pool({ connectionString: URL });
+  const schema = `envelope_backfill_${randomUUID().replaceAll("-", "")}`;
+  await admin.query(`CREATE SCHEMA ${schema}`);
+  const url = new globalThis.URL(URL!);
+  url.searchParams.set("options", `-c search_path=${schema}`);
+  const raw = new pg.Pool({ connectionString: url.toString() });
+  const day = 86_400_000;
+  const at = Date.UTC(2025, 6, 1);
+  const store = createPostgresSessionStore(url.toString(), { now: () => at });
+  const migrations = registeredPgMigrations(url.toString());
+  const backfill = "sessions/store/fork-0003-llm-prompt-envelope-last-use";
+  try {
+    await applyPgMigrations(
+      raw,
+      migrations.filter((migration) => migration.id !== backfill),
+    );
+    const stamped = at - 40 * day;
+    const uses: [string, number][] = [
+      ["used-recently", stamped],
+      ["used-recently", at - 2 * day],
+      ["used-same-day", stamped + 60 * 60_000],
+      ["unused", stamped],
+    ];
+    for (const hash of new Set(uses.map(([hash]) => hash))) {
+      await raw.query("INSERT INTO llm_prompt_envelopes(hash, body, created_at) VALUES ($1, '{}', $2)", [
+        hash,
+        stamped,
+      ]);
+    }
+    for (const [i, [hash, createdAt]] of uses.entries()) {
+      await raw.query(
+        "INSERT INTO session_llm_requests(id, session_id, step, model, scope_label, prompt_hash, created_at) VALUES ($1, 's', 0, 'm', 'personal:u', $2, $3)",
+        [`row-${i}`, hash, createdAt],
+      );
+    }
+    await store.countSessions();
+    const stamps = Object.fromEntries(
+      (await raw.query("SELECT hash, created_at FROM llm_prompt_envelopes")).rows.map((r) => [
+        r.hash,
+        Number(r.created_at),
+      ]),
+    );
+    assert.deepEqual(stamps, { "used-recently": at - 2 * day, "used-same-day": stamped, unused: stamped });
+    assert.equal(await store.purgeLlmCaptures!(at - 30 * day), 2);
+    assert.deepEqual(
+      (await raw.query("SELECT hash FROM llm_prompt_envelopes")).rows.map((r) => r.hash),
+      ["used-recently"],
+    );
+  } finally {
+    await raw.end();
+    await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+    await admin.end();
   }
 });
