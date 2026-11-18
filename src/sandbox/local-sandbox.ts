@@ -56,7 +56,12 @@ export interface LocalSandboxOptions {
   onError?: (e: { category: string; code: string; message: string; scopeLabel?: string }) => void;
 }
 
-const FINGERPRINT_FIXED_SOURCES = ["fly/Dockerfile", "local/Dockerfile", "aws/microvm-agent/agent.mjs"];
+const FINGERPRINT_FIXED_SOURCES = [
+  "fly/Dockerfile",
+  "local/Dockerfile",
+  "local/agent-constraints.txt",
+  "aws/microvm-agent/agent.mjs",
+];
 
 export async function computeSandboxImageFingerprint(repoRoot: string): Promise<string | null> {
   try {
@@ -109,22 +114,27 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
   const scratchByKey = new Map<string, string>();
   const activeByContainer = new Map<string, number>();
 
-  let preflightDone: Promise<string> | undefined;
-  let staleWarned = false;
+  let daemonReady: Promise<void> | undefined;
+  let fingerprintCheckedFor: string | undefined;
 
   async function preflight(): Promise<string> {
-    preflightDone ??= (async () => {
+    daemonReady ??= (async () => {
       const version = await dexec(["version"], 15_000);
       if (version.code !== 0) {
-        preflightDone = undefined;
+        daemonReady = undefined;
         throw new Error("SANDBOX_BACKEND=local requires a running Docker daemon (is Docker Desktop running?)");
       }
-      const img = await dexec(["image", "inspect", "-f", "{{.Id}}", image]);
-      if (img.code !== 0) {
-        preflightDone = undefined;
-        throw new Error(`local sandbox image ${image} not found — ${BUILD_HINT}`);
-      }
-      const imageId = img.stdout.trim();
+    })();
+    await daemonReady;
+    const img = await dexec(["image", "inspect", "-f", "{{.Id}}", image]);
+    if (img.code !== 0) {
+      daemonReady = undefined;
+      if (/no such image/i.test(img.stderr)) throw new Error(`local sandbox image ${image} not found — ${BUILD_HINT}`);
+      throw new Error(`docker image inspect ${image} failed: ${img.stderr.trim()}`);
+    }
+    const imageId = img.stdout.trim();
+    if (fingerprintCheckedFor !== imageId) {
+      fingerprintCheckedFor = imageId;
       const label = await dexec([
         "image",
         "inspect",
@@ -133,16 +143,12 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
         image,
       ]);
       const labeled = label.code === 0 ? label.stdout.trim() : "";
-      if (!staleWarned) {
-        const want = await computeSandboxImageFingerprint(opts.repoRoot ?? process.cwd());
-        if (want && labeled && labeled !== want) {
-          staleWarned = true;
-          console.warn(`[local-sandbox] sandbox image ${image} is stale — ${BUILD_HINT}`);
-        }
+      const want = await computeSandboxImageFingerprint(opts.repoRoot ?? process.cwd());
+      if (want && labeled && labeled !== want) {
+        console.warn(`[local-sandbox] sandbox image ${image} is stale — ${BUILD_HINT}`);
       }
-      return imageId;
-    })();
-    return preflightDone;
+    }
+    return imageId;
   }
 
   async function containerState(name: string): Promise<{ running: boolean; imageId: string } | null> {
@@ -333,7 +339,7 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
       const name = localContainerName(scope);
       scopeByContainer.set(name, scope);
       const state = await containerState(name);
-      if (state && state.imageId === imageId) {
+      if (state && (state.imageId === imageId || state.running || activeByContainer.has(name))) {
         if (state.running) await connectCore(localNetworkName(name));
         else await startContainer(name);
         activeByContainer.set(name, (activeByContainer.get(name) ?? 0) + 1);
@@ -384,8 +390,22 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
     egressEnforcement: "none",
     spec: {
       os: `Debian 12 (bookworm), glibc — local Docker container on a ${arch()} host`,
-      runtimes: ["Node 24", "Python 3 (venv on PATH — `pip install` just works)"],
-      tools: ["git", "curl", "wget", "jq", "unzip", "gnupg", "python3", "gh", "aws (CLI v2)"],
+      runtimes: [
+        "Node 24",
+        "Python 3 (venv on PATH — `pip install` just works; the standard local image already has python-docx, python-pptx, openpyxl, xlsxwriter, pypdf, pymupdf, pymupdf4llm, pdfplumber, reportlab, playwright with its chromium, faster-whisper with the `small` model, requests, httpx, beautifulsoup4, lxml, numpy, pillow, pyyaml, tabulate, psutil — check with `pip show` before installing)",
+      ],
+      tools: [
+        "git",
+        "curl",
+        "wget",
+        "jq",
+        "unzip",
+        "gnupg",
+        "python3",
+        "gh",
+        "aws (CLI v2)",
+        "and on the standard local image soffice (LibreOffice writer, calc, impress; run with --headless), tesseract (eng, spa), pdftotext and pdftoppm (poppler), ffmpeg — check with `command -v` before installing",
+      ],
       notInstalled: ["gcloud", "kubectl", "flyctl", "glab"],
       ...(opts.cpus ? { cpus: opts.cpus } : {}),
       ...(opts.memoryMb ? { memoryMb: opts.memoryMb } : {}),
