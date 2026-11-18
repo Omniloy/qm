@@ -45,9 +45,9 @@ widening access.
 ## Prerequisite: the sandbox image
 
 `core` refuses to start a sandbox unless the local image exists on the host. Build it
-once, on the server, and rebuild it whenever `fly/Dockerfile`, `local/*`,
-`aws/microvm-agent/agent.mjs`, or `fly/tools/*` change. The script builds the base from
-`fly/Dockerfile` first, then the local layer on top:
+once, on the server, and rebuild it whenever `fly/Dockerfile`, `local/Dockerfile`,
+`local/agent-constraints.txt`, `aws/microvm-agent/agent.mjs`, or `fly/tools/*` change. The
+script builds the base from `fly/Dockerfile` first, then the local layer on top:
 
 ```bash
 git clone https://github.com/Omniloy/qm.git && cd qm
@@ -91,16 +91,18 @@ All three land **once, in the shared image layer** — not per sandbox. The `qm-
 `/root`, not image layers, so image size does not multiply by the number of scopes. Keep anything
 baked out of `/root`: Docker copies an image's `/root` into every new home volume on first mount.
 
-**A rebuilt image reaches each sandbox the next time it is idle.** Core resolves
-`LOCAL_SANDBOX_IMAGE` to an image ID on every provision, so no restart is needed. A scope's next
-turn finds its `qm-sbx-*` container on the old image ID and, unless another turn is still using
-it, removes it and starts a fresh one from the new image on the same `qm-home-*` volume. That
-drops the old container's writable layer — anything an agent installed or downloaded at runtime
-outside `/root`, any process still running in it, and anything in its `/tmp` — but nothing under
-`/root`. A stopped `qm-sbx-*` container can be removed by hand at any time for the same reason.
-`sandbox-keepalive` keeps the old image's layers alive until it is recreated on the new one; a
-Dokploy redeploy does that (compare `docker inspect -f '{{.Image}}' qm-omniloy-sandbox-keepalive-1`
-with `docker image inspect -f '{{.Id}}' qm-sandbox-local:latest`). Once no container uses the old
+**A rebuilt image reaches each sandbox the next time its container is parked.** Core resolves
+`LOCAL_SANDBOX_IMAGE` to an image ID on every provision, so no restart is needed. A turn that
+finds its scope's `qm-sbx-*` container stopped on the old image ID removes it and starts a fresh
+one from the new image on the same `qm-home-*` volume. A container that is still running — a turn
+in progress, or kept warm because a background process or browser session outlived the turn — is
+reused as it is and moves over once it has been parked with `docker stop`. Recreating drops the
+old container's writable layer — anything an agent installed or downloaded at runtime outside
+`/root`, and anything in its `/tmp` — but nothing under `/root`. A stopped `qm-sbx-*` container can
+be removed by hand at any time for the same reason. `sandbox-keepalive` keeps the old image's
+layers alive until it is recreated on the new one; a Dokploy redeploy does that (compare
+`docker inspect -f '{{.Image}}' qm-omniloy-sandbox-keepalive-1` with
+`docker image inspect -f '{{.Id}}' qm-sandbox-local:latest`). Once no container uses the old
 image, the nightly cleanup prunes it.
 
 **Agent computers are bounded by `LOCAL_SANDBOX_CPUS` and `LOCAL_SANDBOX_MEMORY_MB`,** set in

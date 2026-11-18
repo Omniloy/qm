@@ -195,7 +195,10 @@ export function installFakeDocker(daemonPort: number): FakeDocker {
       }
       case "run": {
         const c = parseRun(rest);
-        if (self.imageMissing) return fail("Unable to find image");
+        const ref = rest.at(-1) ?? "";
+        if (self.imageMissing || (ref.startsWith("sha256:") && ref !== self.imageId)) {
+          return fail(`Unable to find image '${ref}' locally`);
+        }
         if (containers.has(c.name)) return fail(`Conflict. The container name "/${c.name}" is already in use`);
         if (c.networkMode) c.attached = liveAttach(c.networkMode);
         if (c.networkMode && !networks.has(c.networkMode)) {

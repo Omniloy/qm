@@ -127,7 +127,11 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
     })();
     await daemonReady;
     const img = await dexec(["image", "inspect", "-f", "{{.Id}}", image]);
-    if (img.code !== 0) throw new Error(`local sandbox image ${image} not found — ${BUILD_HINT}`);
+    if (img.code !== 0) {
+      daemonReady = undefined;
+      if (/no such image/i.test(img.stderr)) throw new Error(`local sandbox image ${image} not found — ${BUILD_HINT}`);
+      throw new Error(`docker image inspect ${image} failed: ${img.stderr.trim()}`);
+    }
     const imageId = img.stdout.trim();
     if (fingerprintCheckedFor !== imageId) {
       fingerprintCheckedFor = imageId;
@@ -335,7 +339,7 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
       const name = localContainerName(scope);
       scopeByContainer.set(name, scope);
       const state = await containerState(name);
-      if (state && (state.imageId === imageId || activeByContainer.has(name))) {
+      if (state && (state.imageId === imageId || state.running)) {
         if (state.running) await connectCore(localNetworkName(name));
         else await startContainer(name);
         activeByContainer.set(name, (activeByContainer.get(name) ?? 0) + 1);

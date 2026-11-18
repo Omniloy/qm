@@ -95,6 +95,24 @@ test("a stopped Docker daemon fails provision with the actionable message", asyn
   );
 });
 
+test("a Docker failure after startup is reported as itself, not as a missing image", async () => {
+  const fake = installFakeDocker(daemonPort);
+  const sb = makeSandbox(fake);
+  const layers = rw(scopeId("personal", "U_DOWN"));
+  await sb.teardown(await sb.provision(layers));
+
+  fake.daemonDown = true;
+  const err = await sb.provision(layers).then(
+    () => assert.fail("provision should fail while Docker is down"),
+    (e: Error) => e,
+  );
+  assert.match(err.message, /Cannot connect to the Docker daemon/);
+  assert.doesNotMatch(err.message, /sandbox:local:build/);
+
+  fake.daemonDown = false;
+  await sb.teardown(await sb.provision(layers));
+});
+
 test("a label-inspection error does not misreport an existing image as missing", async () => {
   const fake = installFakeDocker(daemonPort);
   fake.labelInspectFails = true;
@@ -153,11 +171,13 @@ test("teardown parks the container and the next provision restarts it warm", asy
   assert.equal(fake.containers.get(h1.id)!.running, true, "restarted");
 });
 
-test("a stale-image container is recreated while its home volume survives", async () => {
+test("a parked stale-image container is recreated while its home volume survives", async () => {
   const fake = installFakeDocker(daemonPort);
   const layers = rw(scopeId("personal", "U3"));
-  const h1 = await makeSandbox(fake).provision(layers);
+  const first = makeSandbox(fake);
+  const h1 = await first.provision(layers);
   const volume = fake.containers.get(h1.id)!.volume!;
+  await first.teardown(h1);
 
   fake.imageId = "sha256:image-v2";
   const h2 = await makeSandbox(fake).provision(layers);
@@ -168,7 +188,7 @@ test("a stale-image container is recreated while its home volume survives", asyn
   assert.equal(h2.coldStart, false, "existing volume means a warm home");
 });
 
-test("a rebuilt tag moves an idle sandbox onto the new image without a core restart, and never a busy one", async () => {
+test("a rebuilt tag moves a parked sandbox onto the new image without a core restart, never a running one", async () => {
   const fake = installFakeDocker(daemonPort);
   const sb = makeSandbox(fake);
   const layers = rw(scopeId("personal", "U_REBUILD"));
@@ -177,9 +197,14 @@ test("a rebuilt tag moves an idle sandbox onto the new image without a core rest
   fake.imageId = "sha256:image-v2";
   const alongside = await sb.provision(layers);
   assert.equal(fake.runCount, 1, "a container with a live handle is not recreated under it");
-  assert.equal(fake.containers.get(busy.id)!.imageId, "sha256:image-v1");
   await sb.teardown(alongside);
-  await sb.teardown(busy);
+  await sb.teardown(busy, { keepWarm: true });
+
+  const fromAnotherCore = makeSandbox(fake);
+  const warm = await fromAnotherCore.provision(layers);
+  assert.equal(fake.runCount, 1, "a container kept warm for background work is not recreated either");
+  assert.equal(fake.containers.get(warm.id)!.imageId, "sha256:image-v1");
+  await fromAnotherCore.teardown(warm);
 
   const moved = await sb.provision(layers);
   assert.equal(fake.runCount, 2, "the idle container is recreated on the rebuilt image");
