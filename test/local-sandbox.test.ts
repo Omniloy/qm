@@ -108,6 +108,7 @@ test("a Docker failure after startup is reported as itself, not as a missing ima
   );
   assert.match(err.message, /Cannot connect to the Docker daemon/);
   assert.doesNotMatch(err.message, /sandbox:local:build/);
+  await assert.rejects(sb.provision(layers), /requires a running Docker daemon/, "the daemon is checked again");
 
   fake.daemonDown = false;
   await sb.teardown(await sb.provision(layers));

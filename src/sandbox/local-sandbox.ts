@@ -339,7 +339,7 @@ export function createLocalSandbox(workspace: WorkspaceStore, opts: LocalSandbox
       const name = localContainerName(scope);
       scopeByContainer.set(name, scope);
       const state = await containerState(name);
-      if (state && (state.imageId === imageId || state.running)) {
+      if (state && (state.imageId === imageId || state.running || activeByContainer.has(name))) {
         if (state.running) await connectCore(localNetworkName(name));
         else await startContainer(name);
         activeByContainer.set(name, (activeByContainer.get(name) ?? 0) + 1);

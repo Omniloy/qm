@@ -92,16 +92,18 @@ All three land **once, in the shared image layer** — not per sandbox. The `qm-
 baked out of `/root`: Docker copies an image's `/root` into every new home volume on first mount.
 
 **A rebuilt image reaches each sandbox the next time its container is parked.** Core resolves
-`LOCAL_SANDBOX_IMAGE` to an image ID on every provision, so no restart is needed. A turn that
-finds its scope's `qm-sbx-*` container stopped on the old image ID removes it and starts a fresh
-one from the new image on the same `qm-home-*` volume. A container that is still running — a turn
-in progress, or kept warm because a background process or browser session outlived the turn — is
-reused as it is and moves over once it has been parked with `docker stop`. Recreating drops the
-old container's writable layer — anything an agent installed or downloaded at runtime outside
-`/root`, and anything in its `/tmp` — but nothing under `/root`. A stopped `qm-sbx-*` container can
-be removed by hand at any time for the same reason. `sandbox-keepalive` keeps the old image's
-layers alive until it is recreated on the new one; a Dokploy redeploy does that (compare
-`docker inspect -f '{{.Image}}' qm-omniloy-sandbox-keepalive-1` with
+`LOCAL_SANDBOX_IMAGE` to an image ID on every provision, so no restart is needed. Any provision —
+a turn, the monitor poller, a job-output view — that finds its scope's `qm-sbx-*` container
+stopped on the old image ID removes it and starts a fresh one from the new image on the same
+`qm-home-*` volume. A container that is still running — a turn in progress, or kept warm because a
+background process or browser session outlived the turn — is reused as it is and moves over once
+it has been parked with `docker stop`. Recreating drops the old container's writable layer —
+anything an agent installed or downloaded at runtime outside `/root`, and anything in its `/tmp` —
+but nothing under `/root`. A parked container whose scope never runs again stays on the old image
+and keeps its layer on disk; a stopped `qm-sbx-*` container can be removed by hand at any time for
+the same reason, and core recreates it if the scope comes back. `sandbox-keepalive` keeps the
+old image's layers alive until it is recreated on the new one; a Dokploy redeploy does that
+(compare `docker inspect -f '{{.Image}}' qm-omniloy-sandbox-keepalive-1` with
 `docker image inspect -f '{{.Id}}' qm-sandbox-local:latest`). Once no container uses the old
 image, the nightly cleanup prunes it.
 
