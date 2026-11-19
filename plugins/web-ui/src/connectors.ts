@@ -494,7 +494,10 @@ function extensionPanel(provider: BrowserProvider): TemplateResult {
                   Open <code>chrome://extensions</code> (copy-paste it — Chrome blocks links there), turn on
                   <strong>Developer mode</strong>, click <strong>Load unpacked</strong>, and pick the unzipped folder.
                 </li>
-                <li>Click the extension, then <strong>Share this tab</strong> on any tab you want the agent to use.</li>
+                <li>
+                  That's it — the agent opens a tab when it needs one, and can use any tab you have open. Press
+                  <strong>Stop</strong> in the extension to keep it out.
+                </li>
               </ol>
               <p class="kc-browser-note">
                 The download carries a token that lets it connect as you — treat the unzipped folder like a password.

@@ -5,6 +5,7 @@ import {
   browserById,
   browserTabs,
   connectDraft,
+  extensionLabel,
   extensionNote,
   extensionState,
   initialBrowserTab,
@@ -100,7 +101,7 @@ test("a browser that is not in the catalog has nothing to connect", () => {
 const EXTENSION: BrowserProvider = {
   id: "extension",
   name: "Your Chrome",
-  summary: "Drive one tab in your own browser.",
+  summary: "Use your own browser.",
   keyEnv: "",
   keyService: "",
   connected: false,
@@ -115,13 +116,14 @@ test("the extension is chosen, not key-dropped, even when not attached", async (
   assert.equal(isExtensionTab("anchor"), false);
 });
 
-test("a connected extension with no shared tab reads as neither ready nor absent", () => {
+test("a connected extension with no tab in use reads as ready, not as something to fix", () => {
   const provider = { id: "extension", name: "Your Chrome", summary: "", keyEnv: "", keyService: "", connected: true };
 
   assert.deepEqual(extensionState(provider), { kind: "idle" });
+  assert.equal(extensionLabel(extensionState(provider)), "Ready");
   const note = extensionNote(extensionState(provider));
-  assert.equal(note.tone, "warning");
-  assert.match(note.text, /no tab is shared/);
+  assert.equal(note.tone, "ok");
+  assert.match(note.text, /opens a tab when it needs one/);
 });
 
 test("a shared tab is named, so the card answers which one", () => {

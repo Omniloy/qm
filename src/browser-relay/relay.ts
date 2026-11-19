@@ -112,20 +112,24 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
           if (handshake(pair, frame.method, frame.id, pair.cdp)) return;
         }
         if (!pair.extension) {
-          refuse(pair.cdp, frame.id, "your Chrome is not connected — open the Browser Bridge extension");
-          return;
-        }
-        if (!pair.sharing && typeof frame.method === "string" && frame.method.startsWith("Target.")) {
-          refuse(pair.cdp, frame.id, "no tab is shared — open the Browser Bridge extension and press Share this tab");
+          refuse(
+            pair.cdp,
+            frame.id,
+            "your Chrome is not connected — Chrome is closed, or the Browser Bridge extension is off or not paired",
+          );
           return;
         }
         pair.extension.send(raw);
         return;
       }
-      let frame: { qm?: string; title?: string; url?: string; restored?: boolean };
+      let frame: { qm?: unknown; title?: string; url?: string; restored?: boolean };
       try {
-        frame = JSON.parse(raw) as { qm?: string; title?: string; url?: string; restored?: boolean };
+        frame = JSON.parse(raw) as { qm?: unknown; title?: string; url?: string; restored?: boolean };
       } catch {
+        return;
+      }
+      if (frame.qm === undefined) {
+        pair.cdp?.send(raw);
         return;
       }
       if (frame.qm === "attached") {
@@ -135,14 +139,12 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
         if (!frame.restored) opts.onShareChanged?.(principalId, true);
         return;
       }
-      if (frame.qm === "detached") {
+      if (frame.qm === "released" || frame.qm === "detached") {
         pair.sharing = false;
         delete pair.title;
         delete pair.url;
-        opts.onShareChanged?.(principalId, false);
-        return;
+        if (frame.qm === "detached") opts.onShareChanged?.(principalId, false);
       }
-      pair.cdp?.send(raw);
     },
 
     connected(principalId) {

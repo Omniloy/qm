@@ -712,8 +712,8 @@ def main():
     pdl.add_argument("--dir", default="downloads", help="workspace folder to put it in")
     pdl.add_argument("--max-mb", dest="max_mb", type=int, default=100)
     pdl.add_argument("--timeout", type=int, default=25)
-    sub.add_parser("tabs", help="the tabs you can move to, in the window you are sharing from")
-    ptab = sub.add_parser("tab", help="move the share to another tab in that window")
+    sub.add_parser("tabs", help="every open tab in their Chrome, in every window")
+    ptab = sub.add_parser("tab", help="move to another open tab")
     ptab.add_argument("tab_id", type=int)
     pc = sub.add_parser("cookies", help="the site's cookies, HttpOnly included, as JSON")
     pc.add_argument("--url", default="", help="only cookies a request to this URL would send")
@@ -775,7 +775,7 @@ def main():
                 die("This person chose their own Chrome, but no relay URL reached this turn.\n"
                     "Their own Chrome is only offered on a live turn in their own DM, never in a\n"
                     "channel, a group, or a scheduled run. Outside that, say so rather than retrying.\n"
-                    "In their DM: tell them to open the QM Browser Bridge extension and share a tab, then run: open")
+                    "Ask them to message you from their DM instead.")
             a.cdp = relay
 
         if a.cdp:
@@ -787,10 +787,11 @@ def main():
                 if not via_extension:
                     raise
                 clear_state()
-                die("Their Chrome is not sharing a tab, so there is nothing to drive "
-                    f"({str(e)[:80]}).\n"
-                    "Ask them to open the QM Browser Bridge extension and press Share this tab,\n"
-                    "then run: open\n"
+                die(f"Their Chrome did not answer: {str(e)[:200]}\n"
+                    "Not connected means Chrome is closed or the QM Browser Bridge extension is off: ask them\n"
+                    "to open Chrome (the extension reconnects on its own within a minute), then run: open\n"
+                    "Stopped means they pressed Stop: ask whether they want you back, and if so to press\n"
+                    "Share this tab in the extension, then run: open\n"
                     "Do NOT quietly attach to a different browser: it has none of their sign-ins, "
                     "and a task aimed at their own browser will fail in a way that looks like your "
                     "mistake rather than a disconnected extension.")
@@ -810,8 +811,8 @@ def main():
                 f"Read skills/browse/providers/{chosen}.md, create the browser it describes,\n"
                 "then come back and run: open --cdp \"$CDP_URL\".")
         die("No browser is connected for this person.\n"
-            "Their own Chrome: ask them to open the QM Browser Bridge extension and share a tab,\n"
-            "then run: open.\n"
+            "Their own Chrome: ask them to install the QM Browser Bridge extension from\n"
+            "Keychain → Linked accounts → Browser, then run: open.\n"
             "A hosted browser: read its provider doc under skills/browse/providers/, create it,\n"
             "then run: open --cdp \"$CDP_URL\".")
 
@@ -944,12 +945,12 @@ def main():
                     where = " (front)" if t.get("active") else ""
                     print(f"{mark} [{t['tabId']}] {t.get('title','')[:70]}{where}")
                     print(f"      {t.get('url','')[:110]}")
-                print("\n* is the tab you are driving. Move with: tab <id>")
+                print("\n* is the tab you are driving. Move to any of them with: tab <id>")
                 return
             r = c.call("qm.switchTab", tabId=a.tab_id)
             print(f"Now driving [{r['tabId']}] {r.get('title','')[:70]}")
             print(f"  {r.get('url','')[:110]}")
-            print("The person can see the banner move; you are still on one tab only.")
+            print("The banner moves with you, so they can see which tab you are on.")
             return
         finally:
             c.close()

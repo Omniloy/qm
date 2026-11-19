@@ -92,18 +92,18 @@ test("losing the extension closes the agent's side rather than hanging it", () =
   assert.deepEqual(hub.connected(PERSON), { extension: false, cdp: false, sharing: false });
 });
 
-test("the handshake is refused when no tab is shared, so open fails at open", () => {
+test("with nothing shared the handshake goes to the extension, which picks or opens a tab", () => {
   const hub = createRelayHub();
   const ext = fake();
   const cdp = fake();
   hub.attach(PERSON, "extension", ext);
   hub.attach(PERSON, "cdp", cdp);
 
-  hub.deliver(PERSON, "cdp", JSON.stringify({ id: 1, method: "Target.getTargets" }));
+  const ask = JSON.stringify({ id: 1, method: "Target.getTargets" });
+  hub.deliver(PERSON, "cdp", ask);
 
-  assert.equal(ext.sent.length, 0, "a browser-level command is never sent to a tab-scoped debugger");
-  const reply = parse(cdp.sent[0]!) as { error: { message: string } };
-  assert.match(reply.error.message, /no tab is shared/, "and the reason names the real problem");
+  assert.deepEqual(ext.sent, [ask], "no refusal: the extension answers for the tab it will drive");
+  assert.equal(cdp.sent.length, 0);
 });
 
 test("a shared tab still gets the synthetic handshake", () => {
@@ -247,4 +247,38 @@ test("the detach signal never reaches the agent as protocol traffic", () => {
   hub.attach(PERSON, "cdp", cdp);
   hub.deliver(PERSON, "extension", JSON.stringify({ qm: "detached" }));
   assert.equal(cdp.sent.length, 0, "qm control messages are ours, not CDP");
+});
+
+test("a released tab clears the share without giving back the browser choice", () => {
+  const seen: boolean[] = [];
+  const hub = createRelayHub({ onShareChanged: (_id, sharing) => void seen.push(sharing) });
+  const ext = fake();
+  const cdp = fake();
+  hub.attach(PERSON, "extension", ext);
+  hub.attach(PERSON, "cdp", cdp);
+  hub.deliver(
+    PERSON,
+    "extension",
+    JSON.stringify({ qm: "attached", title: "Gmail", url: "https://mail/", restored: true }),
+  );
+
+  hub.deliver(PERSON, "extension", JSON.stringify({ qm: "released" }));
+
+  assert.equal(hub.connected(PERSON).sharing, false, "the closed tab is no longer reported");
+  assert.equal(hub.describe(PERSON), null);
+  assert.deepEqual(seen, [], "a tab closing is not the person stopping, so the browser stays chosen");
+  assert.equal(cdp.sent.length, 0, "and the agent never sees it as protocol traffic");
+});
+
+test("the extension's keepalive stays between the relay and the extension", () => {
+  const hub = createRelayHub();
+  const ext = fake();
+  const cdp = fake();
+  hub.attach(PERSON, "extension", ext);
+  hub.attach(PERSON, "cdp", cdp);
+
+  hub.deliver(PERSON, "extension", JSON.stringify({ qm: "ping" }));
+
+  assert.equal(cdp.sent.length, 0, "an unknown control frame is never forwarded as CDP");
+  assert.deepEqual(hub.connected(PERSON), { extension: true, cdp: true, sharing: false });
 });
