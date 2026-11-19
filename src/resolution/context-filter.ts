@@ -1,5 +1,6 @@
 import type { Principal, ScopeId, SessionEntry } from "../types.ts";
 import { parseScopeId } from "../types.ts";
+import { samePerson } from "../directory/person.ts";
 
 export function principalEntitledToScope(
   p: Principal,
@@ -11,7 +12,7 @@ export function principalEntitledToScope(
 
   if (label === sessionScopeId) return true;
   const { kind, ref } = parseScopeId(label);
-  if (kind === "personal") return p.id === ref;
+  if (kind === "personal") return samePerson(p.id, ref);
   if (kind === "team") return (p.teamIds ?? []).includes(ref);
   return false;
 }

@@ -1427,7 +1427,7 @@ async function runtimeTarget(ctx: ApiCtx): Promise<{ actorId: string; scope: Sco
     (isObj(ctx.body) && typeof ctx.body.scopeId === "string" ? ctx.body.scopeId : ctx.url.searchParams.get("scopeId"));
   if (!actorId || !scope) return null;
   const parsed = parseScopeId(scope);
-  if (parsed.kind === "personal" && parsed.ref === actorId) return { actorId, scope: scope as ScopeId };
+  if (parsed.kind === "personal" && samePerson(parsed.ref, actorId)) return { actorId, scope: scope as ScopeId };
   if (ctx.capability && parsed.kind !== "org") return { actorId, scope: scope as ScopeId };
   if (parsed.kind !== "org" && (await ctx.app.belongsToScope(actorId, scope as ScopeId)))
     return { actorId, scope: scope as ScopeId };

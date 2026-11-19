@@ -2310,7 +2310,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               };
             }
             if (p.screenedOutput && quarantineRelease) {
-              const label = p.screenedOutput.sourceScopeId ?? scopeId;
+              const heldSource = p.securityHold?.source;
+              const heldSkillStillVisible =
+                heldSource?.kind === "skill" &&
+                (await context.listSkills()).some((entry) => entry.skill?.id === heldSource.skillId);
+              const label = heldSkillStillVisible ? scopeId : (p.screenedOutput.sourceScopeId ?? scopeId);
               if (
                 !conversation.audience.every((principal) =>
                   principalEntitledToScope(principal, label, scopeId, resolution.orgScopeId),

@@ -5,12 +5,20 @@ import { createMockHarness } from "../src/harness/mock-harness.ts";
 import { createAgentTools, type ToolContextRef } from "../src/harness/agent-tools.ts";
 import type { HarnessTurnInput } from "../src/harness/harness.ts";
 import { filterHistoryForAudience } from "../src/resolution/context-filter.ts";
-import type { TurnRequest } from "../src/types.ts";
+import { scopeId, type TurnRequest } from "../src/types.ts";
+import type { BuiltApp } from "../src/wiring.ts";
 import { testConfig } from "./support/test-config.ts";
 
 let executions = 0;
 let observedRelease = "";
 let failRelease = false;
+const SHARED_SKILL = "teammate-crm-fixture";
+
+function fixtureCall(input: string): { tool: string; args: unknown } {
+  if (input.includes("skill")) return { tool: "skills", args: { action: "read", name: SHARED_SKILL } };
+  if (input.includes("shared")) return { tool: "files", args: { action: "read", path: "private.txt" } };
+  return { tool: "execute", args: { command: "printf SCREENING_FIXTURE_BLOCK" } };
+}
 mock.module("../src/harness/mock-harness.ts", {
   namedExports: {
     createMockHarness() {
@@ -50,16 +58,13 @@ mock.module("../src/harness/mock-harness.ts", {
           screenToolResult: turn.screenToolResult,
           pendingApprovals: [],
         };
-        const sharedRead = turn.input.includes("shared");
-        const tool = createAgentTools(ref).find((tool) => tool.name === (sharedRead ? "files" : "execute"))!;
+        const call = fixtureCall(turn.input);
+        const tool = createAgentTools(ref).find((tool) => tool.name === call.tool)!;
         const execute = tool.execute as unknown as (
           id: string,
           args: unknown,
         ) => Promise<{ content: Array<{ text?: string }> }>;
-        const result = await execute(
-          "fixture-call",
-          sharedRead ? { action: "read", path: "private.txt" } : { command: "printf SCREENING_FIXTURE_BLOCK" },
-        );
+        const result = await execute("fixture-call", call.args);
         const reply = result.content.map((part) => part.text ?? "").join("\n");
         await turn.emit({ type: "assistant", payload: { text: reply }, scopeLabel: turn.scopeLabel });
         return { reply, pendingApprovals: ref.pendingApprovals, pausedOnApproval: ref.pausedOnApproval };
@@ -189,4 +194,78 @@ test("released shared content retains scope and survives a failed continuation",
   const replay = await built.app.turn({ ...req, approval });
   assert.equal(replay.status, "refused");
   assert.match(replay.reason ?? "", /expired/);
+});
+
+async function shareTeammateSkill(built: BuiltApp): Promise<string> {
+  const skill = await built.skills.create({
+    scopeId: scopeId("personal", "U2"),
+    manifest: {
+      name: SHARED_SKILL,
+      description: "A teammate's CRM routine",
+      requiredCapabilities: [],
+      body: "SCREENING_FIXTURE_BLOCK",
+    },
+    createdBy: "U2",
+  });
+  await built.skills.review(skill.id, "reviewer", []);
+  await built.skills.publish(skill.id);
+  const shared = await built.app.shareSkill({
+    id: skill.id,
+    toScope: scopeId("personal", "U1"),
+    permission: "read",
+    actorId: "U2",
+    liveActor: true,
+  });
+  assert.ok(shared.ok, JSON.stringify(shared));
+  return skill.id;
+}
+
+function strictScreenApp(): BuiltApp {
+  return buildApp(testConfig({ securityPosture: "dangerous", securityScreenAllPostures: true }), {
+    securityScreener: {
+      provider: "fixture-screen",
+      shadow: false,
+      async classify() {
+        return { verdict: { decision: "strict", reason: "fixture verdict" }, score: 1, threshold: 0.5 };
+      },
+    },
+  });
+}
+
+test("a held skill a teammate shares with this conversation is released into it once approved", async () => {
+  const built = strictScreenApp();
+  await shareTeammateSkill(built);
+  const req: TurnRequest = { ...request("teammate-skill"), text: "run fixture skill" };
+  const blocked = await built.app.turn(req);
+  const hold = blocked.pendingApprovals?.[0];
+  assert.equal(hold?.approvalKey, "security-screen-release:skills");
+  observedRelease = "";
+  const approved = await built.app.turn({ ...req, approval: { requestId: hold!.requestId, approved: true } });
+  assert.equal(approved.status, "ok", approved.reason);
+  assert.match(observedRelease, /SCREENING_FIXTURE_BLOCK/);
+  const released = (await built.sessions.getEntries(blocked.sessionId!)).find(
+    (entry) =>
+      entry.type === "user" &&
+      (entry.payload as { securityReleaseRequestId?: string }).securityReleaseRequestId === hold!.requestId,
+  );
+  assert.equal(released?.scopeLabel, scopeId("personal", "U1"));
+});
+
+test("a held skill its owner stopped sharing stays blocked", async () => {
+  const built = strictScreenApp();
+  const skillId = await shareTeammateSkill(built);
+  const req: TurnRequest = { ...request("unshared-skill"), text: "run fixture skill" };
+  const blocked = await built.app.turn(req);
+  const hold = blocked.pendingApprovals?.[0];
+  assert.equal(hold?.approvalKey, "security-screen-release:skills");
+  const unshared = await built.app.unshareSkill({
+    id: skillId,
+    scope: scopeId("personal", "U1"),
+    actorId: "U2",
+    liveActor: true,
+  });
+  assert.ok(unshared.ok, JSON.stringify(unshared));
+  const refused = await built.app.turn({ ...req, approval: { requestId: hold!.requestId, approved: true } });
+  assert.equal(refused.status, "refused");
+  assert.match(refused.reason ?? "", /no longer readable/);
 });

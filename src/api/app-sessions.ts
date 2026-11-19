@@ -984,7 +984,7 @@ export function createSessionMethods(
 
       const to = parseScopeId(toScopeId);
       const toProjectId = to.kind === "group" ? projectIdFromGroupRef(to.ref) : null;
-      if (to.kind === "personal" ? to.ref !== principalId : toProjectId === null) return "forbidden";
+      if (to.kind === "personal" ? !samePerson(to.ref, principalId) : toProjectId === null) return "forbidden";
       if (!(await canUseContext(principalId, session.scopeId))) return "forbidden";
       if (!(await canUseContext(principalId, toScopeId))) return "forbidden";
       if (session.scopeId === toScopeId) return session;
@@ -1145,7 +1145,7 @@ export function createSessionMethods(
         return { session: (await deps.sessions.get(session.id)) ?? session };
       };
       if (parsed.kind === "personal") {
-        return parsed.ref === principalId ? create() : null;
+        return samePerson(parsed.ref, principalId) ? create() : null;
       }
       const projectId = parsed.kind === "group" ? projectIdFromGroupRef(parsed.ref) : null;
       if (projectId) {

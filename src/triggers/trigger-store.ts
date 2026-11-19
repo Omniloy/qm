@@ -23,13 +23,17 @@ export function consentRequiredRecipient(input: {
 }
 
 export function recipientConsentSatisfied(
-  input: { recipientConsent?: RecipientConsent },
+  input: { owner: string; recipientConsent?: RecipientConsent },
   requiredRecipient?: string,
 ): boolean {
-  if (!requiredRecipient) return input.recipientConsent === undefined || input.recipientConsent.status === "accepted";
-  return (
-    input.recipientConsent?.status === "accepted" && samePerson(input.recipientConsent.recipientId, requiredRecipient)
-  );
+  const consent = input.recipientConsent;
+  if (!requiredRecipient)
+    return (
+      consent === undefined ||
+      consent.status === "accepted" ||
+      (consent.status === "pending" && samePerson(consent.recipientId, input.owner))
+    );
+  return consent?.status === "accepted" && samePerson(consent.recipientId, requiredRecipient);
 }
 
 export function decideRecipientConsent(

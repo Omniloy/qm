@@ -9,6 +9,7 @@ import {
 } from "../api/runtime-config.ts";
 import { livePersonCapability } from "../api/artifact-share.ts";
 import { parseScopeId } from "../types.ts";
+import { samePerson } from "../directory/person.ts";
 import { canonicalModelId, isHarnessId, thinkingLevelsForHarness } from "../model/pi-models.ts";
 import { scopeFastModeAllowed } from "../core/turn-options.ts";
 
@@ -28,7 +29,7 @@ export function createRuntimeService(deps: RuntimeDeps, app: Pick<App, "authoriz
     const scope = parseScopeId(claims.scopeId);
     if (
       scope.kind === "org" ||
-      (scope.kind === "personal" && scope.ref !== claims.actorId) ||
+      (scope.kind === "personal" && !samePerson(scope.ref, claims.actorId)) ||
       !(await app.authorizesCapabilityScope(claims))
     )
       return { ok: false, error: "forbidden" };
