@@ -21,7 +21,7 @@ tab it is on closes it goes back to the one before.
 
 **Share this tab** points the agent at the tab you are on. **Stop** (or Cancel on Chrome's
 "started debugging this browser" bar) is a real stop: the agent is locked out, and nothing
-re-opens until you press Share this tab again.
+re-opens until you press Share this tab again, or remove and reinstall the extension.
 
 Because that capability is real, treat the pairing token like a password: anyone holding it
 and able to reach your QM can pair _their_ agent to your browser. The token expires on its

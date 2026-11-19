@@ -749,6 +749,21 @@ test("whether a new tab is in front is judged when it opens, not after the queue
   assert.ok(await until(() => h.store.attachedTabId === 9), "a pop-up that opened in front is followed");
 });
 
+test("a pop-up is followed even when the tab that opened it closes straight away", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+
+  h.tabs[8] = { title: "Next step", url: "https://accounts.example/" };
+  popUp(h, 7, 8);
+  delete h.tabs[7];
+  h.fire("detach", { tabId: 7 }, "target_closed");
+  h.fire("removed", 7);
+
+  assert.ok(await until(() => h.store.attachedTabId === 8), "the sign-in carries on in the pop-up");
+});
+
 test("a page busy with a dialog does not wedge every command behind it", async () => {
   const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD, hangs: [7] });
   await bootWorker();

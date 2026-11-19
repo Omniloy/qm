@@ -818,8 +818,8 @@ def main():
                     "Share this tab in the extension, then run: open\n"
                     "Unauthorized means this turn's access ended: they switched browsers or pressed Stop.\n"
                     "No tab is shared means their extension is an older version: ask them to download it\n"
-                    "again from Keychain → Linked accounts → Browser, Remove the old one in chrome://extensions\n"
-                    "and Load unpacked the new folder, or to press Share this tab.\n"
+                    "again from Keychain → Linked accounts → Browser, Remove the old one in chrome://extensions,\n"
+                    "Load unpacked the new folder and delete the old folder, or to press Share this tab.\n"
                     "Do NOT quietly attach to a different browser: it has none of their sign-ins, "
                     "and a task aimed at their own browser will fail in a way that looks like your "
                     "mistake rather than a disconnected extension.")
@@ -1043,15 +1043,13 @@ def main():
             if a.new_tab:
                 if state.get("provider") != "extension":
                     die("A new tab is for the person's own Chrome, through the extension. Use go without --new-tab.")
-                opened = c.call("Target.createTarget", url="about:blank").get("targetId")
-                if opened != "qm-extension-page":
-                    try:
-                        c.call("Target.closeTarget", targetId=opened)
-                    except Exception:
-                        pass
+                tabs = tab_list(c)
+                if tabs is None or any("front" not in t for t in tabs):
                     die("Their extension is an older version that cannot open a tab of its own. Ask them to\n"
                         "download it again from Keychain → Linked accounts → Browser, Remove the old one in\n"
-                        "chrome://extensions and Load unpacked the new folder. Until then, use go without --new-tab.")
+                        "chrome://extensions, Load unpacked the new folder and delete the old folder.\n"
+                        "Until then, use go without --new-tab.")
+                c.call("Target.createTarget", url="about:blank")
             c.call("Page.enable")
             nav = c.call("Page.navigate", url=url)
             wait_ready(c, 30)

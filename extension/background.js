@@ -652,11 +652,10 @@ chrome.webNavigation.onCreatedNavigationTarget.addListener(({ sourceTabId, tabId
   openedBy.set(tabId, sourceTabId);
   const opened = chrome.tabs.get(tabId).catch(() => null);
   void (async () => {
-    const inFront = (await opened)?.active;
     await ready;
-    if (!inFront) return;
     await settle(async () => {
       if (attachedTabId === null || sourceTabId !== attachedTabId) return;
+      if (!(await opened)?.active) return;
       await claim(tabId);
     });
   })();
