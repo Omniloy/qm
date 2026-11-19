@@ -816,7 +816,8 @@ def main():
                     "Share this tab in the extension, then run: open\n"
                     "Unauthorized means this turn's access ended: they switched browsers or pressed Stop.\n"
                     "No tab is shared means their extension is an older version: ask them to download it\n"
-                    "again from Keychain → Linked accounts → Browser and reload it, or to press Share this tab.\n"
+                    "again from Keychain → Linked accounts → Browser, Remove the old one in chrome://extensions\n"
+                    "and Load unpacked the new folder, or to press Share this tab.\n"
                     "Do NOT quietly attach to a different browser: it has none of their sign-ins, "
                     "and a task aimed at their own browser will fail in a way that looks like your "
                     "mistake rather than a disconnected extension.")

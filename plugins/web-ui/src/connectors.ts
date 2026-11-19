@@ -476,8 +476,8 @@ function extensionPanel(provider: BrowserProvider): TemplateResult {
                 ${extensionDownload("Download again")}
               </div>
               <p class="kc-browser-note">
-                Updating? Download, unzip over the old folder, then press the reload arrow on the extension in
-                <code>chrome://extensions</code>.
+                Updating? Download and unzip it, then in <code>chrome://extensions</code> press
+                <strong>Remove</strong> on the old one and <strong>Load unpacked</strong> the new folder.
               </p>`
       }
       ${
