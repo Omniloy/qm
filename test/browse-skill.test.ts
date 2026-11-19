@@ -155,7 +155,7 @@ test("an automation block is explained as the site's choice, not a bug to retry"
 
 test("a page that fails to load says why, instead of leaving a bare chrome-error URL", () => {
   const go = /if a\.cmd == "go":[\s\S]*?elif a\.cmd == "snapshot":/.exec(CLI)?.[0] ?? "";
-  assert.match(go, /nav = [^\n]*c\.call\("Page\.navigate", url=url\)/);
+  assert.match(go, /nav = c\.call\("Page\.navigate", url=url\)/);
   assert.match(go, /if nav\.get\("errorText"\):[\s\S]*The page did not load: \{nav\['errorText'\]\}/);
   assert.match(go, /Tell the person what failed/);
 });
@@ -338,8 +338,9 @@ test("a page can be opened in a new tab of their Chrome, and only there", () => 
   assert.match(SKILL, /go URL --new-tab/);
   const go = /if a\.cmd == "go":[\s\S]*?wait_ready/.exec(CLI)?.[0] ?? "";
   assert.match(go, /if a\.new_tab:[\s\S]*?provider"\) != "extension"[\s\S]*?die\(/);
-  assert.match(go, /Target\.createTarget", url=url/);
-  assert.match(go, /nav = \{\} if a\.new_tab else c\.call\("Page\.navigate"/);
+  assert.match(go, /Target\.createTarget", url="about:blank"/, "the tab opens blank, then loads through Page.navigate");
+  assert.match(go, /!= "qm-extension-page"[\s\S]*?Target\.closeTarget[\s\S]*?older version/);
+  assert.match(go, /nav = c\.call\("Page\.navigate", url=url\)/);
 });
 
 test("a file with no findable URL is caught by clicking for it", () => {

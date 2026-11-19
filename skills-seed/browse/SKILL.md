@@ -248,10 +248,11 @@ URL. Find that URL the way you would anything else: `snapshot` and read the link
 **A new tab is not lost.** A tab the one you are driving opens is followed automatically, so a
 flow that pops a receipt into a new tab keeps working, and when that tab closes you are moved
 back to the one before. For any other tab, `tabs` lists every tab open in their Chrome, in
-every window, and `tab ID` moves you there. To open a page beside the one you are on, leaving
-that tab as it was, use `go URL --new-tab`. You drive exactly one tab at a time, and the
-banner moves with you so they can see which. Refs belong to the snapshot that listed them:
-after you move tabs, or are moved back when one closes, run `snapshot` again before you click.
+every window, and `tab ID` moves you there. To open a page in a tab of its own, leaving the one
+you were on as it was, use `go URL --new-tab`: it opens in front of them. You drive exactly one
+tab at a time, and the banner moves with you so they can see which. Refs belong to the snapshot
+that listed them: after you move tabs, or are moved back when one closes, run `snapshot` again
+before you click.
 
 ## Sign-ins
 

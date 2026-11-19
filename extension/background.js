@@ -48,6 +48,7 @@ let stopped = false;
 let ownOrigins = [];
 const seenRequests = new Set();
 const issuedStreams = new Set();
+const openedBy = new Map();
 const EVALUATE_PARAMS = new Set(["expression", "returnByValue", "awaitPromise", "timeout"]);
 const KEYS = new Set([
   "Enter",
@@ -404,7 +405,7 @@ async function everyTab() {
     .map((tab) => ({
       tabId: tab.id,
       windowId: tab.windowId,
-      openerTabId: tab.openerTabId ?? null,
+      openerTabId: openedBy.get(tab.id) ?? null,
       title: tab.title || "",
       url: tab.url || "",
       active: Boolean(tab.active),
@@ -648,17 +649,21 @@ chrome.debugger.onDetach.addListener((source, reason) => {
 });
 
 chrome.webNavigation.onCreatedNavigationTarget.addListener(({ sourceTabId, tabId }) => {
+  openedBy.set(tabId, sourceTabId);
+  const opened = chrome.tabs.get(tabId).catch(() => null);
   void (async () => {
+    const inFront = (await opened)?.active;
     await ready;
+    if (!inFront) return;
     await settle(async () => {
       if (attachedTabId === null || sourceTabId !== attachedTabId) return;
-      if (!(await chrome.tabs.get(tabId).catch(() => null))?.active) return;
       await claim(tabId);
     });
   })();
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
+  openedBy.delete(tabId);
   void (async () => {
     await ready;
     await lose(tabId);

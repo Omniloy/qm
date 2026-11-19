@@ -477,7 +477,8 @@ function extensionPanel(provider: BrowserProvider): TemplateResult {
               </div>
               <p class="kc-browser-note">
                 Updating? Download and unzip it, then in <code>chrome://extensions</code> press
-                <strong>Remove</strong> on the old one and <strong>Load unpacked</strong> the new folder.
+                <strong>Remove</strong> on the old one, <strong>Load unpacked</strong> the new folder, and delete the
+                old folder.
               </p>`
       }
       ${

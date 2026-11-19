@@ -6,6 +6,7 @@ interface Tab {
   url: string;
   windowId?: number;
   active?: boolean;
+  openerTabId?: number;
   origin?: string;
   focused?: string;
   frames?: string[];
@@ -715,6 +716,37 @@ test("a pop-up is followed by the tab it came from, not by whichever tab was in 
   h.tabs[9] = { title: "Receipt", url: "https://receipt.example/" };
   popUp(h, 7, 9);
   assert.ok(await until(() => h.store.attachedTabId === 9), "one from the driven tab is followed");
+});
+
+test("the tab list names the tab a pop-up really came from, not Chrome's guess", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+
+  h.tabs[8] = { title: "Receipt", url: "https://receipt.example/", openerTabId: 3 };
+  popUp(h, 7, 8, false);
+  const listed = await h.command(60, "qm.listTabs");
+  const tabs = (listed.result as { tabs: Array<{ tabId: number; openerTabId: number | null }> }).tabs;
+  assert.equal(tabs.find((t) => t.tabId === 8)?.openerTabId, 7);
+});
+
+test("whether a new tab is in front is judged when it opens, not after the queue drains", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+
+  h.tabs[8] = { title: "Read later", url: "https://later.example/" };
+  popUp(h, 7, 8, false);
+  h.tabs[8].active = true;
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(h.store.attachedTabId, 7, "a tab they opened in the background and then looked at is theirs");
+
+  h.tabs[9] = { title: "Sign in", url: "https://accounts.example/" };
+  popUp(h, 7, 9);
+  h.tabs[9].active = false;
+  assert.ok(await until(() => h.store.attachedTabId === 9), "a pop-up that opened in front is followed");
 });
 
 test("a page busy with a dialog does not wedge every command behind it", async () => {

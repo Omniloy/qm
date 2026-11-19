@@ -1043,9 +1043,17 @@ def main():
             if a.new_tab:
                 if state.get("provider") != "extension":
                     die("A new tab is for the person's own Chrome, through the extension. Use go without --new-tab.")
-                c.call("Target.createTarget", url=url)
+                opened = c.call("Target.createTarget", url="about:blank").get("targetId")
+                if opened != "qm-extension-page":
+                    try:
+                        c.call("Target.closeTarget", targetId=opened)
+                    except Exception:
+                        pass
+                    die("Their extension is an older version that cannot open a tab of its own. Ask them to\n"
+                        "download it again from Keychain → Linked accounts → Browser, Remove the old one in\n"
+                        "chrome://extensions and Load unpacked the new folder. Until then, use go without --new-tab.")
             c.call("Page.enable")
-            nav = {} if a.new_tab else c.call("Page.navigate", url=url)
+            nav = c.call("Page.navigate", url=url)
             wait_ready(c, 30)
             time.sleep(0.4)
             info = json.loads(c.eval(
