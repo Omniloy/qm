@@ -49,7 +49,21 @@ let ownOrigins = [];
 const seenRequests = new Set();
 const issuedStreams = new Set();
 const EVALUATE_PARAMS = new Set(["expression", "returnByValue", "awaitPromise", "userGesture", "timeout"]);
-const NO_SHORTCUTS = 2 | 4;
+const KEYS = new Set([
+  "Enter",
+  "Tab",
+  "Escape",
+  "Backspace",
+  "ArrowDown",
+  "ArrowUp",
+  "ArrowLeft",
+  "ArrowRight",
+  "PageDown",
+  "PageUp",
+  "Home",
+  "End",
+]);
+const BUTTONS = new Set(["left", "none"]);
 const BOUND_TO_REQUEST = new Set([
   "Network.getResponseBody",
   "Fetch.takeResponseBodyAsStream",
@@ -487,8 +501,19 @@ async function onCommand(frame) {
     if (method === "Runtime.evaluate" && Object.keys(params ?? {}).some((k) => !EVALUATE_PARAMS.has(k))) {
       throw new Error("Runtime.evaluate runs only in the page itself");
     }
-    if (method === "Input.dispatchKeyEvent" && (params?.commands || Number(params?.modifiers) & NO_SHORTCUTS)) {
-      throw new Error("keyboard shortcuts and editing commands are not available through the Browser Bridge");
+    if (
+      method === "Input.dispatchKeyEvent" &&
+      (params?.commands || Number(params?.modifiers) || !KEYS.has(String(params?.key)))
+    ) {
+      throw new Error(
+        "only plain navigation keys are available through the Browser Bridge — type text with insertText",
+      );
+    }
+    if (
+      method === "Input.dispatchMouseEvent" &&
+      (Number(params?.modifiers) || !BUTTONS.has(String(params?.button ?? "none")))
+    ) {
+      throw new Error("only plain left clicks and scrolling are available through the Browser Bridge");
     }
     if (BOUND_TO_REQUEST.has(method) && !seenRequests.has(String(params?.requestId))) {
       throw new Error("that request is not one this tab showed you");
@@ -509,6 +534,9 @@ async function onCommand(frame) {
     const sent = method === "Network.getCookies" && !params?.urls?.length ? { ...params, urls: [url] } : params || {};
     const result = await chrome.debugger.sendCommand({ tabId }, method, sent);
     if (method === "Fetch.takeResponseBodyAsStream" && result?.stream) remember(issuedStreams, String(result.stream));
+    if (method === "Network.getCookies" && Array.isArray(result?.cookies)) {
+      result.cookies = result.cookies.filter((cookie) => !reachesOwnOrigin(cookie));
+    }
     send({ id, result: result ?? {} });
   } catch (e) {
     send({ id, error: { code: -32000, message: String((e && e.message) || e) } });
@@ -559,12 +587,32 @@ function connect() {
   })();
 }
 
+function hostOf(origin) {
+  try {
+    return new URL(origin).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function reachesOwnOrigin(cookie) {
+  const domain = String(cookie?.domain ?? "")
+    .replace(/^\./, "")
+    .toLowerCase();
+  return (
+    Boolean(domain) && ownOrigins.map(hostOf).some((host) => host && (host === domain || host.endsWith(`.${domain}`)))
+  );
+}
+
 function forwardable(method, params) {
   if (!FORWARDED.has(method)) return false;
   const url = params?.request?.url ?? params?.response?.url ?? params?.frame?.url ?? params?.url;
   const id = params?.requestId === undefined ? null : String(params.requestId);
   if (typeof url === "string") {
-    if (ownOrigins.includes(originOf(url))) return false;
+    if (ownOrigins.includes(originOf(url))) {
+      if (id !== null) seenRequests.delete(id);
+      return false;
+    }
     if (id !== null) remember(seenRequests, id);
     return true;
   }

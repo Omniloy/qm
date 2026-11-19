@@ -9,6 +9,7 @@ interface Tab {
   focused?: string;
   frames?: string[];
   says?: string;
+  cookies?: Array<{ name: string; domain: string }>;
 }
 
 interface Harness {
@@ -178,6 +179,7 @@ function install(opts: {
         }
         if (method === "Page.createIsolatedWorld") return { executionContextId: 99 };
         if (method === "Network.getResponseBody") return { body: "ok", base64Encoded: false };
+        if (method === "Network.getCookies") return { cookies: tab.cookies ?? [] };
         if (method === "Fetch.takeResponseBodyAsStream") return { stream: "s-1" };
         if (method === "Runtime.evaluate") {
           const asked = String((params as { expression?: string } | undefined)?.expression ?? "");
@@ -1125,9 +1127,26 @@ test("scripts run only in the page itself, and keyboard shortcuts are refused", 
   const elsewhere = await h.command(101, "Runtime.evaluate", { expression: "1", contextId: 3 });
   assert.match((elsewhere.error as { message: string }).message, /only in the page itself/);
   const paste = await h.command(102, "Input.dispatchKeyEvent", { type: "keyDown", key: "v", modifiers: 4 });
-  assert.match((paste.error as { message: string }).message, /shortcuts/);
-  const command = await h.command(103, "Input.dispatchKeyEvent", { type: "keyDown", commands: ["paste"] });
-  assert.match((command.error as { message: string }).message, /shortcuts/);
+  assert.match((paste.error as { message: string }).message, /plain navigation keys/);
+  const command = await h.command(103, "Input.dispatchKeyEvent", {
+    type: "keyDown",
+    key: "Enter",
+    commands: ["paste"],
+  });
+  assert.match((command.error as { message: string }).message, /plain navigation keys/);
+  const insert = await h.command(108, "Input.dispatchKeyEvent", { type: "rawKeyDown", key: "Insert", modifiers: 8 });
+  assert.match((insert.error as { message: string }).message, /plain navigation keys/, "Shift+Insert pastes too");
+  const middle = await h.command(109, "Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: 1,
+    y: 1,
+    button: "middle",
+  });
+  assert.match((middle.error as { message: string }).message, /plain left clicks/, "a middle click pastes on Linux");
+  const click = await h.command(110, "Input.dispatchMouseEvent", { type: "mousePressed", x: 1, y: 1, button: "left" });
+  assert.ok(!click.error, JSON.stringify(click.error));
+  const wheel = await h.command(111, "Input.dispatchMouseEvent", { type: "mouseWheel", x: 1, y: 1, deltaY: 300 });
+  assert.ok(!wheel.error, JSON.stringify(wheel.error));
   const enter = await h.command(104, "Input.dispatchKeyEvent", { type: "keyDown", key: "Enter" });
   assert.ok(!enter.error, JSON.stringify(enter.error));
 });
@@ -1161,4 +1180,52 @@ test("a page that lies about its origin in script still cannot receive another s
 
   assert.match((reply.error as { message: string }).message, /refusing to type/);
   assert.ok(!h.commands.some((c) => c.method === "Input.insertText"));
+});
+
+test("a cookie QM itself would also receive is never handed over, even from a sibling subdomain", async () => {
+  const h = install({
+    store: { ...PAIRED, attachedTabId: 7 },
+    tabs: {
+      7: {
+        title: "Shop",
+        url: "https://shop.apps.qm.example.com/",
+        cookies: [
+          { name: "portal_session", domain: ".qm.example.com" },
+          { name: "cart", domain: "shop.apps.qm.example.com" },
+        ],
+      },
+    },
+  });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+
+  const reply = await h.command(112, "Network.getCookies", {});
+
+  assert.deepEqual(
+    (reply.result as { cookies: Array<{ name: string }> }).cookies.map((c) => c.name),
+    ["cart"],
+  );
+});
+
+test("a request that redirects into QM stops being readable", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+
+  h.fire("event", { tabId: 7 }, "Network.requestWillBeSent", {
+    requestId: "60",
+    request: { url: "https://mail.google.com/r" },
+  });
+  h.fire("event", { tabId: 7 }, "Network.requestWillBeSent", {
+    requestId: "60",
+    request: { url: "https://qm.example.com/v1/me" },
+    redirectResponse: { url: "https://mail.google.com/r" },
+  });
+  h.fire("event", { tabId: 7 }, "Network.loadingFinished", { requestId: "60" });
+
+  const body = await h.command(113, "Network.getResponseBody", { requestId: "60" });
+  assert.match((body.error as { message: string }).message, /not one this tab showed you/);
+  assert.ok(!h.sent().some((m) => m.method === "Network.loadingFinished"));
 });
