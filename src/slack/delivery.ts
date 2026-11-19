@@ -1,4 +1,5 @@
 import { errMessage, swallowAs } from "../util/errors.ts";
+import { personIds } from "../directory/person.ts";
 import { safeChunks, safeClip } from "./safe-cut.ts";
 import { sleep } from "./util.ts";
 import { isExternallyShared, isMpim, type ChannelMeta } from "./identity.ts";
@@ -254,12 +255,29 @@ export function encodeDeliveryTarget(channel: string, threadTs?: string): string
   return threadTs ? `${channel}:${threadTs}` : channel;
 }
 
-async function slackUserIdFor(client: any, principalId: string): Promise<string> {
-  if (!principalId.includes("@")) return principalId;
-  const res = (await client.users.lookupByEmail({ email: principalId })) as { user?: { id?: string } };
-  const id = res?.user?.id;
-  if (!id) throw new Error(`no Slack member found for ${principalId}`);
-  return id;
+async function slackMemberByEmail(client: any, email: string): Promise<string | undefined> {
+  try {
+    const res = (await client.users.lookupByEmail({ email })) as { user?: { id?: string } };
+    return res?.user?.id;
+  } catch (err) {
+    if ((err as { data?: { error?: string } })?.data?.error === "users_not_found") return undefined;
+    throw err;
+  }
+}
+
+const SLACK_USER_ID = /^[UW][A-Z0-9]+$/;
+
+export async function slackUserIdFor(client: any, principalId: string): Promise<string> {
+  if (SLACK_USER_ID.test(principalId)) return principalId;
+  const ids = personIds(principalId);
+  for (const email of ids.filter((id) => id.includes("@"))) {
+    const member = await slackMemberByEmail(client, email);
+    if (member) return member;
+  }
+  const linked = ids.find((id) => SLACK_USER_ID.test(id));
+  if (linked) return linked;
+  if (principalId.includes("@")) throw new Error(`no Slack member found for ${principalId}`);
+  return principalId;
 }
 
 export async function openConversationFor(client: any, principalIds: readonly string[]): Promise<string> {

@@ -9,6 +9,7 @@ import type { SlackHistoryReader } from "./history.ts";
 import { performance } from "node:perf_hooks";
 import { slackFailureText } from "./turn-flow.ts";
 import { errMessage, reportFailure, reportFailureAs, swallowAs } from "../util/errors.ts";
+import { canonicalPerson } from "../directory/person.ts";
 import {
   type ActorAssertion,
   type ChannelMeta,
@@ -281,7 +282,7 @@ export function createTurnHandler(deps: {
       if (deps.externalAccess) threadRef = `slack-account:${ids.ownTeamId}:${threadRef}`;
       replyThreadTs = inc.threadTs;
       if (!actor.isBot && !actor.isExternalGuest)
-        deps.ensureHeader?.(client, inc.channel, `personal:${actor.externalId}`, "dm");
+        deps.ensureHeader?.(client, inc.channel, `personal:${canonicalPerson(actor.externalId)}`, "dm");
     } else {
       channelRef = inc.channel;
       const info = inc.prefetched ? inc.prefetched.info : await getChannelInfo(client, inc.channel);
