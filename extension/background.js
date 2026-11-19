@@ -647,13 +647,13 @@ chrome.debugger.onDetach.addListener((source, reason) => {
   })();
 });
 
-chrome.tabs.onCreated.addListener((tab) => {
+chrome.webNavigation.onCreatedNavigationTarget.addListener(({ sourceTabId, tabId }) => {
   void (async () => {
     await ready;
-    if (!tab.active || typeof tab.id !== "number") return;
     await settle(async () => {
-      if (attachedTabId === null || tab.openerTabId !== attachedTabId) return;
-      await claim(tab.id);
+      if (attachedTabId === null || sourceTabId !== attachedTabId) return;
+      if (!(await chrome.tabs.get(tabId).catch(() => null))?.active) return;
+      await claim(tabId);
     });
   })();
 });

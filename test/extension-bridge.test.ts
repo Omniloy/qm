@@ -5,6 +5,7 @@ interface Tab {
   title: string;
   url: string;
   windowId?: number;
+  active?: boolean;
   origin?: string;
   focused?: string;
   frames?: string[];
@@ -143,8 +144,8 @@ function install(opts: {
         removed.push(id);
       },
       onRemoved: on("removed"),
-      onCreated: on("created"),
     },
+    webNavigation: { onCreatedNavigationTarget: on("opened") },
     debugger: {
       attach: async ({ tabId }: { tabId: number }) => {
         if (opts.attachFails) throw new Error("Cannot access a chrome:// URL");
@@ -283,6 +284,11 @@ async function bootWorker(): Promise<void> {
   } finally {
     globalThis.setInterval = real;
   }
+}
+
+function popUp(h: Harness, from: number, id: number, active = true): void {
+  h.tabs[id]!.active = active;
+  h.fire("opened", { sourceTabId: from, tabId: id });
 }
 
 async function until(cond: () => boolean, ms = 2000): Promise<boolean> {
@@ -666,8 +672,8 @@ test("two tabs opened at once leave exactly one driven tab, marked and remembere
 
   h.tabs[8] = { title: "A", url: "https://a.example/" };
   h.tabs[9] = { title: "B", url: "https://b.example/" };
-  h.fire("created", { id: 8, openerTabId: 7, active: true });
-  h.fire("created", { id: 9, openerTabId: 7, active: true });
+  popUp(h, 7, 8);
+  popUp(h, 7, 9);
   await new Promise((r) => setTimeout(r, 100));
 
   assert.equal(h.live.size, 1, `one debugger session, got ${[...h.live]}`);
@@ -689,10 +695,26 @@ test("a tab the person opens in the background is not taken over", async () => {
   assert.ok(await until(() => h.store.attachedTabId === 7));
 
   h.tabs[8] = { title: "Theirs", url: "https://theirs.example/" };
-  h.fire("created", { id: 8, openerTabId: 7, active: false });
+  popUp(h, 7, 8, false);
   await new Promise((r) => setTimeout(r, 50));
 
   assert.equal(h.store.attachedTabId, 7);
+});
+
+test("a pop-up is followed by the tab it came from, not by whichever tab was in front", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+
+  h.tabs[8] = { title: "Someone else's", url: "https://elsewhere.example/" };
+  popUp(h, 3, 8);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(h.store.attachedTabId, 7, "a pop-up from another tab is left alone");
+
+  h.tabs[9] = { title: "Receipt", url: "https://receipt.example/" };
+  popUp(h, 7, 9);
+  assert.ok(await until(() => h.store.attachedTabId === 9), "one from the driven tab is followed");
 });
 
 test("a page busy with a dialog does not wedge every command behind it", async () => {
@@ -701,7 +723,7 @@ test("a page busy with a dialog does not wedge every command behind it", async (
   await booted(h);
   assert.ok(await until(() => h.store.attachedTabId === 7, 4000));
   h.tabs[8] = { title: "Sign in", url: "https://accounts.example/" };
-  h.fire("created", { id: 8, openerTabId: 7, active: true });
+  popUp(h, 7, 8);
   assert.ok(await until(() => h.store.attachedTabId === 8));
 
   delete h.tabs[8];
@@ -813,7 +835,7 @@ test("a tab the driven one opened goes back to its opener when it closes", async
   assert.ok(await until(() => h.store.attachedTabId === 7));
 
   h.tabs[8] = { title: "Sign in", url: "https://accounts.example/" };
-  h.fire("created", { id: 8, openerTabId: 7, active: true });
+  popUp(h, 7, 8);
   assert.ok(await until(() => h.store.attachedTabId === 8), "followed the pop-up");
 
   delete h.tabs[8];
@@ -831,7 +853,7 @@ test("a command that lands while the tab is being handed back waits, rather than
   await booted(h);
   assert.ok(await until(() => h.store.attachedTabId === 7));
   h.tabs[8] = { title: "Sign in", url: "https://accounts.example/" };
-  h.fire("created", { id: 8, openerTabId: 7, active: true });
+  popUp(h, 7, 8);
   assert.ok(await until(() => h.store.attachedTabId === 8));
 
   delete h.tabs[8];
