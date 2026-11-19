@@ -1043,8 +1043,8 @@ def main():
             if a.new_tab:
                 if state.get("provider") != "extension":
                     die("A new tab is for the person's own Chrome, through the extension. Use go without --new-tab.")
-                tabs = tab_list(c)
-                if tabs is None or any("front" not in t for t in tabs):
+                tabs = c.call("qm.listTabs").get("tabs", [])
+                if any("front" not in t for t in tabs):
                     die("Their extension is an older version that cannot open a tab of its own. Ask them to\n"
                         "download it again from Keychain → Linked accounts → Browser, Remove the old one in\n"
                         "chrome://extensions, Load unpacked the new folder and delete the old folder.\n"

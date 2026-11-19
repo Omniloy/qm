@@ -340,7 +340,7 @@ test("a page can be opened in a new tab of their Chrome, and only there", () => 
   assert.match(go, /if a\.new_tab:[\s\S]*?provider"\) != "extension"[\s\S]*?die\(/);
   assert.match(
     go,
-    /tabs = tab_list\(c\)[\s\S]*?"front" not in t[\s\S]*?older version[\s\S]*?Target\.createTarget", url="about:blank"/,
+    /tabs = c\.call\("qm\.listTabs"\)[\s\S]*?"front" not in t[\s\S]*?older version[\s\S]*?Target\.createTarget", url="about:blank"/,
     "an older extension is caught before any tab is opened, and the new tab loads through Page.navigate",
   );
   assert.doesNotMatch(go, /Target\.closeTarget/);
