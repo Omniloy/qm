@@ -6,6 +6,7 @@ import { deployRef, encodeRef } from "../../acl/resource-ref.ts";
 import { externalMemberActive, validEmail } from "../../identity/external-members.ts";
 import { isObj, authorizeAdmin, orgScope, audit, activePrincipal } from "./shared.ts";
 import { type ApiCtx, type Route } from "./route.ts";
+import { ownsPersonalScope } from "../../directory/person.ts";
 
 const NAMESPACE = "authbroker:";
 const MAX_IDS = 64;
@@ -75,7 +76,7 @@ async function emailAllowed(ctx: ApiCtx): Promise<void> {
         (g) =>
           g.ownerScopeId === d.ownerScopeId &&
           g.ref === encodeRef(deployRef(d.id)) &&
-          g.granteeScopeId === `personal:${email}` &&
+          ownsPersonalScope(email, g.granteeScopeId) &&
           g.permission === "read",
       ),
   );

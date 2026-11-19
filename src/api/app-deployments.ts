@@ -9,6 +9,7 @@ import { mintDeployGitAccess } from "../deploy/access-token.ts";
 import type { App, AppDeps, ViewerDeployment } from "./app-types.ts";
 import { deploymentView } from "./app-types.ts";
 import type { AppHelpers } from "./app-helpers.ts";
+import { ownsPersonalScope } from "../directory/person.ts";
 
 export function createDeploymentMethods(
   deps: AppDeps,
@@ -84,7 +85,7 @@ export function createDeploymentMethods(
       const grantee = await deploymentShareScope(`personal:${email}`, "read");
       const deployment = await deps.deploy.getDeployment(idOrName);
       if (!deployment) throw new Error(`no such app: ${idOrName}`);
-      if (deployment.ownerScopeId !== `personal:${actorId}`)
+      if (!ownsPersonalScope(actorId, deployment.ownerScopeId))
         throw new Error(`only the owner can change who can reach "${deployment.name ?? deployment.id}"`);
       return invitationLock.withLock(`deployment-invite:${deployment.id}:${email}`, async () => {
         const previous = await deps.deploy.deploymentGrantees(deployment.id);

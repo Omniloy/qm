@@ -30,6 +30,7 @@ import { errMessage, swallow, swallowAs } from "../../util/errors.ts";
 import { sleep } from "../../util/async.ts";
 import { loadActiveBundles } from "./turn-helpers.ts";
 import type { OrchestratorDeps, OrchestratorInput } from "./types.ts";
+import { ownsPersonalScope } from "../../directory/person.ts";
 
 const TURN_FILES_MAX_AGE_MS = 24 * 60 * 60_000;
 
@@ -441,7 +442,7 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
     const crossScope = resource.ownerScopeId !== writableScopeId && resource.ownerScopeId !== scopeId;
     if (!crossScope) return { resource, crossScope: false, egress: resolution.egress, commandPolicy: null };
     await deps.config!.refreshSecurity([resource.ownerScopeId]);
-    const credentialScopeId = resource.ownerScopeId === personalScope(actor.id) ? resource.ownerScopeId : undefined;
+    const credentialScopeId = ownsPersonalScope(actor.id, resource.ownerScopeId) ? resource.ownerScopeId : undefined;
     return {
       resource,
       crossScope: true,

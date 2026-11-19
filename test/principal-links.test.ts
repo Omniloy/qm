@@ -13,6 +13,7 @@ import { createPrincipalLinkService, PrincipalLinkError, type PrincipalLink } fr
 import {
   canonicalPerson,
   installPrincipalLinks,
+  ownsPersonalScope,
   personIds,
   personKey,
   samePerson,
@@ -154,6 +155,17 @@ describe("person primitives fold a linked sign-in to its canonical principal", (
     assert.equal(principalEntitledToScope(jordan, label, session, org), true);
     assert.equal(principalEntitledToScope({ id: "casey@acme.test", type: "internal" }, label, session, org), false);
     assert.equal(filterHistoryForAudience([entry], [jordan], session, org).length, 1);
+  });
+
+  it("ownsPersonalScope recognises each linked sign-in's personal scope and nothing else", async () => {
+    assert.equal(ownsPersonalScope(EMAIL, scopeId("personal", OIDC)), false);
+    await installed();
+    assert.equal(ownsPersonalScope(EMAIL, scopeId("personal", OIDC)), true);
+    assert.equal(ownsPersonalScope(OIDC, scopeId("personal", "Jordan@Acme.test")), true);
+    assert.equal(ownsPersonalScope("casey@acme.test", scopeId("personal", OIDC)), false);
+    assert.equal(ownsPersonalScope(EMAIL, scopeId("team", EMAIL)), false);
+    assert.equal(ownsPersonalScope(EMAIL, undefined), false);
+    assert.equal(ownsPersonalScope(undefined, scopeId("personal", EMAIL)), false);
   });
 
   it("the directory bridge reaches a linked sign-in through the roster row", async () => {

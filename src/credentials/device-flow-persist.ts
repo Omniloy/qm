@@ -10,7 +10,7 @@ import { errMessage } from "../util/errors.ts";
 import { pathUnder } from "../util/paths.ts";
 import type { Sandbox, SandboxHandle } from "../sandbox/sandbox.ts";
 import { makeTar, parseTar } from "../sandbox/tar.ts";
-import { scopeId, type ScopeId } from "../types.ts";
+import type { ScopeId } from "../types.ts";
 import { shq } from "../util/shell.ts";
 import { hashId } from "../util/crypto.ts";
 import { DISPLACED_DIR_REL, EPHEMERAL_CRED_DIR } from "./resident-paths.ts";
@@ -25,6 +25,7 @@ import {
 } from "./resident-paths.ts";
 import { credentialPathError } from "../deployment/deployment-layer.ts";
 import { homeRelativePath } from "./paths.ts";
+import { ownsPersonalScope } from "../directory/person.ts";
 
 const CRED_DOTDIRS = [
   ".aws",
@@ -62,7 +63,7 @@ const MAX_REGISTERED_ROOTS = 64;
 export { DEVICE_FLOW_ORIGIN };
 
 export function deviceFlowCredOwner(computerScopeId: ScopeId, actorId: string): string {
-  return computerScopeId === scopeId("personal", actorId) ? actorId : computerScopeId;
+  return ownsPersonalScope(actorId, computerScopeId) ? actorId : computerScopeId;
 }
 
 function fixedCoverage(credentialPaths: readonly CredentialPathSpec[]): { dirs: Set<string>; files: Set<string> } {

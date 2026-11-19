@@ -2,9 +2,9 @@ import type { Server, IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
 import { verifyCapabilityToken, type CapabilityClaims } from "../auth/capability-token.ts";
-import { personalScope } from "../types.ts";
 import { errMessage } from "../util/errors.ts";
 import { createRelayHub, relaySocket, type RelayHub, type RelaySide } from "./relay.ts";
+import { ownsPersonalScope } from "../directory/person.ts";
 
 export const BROWSER_RELAY_AUD = "browser-relay";
 export const BROWSER_RELAY_CDP_AUD = "browser-relay-cdp";
@@ -29,7 +29,7 @@ export function isLivePersonalClaim(claims: CapabilityClaims): boolean {
     claims.triggered !== true &&
     claims.externalSlack !== true &&
     claims.deployment === undefined &&
-    claims.scopeId === personalScope(claims.actorId)
+    ownsPersonalScope(claims.actorId, claims.scopeId)
   );
 }
 

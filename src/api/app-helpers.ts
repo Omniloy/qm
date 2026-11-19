@@ -36,7 +36,7 @@ import {
   createManagesArtifactHome,
   createMembershipControlsScope,
 } from "../resolution/scope-membership.ts";
-import { samePerson } from "../directory/person.ts";
+import { ownsPersonalScope, samePerson } from "../directory/person.ts";
 import { securityHoldView } from "../security/security-hold.ts";
 import { actorAssertionActive } from "../identity/identity-service.ts";
 import type { Deployment } from "../deploy/deploy-store.ts";
@@ -582,11 +582,7 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     const grants = (await deps.acl?.grantsFor(d.ownerScopeId, encodeRef(deployRef(d.id))).catch(() => [])) ?? [];
     for (const g of grants) {
       if (g.permission !== "read" && g.permission !== "write") continue;
-      if (
-        g.permission === "read" &&
-        principalId.includes("@") &&
-        g.granteeScopeId === `personal:${principalId.trim().toLowerCase()}`
-      ) {
+      if (g.permission === "read" && principalId.includes("@") && ownsPersonalScope(principalId, g.granteeScopeId)) {
         best = "read";
         continue;
       }

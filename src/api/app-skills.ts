@@ -15,7 +15,7 @@ import { computeBundleHash } from "../skills/skill-bundle-store.ts";
 import { persistedSkillRecordPaths, SKILL_MATERIALIZATION_LOCK } from "../skills/skill-collision.ts";
 import { livePersonCapability } from "./artifact-share.ts";
 import { conversationLabelFor } from "../core/orchestrator/turn-helpers.ts";
-import { samePerson } from "../directory/person.ts";
+import { ownsPersonalScope, samePerson } from "../directory/person.ts";
 
 import type { App, AppDeps, SkillViewer } from "./app-types.ts";
 import { encodeRef, parseRef, skillRef } from "../acl/resource-ref.ts";
@@ -340,7 +340,7 @@ export function createSkillMethods(
     async listTurnSkills(viewer) {
       const org = scopeId("org", orgIdOf());
       const actor = deps.identity.classify(viewer.actorId);
-      const own = viewer.scopeId === scopeId("personal", viewer.actorId);
+      const own = ownsPersonalScope(viewer.actorId, viewer.scopeId);
       const teams = own ? (actor.teamIds ?? []).map((t) => scopeId("team", t)) : [];
       const ordered = [...new Set([viewer.scopeId, ...teams, org])];
       const granted = (

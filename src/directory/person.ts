@@ -1,3 +1,5 @@
+import { parseScopeId, type ScopeId } from "../types.ts";
+
 export interface PrincipalLinkResolver {
   canonical(key: string): string | undefined;
   aliases(key: string): readonly string[];
@@ -36,6 +38,12 @@ export function personKey(id: string | null | undefined): string {
 export function samePerson(a: string | null | undefined, b: string | null | undefined): boolean {
   const key = personKey(a);
   return key !== "" && key === personKey(b);
+}
+
+export function ownsPersonalScope(principalId: string | null | undefined, scope: string | null | undefined): boolean {
+  if (!scope) return false;
+  const { kind, ref } = parseScopeId(scope as ScopeId);
+  return kind === "personal" && samePerson(ref, principalId);
 }
 
 export interface RosterPerson {

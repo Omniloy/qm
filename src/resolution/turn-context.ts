@@ -125,6 +125,7 @@ export async function resolveTurnContext(input: ContextInput) {
     searchMemory: memories.search,
     listFiles: () => handles,
     listSkills: async () => (await input.skills?.visibleFor(skillScopes, grantedSkills)) ?? [],
+    skillSharedWithAudience: (skillId: string) => grantedSkills.some((grant) => grant.id === skillId),
     readFile: (path: string) =>
       readContextFile(path, handles, input.workspace, input.files, (grant) => {
         if (grant.carried) recordRead(grant.ownerScopeId, grant.ownerPath);
