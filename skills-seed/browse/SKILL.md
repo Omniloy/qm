@@ -59,6 +59,7 @@ they made deliberately.
 python3 skills/browse/scripts/browser.py open          # attach to the person's Chrome, or reattach
 python3 skills/browse/scripts/browser.py open --cdp URL # drive a browser running elsewhere
 python3 skills/browse/scripts/browser.py go URL
+python3 skills/browse/scripts/browser.py go URL --new-tab # their Chrome: open it in a new tab and drive that one
 python3 skills/browse/scripts/browser.py snapshot      # numbered interactive elements
 python3 skills/browse/scripts/browser.py read [--selector S] [--max N]
 python3 skills/browse/scripts/browser.py click REF | --selector S
@@ -247,7 +248,8 @@ URL. Find that URL the way you would anything else: `snapshot` and read the link
 **A new tab is not lost.** A tab the one you are driving opens is followed automatically, so a
 flow that pops a receipt into a new tab keeps working, and when that tab closes you are moved
 back to the one before. For any other tab, `tabs` lists every tab open in their Chrome, in
-every window, and `tab ID` moves you there. You drive exactly one tab at a time, and the
+every window, and `tab ID` moves you there. To open a page beside the one you are on, leaving
+that tab as it was, use `go URL --new-tab`. You drive exactly one tab at a time, and the
 banner moves with you so they can see which. Refs belong to the snapshot that listed them:
 after you move tabs, or are moved back when one closes, run `snapshot` again before you click.
 

@@ -704,6 +704,8 @@ def main():
     po.add_argument("--cdp", help="attach to an existing browser given its CDP endpoint")
 
     pg = sub.add_parser("go"); pg.add_argument("url")
+    pg.add_argument("--new-tab", dest="new_tab", action="store_true",
+                    help="open it in a new tab of their Chrome and drive that one, leaving this tab as it is")
     ps = sub.add_parser("snapshot"); ps.add_argument("--max", type=int, default=60)
     pr = sub.add_parser("read")
     pr.add_argument("--selector"); pr.add_argument("--max", type=int, default=6000)
@@ -1038,8 +1040,12 @@ def main():
             # Any scheme is taken as written — about:blank and data: have no
             # "//" and must not get an https:// prefix bolted on.
             url = a.url if re.match(r"^[a-z][a-z0-9+.-]*:", a.url) else "https://" + a.url
+            if a.new_tab:
+                if state.get("provider") != "extension":
+                    die("A new tab is for the person's own Chrome, through the extension. Use go without --new-tab.")
+                c.call("Target.createTarget", url=url)
             c.call("Page.enable")
-            nav = c.call("Page.navigate", url=url)
+            nav = {} if a.new_tab else c.call("Page.navigate", url=url)
             wait_ready(c, 30)
             time.sleep(0.4)
             info = json.loads(c.eval(
