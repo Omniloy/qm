@@ -145,7 +145,7 @@ test("skill discovery uses the same included scopes and audience-filtered explic
   await (await resolveTurnContext(input)).listSkills();
   assert.deepEqual(seen[0], {
     scopes: ["personal:alice", "channel:eng", "org:test"],
-    grants: [{ id: "explicit", ownerScopeId: "personal:owner" }],
+    grants: [{ id: "explicit", ownerScopeId: "personal:owner", granteeScopeId: "personal:alice" }],
   });
   input.audience.push({ id: "bob", type: "internal" });
   input.targetScope = "channel:other";
@@ -172,7 +172,7 @@ test("an org-wide skill grant reaches internal turns but never an external one",
   } as Pick<NonNullable<typeof input.skills>, "visibleFor"> as NonNullable<typeof input.skills>;
   await (await resolveTurnContext(input)).listSkills();
   await (await resolveTurnContext({ ...input, external: true })).listSkills();
-  assert.deepEqual(seen, [[{ id: "slides", ownerScopeId: "personal:owner" }], []]);
+  assert.deepEqual(seen, [[{ id: "slides", ownerScopeId: "personal:owner", granteeScopeId: "org:test" }], []]);
 });
 
 test("ambiguous file aliases fail closed in the shared reader", async () => {

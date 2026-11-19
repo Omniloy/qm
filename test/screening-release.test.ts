@@ -376,3 +376,35 @@ test("a scheduled run's held teammate skill is released when its owner allows it
   );
   assert.equal(released?.scopeLabel, scopeId("personal", "U1"));
 });
+
+test("a held skill granted only to the speaker keeps that grant's label in a channel run", async () => {
+  const built = strictScreenApp();
+  await shareTeammateSkill(built);
+  const req: TurnRequest = {
+    surface: "test",
+    actor: { externalId: "U1" },
+    origin: { kind: "human" },
+    conversation: { kind: "channel", channelRef: "C9", threadRef: "C9:owner-only" },
+    text: "run fixture skill",
+  };
+  const blocked = await built.app.turn(req);
+  const hold = blocked.pendingApprovals?.[0];
+  assert.equal(hold?.approvalKey, "security-screen-release:skills");
+  const approved = await built.app.turn({ ...req, approval: { requestId: hold!.requestId, approved: true } });
+  assert.equal(approved.status, "ok", approved.reason);
+  const released = (await built.sessions.getEntries(blocked.sessionId!)).find(
+    (entry) =>
+      entry.type === "user" &&
+      (entry.payload as { securityReleaseRequestId?: string }).securityReleaseRequestId === hold!.requestId,
+  );
+  assert.equal(released?.scopeLabel, scopeId("personal", "U1"));
+  assert.equal(
+    filterHistoryForAudience(
+      [released!],
+      [{ id: "U3", type: "internal" }],
+      scopeId("channel", "C9"),
+      scopeId("org", "default-org"),
+    ).length,
+    0,
+  );
+});

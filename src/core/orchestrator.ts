@@ -2311,15 +2311,24 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             }
             if (p.screenedOutput && quarantineRelease) {
               const heldSource = p.securityHold?.source;
-              const heldSkillSharedWithAudience =
-                heldSource?.kind === "skill" &&
-                context.skillSharedWithAudience(heldSource.skillId) &&
-                (await context.listSkills()).some(
-                  (entry) =>
-                    entry.skill?.id === heldSource.skillId &&
-                    skillIdentity(entry.skill).contentHash === heldSource.contentHash,
-                );
-              const label = heldSkillSharedWithAudience ? scopeId : (p.screenedOutput.sourceScopeId ?? scopeId);
+              const heldSkill =
+                heldSource?.kind === "skill"
+                  ? (await context.listSkills()).find(
+                      (entry) =>
+                        entry.skill?.id === heldSource.skillId &&
+                        skillIdentity(entry.skill).contentHash === heldSource.contentHash,
+                    )?.skill
+                  : undefined;
+              const grantLabel = heldSkill
+                ? context
+                    .skillGrantScopes(heldSkill.id, heldSkill.scopeId)
+                    .find((grantee) =>
+                      conversation.audience.every((principal) =>
+                        principalEntitledToScope(principal, grantee, scopeId, resolution.orgScopeId),
+                      ),
+                    )
+                : undefined;
+              const label = grantLabel ?? p.screenedOutput.sourceScopeId ?? scopeId;
               if (
                 !conversation.audience.every((principal) =>
                   principalEntitledToScope(principal, label, scopeId, resolution.orgScopeId),

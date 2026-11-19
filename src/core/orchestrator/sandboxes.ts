@@ -419,10 +419,9 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
     if (target === writableScopeId || target === scopeId) return true;
     if (!openResourceAccess || actor.type !== "internal" || !deps.config || !deps.isCurrentSharedScopeMember)
       return false;
-    const personal = personalScope(actor.id);
     for (const scope of new Set([scopeId, target])) {
-      if (scope === personal) {
-        if ((await deps.config.resolveSharingPostureDurable(personal, scope)) !== "open") return false;
+      if (ownsPersonalScope(actor.id, scope)) {
+        if ((await deps.config.resolveSharingPostureDurable(scope, scope)) !== "open") return false;
       } else if (
         !(await isOpenScopeMember({
           actorId: actor.id,

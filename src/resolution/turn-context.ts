@@ -103,7 +103,7 @@ export async function resolveTurnContext(input: ContextInput) {
     ...resolution.grantedHandles,
     ...(await carriedFileHandles(sharingSources, input.workspace, input.files)),
   ];
-  const grantedSkills: GrantedSkillRef[] = input.external
+  const grantedSkills: Array<GrantedSkillRef & { granteeScopeId: ScopeId }> = input.external
     ? []
     : (
         await input.acl
@@ -115,7 +115,11 @@ export async function resolveTurnContext(input: ContextInput) {
             principalEntitledToScope,
           )
           .catch(swallowAs("context: skill grants for audience", []))
-      ).map((grant) => ({ id: parseRef(grant.ref).id, ownerScopeId: grant.ownerScopeId }));
+      ).map((grant) => ({
+        id: parseRef(grant.ref).id,
+        ownerScopeId: grant.ownerScopeId,
+        granteeScopeId: grant.granteeScopeId,
+      }));
   return {
     sharingSources,
     memoryScopeId,
@@ -125,7 +129,10 @@ export async function resolveTurnContext(input: ContextInput) {
     searchMemory: memories.search,
     listFiles: () => handles,
     listSkills: async () => (await input.skills?.visibleFor(skillScopes, grantedSkills)) ?? [],
-    skillSharedWithAudience: (skillId: string) => grantedSkills.some((grant) => grant.id === skillId),
+    skillGrantScopes: (skillId: string, ownerScopeId: ScopeId) =>
+      grantedSkills
+        .filter((grant) => grant.id === skillId && grant.ownerScopeId === ownerScopeId)
+        .map((grant) => grant.granteeScopeId),
     readFile: (path: string) =>
       readContextFile(path, handles, input.workspace, input.files, (grant) => {
         if (grant.carried) recordRead(grant.ownerScopeId, grant.ownerPath);

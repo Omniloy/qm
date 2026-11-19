@@ -446,7 +446,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
 
   async function canWriteScope(callerId: string, scope: ScopeId, actingScopeId?: ScopeId): Promise<boolean> {
     if (deps.canWriteScope) return deps.canWriteScope(callerId, scope);
-    return scope === `personal:${callerId}` || scope === actingScopeId;
+    return ownsPersonalScope(callerId, scope) || scope === actingScopeId;
   }
 
   async function managesHome(d: Deployment, callerId: string, actingScopeId?: ScopeId): Promise<boolean> {
