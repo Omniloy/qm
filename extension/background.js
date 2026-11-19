@@ -48,7 +48,7 @@ let stopped = false;
 let ownOrigins = [];
 const seenRequests = new Set();
 const issuedStreams = new Set();
-const EVALUATE_PARAMS = new Set(["expression", "returnByValue", "awaitPromise", "userGesture", "timeout"]);
+const EVALUATE_PARAMS = new Set(["expression", "returnByValue", "awaitPromise", "timeout"]);
 const KEYS = new Set([
   "Enter",
   "Tab",
@@ -533,6 +533,9 @@ async function onCommand(frame) {
     if (stopped) throw new Error(STOPPED_MESSAGE);
     const sent = method === "Network.getCookies" && !params?.urls?.length ? { ...params, urls: [url] } : params || {};
     const result = await chrome.debugger.sendCommand({ tabId }, method, sent);
+    if (BOUND_TO_REQUEST.has(method) && !seenRequests.has(String(params?.requestId))) {
+      throw new Error("that request is not one this tab showed you");
+    }
     if (method === "Fetch.takeResponseBodyAsStream" && result?.stream) remember(issuedStreams, String(result.stream));
     if (method === "Network.getCookies" && Array.isArray(result?.cookies)) {
       result.cookies = result.cookies.filter((cookie) => !reachesOwnOrigin(cookie));
@@ -596,11 +599,12 @@ function hostOf(origin) {
 }
 
 function reachesOwnOrigin(cookie) {
-  const domain = String(cookie?.domain ?? "")
-    .replace(/^\./, "")
-    .toLowerCase();
+  const raw = String(cookie?.domain ?? "").toLowerCase();
+  const domain = raw.replace(/^\./, "");
+  const shared = raw.startsWith(".");
   return (
-    Boolean(domain) && ownOrigins.map(hostOf).some((host) => host && (host === domain || host.endsWith(`.${domain}`)))
+    Boolean(domain) &&
+    ownOrigins.map(hostOf).some((host) => host && (host === domain || (shared && host.endsWith(`.${domain}`))))
   );
 }
 
@@ -609,7 +613,8 @@ function forwardable(method, params) {
   const url = params?.request?.url ?? params?.response?.url ?? params?.frame?.url ?? params?.url;
   const id = params?.requestId === undefined ? null : String(params.requestId);
   if (typeof url === "string") {
-    if (ownOrigins.includes(originOf(url))) {
+    const fromOwn = ownOrigins.includes(originOf(String(params?.redirectResponse?.url ?? "")));
+    if (ownOrigins.includes(originOf(url)) || fromOwn) {
       if (id !== null) seenRequests.delete(id);
       return false;
     }

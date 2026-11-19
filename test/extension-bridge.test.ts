@@ -1229,3 +1229,70 @@ test("a request that redirects into QM stops being readable", async () => {
   assert.match((body.error as { message: string }).message, /not one this tab showed you/);
   assert.ok(!h.sent().some((m) => m.method === "Network.loadingFinished"));
 });
+
+test("only shared cookies are matched against QM's hosts, so the page's own host-only cookies stay", async () => {
+  const h = install({
+    store: { ...PAIRED, attachedTabId: 7 },
+    tabs: {
+      7: {
+        title: "Example",
+        url: "https://example.com/",
+        cookies: [
+          { name: "own", domain: "example.com" },
+          { name: "shared", domain: ".example.com" },
+        ],
+      },
+    },
+  });
+  await bootWorker();
+  await booted(h);
+  h.sockets[0]!.onmessage?.({ data: JSON.stringify({ qm: "origins", app: "https://qm.example.com" }) });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+
+  const reply = await h.command(114, "Network.getCookies", {});
+
+  assert.deepEqual(
+    (reply.result as { cookies: Array<{ name: string }> }).cookies.map((c) => c.name),
+    ["own"],
+    "a host-only cookie for example.com never reaches qm.example.com; a .example.com one does",
+  );
+});
+
+test("a redirect out of QM does not carry QM's response to the agent", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+  const before = h.sent().length;
+
+  h.fire("event", { tabId: 7 }, "Network.requestWillBeSent", {
+    requestId: "70",
+    request: { url: "https://mail.google.com/after" },
+    redirectResponse: { url: "https://qm.example.com/login", headers: { location: "https://mail.google.com/after" } },
+  });
+
+  assert.equal(
+    h
+      .sent()
+      .slice(before)
+      .filter((m) => typeof m.method === "string").length,
+    0,
+  );
+  const body = await h.command(115, "Network.getResponseBody", { requestId: "70" });
+  assert.match((body.error as { message: string }).message, /not one this tab showed you/);
+});
+
+test("scripts cannot claim a user gesture", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+
+  const reply = await h.command(116, "Runtime.evaluate", {
+    expression: "navigator.clipboard.readText()",
+    userGesture: true,
+  });
+
+  assert.match((reply.error as { message: string }).message, /only in the page itself/);
+});
