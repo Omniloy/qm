@@ -378,3 +378,29 @@ test("waiting for an interception cannot end in a socket traceback", () => {
   const wait = /def wait_event\([\s\S]{0,900}/.exec(CLI)?.[0] ?? "";
   assert.match(wait, /socket\.timeout|TimeoutError/);
 });
+
+test("a ref only matches in the page the snapshot that listed it read", () => {
+  assert.match(CLI, /el\.setAttribute\('data-qmref', SNAP \+ '-' \+ n\)/);
+  assert.match(CLI, /SNAPSHOT_JS\.replace\("__QMSNAP__", snap\)/);
+  assert.match(CLI, /write_state\(\{\*\*state, "snap": snap\}\)/);
+  const lookups = CLI.match(/data-qmref=/g) ?? [];
+  assert.equal(lookups.length, 1, "every lookup goes through ref_selector");
+  assert.match(CLI, /def box_of[\s\S]*?ref_selector\(ref\)/);
+  assert.match(CLI, /def href_behind[\s\S]*?ref_selector\(ref\)/);
+});
+
+test("closing lets go of the person's tab rather than leaving the banner up", () => {
+  const close = /if a\.cmd == "close":[\s\S]*?\n {4}c, state = connect\(\)/.exec(CLI)?.[0] ?? "";
+  assert.match(close, /c\.call\("qm\.release"\)/);
+  assert.match(close, /Let go of their tab/);
+});
+
+test("a download only blames a new tab the driven one opened", () => {
+  assert.match(CLI, /def new_tab_url[\s\S]*?openerTabId[\s\S]*?== driven/);
+});
+
+test("status does not open a tab in the person's Chrome just to describe it", () => {
+  const status = /if a\.cmd == "status":[\s\S]*?\n {4}if a\.cmd == "download":/.exec(CLI)?.[0] ?? "";
+  assert.match(status, /tab_list\(c\)/);
+  assert.match(status, /no tab in use yet/);
+});

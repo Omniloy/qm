@@ -3,17 +3,21 @@ const PROTOCOL_VERSION = "1.3";
 const TARGET_ID = "qm-extension-page";
 const SESSION_ID = "qm-extension-session";
 const KEEPALIVE_MS = 20_000;
+const DRIVE_CHECK_MS = 2_000;
 const STOPPED_MESSAGE =
   "they stopped QM using their Chrome — it stays off until they press Share this tab in the Browser Bridge extension";
+const OFF_LIMITS_MESSAGE =
+  "that tab cannot be driven — only web pages are; Chrome's own pages, extensions and local files stay off limits";
 
 let socket = null;
 let attachedTabId = null;
 let previousTabId = null;
+let stopped = false;
 let pending = null;
 let reconnectDelay = 1000;
 let restoreYielded = false;
 const ready = Promise.race([
-  bootstrapFromConfig().then(restoreShare),
+  bootstrapFromConfig().then(loadStopped).then(restoreShare),
   new Promise((resolve) => setTimeout(resolve, 5000)),
 ]).catch(() => {});
 
@@ -37,9 +41,24 @@ async function bootstrapFromConfig() {
   }
 }
 
+async function loadStopped() {
+  const stored = await chrome.storage.local.get("stopped").catch(() => ({}));
+  if (stored.stopped === true) stopped = true;
+}
+
 async function isStopped() {
-  const { stopped } = await chrome.storage.local.get("stopped").catch(() => ({ stopped: true }));
-  return stopped === true;
+  if (stopped) return true;
+  const stored = await chrome.storage.local.get("stopped").catch(() => ({ stopped: true }));
+  return stored.stopped === true;
+}
+
+function drivable(url) {
+  return /^(https?:|data:|about:blank)/i.test(url);
+}
+
+async function tabUrl(tabId) {
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  return tab ? tab.pendingUrl || tab.url || "about:blank" : null;
 }
 
 async function badge(tabId, on) {
@@ -76,7 +95,9 @@ function pageBanner(on) {
 }
 
 async function showBanner(tabId, on) {
-  await chrome.scripting.executeScript({ target: { tabId }, func: pageBanner, args: [on] }).catch(() => {});
+  await chrome.scripting
+    .executeScript({ target: { tabId }, world: "MAIN", func: pageBanner, args: [on] })
+    .catch(() => {});
 }
 
 function send(payload) {
@@ -101,12 +122,28 @@ async function announce(tabId, restored) {
 }
 
 async function canDrive(tabId) {
-  try {
-    await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", { expression: "1", returnByValue: true });
-    return true;
-  } catch {
-    return false;
-  }
+  let timer;
+  const probe = chrome.debugger
+    .sendCommand({ tabId }, "Runtime.evaluate", { expression: "1", returnByValue: true })
+    .then(
+      () => true,
+      () => false,
+    );
+  const busy = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(true), DRIVE_CHECK_MS);
+  });
+  return Promise.race([probe, busy]).finally(() => clearTimeout(timer));
+}
+
+function settle(work) {
+  const run = (pending ?? Promise.resolve()).then(work);
+  const tracked = run
+    .catch(() => {})
+    .finally(() => {
+      if (pending === tracked) pending = null;
+    });
+  pending = tracked;
+  return run;
 }
 
 async function forget(tabId) {
@@ -116,110 +153,135 @@ async function forget(tabId) {
   await chrome.debugger.detach({ tabId }).catch(() => {});
 }
 
-async function detach() {
-  const tabId = attachedTabId;
-  attachedTabId = null;
-  if (tabId !== null) await forget(tabId);
-}
-
 async function claim(tabId, chosen = false) {
   if (!chosen && (await isStopped())) return false;
-  try {
-    await chrome.debugger.attach({ tabId }, PROTOCOL_VERSION);
-  } catch (e) {
-    if (chosen) throw e;
+  const url = await tabUrl(tabId);
+  if (url === null || !drivable(url)) {
+    if (chosen) throw new Error(OFF_LIMITS_MESSAGE);
+    return false;
   }
-  if (!(await canDrive(tabId))) return false;
+  let attachError = null;
+  let attachedHere = false;
+  if (tabId !== attachedTabId) {
+    try {
+      await chrome.debugger.attach({ tabId }, PROTOCOL_VERSION);
+      attachedHere = true;
+    } catch (e) {
+      attachError = e;
+    }
+  }
+  if (!(await canDrive(tabId)) || (!chosen && stopped)) {
+    if (attachedHere && tabId !== attachedTabId) await chrome.debugger.detach({ tabId }).catch(() => {});
+    if (chosen && attachError) throw attachError;
+    return false;
+  }
   const old = attachedTabId;
   attachedTabId = tabId;
   if (old !== null && old !== tabId) {
     previousTabId = old;
     await forget(old);
   }
-  await chrome.storage.local.set({ attachedTabId: tabId });
-  await chrome.storage.local.remove("pendingDetach").catch(() => {});
+  await chrome.storage.local.set({ attachedTabId: tabId, previousTabId }).catch(() => {});
+  if (chosen) await chrome.storage.local.remove("pendingDetach").catch(() => {});
   await announce(tabId, !chosen);
   await badge(tabId, true);
   await showBanner(tabId, true);
   return true;
 }
 
-function settle(work) {
-  const run = (pending ?? Promise.resolve()).catch(() => {}).then(() => work());
-  const tracked = run.finally(() => {
-    if (pending === tracked) pending = null;
-  });
-  tracked.catch(() => {});
-  pending = tracked;
-  return run;
-}
-
-async function lose(tabId) {
-  if (tabId !== attachedTabId) return;
-  attachedTabId = null;
+async function fallBack(lost) {
   const back = previousTabId;
   previousTabId = null;
-  await settle(async () => {
+  await forget(lost);
+  if (back !== null && back !== lost && (await claim(back))) return;
+  send({ qm: "released" });
+}
+
+function lose(tabId) {
+  return settle(async () => {
+    if (tabId === previousTabId) previousTabId = null;
+    if (tabId !== attachedTabId) return;
+    attachedTabId = null;
+    await fallBack(tabId);
+  });
+}
+
+function release() {
+  return settle(async () => {
+    const tabId = attachedTabId;
+    attachedTabId = null;
+    previousTabId = null;
+    if (tabId === null) return;
     await forget(tabId);
-    if (attachedTabId !== null) return;
-    if (back !== null && back !== tabId && (await claim(back))) return;
     send({ qm: "released" });
   });
 }
 
 async function stop() {
+  stopped = true;
   await chrome.storage.local.set({ stopped: true }).catch(() => {});
-  const stored = await chrome.storage.local.get("attachedTabId").catch(() => ({}));
-  const tabId = attachedTabId ?? (typeof stored.attachedTabId === "number" ? stored.attachedTabId : null);
-  attachedTabId = null;
-  previousTabId = null;
-  if (tabId !== null) await forget(tabId);
-  if (!send({ qm: "detached" })) await chrome.storage.local.set({ pendingDetach: true }).catch(() => {});
+  await settle(async () => {
+    const stored = await chrome.storage.local.get("attachedTabId").catch(() => ({}));
+    const tabId = attachedTabId ?? (typeof stored.attachedTabId === "number" ? stored.attachedTabId : null);
+    attachedTabId = null;
+    previousTabId = null;
+    if (tabId !== null) await forget(tabId);
+    if (!send({ qm: "detached" })) await chrome.storage.local.set({ pendingDetach: true }).catch(() => {});
+  });
 }
 
 async function restoreShare() {
-  const stored = await chrome.storage.local.get("attachedTabId").catch(() => ({}));
+  const stored = await chrome.storage.local.get(["attachedTabId", "previousTabId"]).catch(() => ({}));
   const saved = stored.attachedTabId;
   if (typeof saved !== "number") return;
   const forgetSaved = () => chrome.storage.local.remove("attachedTabId").catch(() => {});
-  const yielded = () => attachedTabId !== null || restoreYielded;
-  if (yielded()) return;
-  try {
-    await chrome.tabs.get(saved);
-  } catch {
-    return forgetSaved();
-  }
-  if (yielded()) return;
-  if (!(await claim(saved))) return forgetSaved();
-  if (restoreYielded && attachedTabId === saved) await detach();
+  await settle(async () => {
+    if (attachedTabId !== null || restoreYielded) return;
+    if (!(await chrome.tabs.get(saved).catch(() => null))) return forgetSaved();
+    if (restoreYielded) return;
+    if (typeof stored.previousTabId === "number") previousTabId = stored.previousTabId;
+    if (!(await claim(saved))) return forgetSaved();
+    if (restoreYielded && attachedTabId === saved) {
+      attachedTabId = null;
+      await forget(saved);
+    }
+  });
 }
 
-async function openTab(url = "about:blank") {
+async function openTab(url) {
+  if (!drivable(url)) throw new Error(OFF_LIMITS_MESSAGE);
   const win = await chrome.windows.getLastFocused({ windowTypes: ["normal"] }).catch(() => null);
   const tab =
     typeof win?.id === "number"
       ? await chrome.tabs.create({ windowId: win.id, url, active: true })
       : (await chrome.windows.create({ url, focused: true })).tabs?.[0];
-  if (typeof tab?.id !== "number" || !(await claim(tab.id))) throw new Error("could not open a tab to work in");
-  return tab.id;
+  if (typeof tab?.id !== "number") throw new Error("could not open a tab to work in");
+  if (await claim(tab.id)) return tab.id;
+  await chrome.tabs.remove(tab.id).catch(() => {});
+  throw new Error(stopped ? STOPPED_MESSAGE : "could not open a tab to work in");
 }
 
 async function drivenTab() {
-  while (pending) await pending.catch(() => {});
+  while (pending) await pending;
   if (attachedTabId !== null) return attachedTabId;
-  return settle(() => openTab());
+  return settle(() => (attachedTabId !== null ? attachedTabId : openTab("about:blank")));
 }
 
 async function everyTab() {
-  const tabs = await chrome.tabs.query({});
+  const [tabs, front] = await Promise.all([
+    chrome.tabs.query({}),
+    chrome.windows.getLastFocused({ windowTypes: ["normal"] }).catch(() => null),
+  ]);
   return tabs
-    .filter((tab) => typeof tab.id === "number")
+    .filter((tab) => typeof tab.id === "number" && drivable(tab.pendingUrl || tab.url || "about:blank"))
     .map((tab) => ({
       tabId: tab.id,
       windowId: tab.windowId,
+      openerTabId: tab.openerTabId ?? null,
       title: tab.title || "",
       url: tab.url || "",
       active: Boolean(tab.active),
+      front: Boolean(tab.active && tab.windowId === front?.id),
       shared: tab.id === attachedTabId,
     }));
 }
@@ -242,20 +304,23 @@ const LOCAL = {
   "Target.setDiscoverTargets": async () => ({}),
   "Target.setAutoAttach": async () => ({}),
   "Target.createTarget": async (params) => {
-    await openTab(params?.url || "about:blank");
+    await settle(() => openTab(params?.url || "about:blank"));
     return { targetId: TARGET_ID };
   },
   "qm.listTabs": async () => ({ tabs: await everyTab() }),
   "qm.switchTab": async (params) => {
     const wanted = params?.tabId;
-    if (!(await chrome.tabs.get(wanted).catch(() => null))) throw new Error("there is no open tab with that id");
-    if (!(await claim(wanted))) {
-      throw new Error(
-        "that tab cannot be driven — Chrome's own pages, the Web Store and other extensions are off limits",
-      );
-    }
+    const moved = await settle(async () => {
+      if (!(await chrome.tabs.get(wanted).catch(() => null))) throw new Error("there is no open tab with that id");
+      return claim(wanted);
+    });
+    if (!moved) throw new Error(stopped ? STOPPED_MESSAGE : OFF_LIMITS_MESSAGE);
     const now = await chrome.tabs.get(wanted);
     return { tabId: wanted, title: now.title || "", url: now.url || "" };
+  },
+  "qm.release": async () => {
+    await release();
+    return {};
   },
 };
 
@@ -264,8 +329,15 @@ async function onCommand(frame) {
   try {
     if (await isStopped()) throw new Error(STOPPED_MESSAGE);
     if (Object.hasOwn(LOCAL, method)) return send({ id, result: await LOCAL[method](params) });
-    if (method.startsWith("qm.")) throw new Error(`unknown control command ${method}`);
+    if (/^(qm|Target|Browser)\./.test(method)) throw new Error(`${method} is not available through the Browser Bridge`);
+    if (method === "Page.navigate" && !drivable(String(params?.url ?? ""))) throw new Error(OFF_LIMITS_MESSAGE);
     const tabId = await drivenTab();
+    const url = await tabUrl(tabId);
+    if (url !== null && !drivable(url)) {
+      await lose(tabId);
+      throw new Error(OFF_LIMITS_MESSAGE);
+    }
+    if (stopped) throw new Error(STOPPED_MESSAGE);
     const result = await chrome.debugger.sendCommand({ tabId }, method, params || {});
     send({ id, result: result ?? {} });
   } catch (e) {
@@ -280,40 +352,41 @@ function connect() {
     if (!origin || !token) return;
     if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
 
-    const url = `${origin.replace(/^http/, "ws")}${RELAY_PATH}?t=${encodeURIComponent(token)}`;
-    socket = new WebSocket(url);
+    const ws = new WebSocket(`${origin.replace(/^http/, "ws")}${RELAY_PATH}?t=${encodeURIComponent(token)}`);
+    socket = ws;
 
-    socket.onopen = () => {
+    ws.onopen = () => {
       reconnectDelay = 1000;
       void (async () => {
-        const pending = await chrome.storage.local.get("pendingDetach").catch(() => ({}));
-        if (pending.pendingDetach) {
+        const stored = await chrome.storage.local.get("pendingDetach").catch(() => ({}));
+        if (stored.pendingDetach) {
           send({ qm: "detached" });
           await chrome.storage.local.remove("pendingDetach").catch(() => {});
         }
         await announce(attachedTabId, true);
       })();
     };
-    socket.onmessage = (event) => {
+    ws.onmessage = (event) => {
       let frame;
       try {
         frame = JSON.parse(event.data);
       } catch {
         return;
       }
-      if (typeof frame.id === "number" && typeof frame.method === "string") void onCommand(frame);
+      if (typeof frame?.id === "number" && typeof frame.method === "string") void onCommand(frame);
     };
-    socket.onclose = () => {
+    ws.onclose = () => {
+      if (socket !== ws) return;
       socket = null;
       reconnectDelay = Math.min(reconnectDelay * 2, 30000);
       setTimeout(connect, reconnectDelay);
     };
-    socket.onerror = () => socket && socket.close();
+    ws.onerror = () => ws.close();
   })();
 }
 
 chrome.debugger.onEvent.addListener((source, method, params) => {
-  if (source.tabId !== attachedTabId) return;
+  if (stopped || source.tabId !== attachedTabId) return;
   send({ method, params: params ?? {} });
   if (method === "Page.frameNavigated") {
     void announce(attachedTabId, true);
@@ -324,33 +397,41 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
 chrome.debugger.onDetach.addListener((source, reason) => {
   void (async () => {
     await ready;
-    const tabId = source.tabId;
-    if (tabId !== attachedTabId) return;
     if (reason === "canceled_by_user") return stop();
-    if (reason !== "replaced_with_devtools" && (await claim(tabId))) return;
-    await lose(tabId);
+    const tabId = source.tabId;
+    await settle(async () => {
+      if (tabId !== attachedTabId) return;
+      attachedTabId = null;
+      if (reason !== "replaced_with_devtools" && (await claim(tabId))) return;
+      await fallBack(tabId);
+    });
   })();
 });
 
 chrome.tabs.onCreated.addListener((tab) => {
   void (async () => {
     await ready;
-    if (attachedTabId === null || tab.openerTabId !== attachedTabId) return;
-    if (typeof tab.id !== "number") return;
-    const from = attachedTabId;
-    if (!(await claim(tab.id))) await claim(from);
+    if (!tab.active || typeof tab.id !== "number") return;
+    await settle(async () => {
+      if (attachedTabId === null || tab.openerTabId !== attachedTabId) return;
+      await claim(tab.id);
+    });
   })();
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   void (async () => {
     await ready;
-    if (tabId === previousTabId) previousTabId = null;
     await lose(tabId);
   })();
 });
 
-chrome.runtime.onMessage.addListener((message, _sender, respond) => {
+function fromThisExtension(sender) {
+  return sender?.id === chrome.runtime.id && String(sender.url ?? "").startsWith(chrome.runtime.getURL(""));
+}
+
+chrome.runtime.onMessage.addListener((message, sender, respond) => {
+  if (!fromThisExtension(sender)) return false;
   if (message.type === "share-current-tab" || message.type === "stop-sharing") restoreYielded = true;
   void (async () => {
     await ready;
@@ -358,7 +439,8 @@ chrome.runtime.onMessage.addListener((message, _sender, respond) => {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab?.id) return respond({ ok: false, error: "no active tab" });
       try {
-        if (!(await claim(tab.id, true))) throw new Error("that tab cannot be driven");
+        if (!(await settle(() => claim(tab.id, true)))) throw new Error("that tab cannot be driven");
+        stopped = false;
         await chrome.storage.local.remove("stopped").catch(() => {});
         connect();
         respond({ ok: true, tabId: tab.id, title: tab.title });

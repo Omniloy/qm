@@ -14,15 +14,19 @@ interface Harness {
   attached: Array<{ tabId: number }>;
   detached: Array<{ tabId: number }>;
   created: Array<{ tabId: number; windowId?: number; url: string; active?: boolean }>;
+  removed: number[];
+  live: Set<number>;
+  worlds: string[];
   commands: Array<{ tabId: number; method: string }>;
   store: Record<string, unknown>;
   banners: Array<{ tabId: number; on: boolean }>;
   sent(): Array<Record<string, unknown>>;
   fire(event: string, ...args: unknown[]): void;
-  message(msg: Record<string, unknown>): Promise<Record<string, unknown>>;
+  message(msg: Record<string, unknown>, sender?: Record<string, unknown>): Promise<Record<string, unknown>>;
   command(id: number, method: string, params?: Record<string, unknown>): Promise<Record<string, unknown>>;
   tick(): void;
   openGate(): void;
+  openAttach(): void;
 }
 
 class FakeSocket {
@@ -55,6 +59,9 @@ function install(opts: {
   store?: Record<string, unknown>;
   tabs?: Record<number, Tab>;
   undrivable?: number[];
+  live?: number[];
+  hangs?: number[];
+  attachGate?: boolean;
   noWindow?: boolean;
   attachFails?: boolean;
   canDrive?: boolean;
@@ -67,7 +74,12 @@ function install(opts: {
   const attached: Array<{ tabId: number }> = [];
   const detached: Array<{ tabId: number }> = [];
   const created: Harness["created"] = [];
+  const removed: number[] = [];
+  const live = new Set<number>(opts.live ?? []);
+  const worlds: string[] = [];
   const commands: Harness["commands"] = [];
+  let letAttach = (): void => {};
+  const attachGate = opts.attachGate ? new Promise<void>((r) => (letAttach = r)) : Promise.resolve();
   let nextTab = 100;
   const openTab = (windowId: number, url: string, active?: boolean) => {
     const id = nextTab++;
@@ -116,19 +128,30 @@ function install(opts: {
       },
       create: async ({ windowId, url, active }: { windowId: number; url: string; active?: boolean }) =>
         openTab(windowId, url, active),
+      remove: async (id: number) => {
+        delete tabs[id];
+        removed.push(id);
+      },
       onRemoved: on("removed"),
       onCreated: on("created"),
     },
     debugger: {
       attach: async ({ tabId }: { tabId: number }) => {
         if (opts.attachFails) throw new Error("Cannot access a chrome:// URL");
+        if (live.has(tabId)) throw new Error(`Another debugger is already attached to the tab with id: ${tabId}.`);
+        await attachGate;
+        live.add(tabId);
         attached.push({ tabId });
       },
-      detach: async ({ tabId }: { tabId: number }) => void detached.push({ tabId }),
+      detach: async ({ tabId }: { tabId: number }) => {
+        if (!live.delete(tabId)) throw new Error(`Debugger is not attached to the tab with id: ${tabId}.`);
+        detached.push({ tabId });
+      },
       sendCommand: async ({ tabId }: { tabId: number }, method: string) => {
-        if (!harness.canDrive || !(tabId in tabs) || opts.undrivable?.includes(tabId)) {
+        if (!live.has(tabId) || !harness.canDrive || !(tabId in tabs) || opts.undrivable?.includes(tabId)) {
           throw new Error(`Debugger is not attached to the tab with id: ${tabId}`);
         }
+        if (method === "Runtime.evaluate" && opts.hangs?.includes(tabId)) return new Promise(() => {});
         commands.push({ tabId, method });
         return {};
       },
@@ -144,13 +167,23 @@ function install(opts: {
     },
     action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
     scripting: {
-      executeScript: async ({ target, args }: { target: { tabId: number }; args: unknown[] }) => {
+      executeScript: async ({
+        target,
+        args,
+        world,
+      }: {
+        target: { tabId: number };
+        args: unknown[];
+        world?: string;
+      }) => {
         banners.push({ tabId: target.tabId, on: Boolean(args?.[0]) });
+        worlds.push(world ?? "ISOLATED");
         return [];
       },
     },
     alarms: { create: () => {}, onAlarm: on("alarm") },
     runtime: {
+      id: "test",
       getURL: (p: string) => `chrome-extension://test/${p}`,
       onMessage: on("message"),
       onStartup: on("startup"),
@@ -171,6 +204,9 @@ function install(opts: {
     attached,
     detached,
     created,
+    removed,
+    live,
+    worlds,
     commands,
     store,
     banners,
@@ -178,9 +214,11 @@ function install(opts: {
     fire: (event, ...args) => {
       for (const fn of listeners[event] ?? []) fn(...args);
     },
-    message: (msg) =>
+    message: (msg, sender = { id: "test", url: "chrome-extension://test/popup.html" }) =>
       new Promise((resolve) => {
-        for (const fn of listeners.message ?? []) fn(msg, {}, resolve);
+        for (const fn of listeners.message ?? []) {
+          if (fn(msg, sender, resolve) === false) resolve({ ignored: true });
+        }
       }),
     command: async (id, method, params) => {
       FakeSocket.all[0]!.onmessage?.({ data: JSON.stringify({ id, method, ...(params ? { params } : {}) }) });
@@ -191,6 +229,7 @@ function install(opts: {
       for (const fn of ticks) fn();
     },
     openGate: () => release(),
+    openAttach: () => letAttach(),
   };
   return harness;
 }
@@ -263,7 +302,7 @@ test("a saved tab that has since closed is forgotten rather than re-attached", a
 });
 
 test("a debugger session that outlived the worker is kept, not abandoned", async () => {
-  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: GMAIL, attachFails: true });
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: GMAIL, live: [7] });
   await bootWorker();
 
   assert.ok(
@@ -356,6 +395,7 @@ test("a detach Chrome caused is recovered from, not treated as a decision", asyn
   assert.ok(await until(() => shares(h).length > 0));
   const before = h.attached.length;
 
+  h.live.delete(7);
   h.fire("detach", { tabId: 7 }, "target_closed");
 
   assert.ok(await until(() => h.attached.length > before), "took the tab back");
@@ -369,6 +409,7 @@ test("a tab that cannot be recovered is released, not left half-alive and not a 
   assert.ok(await until(() => shares(h).length > 0));
 
   h.canDrive = false;
+  h.live.delete(7);
   h.fire("detach", { tabId: 7 }, "target_closed");
 
   assert.ok(
@@ -495,6 +536,210 @@ test("a tab that cannot be driven, or does not exist, is refused by name", async
 
   assert.match((locked.error as { message: string }).message, /cannot be driven/);
   assert.match((missing.error as { message: string }).message, /no open tab/);
+  assert.ok(!h.attached.some((a) => a.tabId === 11), "a page that is off limits is never attached to");
+});
+
+const DASHBOARD = { 7: { title: "Gmail", url: "https://mail.google.com/" } };
+
+test("the extension's own pages, Chrome's pages and local files are off limits", async () => {
+  const h = install({
+    store: { ...PAIRED },
+    tabs: {
+      ...DASHBOARD,
+      21: { title: "Browser Bridge", url: "chrome-extension://test/popup.html" },
+      22: { title: "notes", url: "file:///Users/someone/notes.txt" },
+    },
+  });
+  await bootWorker();
+  await booted(h);
+
+  const listed = await h.command(30, "qm.listTabs");
+  const ids = (listed.result as { tabs: Array<{ tabId: number }> }).tabs.map((t) => t.tabId);
+  assert.deepEqual(ids, [7], "only web pages are offered");
+  for (const [i, tabId] of [21, 22].entries()) {
+    const reply = await h.command(31 + i, "qm.switchTab", { tabId });
+    assert.match((reply.error as { message: string }).message, /cannot be driven/);
+  }
+  const nav = await h.command(33, "Page.navigate", { url: "chrome-extension://test/popup.html" });
+  assert.match((nav.error as { message: string }).message, /cannot be driven/);
+  const opened = await h.command(34, "Target.createTarget", { url: "chrome://settings" });
+  assert.match((opened.error as { message: string }).message, /cannot be driven/);
+  assert.deepEqual(h.created, [], "and no tab is left behind for one");
+  assert.ok(!h.attached.some((a) => a.tabId === 21 || a.tabId === 22));
+});
+
+test("a driven tab that ends up on an off-limits page is let go, not driven", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+
+  h.tabs[7] = { title: "Browser Bridge", url: "chrome-extension://test/popup.html" };
+  const reply = await h.command(35, "Runtime.evaluate", { expression: "chrome.storage" });
+
+  assert.match((reply.error as { message: string }).message, /cannot be driven/);
+  assert.ok(!h.commands.some((c) => c.method === "Runtime.evaluate" && c.tabId === 7 && h.commands.length > 1));
+  assert.ok(await until(() => h.sent().some((m) => m.qm === "released")));
+  assert.ok(!h.live.has(7));
+});
+
+test("the banner runs in the page's own world, so no extension context is exposed to the page", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD });
+  await bootWorker();
+  assert.ok(await until(() => h.banners.length > 0));
+  assert.deepEqual([...new Set(h.worlds)], ["MAIN"]);
+});
+
+test("messages from anything but the extension's own pages are ignored", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD, activeTab: 7 });
+  await bootWorker();
+  await booted(h);
+
+  const fromPage = await h.message(
+    { type: "share-current-tab" },
+    { id: "test", url: "https://evil.example/", tab: {} },
+  );
+  const fromElsewhere = await h.message(
+    { type: "stop-sharing" },
+    { id: "other", url: "chrome-extension://other/x.html" },
+  );
+
+  assert.deepEqual(fromPage, { ignored: true });
+  assert.deepEqual(fromElsewhere, { ignored: true });
+  assert.ok(!("stopped" in h.store));
+});
+
+test("Share works on the tab the agent is already driving", async () => {
+  const h = install({ store: { ...PAIRED }, tabs: DASHBOARD, activeTab: 7 });
+  await bootWorker();
+  await booted(h);
+  await h.command(36, "qm.switchTab", { tabId: 7 });
+  assert.ok(h.live.has(7));
+
+  const shared = await h.message({ type: "share-current-tab" });
+
+  assert.equal(shared.ok, true, JSON.stringify(shared));
+  assert.equal(shares(h).at(-1)!.restored, undefined, "the person's click is what picks the browser");
+});
+
+test("two tabs opened at once leave exactly one driven tab, marked and remembered", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+
+  h.tabs[8] = { title: "A", url: "https://a.example/" };
+  h.tabs[9] = { title: "B", url: "https://b.example/" };
+  h.fire("created", { id: 8, openerTabId: 7, active: true });
+  h.fire("created", { id: 9, openerTabId: 7, active: true });
+  await new Promise((r) => setTimeout(r, 100));
+
+  assert.equal(h.live.size, 1, `one debugger session, got ${[...h.live]}`);
+  const driven = [...h.live][0]!;
+  assert.equal(h.store.attachedTabId, driven, "storage names the tab actually driven");
+  const lit = new Map<number, boolean>();
+  for (const b of h.banners) lit.set(b.tabId, b.on);
+  assert.deepEqual(
+    [...lit].filter(([, on]) => on).map(([id]) => id),
+    [driven],
+    "and only that tab carries the banner",
+  );
+});
+
+test("a tab the person opens in the background is not taken over", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+
+  h.tabs[8] = { title: "Theirs", url: "https://theirs.example/" };
+  h.fire("created", { id: 8, openerTabId: 7, active: false });
+  await new Promise((r) => setTimeout(r, 50));
+
+  assert.equal(h.store.attachedTabId, 7);
+});
+
+test("a page busy with a dialog does not wedge every command behind it", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD, hangs: [7] });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7, 4000));
+  h.tabs[8] = { title: "Sign in", url: "https://accounts.example/" };
+  h.fire("created", { id: 8, openerTabId: 7, active: true });
+  assert.ok(await until(() => h.store.attachedTabId === 8));
+
+  delete h.tabs[8];
+  h.fire("removed", 8);
+  const reply = await h.command(37, "Page.handleJavaScriptDialog", { accept: true });
+
+  assert.ok(!reply.error, JSON.stringify(reply.error));
+  assert.deepEqual(h.commands.at(-1), { tabId: 7, method: "Page.handleJavaScriptDialog" });
+});
+
+test("Stop wins over a tab that was being opened at that moment", async () => {
+  const h = install({ store: { ...PAIRED }, tabs: DASHBOARD, attachGate: true });
+  await bootWorker();
+  await booted(h);
+
+  const reply = h.command(38, "Page.navigate", { url: "https://x.test/" });
+  assert.ok(await until(() => h.created.length === 1), "a tab is on its way");
+  const stopped = h.message({ type: "stop-sharing" });
+  h.openAttach();
+  await stopped;
+
+  assert.match(((await reply).error as { message: string }).message, /stopped/);
+  assert.equal(h.live.size, 0, "no debugger session survives the stop");
+  assert.deepEqual(h.removed, [h.created[0]!.tabId], "and the half-opened tab is closed again");
+  const frames = h
+    .sent()
+    .filter((m) => m.qm === "attached" || m.qm === "detached")
+    .map((m) => m.qm);
+  assert.equal(frames.at(-1), "detached", `the relay ends on the stop, got ${frames}`);
+});
+
+test("letting go releases the tab without stopping anything", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+
+  const reply = await h.command(39, "qm.release");
+
+  assert.ok(!reply.error);
+  assert.equal(h.live.size, 0);
+  assert.ok(h.sent().some((m) => m.qm === "released"));
+  assert.ok(!h.sent().some((m) => m.qm === "detached"));
+  assert.ok(!("stopped" in h.store));
+});
+
+test("browser-level commands are refused, never sent to a tab", async () => {
+  const h = install({ store: { ...PAIRED }, tabs: DASHBOARD });
+  await bootWorker();
+  await booted(h);
+
+  const reply = await h.command(40, "Target.closeTarget", { targetId: "x" });
+
+  assert.match((reply.error as { message: string }).message, /not available/);
+  assert.deepEqual(h.created, []);
+});
+
+test("a stale socket closing late does not orphan the live one", async () => {
+  const h = install({ store: { ...PAIRED }, tabs: DASHBOARD });
+  await bootWorker();
+  await booted(h);
+  const stale = h.sockets[0]!;
+  stale.readyState = 2;
+  h.fire("alarm");
+  assert.ok(await until(() => h.sockets.length === 2), "a fresh socket opened");
+  const fresh = h.sockets[1]!;
+
+  stale.onclose?.();
+  fresh.onmessage?.({ data: JSON.stringify({ id: 41, method: "qm.listTabs" }) });
+
+  assert.ok(
+    await until(() => fresh.sent.some((raw) => (JSON.parse(raw) as { id?: number }).id === 41)),
+    "the reply still goes out on the live socket",
+  );
 });
 
 test("Stop keeps the agent out until the person shares a tab again", async () => {
@@ -532,7 +777,7 @@ test("a tab the driven one opened goes back to its opener when it closes", async
   assert.ok(await until(() => h.store.attachedTabId === 7));
 
   h.tabs[8] = { title: "Sign in", url: "https://accounts.example/" };
-  h.fire("created", { id: 8, openerTabId: 7 });
+  h.fire("created", { id: 8, openerTabId: 7, active: true });
   assert.ok(await until(() => h.store.attachedTabId === 8), "followed the pop-up");
 
   delete h.tabs[8];
@@ -550,7 +795,7 @@ test("a command that lands while the tab is being handed back waits, rather than
   await booted(h);
   assert.ok(await until(() => h.store.attachedTabId === 7));
   h.tabs[8] = { title: "Sign in", url: "https://accounts.example/" };
-  h.fire("created", { id: 8, openerTabId: 7 });
+  h.fire("created", { id: 8, openerTabId: 7, active: true });
   assert.ok(await until(() => h.store.attachedTabId === 8));
 
   delete h.tabs[8];

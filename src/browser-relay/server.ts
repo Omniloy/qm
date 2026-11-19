@@ -86,7 +86,8 @@ export function attachBrowserRelay(server: Server, opts: BrowserRelayOptions = {
       if (!principalId) return refuse(socket, 401, "Unauthorized");
       wss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
         const owner = principalId!;
-        hub.attach(owner, side, relaySocket(ws));
+        const relayed = relaySocket(ws);
+        hub.attach(owner, side, relayed);
 
         let idle = setTimeout(() => ws.close(1000, "idle"), idleMs);
         const touch = () => {
@@ -100,7 +101,7 @@ export function attachBrowserRelay(server: Server, opts: BrowserRelayOptions = {
         ws.on("pong", touch);
         ws.on("close", () => {
           clearTimeout(idle);
-          hub.detach(owner, side);
+          hub.detach(owner, side, relayed);
         });
         ws.on("error", () => ws.close());
       });

@@ -422,6 +422,7 @@ SNAPSHOT_JS = r"""
   const SEL = 'a[href],button,input,textarea,select,summary,[role=button],[role=link],' +
               '[role=tab],[role=checkbox],[role=radio],[onclick],[contenteditable=""],' +
               '[contenteditable=true]';
+  const SNAP = "__QMSNAP__";
   document.querySelectorAll('[data-qmref]').forEach(e => e.removeAttribute('data-qmref'));
   const seen = [], out = [];
   let n = 0;
@@ -434,7 +435,7 @@ SNAPSHOT_JS = r"""
     if (seen.some(p => p.contains(el))) continue;   // skip nested duplicates
     seen.push(el);
     n += 1;
-    el.setAttribute('data-qmref', String(n));
+    el.setAttribute('data-qmref', SNAP + '-' + n);
     const tag = el.tagName.toLowerCase();
     const label = (
       el.getAttribute('aria-label') || el.getAttribute('placeholder') ||
@@ -490,9 +491,19 @@ def wait_ready(c, seconds=25):
     return False
 
 
+def ref_selector(ref):
+    """The element `snapshot` listed as ref, and only in the page that snapshot read.
+
+    Refs are stamped with the snapshot that made them, so a ref from another tab
+    or an older page matches nothing instead of a different element.
+    """
+    snap = (read_state() or {}).get("snap", "")
+    return f'[data-qmref="{snap}-{ref}"]'
+
+
 def box_of(c, ref=None, selector=None):
     if ref is not None:
-        expr = f'document.querySelector({json.dumps(f"[data-qmref={json.dumps(str(ref))}]")})'
+        expr = f"document.querySelector({json.dumps(ref_selector(ref))})"
     else:
         expr = f"document.querySelector({json.dumps(selector)})"
     raw = c.eval(f"""
@@ -561,12 +572,20 @@ def safe_output_path(folder, name):
     return outdir, path
 
 
-def tab_ids(c):
-    """The tabs open right now, or None when this browser has no notion of them."""
+def tab_list(c):
+    """Every tab the bridge can drive, or None when this browser has no notion of tabs."""
     try:
-        return {t["tabId"] for t in c.call("qm.listTabs").get("tabs", [])}
+        return c.call("qm.listTabs").get("tabs", [])
     except Exception:
         return None
+
+
+def tab_ids(c):
+    """The tabs open right now and the one being driven, or None when this browser has no notion of them."""
+    tabs = tab_list(c)
+    if tabs is None:
+        return None
+    return {t["tabId"] for t in tabs}, next((t["tabId"] for t in tabs if t.get("shared")), None)
 
 
 def new_tab_url(c, before):
@@ -576,9 +595,11 @@ def new_tab_url(c, before):
     interception is not listening, and the new tab is often a viewer we cannot
     drive — but its URL is all we need to fetch the file properly.
     """
+    ids, driven = before
     try:
         for t in c.call("qm.listTabs").get("tabs", []):
-            if t["tabId"] not in before and str(t.get("url", "")).startswith("http"):
+            opened_here = t.get("openerTabId", driven) == driven
+            if t["tabId"] not in ids and opened_here and str(t.get("url", "")).startswith("http"):
                 return t["url"]
     except Exception:
         return ""
@@ -591,7 +612,7 @@ def href_behind(c, ref):
     A file behind a plain link never needs clicking: fetching the href keeps the
     tab where it is, so nothing navigates into a viewer and nothing breaks.
     """
-    sel = json.dumps(f'[data-qmref="{ref}"]')
+    sel = json.dumps(ref_selector(ref))
     try:
         got = c.eval("(() => { const e = document.querySelector(%s);"
                      " const a = e && e.closest && e.closest('a');"
@@ -792,6 +813,8 @@ def main():
                     "to open Chrome (the extension reconnects on its own within a minute), then run: open\n"
                     "Stopped means they pressed Stop: ask whether they want you back, and if so to press\n"
                     "Share this tab in the extension, then run: open\n"
+                    "No tab is shared means their extension is an older version: ask them to download it\n"
+                    "again from Keychain → Linked accounts → Browser and reload it, or to press Share this tab.\n"
                     "Do NOT quietly attach to a different browser: it has none of their sign-ins, "
                     "and a task aimed at their own browser will fail in a way that looks like your "
                     "mistake rather than a disconnected extension.")
@@ -811,8 +834,9 @@ def main():
                 f"Read skills/browse/providers/{chosen}.md, create the browser it describes,\n"
                 "then come back and run: open --cdp \"$CDP_URL\".")
         die("No browser is connected for this person.\n"
-            "Their own Chrome: ask them to install the QM Browser Bridge extension from\n"
-            "Keychain → Linked accounts → Browser, then run: open.\n"
+            "Their own Chrome: if they already have the QM Browser Bridge extension (it is off after\n"
+            "they press Stop), pressing Share this tab in it turns it back on; if not, they install it\n"
+            "from Keychain → Linked accounts → Browser. Then run: open.\n"
             "A hosted browser: read its provider doc under skills/browse/providers/, create it,\n"
             "then run: open --cdp \"$CDP_URL\".")
 
@@ -824,6 +848,16 @@ def main():
             return
         c, _ = connect()
         try:
+            if state.get("provider") == "extension":
+                tabs = tab_list(c)
+                if tabs is not None:
+                    driven = next((t for t in tabs if t.get("shared")), None)
+                    if driven:
+                        print(f"open (provider=extension) — {driven.get('title', '')[:60]} ({driven.get('url', '')[:120]})")
+                    else:
+                        print("open (provider=extension) — no tab in use yet; the next command opens one, "
+                              "or move to one of theirs with: tabs, then tab <id>")
+                    return
             info = json.loads(c.eval("JSON.stringify({url: location.href, title: document.title})"))
             print(f"open (provider={state.get('provider')}) — "
                   f"{info['title'][:60]} ({info['url'][:120]})")
@@ -890,13 +924,13 @@ def main():
             if status and not (200 <= int(status) < 300):
                 c.call("Fetch.failRequest", requestId=rid, errorReason="Aborted")
                 die(f"That URL answered {status}, so there is nothing to save. "
-                    "If it needs a sign-in, open the page in the shared tab first.")
+                    "If it needs a sign-in, open the page in the tab you are driving first.")
             ctype = headers.get("content-type", "")
             disp = headers.get("content-disposition", "")
             if "text/html" in ctype and "attachment" not in disp.lower():
                 c.call("Fetch.failRequest", requestId=rid, errorReason="Aborted")
                 die("That URL returned a web page, not a file — usually a sign-in wall or an\n"
-                    "error page. Open it in the shared tab first so the session is established,\n"
+                    "error page. Open it in the tab you are driving first so the session is established,\n"
                     "then find the real file URL and download that.")
             if not a.name:
                 m = re.search(r'filename\*?=(?:UTF-8\'\'|")?([^";]+)', disp)
@@ -942,7 +976,7 @@ def main():
                     return
                 for t in tabs:
                     mark = "*" if t.get("shared") else " "
-                    where = " (front)" if t.get("active") else ""
+                    where = " (front)" if t.get("front", t.get("active")) else ""
                     print(f"{mark} [{t['tabId']}] {t.get('title','')[:70]}{where}")
                     print(f"      {t.get('url','')[:110]}")
                 print("\n* is the tab you are driving. Move to any of them with: tab <id>")
@@ -961,6 +995,19 @@ def main():
         if not state or not state.get("cdpUrl"):
             clear_state()
             print("Nothing to close.")
+            return
+        if state.get("provider") == "extension":
+            try:
+                c, _ = connect()
+                try:
+                    c.call("qm.release")
+                finally:
+                    c.close()
+            except (Exception, SystemExit):
+                pass
+            clear_state()
+            print("Let go of their tab. Their Chrome keeps running as it was; the next command "
+                  "opens or picks a tab again.")
             return
         # Not ours to shut down, and pretending otherwise would leave a
         # browser running somewhere while the person believes it stopped.
@@ -1006,7 +1053,9 @@ def main():
                     print(f"page says: {blocked['sample']}")
 
         elif a.cmd == "snapshot":
-            data = json.loads(c.eval(SNAPSHOT_JS))
+            snap = os.urandom(4).hex()
+            data = json.loads(c.eval(SNAPSHOT_JS.replace("__QMSNAP__", snap)))
+            write_state({**state, "snap": snap})
             items = data["items"][: a.max]
             n = data["count"]
             print(f"{n} interactive element{'' if n == 1 else 's'}"

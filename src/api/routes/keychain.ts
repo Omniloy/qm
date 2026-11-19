@@ -255,6 +255,13 @@ async function handleKeychain(ctx: ApiCtx): Promise<void> {
         });
       }
       if (!deps.config) return sendJson(res, 404, { error: "not_found" });
+      if (wanted === EXTENSION_BROWSER_ID && capability.portalSession !== true) {
+        return sendJson(res, 403, {
+          error: "forbidden",
+          message:
+            "only the person can hand their own Chrome to the agent — they choose it in Keychain → Browser, or press Share this tab in the extension",
+        });
+      }
       const wantedSpec = (deps.browserProviders ?? []).find((spec) => spec.id === wanted);
       if (wantedSpec) {
         const owned = new Set((await kc.listByOwner(actorId)).map((credential) => credential.service));

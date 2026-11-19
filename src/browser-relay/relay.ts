@@ -20,10 +20,19 @@ const SESSION_ID = "qm-extension-session";
 
 export interface RelayHub {
   attach(principalId: string, side: RelaySide, socket: RelaySocket): void;
-  detach(principalId: string, side: RelaySide): void;
+  detach(principalId: string, side: RelaySide, socket: RelaySocket): void;
   deliver(principalId: string, side: RelaySide, raw: string): void;
   connected(principalId: string): { extension: boolean; cdp: boolean; sharing: boolean };
   describe(principalId: string): { title?: string; url?: string } | null;
+}
+
+function parseFrame<T extends object>(raw: string): T | null {
+  try {
+    const frame: unknown = JSON.parse(raw);
+    return typeof frame === "object" && frame !== null && !Array.isArray(frame) ? (frame as T) : null;
+  } catch {
+    return null;
+  }
 }
 
 function reply(socket: RelaySocket, id: number, result: unknown): void {
@@ -86,9 +95,9 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
       pair[side] = socket;
     },
 
-    detach(principalId, side) {
+    detach(principalId, side, socket) {
       const pair = pairs.get(principalId);
-      if (!pair) return;
+      if (!pair || pair[side] !== socket) return;
       delete pair[side];
       if (side === "extension") {
         pair.cdp?.close(1001, "the extension disconnected");
@@ -102,12 +111,8 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
       if (!pair) return;
       if (side === "cdp") {
         if (!pair.cdp) return;
-        let frame: { id?: number; method?: string };
-        try {
-          frame = JSON.parse(raw) as { id?: number; method?: string };
-        } catch {
-          return;
-        }
+        const frame = parseFrame<{ id?: number; method?: string }>(raw);
+        if (!frame) return;
         if (typeof frame.id === "number" && typeof frame.method === "string") {
           if (handshake(pair, frame.method, frame.id, pair.cdp)) return;
         }
@@ -122,12 +127,8 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
         pair.extension.send(raw);
         return;
       }
-      let frame: { qm?: unknown; title?: string; url?: string; restored?: boolean };
-      try {
-        frame = JSON.parse(raw) as { qm?: unknown; title?: string; url?: string; restored?: boolean };
-      } catch {
-        return;
-      }
+      const frame = parseFrame<{ qm?: unknown; title?: string; url?: string; restored?: boolean }>(raw);
+      if (!frame) return;
       if (frame.qm === undefined) {
         pair.cdp?.send(raw);
         return;

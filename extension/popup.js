@@ -13,7 +13,7 @@ async function refresh() {
 
   if (s?.stopped) {
     $("state").textContent = "Stopped";
-    $("detail").textContent = "QM can't use this browser until you share a tab";
+    $("detail").textContent = "Share this tab lets QM back in";
   } else if (sharing) {
     $("state").textContent = "QM is using a tab";
     $("detail").textContent = s.sharedTitle || "a tab in this browser";

@@ -1,5 +1,6 @@
 import { mintCapabilityToken } from "../../auth/capability-token.ts";
 import { BROWSER_RELAY_AUD } from "../../browser-relay/server.ts";
+import { EXTENSION_BROWSER_ID } from "../../connectors/browser-providers.ts";
 import { personalScope } from "../../types.ts";
 import { sendJson } from "../http.ts";
 import type { ApiCtx, Route } from "./route.ts";
@@ -31,6 +32,7 @@ async function mintRelayPairing(ctx: ApiCtx): Promise<void> {
     },
     secret,
   );
+  deps.config?.setBrowserProvider(personalScope(principalId), EXTENSION_BROWSER_ID);
   audit(deps, {
     principalId,
     action: "browser-relay.pair",

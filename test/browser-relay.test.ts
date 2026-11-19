@@ -87,7 +87,7 @@ test("losing the extension closes the agent's side rather than hanging it", () =
   const cdp = fake();
   hub.attach(PERSON, "extension", ext);
   hub.attach(PERSON, "cdp", cdp);
-  hub.detach(PERSON, "extension");
+  hub.detach(PERSON, "extension", ext);
   assert.equal(cdp.closed.length, 1);
   assert.deepEqual(hub.connected(PERSON), { extension: false, cdp: false, sharing: false });
 });
@@ -159,9 +159,10 @@ test("sharing is reported only while a tab is actually shared", () => {
 
 test("a share does not survive the socket that announced it", () => {
   const hub = createRelayHub();
-  hub.attach(PERSON, "extension", fake());
+  const first = fake();
+  hub.attach(PERSON, "extension", first);
   hub.deliver(PERSON, "extension", JSON.stringify({ qm: "attached", title: "Gmail" }));
-  hub.detach(PERSON, "extension");
+  hub.detach(PERSON, "extension", first);
 
   hub.attach(PERSON, "extension", fake());
 
@@ -235,7 +236,7 @@ test("a dropped socket is not a decision to stop sharing", () => {
   const ext = fake();
   hub.attach(PERSON, "extension", ext);
   hub.deliver(PERSON, "extension", JSON.stringify({ qm: "attached", title: "LinkedIn" }));
-  hub.detach(PERSON, "extension");
+  hub.detach(PERSON, "extension", ext);
   assert.deepEqual(seen, [true], "only the share fired, not the disconnect");
 });
 
@@ -281,4 +282,37 @@ test("the extension's keepalive stays between the relay and the extension", () =
 
   assert.equal(cdp.sent.length, 0, "an unknown control frame is never forwarded as CDP");
   assert.deepEqual(hub.connected(PERSON), { extension: true, cdp: true, sharing: false });
+});
+
+test("a replaced socket closing late does not take its replacement down with it", () => {
+  const hub = createRelayHub();
+  const stale = fake();
+  const fresh = fake();
+  const cdp = fake();
+  hub.attach(PERSON, "extension", stale);
+  hub.attach(PERSON, "extension", fresh);
+  hub.attach(PERSON, "cdp", cdp);
+
+  hub.detach(PERSON, "extension", stale);
+
+  assert.equal(hub.connected(PERSON).extension, true, "a worker restart must not leave Chrome looking disconnected");
+  assert.equal(cdp.closed.length, 0, "and the agent's connection is untouched");
+  const go = JSON.stringify({ id: 1, method: "Page.reload" });
+  hub.deliver(PERSON, "cdp", go);
+  assert.deepEqual(fresh.sent, [go]);
+});
+
+test("a frame that is valid JSON but not an object is dropped, not thrown", () => {
+  const hub = createRelayHub();
+  const ext = fake();
+  const cdp = fake();
+  hub.attach(PERSON, "extension", ext);
+  hub.attach(PERSON, "cdp", cdp);
+
+  for (const raw of ["null", "1", '"x"', "[]"]) {
+    assert.doesNotThrow(() => hub.deliver(PERSON, "cdp", raw), `cdp ${raw}`);
+    assert.doesNotThrow(() => hub.deliver(PERSON, "extension", raw), `extension ${raw}`);
+  }
+  assert.equal(ext.sent.length, 0);
+  assert.equal(cdp.sent.length, 0);
 });

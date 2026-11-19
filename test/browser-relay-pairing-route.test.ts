@@ -21,7 +21,13 @@ const SECRET = "core-signing-secret".repeat(3);
 const PAIRING = "/v1/browser-relay/pairing";
 
 const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "relay-pairing-")) }));
-const core = createServer(built.app, { signingSecret: SECRET, capabilitySecret: TEST_CAPABILITY_SECRET });
+const core = createServer(built.app, {
+  signingSecret: SECRET,
+  capabilitySecret: TEST_CAPABILITY_SECRET,
+  config: built.config,
+  relayPublicUrl: "http://relay.test",
+  ...(built.keychain ? { keychain: built.keychain } : {}),
+});
 core.listen(0);
 const coreBase = `http://localhost:${(core.address() as AddressInfo).port}`;
 
@@ -98,4 +104,48 @@ test("the web UI's pairing button mints the signed-in person's pairing token", a
   const minted = await verifyCapabilityToken(((await r.json()) as { token: string }).token, TEST_CAPABILITY_SECRET);
   assert.equal(minted?.actorId, "U1");
   assert.equal(minted?.scopeId, personalScope("U1"));
+});
+
+const asPerson = (user: string) =>
+  mintCapabilityToken(
+    { actorId: user, scopeId: personalScope(user), liveActor: true, portalSession: true, exp: Date.now() + 60_000 },
+    TEST_CAPABILITY_SECRET,
+  );
+const asAgent = (user: string) =>
+  mintCapabilityToken(
+    { actorId: user, scopeId: personalScope(user), aud: CONTROL_PLANE_AUD, liveActor: true, exp: Date.now() + 60_000 },
+    TEST_CAPABILITY_SECRET,
+  );
+async function activeBrowser(user: string): Promise<string | null> {
+  const r = await fetch(`${coreBase}/v1/keychain/overview`, { headers: { [CAPABILITY_HEADER]: await asPerson(user) } });
+  return ((await r.json()) as { activeBrowser: string | null }).activeBrowser;
+}
+async function choose(token: string, provider: string): Promise<number> {
+  const r = await fetch(`${coreBase}/v1/keychain/browser`, {
+    method: "POST",
+    headers: { "content-type": "application/json", [CAPABILITY_HEADER]: token },
+    body: JSON.stringify({ provider }),
+  });
+  return r.status;
+}
+
+test("pairing the extension is what chooses the person's own Chrome", async () => {
+  assert.equal(await activeBrowser("U5"), null);
+  const path = withSourceAuthNonce(PAIRING, SECRET);
+  const r = await fetch(`${coreBase}${path}`, {
+    method: "POST",
+    headers: { ...signedHeaders(SECRET, "POST", path, "{}"), ...portal("U5") },
+    body: "{}",
+  });
+  assert.equal(r.status, 200);
+  assert.equal(await activeBrowser("U5"), "extension", "installing the bridge needs no second step");
+});
+
+test("an agent turn cannot hand itself the person's own Chrome", async () => {
+  assert.equal(await choose(await asAgent("U6"), "extension"), 403);
+  assert.equal(await activeBrowser("U6"), null);
+  assert.equal(await choose(await asPerson("U6"), "extension"), 200, "the person choosing it in the app still works");
+  assert.equal(await activeBrowser("U6"), "extension");
+  assert.equal(await choose(await asAgent("U6"), ""), 200, "letting go of it stays open to the agent");
+  assert.equal(await activeBrowser("U6"), null);
 });

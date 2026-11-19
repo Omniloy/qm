@@ -46,10 +46,12 @@ they made deliberately.
   `skills/browse/providers/$BROWSE_PROVIDER.md`, create the browser it describes, then
   `open --cdp "$CDP_URL"`. Every verb behaves the same afterwards.
 
-- **Unset** — the person has connected no browser. Plain `open` will refuse and say so. In a DM,
-  tell them they have no browser yet and can connect one in **Keychain → Linked accounts →
-  Browser**: either install the extension to drive their own Chrome, or paste a hosted
-  provider's key. Do not guess a browser; there is nothing to launch.
+- **Unset** — the person has connected no browser, or pressed Stop in the extension. Plain
+  `open` will refuse and say so. In a DM, tell them so: if they have the extension, pressing
+  **Share this tab** in it turns their Chrome back on; otherwise they connect a browser in
+  **Keychain → Linked accounts → Browser** — install the extension to use their own Chrome, or
+  paste a hosted provider's key. Do not guess a browser; there is nothing to launch. Choosing
+  their own Chrome is theirs to do: the API refuses it from a turn.
 
 ## The verbs
 
@@ -246,7 +248,8 @@ URL. Find that URL the way you would anything else: `snapshot` and read the link
 flow that pops a receipt into a new tab keeps working, and when that tab closes you are moved
 back to the one before. For any other tab, `tabs` lists every tab open in their Chrome, in
 every window, and `tab ID` moves you there. You drive exactly one tab at a time, and the
-banner moves with you so they can see which.
+banner moves with you so they can see which. Refs belong to the snapshot that listed them:
+after you move tabs, or are moved back when one closes, run `snapshot` again before you click.
 
 ## Sign-ins
 
@@ -297,9 +300,10 @@ run unless the person's standing instruction named it.
 python3 skills/browse/scripts/browser.py close
 ```
 
-`close` detaches — it does not stop the browser. The person's own Chrome keeps running as it
-was; a hosted browser bills until its own timeout, so follow the provider doc's Clean up step
-to actually stop it.
+`close` detaches — it does not stop the browser. In the person's own Chrome it lets go of the
+tab you were driving (the banner goes) and their Chrome keeps running as it was; a hosted
+browser bills until its own timeout, so follow the provider doc's Clean up step to actually
+stop it.
 
 **Do not detach just because your answer is ready.** For the extension, the person is watching
 their own screen; for a hosted browser, the pane below the conversation is how they see what you
