@@ -126,7 +126,7 @@ function install(opts: {
       },
       detach: async ({ tabId }: { tabId: number }) => void detached.push({ tabId }),
       sendCommand: async ({ tabId }: { tabId: number }, method: string) => {
-        if (!harness.canDrive || opts.undrivable?.includes(tabId)) {
+        if (!harness.canDrive || !(tabId in tabs) || opts.undrivable?.includes(tabId)) {
           throw new Error(`Debugger is not attached to the tab with id: ${tabId}`);
         }
         commands.push({ tabId, method });
@@ -542,6 +542,24 @@ test("a tab the driven one opened goes back to its opener when it closes", async
   assert.ok(await until(() => h.store.attachedTabId === 7), "back on the tab that opened it");
   assert.equal(shares(h).at(-1)!.title, "Gmail");
   assert.ok(!h.sent().some((m) => m.qm === "released" || m.qm === "detached"), "with no share lost");
+});
+
+test("a command that lands while the tab is being handed back waits, rather than opening a stray tab", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: GMAIL });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+  h.tabs[8] = { title: "Sign in", url: "https://accounts.example/" };
+  h.fire("created", { id: 8, openerTabId: 7 });
+  assert.ok(await until(() => h.store.attachedTabId === 8));
+
+  delete h.tabs[8];
+  h.fire("removed", 8);
+  const reply = await h.command(16, "Runtime.evaluate", { expression: "1" });
+
+  assert.ok(!reply.error, JSON.stringify(reply.error));
+  assert.deepEqual(h.created, [], "the opener was still there to go back to");
+  assert.deepEqual(h.commands.at(-1), { tabId: 7, method: "Runtime.evaluate" });
 });
 
 test("closing the only tab releases it, and the next command opens a fresh one", async () => {

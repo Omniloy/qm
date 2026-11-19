@@ -9,7 +9,7 @@ const STOPPED_MESSAGE =
 let socket = null;
 let attachedTabId = null;
 let previousTabId = null;
-let opening = null;
+let pending = null;
 let reconnectDelay = 1000;
 let restoreYielded = false;
 const ready = Promise.race([
@@ -130,11 +130,12 @@ async function claim(tabId, chosen = false) {
     if (chosen) throw e;
   }
   if (!(await canDrive(tabId))) return false;
-  if (attachedTabId !== null && attachedTabId !== tabId) {
-    previousTabId = attachedTabId;
-    await detach();
-  }
+  const old = attachedTabId;
   attachedTabId = tabId;
+  if (old !== null && old !== tabId) {
+    previousTabId = old;
+    await forget(old);
+  }
   await chrome.storage.local.set({ attachedTabId: tabId });
   await chrome.storage.local.remove("pendingDetach").catch(() => {});
   await announce(tabId, !chosen);
@@ -143,14 +144,27 @@ async function claim(tabId, chosen = false) {
   return true;
 }
 
+function settle(work) {
+  const run = (pending ?? Promise.resolve()).catch(() => {}).then(() => work());
+  const tracked = run.finally(() => {
+    if (pending === tracked) pending = null;
+  });
+  tracked.catch(() => {});
+  pending = tracked;
+  return run;
+}
+
 async function lose(tabId) {
   if (tabId !== attachedTabId) return;
   attachedTabId = null;
   const back = previousTabId;
   previousTabId = null;
-  await forget(tabId);
-  if (back !== null && back !== tabId && (await claim(back))) return;
-  send({ qm: "released" });
+  await settle(async () => {
+    await forget(tabId);
+    if (attachedTabId !== null) return;
+    if (back !== null && back !== tabId && (await claim(back))) return;
+    send({ qm: "released" });
+  });
 }
 
 async function stop() {
@@ -191,11 +205,9 @@ async function openTab(url = "about:blank") {
 }
 
 async function drivenTab() {
+  while (pending) await pending.catch(() => {});
   if (attachedTabId !== null) return attachedTabId;
-  opening ??= openTab().finally(() => {
-    opening = null;
-  });
-  return opening;
+  return settle(() => openTab());
 }
 
 async function everyTab() {
