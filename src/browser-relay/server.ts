@@ -13,11 +13,13 @@ const RELAY_EXTENSION_PATH = "/v1/browser-relay/extension";
 const RELAY_CDP_PATH = "/v1/browser-relay/cdp";
 
 type ScopeAuthorizer = (claims: CapabilityClaims) => Promise<boolean>;
+type ChoiceCheck = (actorId: string) => Promise<boolean>;
 
 export interface BrowserRelayOptions {
   hub?: RelayHub;
   capabilitySecret?: string;
   authorizesScope?: ScopeAuthorizer;
+  stillChosen?: ChoiceCheck;
   idleMs?: number;
 }
 
@@ -44,6 +46,7 @@ async function relayPrincipalFor(
   side: RelaySide,
   secret: string,
   authorizesScope?: ScopeAuthorizer,
+  stillChosen?: ChoiceCheck,
 ): Promise<string | null> {
   if (!token) return null;
   const claims = await verifyCapabilityToken(token, secret);
@@ -51,6 +54,7 @@ async function relayPrincipalFor(
   if (side === "extension") return claims.aud === BROWSER_RELAY_AUD ? claims.actorId : null;
   if (claims.aud !== BROWSER_RELAY_CDP_AUD || !isLivePersonalClaim(claims)) return null;
   if (authorizesScope && !(await authorizesScope(claims))) return null;
+  if (stillChosen && !(await stillChosen(claims.actorId))) return null;
   return claims.actorId;
 }
 
@@ -79,7 +83,13 @@ export function attachBrowserRelay(server: Server, opts: BrowserRelayOptions = {
     void (async () => {
       let principalId: string | null = null;
       try {
-        principalId = await relayPrincipalFor(url.searchParams.get("t"), side, secret, opts.authorizesScope);
+        principalId = await relayPrincipalFor(
+          url.searchParams.get("t"),
+          side,
+          secret,
+          opts.authorizesScope,
+          opts.stillChosen,
+        );
       } catch (e) {
         console.error("[browser-relay] token check failed:", errMessage(e));
       }

@@ -813,6 +813,7 @@ def main():
                     "to open Chrome (the extension reconnects on its own within a minute), then run: open\n"
                     "Stopped means they pressed Stop: ask whether they want you back, and if so to press\n"
                     "Share this tab in the extension, then run: open\n"
+                    "Unauthorized means this turn's access ended: they switched browsers or pressed Stop.\n"
                     "No tab is shared means their extension is an older version: ask them to download it\n"
                     "again from Keychain → Linked accounts → Browser and reload it, or to press Share this tab.\n"
                     "Do NOT quietly attach to a different browser: it has none of their sign-ins, "
@@ -858,7 +859,10 @@ def main():
                         print("open (provider=extension) — no tab in use yet; the next command opens one, "
                               "or move to one of theirs with: tabs, then tab <id>")
                     return
-            info = json.loads(c.eval("JSON.stringify({url: location.href, title: document.title})"))
+            try:
+                info = json.loads(c.eval("JSON.stringify({url: location.href, title: document.title})"))
+            except RuntimeError as e:
+                die(f"The browser did not answer: {str(e)[:200]}")
             print(f"open (provider={state.get('provider')}) — "
                   f"{info['title'][:60]} ({info['url'][:120]})")
         finally:
@@ -1121,7 +1125,15 @@ def main():
             on_pinned_site()
             focus_field(c, a.into, a.into_selector)
             on_pinned_site()
-            c.call("Input.insertText", text=payload["value"])
+            if state.get("provider") == "extension":
+                try:
+                    c.call("qm.insertText", text=payload["value"], origin=origin)
+                except RuntimeError as e:
+                    if "unknown control command" not in str(e):
+                        die(f"Did not fill: {str(e)[:200]}")
+                    c.call("Input.insertText", text=payload["value"])
+            else:
+                c.call("Input.insertText", text=payload["value"])
             print(f"Filled the stored password into the focused field on {origin}.")
 
         elif a.cmd == "key":

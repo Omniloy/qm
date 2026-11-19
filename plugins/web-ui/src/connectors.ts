@@ -473,7 +473,7 @@ function extensionPanel(provider: BrowserProvider): TemplateResult {
                 <button class="btn" type="button" ?disabled=${relayChecking} @click=${() => void recheckExtension()}>
                   ${relayChecking ? "Checking…" : "Re-check"}
                 </button>
-                <a class="btn" href=${withBase("/api/browser-relay/extension.zip")} download>Download again</a>
+                ${extensionDownload("Download again")}
               </div>
               <p class="kc-browser-note">
                 Updating? Download, unzip over the old folder, then press the reload arrow on the extension in
@@ -485,10 +485,8 @@ function extensionPanel(provider: BrowserProvider): TemplateResult {
           ? ""
           : html`<ol class="kc-ext-steps">
                 <li>
-                  <a class="btn" href=${withBase("/api/browser-relay/extension.zip")} download
-                    >Download the extension</a
-                  >
-                  and unzip it. It comes set up with your ${brandName()} address and a pairing token — nothing to paste.
+                  ${extensionDownload("Download the extension")} and unzip it. It comes set up with your ${brandName()}
+                  address and a pairing token — nothing to paste.
                 </li>
                 <li>
                   Open <code>chrome://extensions</code> (copy-paste it — Chrome blocks links there), turn on
@@ -505,6 +503,12 @@ function extensionPanel(provider: BrowserProvider): TemplateResult {
       }
     </div>
   `;
+}
+
+function extensionDownload(label: string): TemplateResult {
+  return html`<form class="kc-download" method="post" action=${withBase("/api/browser-relay/extension.zip")}>
+    <button class="btn" type="submit">${label}</button>
+  </form>`;
 }
 
 function browserActionTpl(action: BrowserAction, tabId: string, provider: BrowserProvider): TemplateResult {

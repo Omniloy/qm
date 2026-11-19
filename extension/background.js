@@ -4,6 +4,18 @@ const TARGET_ID = "qm-extension-page";
 const SESSION_ID = "qm-extension-session";
 const KEEPALIVE_MS = 20_000;
 const DRIVE_CHECK_MS = 2_000;
+const BLANK = "data:text/html,%3Ctitle%3EQM%3C%2Ftitle%3E";
+const WITHHELD = new Set([
+  "DOM.setFileInputFiles",
+  "Input.dispatchDragEvent",
+  "Page.setDownloadBehavior",
+  "Network.loadNetworkResource",
+  "Network.clearBrowserCookies",
+  "Network.clearBrowserCache",
+  "Security.setIgnoreCertificateErrors",
+  "Storage.clearDataForOrigin",
+  "Storage.clearCookies",
+]);
 const STOPPED_MESSAGE =
   "they stopped QM using their Chrome — it stays off until they press Share this tab in the Browser Bridge extension";
 const OFF_LIMITS_MESSAGE =
@@ -13,32 +25,47 @@ let socket = null;
 let attachedTabId = null;
 let previousTabId = null;
 let stopped = false;
+let ownOrigins = [];
 let pending = null;
 let reconnectDelay = 1000;
 let restoreYielded = false;
 const ready = Promise.race([
-  bootstrapFromConfig().then(loadStopped).then(restoreShare),
+  bootstrapFromConfig().then(loadOwnOrigins).then(loadStopped).then(restoreShare),
   new Promise((resolve) => setTimeout(resolve, 5000)),
 ]).catch(() => {});
 
 async function settings() {
-  const { origin, token } = await chrome.storage.local.get(["origin", "token"]);
-  return { origin: origin || "", token: token || "" };
+  const { origin, token, app } = await chrome.storage.local.get(["origin", "token", "app"]);
+  return { origin: origin || "", token: token || "", app: app || "" };
 }
 
 async function bootstrapFromConfig() {
-  const { origin } = await settings();
-  if (origin) return;
+  const { origin, app } = await settings();
+  if (origin && app) return;
   try {
     const res = await fetch(chrome.runtime.getURL("config.json"));
     const cfg = await res.json();
     const next = {};
-    if (cfg.origin) next.origin = cfg.origin;
-    if (cfg.token) next.token = cfg.token;
+    if (!origin && cfg.origin) next.origin = cfg.origin;
+    if (!origin && cfg.token) next.token = cfg.token;
+    if (!app && cfg.app) next.app = cfg.app;
     if (Object.keys(next).length) await chrome.storage.local.set(next);
   } catch {
     void 0;
   }
+}
+
+function originOf(url) {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "";
+  }
+}
+
+async function loadOwnOrigins() {
+  const { origin, app } = await settings().catch(() => ({ origin: "", app: "" }));
+  ownOrigins = [origin, app].map(originOf).filter((o) => o && o !== "null");
 }
 
 async function loadStopped() {
@@ -53,7 +80,11 @@ async function isStopped() {
 }
 
 function drivable(url) {
-  return /^(https?:|data:|about:blank)/i.test(url);
+  return /^(https?:|data:|blob:https?:|about:blank)/i.test(url) && !ownOrigins.includes(originOf(url));
+}
+
+function webOrigin(origin) {
+  return origin === "null" || /^https?:\/\//.test(origin);
 }
 
 async function tabUrl(tabId) {
@@ -124,9 +155,12 @@ async function announce(tabId, restored) {
 async function canDrive(tabId) {
   let timer;
   const probe = chrome.debugger
-    .sendCommand({ tabId }, "Runtime.evaluate", { expression: "1", returnByValue: true })
+    .sendCommand({ tabId }, "Runtime.evaluate", { expression: "location.origin", returnByValue: true })
     .then(
-      () => true,
+      (r) => {
+        const origin = r?.result?.value;
+        return typeof origin !== "string" || (webOrigin(origin) && !ownOrigins.includes(origin));
+      },
       () => false,
     );
   const busy = new Promise((resolve) => {
@@ -149,7 +183,7 @@ function settle(work) {
 async function forget(tabId) {
   await chrome.storage.local.remove("attachedTabId").catch(() => {});
   await badge(tabId, false);
-  await showBanner(tabId, false);
+  void showBanner(tabId, false);
   await chrome.debugger.detach({ tabId }).catch(() => {});
 }
 
@@ -185,7 +219,7 @@ async function claim(tabId, chosen = false) {
   if (chosen) await chrome.storage.local.remove("pendingDetach").catch(() => {});
   await announce(tabId, !chosen);
   await badge(tabId, true);
-  await showBanner(tabId, true);
+  void showBanner(tabId, true);
   return true;
 }
 
@@ -221,6 +255,8 @@ async function stop() {
   stopped = true;
   await chrome.storage.local.set({ stopped: true }).catch(() => {});
   await settle(async () => {
+    stopped = true;
+    await chrome.storage.local.set({ stopped: true }).catch(() => {});
     const stored = await chrome.storage.local.get("attachedTabId").catch(() => ({}));
     const tabId = attachedTabId ?? (typeof stored.attachedTabId === "number" ? stored.attachedTabId : null);
     attachedTabId = null;
@@ -264,7 +300,7 @@ async function openTab(url) {
 async function drivenTab() {
   while (pending) await pending;
   if (attachedTabId !== null) return attachedTabId;
-  return settle(() => (attachedTabId !== null ? attachedTabId : openTab("about:blank")));
+  return settle(() => (attachedTabId !== null ? attachedTabId : openTab(BLANK)));
 }
 
 async function everyTab() {
@@ -304,7 +340,8 @@ const LOCAL = {
   "Target.setDiscoverTargets": async () => ({}),
   "Target.setAutoAttach": async () => ({}),
   "Target.createTarget": async (params) => {
-    await settle(() => openTab(params?.url || "about:blank"));
+    const url = params?.url && params.url !== "about:blank" ? params.url : BLANK;
+    await settle(() => openTab(url));
     return { targetId: TARGET_ID };
   },
   "qm.listTabs": async () => ({ tabs: await everyTab() }),
@@ -322,6 +359,17 @@ const LOCAL = {
     await release();
     return {};
   },
+  "qm.insertText": async (params) =>
+    settle(async () => {
+      const tabId = attachedTabId;
+      const here = tabId === null ? null : await tabUrl(tabId);
+      if (here === null || originOf(here) !== originOf(String(params?.origin ?? ""))) {
+        throw new Error(`refusing to type: the tab in use is not on ${params?.origin}`);
+      }
+      if (stopped) throw new Error(STOPPED_MESSAGE);
+      await chrome.debugger.sendCommand({ tabId }, "Input.insertText", { text: String(params?.text ?? "") });
+      return {};
+    }),
 };
 
 async function onCommand(frame) {
@@ -329,7 +377,9 @@ async function onCommand(frame) {
   try {
     if (await isStopped()) throw new Error(STOPPED_MESSAGE);
     if (Object.hasOwn(LOCAL, method)) return send({ id, result: await LOCAL[method](params) });
-    if (/^(qm|Target|Browser)\./.test(method)) throw new Error(`${method} is not available through the Browser Bridge`);
+    if (/^(qm|Target|Browser)\./.test(method) || WITHHELD.has(method)) {
+      throw new Error(`${method} is not available through the Browser Bridge`);
+    }
     if (method === "Page.navigate" && !drivable(String(params?.url ?? ""))) throw new Error(OFF_LIMITS_MESSAGE);
     const tabId = await drivenTab();
     const url = await tabUrl(tabId);
@@ -439,9 +489,13 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab?.id) return respond({ ok: false, error: "no active tab" });
       try {
-        if (!(await settle(() => claim(tab.id, true)))) throw new Error("that tab cannot be driven");
-        stopped = false;
-        await chrome.storage.local.remove("stopped").catch(() => {});
+        const shared = await settle(async () => {
+          if (!(await claim(tab.id, true))) return false;
+          stopped = false;
+          await chrome.storage.local.remove("stopped").catch(() => {});
+          return true;
+        });
+        if (!shared) throw new Error("that tab cannot be driven");
         connect();
         respond({ ok: true, tabId: tab.id, title: tab.title });
       } catch (e) {
@@ -456,6 +510,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     }
     if (message.type === "save-settings") {
       await chrome.storage.local.set({ origin: message.origin, token: message.token });
+      await loadOwnOrigins();
       connect();
       respond({ ok: true });
       return;

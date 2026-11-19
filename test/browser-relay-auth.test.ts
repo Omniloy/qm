@@ -28,12 +28,19 @@ function mint(claims: Partial<CapabilityClaims>): Promise<string> {
 
 const cdpToken = () => mint({ aud: BROWSER_RELAY_CDP_AUD, liveActor: true });
 
-async function relayServer(authorizesScope?: (c: CapabilityClaims) => Promise<boolean>): Promise<{
+async function relayServer(
+  authorizesScope?: (c: CapabilityClaims) => Promise<boolean>,
+  stillChosen?: (actorId: string) => Promise<boolean>,
+): Promise<{
   server: Server;
   url: string;
 }> {
   const server = createServer();
-  attachBrowserRelay(server, { capabilitySecret: SECRET, ...(authorizesScope ? { authorizesScope } : {}) });
+  attachBrowserRelay(server, {
+    capabilitySecret: SECRET,
+    ...(authorizesScope ? { authorizesScope } : {}),
+    ...(stillChosen ? { stillChosen } : {}),
+  });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   return { server, url: `ws://127.0.0.1:${(server.address() as AddressInfo).port}` };
 }
@@ -100,6 +107,29 @@ test("the CDP leg re-checks the scope with the core authorizer", async () => {
   try {
     assert.equal(await dial(`${url}/v1/browser-relay/cdp?t=${await cdpToken()}`), 401);
     assert.equal(seen[0]?.actorId, ALICE);
+  } finally {
+    server.close();
+  }
+});
+
+test("a turn's relay key stops working once the person stops or switches browsers", async () => {
+  let chosen = true;
+  const asked: string[] = [];
+  const { server, url } = await relayServer(undefined, async (actorId) => {
+    asked.push(actorId);
+    return chosen;
+  });
+  try {
+    const key = await cdpToken();
+    assert.equal(await dial(`${url}/v1/browser-relay/cdp?t=${key}`), "open");
+    chosen = false;
+    assert.equal(await dial(`${url}/v1/browser-relay/cdp?t=${key}`), 401, "the same key, an hour from expiry");
+    assert.deepEqual(asked, [ALICE, ALICE]);
+    assert.equal(
+      await dial(`${url}/v1/browser-relay/extension?t=${await mint({ aud: BROWSER_RELAY_AUD })}`),
+      "open",
+      "the extension itself can still connect, so Share this tab can turn it back on",
+    );
   } finally {
     server.close();
   }

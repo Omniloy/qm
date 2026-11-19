@@ -404,3 +404,9 @@ test("status does not open a tab in the person's Chrome just to describe it", ()
   assert.match(status, /tab_list\(c\)/);
   assert.match(status, /no tab in use yet/);
 });
+
+test("a stored password is typed by the extension, pinned to its site in the same step", () => {
+  const fill = /elif a\.cmd == "type-secret":[\s\S]*?elif a\.cmd == "key":/.exec(CLI)?.[0] ?? "";
+  assert.match(fill, /c\.call\("qm\.insertText", text=payload\["value"\], origin=origin\)/);
+  assert.match(fill, /if "unknown control command" not in str\(e\):\s+die\(/, "a refusal is never retried unpinned");
+});

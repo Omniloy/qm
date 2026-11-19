@@ -5,6 +5,7 @@ interface Tab {
   title: string;
   url: string;
   windowId?: number;
+  origin?: string;
 }
 
 interface Harness {
@@ -62,6 +63,7 @@ function install(opts: {
   live?: number[];
   hangs?: number[];
   attachGate?: boolean;
+  config?: Record<string, string>;
   noWindow?: boolean;
   attachFails?: boolean;
   canDrive?: boolean;
@@ -153,6 +155,11 @@ function install(opts: {
         }
         if (method === "Runtime.evaluate" && opts.hangs?.includes(tabId)) return new Promise(() => {});
         commands.push({ tabId, method });
+        if (method === "Runtime.evaluate") {
+          const tab = tabs[tabId]!;
+          const origin = tab.origin ?? (/^https?:/.test(tab.url) ? new URL(tab.url).origin : "null");
+          return { result: { type: "string", value: origin } };
+        }
         return {};
       },
       onEvent: on("event"),
@@ -176,6 +183,7 @@ function install(opts: {
         args: unknown[];
         world?: string;
       }) => {
+        if (opts.hangs?.includes(target.tabId)) return new Promise(() => {});
         banners.push({ tabId: target.tabId, on: Boolean(args?.[0]) });
         worlds.push(world ?? "ISOLATED");
         return [];
@@ -194,7 +202,8 @@ function install(opts: {
   (globalThis as Record<string, unknown>).chrome = chrome;
   (globalThis as Record<string, unknown>).WebSocket = FakeSocket;
   (globalThis as Record<string, unknown>).fetch = async () => {
-    throw new Error("no baked config");
+    if (!opts.config) throw new Error("no baked config");
+    return { json: async () => opts.config };
   };
 
   const harness: Harness = {
@@ -831,4 +840,90 @@ test("a keepalive goes out while connected, so Chrome keeps the extension awake"
   h.tick();
 
   assert.ok(h.sent().some((m) => m.qm === "ping"));
+});
+
+test("commands that reach local files or every site at once are withheld", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+
+  for (const [i, method] of [
+    "DOM.setFileInputFiles",
+    "Input.dispatchDragEvent",
+    "Network.clearBrowserCookies",
+  ].entries()) {
+    const reply = await h.command(50 + i, method, { files: ["/Users/someone/.ssh/id_ed25519"] });
+    assert.match((reply.error as { message: string }).message, /not available/, method);
+  }
+  assert.ok(!h.commands.some((c) => c.method === "DOM.setFileInputFiles"));
+});
+
+test("QM's own web app is off limits, so the agent cannot act there with the person's session", async () => {
+  const h = install({
+    store: { origin: "https://relay.qm.example.com", token: "tok" },
+    config: { app: "https://qm.example.com" },
+    tabs: { ...DASHBOARD, 23: { title: "Keychain", url: "https://qm.example.com/keychain" } },
+  });
+  await bootWorker();
+  await booted(h);
+
+  assert.equal(h.store.app, "https://qm.example.com", "an update fills in the app address it did not have");
+  const listed = await h.command(53, "qm.listTabs");
+  assert.deepEqual(
+    (listed.result as { tabs: Array<{ tabId: number }> }).tabs.map((t) => t.tabId),
+    [7],
+  );
+  const moved = await h.command(54, "qm.switchTab", { tabId: 23 });
+  assert.match((moved.error as { message: string }).message, /cannot be driven/);
+  const nav = await h.command(55, "Page.navigate", { url: "https://qm.example.com/admin" });
+  assert.match((nav.error as { message: string }).message, /cannot be driven/);
+});
+
+test("a blank tab that carries an extension's origin is refused, and the agent's own tab is opaque", async () => {
+  const h = install({
+    store: { ...PAIRED },
+    tabs: { ...DASHBOARD, 24: { title: "", url: "about:blank", origin: "chrome-extension://other" } },
+  });
+  await bootWorker();
+  await booted(h);
+
+  const moved = await h.command(56, "qm.switchTab", { tabId: 24 });
+  assert.match((moved.error as { message: string }).message, /cannot be driven/);
+  assert.ok(!h.live.has(24), "and the probe's session is let go");
+  await h.command(57, "Page.enable");
+  assert.match(h.created[0]!.url, /^data:text\/html,/, "its own tab is a data: page, which has no origin to inherit");
+});
+
+test("Stop pressed while a Share is still attaching stays stopped", async () => {
+  const h = install({ store: { ...PAIRED }, tabs: DASHBOARD, activeTab: 7, attachGate: true });
+  await bootWorker();
+  await booted(h);
+
+  const sharing = h.message({ type: "share-current-tab" });
+  await new Promise((r) => setTimeout(r, 20));
+  const stopping = h.message({ type: "stop-sharing" });
+  h.openAttach();
+  await Promise.all([sharing, stopping]);
+
+  assert.equal(h.store.stopped, true, "the later decision wins in storage");
+  assert.equal((await h.message({ type: "status" })).stopped, true, "and in the running worker");
+  const refused = await h.command(58, "Page.enable");
+  assert.match((refused.error as { message: string }).message, /stopped/);
+  assert.equal(h.live.size, 0);
+});
+
+test("a stored password is typed only while the tab in use is on its site", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+
+  const wrong = await h.command(59, "qm.insertText", { text: "s3cret", origin: "https://bank.example" });
+  assert.match((wrong.error as { message: string }).message, /refusing to type/);
+  assert.ok(!h.commands.some((c) => c.method === "Input.insertText"));
+
+  const right = await h.command(60, "qm.insertText", { text: "s3cret", origin: "https://mail.google.com" });
+  assert.ok(!right.error, JSON.stringify(right.error));
+  assert.deepEqual(h.commands.at(-1), { tabId: 7, method: "Input.insertText" });
 });

@@ -149,3 +149,17 @@ test("an agent turn cannot hand itself the person's own Chrome", async () => {
   assert.equal(await choose(await asAgent("U6"), ""), 200, "letting go of it stays open to the agent");
   assert.equal(await activeBrowser("U6"), null);
 });
+
+test("downloading the extension is a POST, so a link cannot pair it and pick the browser", async () => {
+  const headers = { cookie: "webuiuser=U7", ...portal("U7") };
+  const viaLink = await fetch(`${webBase}/api/browser-relay/extension.zip`, { headers });
+  assert.notEqual(viaLink.headers.get("content-type"), "application/zip", "a plain GET serves no extension");
+  assert.equal(await activeBrowser("U7"), null, "and mints no pairing, so the browser choice is untouched");
+
+  const viaButton = await fetch(`${webBase}/api/browser-relay/extension.zip`, { method: "POST", headers });
+  const body = viaButton.status === 404 ? ((await viaButton.json()) as { message?: string }).message : "";
+  assert.ok(
+    viaButton.status === 200 || /not bundled/.test(body ?? ""),
+    `the button's POST reaches the download route (${viaButton.status} ${body})`,
+  );
+});

@@ -4978,6 +4978,10 @@ summary.stopped-head:focus-visible {
   padding: 24px;
 }
 
+.kc-download {
+  display: inline;
+}
+
 .btn {
   display: inline-flex;
   align-items: center;

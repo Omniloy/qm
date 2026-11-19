@@ -2523,7 +2523,7 @@ const apiRoutes: readonly WebRoute[] = [
     },
   },
   {
-    method: "GET",
+    method: "POST",
     path: "/api/browser-relay/extension.zip",
     handle: async (c) => {
       const { res } = c;
@@ -2538,7 +2538,7 @@ const apiRoutes: readonly WebRoute[] = [
         if (pairing.status >= 200 && pairing.status < 300) {
           try {
             const p = JSON.parse(pairing.text) as { token?: string; relayUrl?: string };
-            const cfg: Record<string, string> = {};
+            const cfg: Record<string, string> = { app: new URL(PUBLIC_URL).origin };
             if (p.relayUrl) cfg.origin = p.relayUrl;
             if (p.token) cfg.token = p.token;
             if (Object.keys(cfg).length) {
