@@ -58,6 +58,7 @@ attachBrowserRelay(server, {
     built.identity.classify(claims.actorId).type === "internal" && (await built.app.authorizesCapabilityScope(claims)),
   stillChosen: async (actorId) =>
     (await built.config.getBrowserProviderDurable(personalScope(actorId))) === EXTENSION_BROWSER_ID,
+  ...(config.publicUrl ? { appUrl: config.publicUrl } : {}),
   ...(config.capabilitySecret ? { capabilitySecret: config.capabilitySecret } : {}),
 });
 

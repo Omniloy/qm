@@ -135,6 +135,24 @@ test("a turn's relay key stops working once the person stops or switches browser
   }
 });
 
+test("the extension learns QM's own address as soon as it connects", async () => {
+  const server = createServer();
+  attachBrowserRelay(server, { capabilitySecret: SECRET, appUrl: "https://qm.example.com" });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    const ws = new WebSocket(`${url}/v1/browser-relay/extension?t=${await mint({ aud: BROWSER_RELAY_AUD })}`);
+    const first = await new Promise<string>((resolve, reject) => {
+      ws.once("message", (data) => resolve(String(data)));
+      ws.once("error", reject);
+    });
+    ws.close();
+    assert.deepEqual(JSON.parse(first), { qm: "origins", app: "https://qm.example.com" });
+  } finally {
+    server.close();
+  }
+});
+
 test("the extension leg takes only a pairing token", async () => {
   const { server, url } = await relayServer();
   try {

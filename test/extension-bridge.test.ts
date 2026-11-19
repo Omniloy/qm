@@ -6,6 +6,7 @@ interface Tab {
   url: string;
   windowId?: number;
   origin?: string;
+  focused?: string;
 }
 
 interface Harness {
@@ -149,7 +150,7 @@ function install(opts: {
         if (!live.delete(tabId)) throw new Error(`Debugger is not attached to the tab with id: ${tabId}.`);
         detached.push({ tabId });
       },
-      sendCommand: async ({ tabId }: { tabId: number }, method: string) => {
+      sendCommand: async ({ tabId }: { tabId: number }, method: string, params?: unknown) => {
         if (!live.has(tabId) || !harness.canDrive || !(tabId in tabs) || opts.undrivable?.includes(tabId)) {
           throw new Error(`Debugger is not attached to the tab with id: ${tabId}`);
         }
@@ -158,7 +159,9 @@ function install(opts: {
         if (method === "Runtime.evaluate") {
           const tab = tabs[tabId]!;
           const origin = tab.origin ?? (/^https?:/.test(tab.url) ? new URL(tab.url).origin : "null");
-          return { result: { type: "string", value: origin } };
+          const asked = String((params as { expression?: string } | undefined)?.expression ?? "");
+          const value = asked.includes("activeElement") ? JSON.stringify([origin, tab.focused ?? "INPUT"]) : origin;
+          return { result: { type: "string", value } };
         }
         return {};
       },
@@ -231,7 +234,7 @@ function install(opts: {
       }),
     command: async (id, method, params) => {
       FakeSocket.all[0]!.onmessage?.({ data: JSON.stringify({ id, method, ...(params ? { params } : {}) }) });
-      assert.ok(await until(() => harness.sent().some((m) => m.id === id)), `${method} was answered`);
+      assert.ok(await until(() => harness.sent().some((m) => m.id === id), 8000), `${method} was answered`);
       return harness.sent().find((m) => m.id === id)!;
     },
     tick: () => {
@@ -370,7 +373,7 @@ test("stopping mid-restore is not quietly undone", async () => {
 });
 
 test("a storage failure does not brick the keepalive reconnect", async () => {
-  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: GMAIL, storageFailures: 3 });
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: GMAIL, storageFailures: 5 });
   await bootWorker();
 
   assert.equal(h.sockets.length, 0, "boot could not read the token, so nothing connected");
@@ -430,7 +433,7 @@ test("a tab that cannot be recovered is released, not left half-alive and not a 
 });
 
 const booted = async (h: Harness): Promise<void> => {
-  assert.ok(await until(() => h.sockets.length > 0), "connected to the relay");
+  assert.ok(await until(() => h.sockets.length > 0, 8000), "connected to the relay");
   await new Promise((r) => setTimeout(r, 10));
 };
 
@@ -476,7 +479,7 @@ test("two commands racing with nothing shared open one tab, not two", async () =
   await bootWorker();
   await booted(h);
 
-  await Promise.all([h.command(4, "Page.enable"), h.command(5, "Runtime.enable")]);
+  await Promise.all([h.command(4, "Page.enable"), h.command(5, "Runtime.evaluate", { expression: "1" })]);
 
   assert.equal(h.created.length, 1);
 });
@@ -926,4 +929,104 @@ test("a stored password is typed only while the tab in use is on its site", asyn
   const right = await h.command(60, "qm.insertText", { text: "s3cret", origin: "https://mail.google.com" });
   assert.ok(!right.error, JSON.stringify(right.error));
   assert.deepEqual(h.commands.at(-1), { tabId: 7, method: "Input.insertText" });
+});
+
+test("only the commands the agent's verbs use get through", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+
+  const refusedMethods = [
+    "Page.addScriptToEvaluateOnNewDocument",
+    "Page.navigateToHistoryEntry",
+    "Network.getAllCookies",
+    "Network.setCookie",
+    "Storage.getCookies",
+    "Storage.clearDataForStorageKey",
+    "IndexedDB.requestData",
+  ];
+  for (const [i, method] of refusedMethods.entries()) {
+    const reply = await h.command(70 + i, method, {});
+    assert.match((reply.error as { message: string }).message, /not available/, method);
+  }
+  const qmCookies = await h.command(80, "Network.getCookies", { urls: ["https://qm.example.com/"] });
+  assert.match((qmCookies.error as { message: string }).message, /cannot be driven/);
+  const rerouted = await h.command(81, "Fetch.continueRequest", { requestId: "r1", url: "https://qm.example.com/" });
+  assert.match((rerouted.error as { message: string }).message, /unchanged/);
+  const ok = await h.command(82, "Network.getCookies", {});
+  assert.ok(!ok.error, "the page's own cookies still work");
+});
+
+test("events about QM's own origin, and anything carrying raw cookie headers, never reach the agent", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+  const before = h.sent().length;
+
+  h.fire("event", { tabId: 7 }, "Network.requestWillBeSent", {
+    requestId: "1",
+    request: { url: "https://qm.example.com/" },
+  });
+  h.fire("event", { tabId: 7 }, "Network.requestWillBeSentExtraInfo", { requestId: "1", headers: { Cookie: "s=1" } });
+  h.fire("event", { tabId: 7 }, "Runtime.consoleAPICalled", { args: [{ value: "exfil" }] });
+  h.fire("event", { tabId: 7 }, "Network.requestWillBeSent", {
+    requestId: "2",
+    request: { url: "https://mail.google.com/x" },
+  });
+
+  const forwarded = h
+    .sent()
+    .slice(before)
+    .filter((m) => typeof m.method === "string");
+  assert.deepEqual(
+    forwarded.map((m) => [m.method, (m.params as { requestId?: string }).requestId]),
+    [["Network.requestWillBeSent", "2"]],
+  );
+});
+
+test("the relay tells the extension QM's own address, which is then off limits", async () => {
+  const h = install({
+    store: { origin: "https://relay.qm.example.com", token: "tok" },
+    tabs: { ...DASHBOARD, 25: { title: "QM", url: "https://app.qm.example.com/keychain" } },
+  });
+  await bootWorker();
+  await booted(h);
+  h.sockets[0]!.onmessage?.({ data: JSON.stringify({ qm: "origins", app: "https://app.qm.example.com/" }) });
+  await new Promise((r) => setTimeout(r, 20));
+
+  assert.equal(h.store.app, "https://app.qm.example.com");
+  const moved = await h.command(83, "qm.switchTab", { tabId: 25 });
+  assert.match((moved.error as { message: string }).message, /cannot be driven/);
+});
+
+test("a password is not typed into a focused frame from another site", async () => {
+  const h = install({
+    store: { ...PAIRED, attachedTabId: 7 },
+    tabs: { 7: { title: "Gmail", url: "https://mail.google.com/", focused: "IFRAME" } },
+  });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+
+  const reply = await h.command(84, "qm.insertText", { text: "s3cret", origin: "https://mail.google.com" });
+
+  assert.match((reply.error as { message: string }).message, /refusing to type/);
+  assert.ok(!h.commands.some((c) => c.method === "Input.insertText"));
+});
+
+test("a blank tab too busy to say where it came from is not taken", async () => {
+  const h = install({
+    store: { ...PAIRED },
+    tabs: { ...DASHBOARD, 26: { title: "", url: "about:blank", origin: "https://qm.example.com" } },
+    hangs: [26],
+  });
+  await bootWorker();
+  await booted(h);
+
+  const moved = await h.command(85, "qm.switchTab", { tabId: 26 });
+
+  assert.match((moved.error as { message: string }).message, /cannot be driven/);
+  assert.ok(!h.live.has(26));
 });

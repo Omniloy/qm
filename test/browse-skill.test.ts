@@ -410,3 +410,10 @@ test("a stored password is typed by the extension, pinned to its site in the sam
   assert.match(fill, /c\.call\("qm\.insertText", text=payload\["value"\], origin=origin\)/);
   assert.match(fill, /if "unknown control command" not in str\(e\):\s+die\(/, "a refusal is never retried unpinned");
 });
+
+test("a download named by the server lands through the same workspace check, in a folder it creates", () => {
+  assert.match(CLI, /def safe_output_path[\s\S]*?os\.makedirs\(outdir, exist_ok=True\)\n\s+return outdir, path/);
+  const dl = /if a\.cmd == "download":[\s\S]*?if a\.cmd in \("tabs", "tab"\):/.exec(CLI)?.[0] ?? "";
+  assert.match(dl, /name = urllib\.parse\.unquote[\s\S]*?outdir, path = safe_output_path\(a\.dir, name\)/);
+  assert.doesNotMatch(dl, /path = os\.path\.join\(outdir/);
+});

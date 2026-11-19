@@ -20,6 +20,7 @@ export interface BrowserRelayOptions {
   capabilitySecret?: string;
   authorizesScope?: ScopeAuthorizer;
   stillChosen?: ChoiceCheck;
+  appUrl?: string;
   idleMs?: number;
 }
 
@@ -98,6 +99,7 @@ export function attachBrowserRelay(server: Server, opts: BrowserRelayOptions = {
         const owner = principalId!;
         const relayed = relaySocket(ws);
         hub.attach(owner, side, relayed);
+        if (side === "extension" && opts.appUrl) relayed.send(JSON.stringify({ qm: "origins", app: opts.appUrl }));
 
         let idle = setTimeout(() => ws.close(1000, "idle"), idleMs);
         const touch = () => {

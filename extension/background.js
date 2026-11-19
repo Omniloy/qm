@@ -5,16 +5,36 @@ const SESSION_ID = "qm-extension-session";
 const KEEPALIVE_MS = 20_000;
 const DRIVE_CHECK_MS = 2_000;
 const BLANK = "data:text/html,%3Ctitle%3EQM%3C%2Ftitle%3E";
-const WITHHELD = new Set([
-  "DOM.setFileInputFiles",
-  "Input.dispatchDragEvent",
-  "Page.setDownloadBehavior",
-  "Network.loadNetworkResource",
-  "Network.clearBrowserCookies",
-  "Network.clearBrowserCache",
-  "Security.setIgnoreCertificateErrors",
-  "Storage.clearDataForOrigin",
-  "Storage.clearCookies",
+const ALLOWED = new Set([
+  "Page.enable",
+  "Page.navigate",
+  "Page.captureScreenshot",
+  "Page.handleJavaScriptDialog",
+  "Runtime.evaluate",
+  "Input.dispatchMouseEvent",
+  "Input.dispatchKeyEvent",
+  "Input.insertText",
+  "Network.enable",
+  "Network.getCookies",
+  "Network.getResponseBody",
+  "Fetch.enable",
+  "Fetch.disable",
+  "Fetch.continueRequest",
+  "Fetch.failRequest",
+  "Fetch.takeResponseBodyAsStream",
+  "IO.read",
+  "IO.close",
+]);
+const FORWARDED = new Set([
+  "Page.loadEventFired",
+  "Page.domContentEventFired",
+  "Page.frameNavigated",
+  "Page.javascriptDialogOpening",
+  "Network.requestWillBeSent",
+  "Network.responseReceived",
+  "Network.loadingFinished",
+  "Network.loadingFailed",
+  "Fetch.requestPaused",
 ]);
 const STOPPED_MESSAGE =
   "they stopped QM using their Chrome — it stays off until they press Share this tab in the Browser Bridge extension";
@@ -29,10 +49,12 @@ let ownOrigins = [];
 let pending = null;
 let reconnectDelay = 1000;
 let restoreYielded = false;
-const ready = Promise.race([
-  bootstrapFromConfig().then(loadOwnOrigins).then(loadStopped).then(restoreShare),
-  new Promise((resolve) => setTimeout(resolve, 5000)),
-]).catch(() => {});
+const ready = (async () => {
+  await bootstrapFromConfig().catch(() => {});
+  await loadOwnOrigins();
+  await loadStopped();
+  await Promise.race([restoreShare(), new Promise((resolve) => setTimeout(resolve, 5000))]);
+})().catch(() => {});
 
 async function settings() {
   const { origin, token, app } = await chrome.storage.local.get(["origin", "token", "app"]);
@@ -61,6 +83,13 @@ function originOf(url) {
   } catch {
     return "";
   }
+}
+
+async function learnApp(app) {
+  const origin = originOf(app);
+  if (!origin || origin === "null") return;
+  if (!ownOrigins.includes(origin)) ownOrigins = [...ownOrigins, origin];
+  await chrome.storage.local.set({ app: origin }).catch(() => {});
 }
 
 async function loadOwnOrigins() {
@@ -164,9 +193,17 @@ async function canDrive(tabId) {
       () => false,
     );
   const busy = new Promise((resolve) => {
-    timer = setTimeout(() => resolve(true), DRIVE_CHECK_MS);
+    timer = setTimeout(() => resolve("busy"), DRIVE_CHECK_MS);
   });
   return Promise.race([probe, busy]).finally(() => clearTimeout(timer));
+}
+
+function withTimeout(promise, ms) {
+  let timer;
+  const late = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error("the page did not respond")), ms);
+  });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
 function settle(work) {
@@ -204,7 +241,8 @@ async function claim(tabId, chosen = false) {
       attachError = e;
     }
   }
-  if (!(await canDrive(tabId)) || (!chosen && stopped)) {
+  const probe = await canDrive(tabId);
+  if (probe === false || (probe === "busy" && /^about:/i.test(url)) || (!chosen && stopped)) {
     if (attachedHere && tabId !== attachedTabId) await chrome.debugger.detach({ tabId }).catch(() => {});
     if (chosen && attachError) throw attachError;
     return false;
@@ -362,12 +400,23 @@ const LOCAL = {
   "qm.insertText": async (params) =>
     settle(async () => {
       const tabId = attachedTabId;
-      const here = tabId === null ? null : await tabUrl(tabId);
-      if (here === null || originOf(here) !== originOf(String(params?.origin ?? ""))) {
-        throw new Error(`refusing to type: the tab in use is not on ${params?.origin}`);
-      }
+      const want = originOf(String(params?.origin ?? ""));
+      const refuse = new Error(`refusing to type: the tab in use is not on ${params?.origin}`);
+      if (tabId === null || !want) throw refuse;
+      const probe = await withTimeout(
+        chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
+          expression: "JSON.stringify([location.origin, document.activeElement ? document.activeElement.tagName : ''])",
+          returnByValue: true,
+        }),
+        DRIVE_CHECK_MS,
+      );
+      const [origin, focused] = JSON.parse(probe?.result?.value ?? "[]");
+      if (origin !== want || /^(IFRAME|FRAME|OBJECT|EMBED)$/i.test(focused ?? "")) throw refuse;
       if (stopped) throw new Error(STOPPED_MESSAGE);
-      await chrome.debugger.sendCommand({ tabId }, "Input.insertText", { text: String(params?.text ?? "") });
+      await withTimeout(
+        chrome.debugger.sendCommand({ tabId }, "Input.insertText", { text: String(params?.text ?? "") }),
+        DRIVE_CHECK_MS,
+      );
       return {};
     }),
 };
@@ -377,10 +426,14 @@ async function onCommand(frame) {
   try {
     if (await isStopped()) throw new Error(STOPPED_MESSAGE);
     if (Object.hasOwn(LOCAL, method)) return send({ id, result: await LOCAL[method](params) });
-    if (/^(qm|Target|Browser)\./.test(method) || WITHHELD.has(method)) {
-      throw new Error(`${method} is not available through the Browser Bridge`);
-    }
+    if (!ALLOWED.has(method)) throw new Error(`${method} is not available through the Browser Bridge`);
     if (method === "Page.navigate" && !drivable(String(params?.url ?? ""))) throw new Error(OFF_LIMITS_MESSAGE);
+    if (method === "Network.getCookies" && (params?.urls ?? []).some((u) => !drivable(String(u)))) {
+      throw new Error(OFF_LIMITS_MESSAGE);
+    }
+    if (method === "Fetch.continueRequest" && Object.keys(params ?? {}).some((k) => k !== "requestId")) {
+      throw new Error("Fetch.continueRequest can only let a request through unchanged");
+    }
     const tabId = await drivenTab();
     const url = await tabUrl(tabId);
     if (url !== null && !drivable(url)) {
@@ -423,6 +476,10 @@ function connect() {
       } catch {
         return;
       }
+      if (frame?.qm === "origins" && typeof frame.app === "string") {
+        void learnApp(frame.app);
+        return;
+      }
       if (typeof frame?.id === "number" && typeof frame.method === "string") void onCommand(frame);
     };
     ws.onclose = () => {
@@ -435,9 +492,14 @@ function connect() {
   })();
 }
 
+function aboutOwnOrigin(params) {
+  const url = params?.request?.url ?? params?.response?.url ?? params?.frame?.url ?? params?.url;
+  return typeof url === "string" && ownOrigins.includes(originOf(url));
+}
+
 chrome.debugger.onEvent.addListener((source, method, params) => {
   if (stopped || source.tabId !== attachedTabId) return;
-  send({ method, params: params ?? {} });
+  if (FORWARDED.has(method) && !aboutOwnOrigin(params)) send({ method, params: params ?? {} });
   if (method === "Page.frameNavigated") {
     void announce(attachedTabId, true);
     void showBanner(attachedTabId, true);
@@ -509,7 +571,10 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       return;
     }
     if (message.type === "save-settings") {
+      const before = await settings().catch(() => ({ origin: "" }));
       await chrome.storage.local.set({ origin: message.origin, token: message.token });
+      if (originOf(before.origin) !== originOf(message.origin))
+        await chrome.storage.local.remove("app").catch(() => {});
       await loadOwnOrigins();
       connect();
       respond({ ok: true });

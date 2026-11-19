@@ -569,6 +569,7 @@ def safe_output_path(folder, name):
     path = os.path.realpath(os.path.join(outdir, leaf))
     if not path.startswith(root + os.sep):
         die("That filename would write outside the workspace.")
+    os.makedirs(outdir, exist_ok=True)
     return outdir, path
 
 
@@ -940,7 +941,7 @@ def main():
                 m = re.search(r'filename\*?=(?:UTF-8\'\'|")?([^";]+)', disp)
                 if m:
                     name = urllib.parse.unquote(m.group(1).strip().strip('"'))
-                    path = os.path.join(outdir, os.path.basename(name))
+                    outdir, path = safe_output_path(a.dir, name)
             stream = c.call("Fetch.takeResponseBodyAsStream", requestId=rid)["stream"]
             total = 0
             with open(path, "wb") as f:
