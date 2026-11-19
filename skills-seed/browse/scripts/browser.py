@@ -1117,7 +1117,7 @@ def main():
             origin = payload.get("origin", "")
 
             def on_pinned_site():
-                here = json.loads(c.eval("JSON.stringify({url: location.href})"))["url"]
+                here = c.eval("location.href")
                 if not same_origin(here, origin):
                     die(f"Refusing to fill: this page ({here}) is not the site this password is "
                         f"pinned to ({origin}).\nThe stored password is only ever typed on its own "

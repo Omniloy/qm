@@ -735,9 +735,12 @@ export function buildApp(
     },
   });
   const browserProviders = loadBrowserProviders(config.skillsSeedDir);
+  const shareTurns = new Map<string, number>();
   const browserRelay = createRelayHub({
     onShareChanged(principalId, sharing) {
       const scope = personalScope(principalId);
+      const turn = (shareTurns.get(scope) ?? 0) + 1;
+      shareTurns.set(scope, turn);
       if (sharing) {
         configStore.setBrowserProvider(scope, EXTENSION_BROWSER_ID);
         return;
@@ -745,7 +748,8 @@ export function buildApp(
       void configStore
         .getBrowserProviderDurable(scope)
         .then((current) => {
-          if (current === EXTENSION_BROWSER_ID) configStore.setBrowserProvider(scope, null);
+          if (shareTurns.get(scope) === turn && current === EXTENSION_BROWSER_ID)
+            configStore.setBrowserProvider(scope, null);
         })
         .catch(swallowAs("browser choice after Stop", undefined));
     },

@@ -113,9 +113,8 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
         if (!pair.cdp) return;
         const frame = parseFrame<{ id?: number; method?: string }>(raw);
         if (!frame) return;
-        if (typeof frame.id === "number" && typeof frame.method === "string") {
-          if (handshake(pair, frame.method, frame.id, pair.cdp)) return;
-        }
+        if (typeof frame.id !== "number" || typeof frame.method !== "string") return;
+        if (handshake(pair, frame.method, frame.id, pair.cdp)) return;
         if (!pair.extension) {
           refuse(
             pair.cdp,

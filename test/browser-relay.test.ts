@@ -316,3 +316,16 @@ test("a frame that is valid JSON but not an object is dropped, not thrown", () =
   assert.equal(ext.sent.length, 0);
   assert.equal(cdp.sent.length, 0);
 });
+
+test("only real commands cross from the agent to the extension", () => {
+  const hub = createRelayHub();
+  const ext = fake();
+  const cdp = fake();
+  hub.attach(PERSON, "extension", ext);
+  hub.attach(PERSON, "cdp", cdp);
+
+  hub.deliver(PERSON, "cdp", JSON.stringify({ qm: "origins", app: "https://evil.example" }));
+  hub.deliver(PERSON, "cdp", JSON.stringify({ method: "Page.enable" }));
+
+  assert.deepEqual(ext.sent, [], "a control frame or an id-less message from the agent is dropped");
+});

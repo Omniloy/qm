@@ -7,6 +7,8 @@ interface Tab {
   windowId?: number;
   origin?: string;
   focused?: string;
+  frames?: string[];
+  says?: string;
 }
 
 interface Harness {
@@ -20,6 +22,7 @@ interface Harness {
   live: Set<number>;
   worlds: string[];
   commands: Array<{ tabId: number; method: string }>;
+  sentParams: Array<{ method: string; params: unknown }>;
   store: Record<string, unknown>;
   banners: Array<{ tabId: number; on: boolean }>;
   sent(): Array<Record<string, unknown>>;
@@ -73,7 +76,9 @@ function install(opts: {
   gated?: boolean;
 }): Harness {
   const store: Record<string, unknown> = { ...opts.store };
-  const tabs: Record<number, Tab> = { ...opts.tabs };
+  const tabs: Record<number, Tab> = Object.fromEntries(
+    Object.entries(opts.tabs ?? {}).map(([id, tab]) => [id, { ...tab }]),
+  );
   const attached: Array<{ tabId: number }> = [];
   const detached: Array<{ tabId: number }> = [];
   const created: Harness["created"] = [];
@@ -81,6 +86,7 @@ function install(opts: {
   const live = new Set<number>(opts.live ?? []);
   const worlds: string[] = [];
   const commands: Harness["commands"] = [];
+  const sentParams: Harness["sentParams"] = [];
   let letAttach = (): void => {};
   const attachGate = opts.attachGate ? new Promise<void>((r) => (letAttach = r)) : Promise.resolve();
   let nextTab = 100;
@@ -156,11 +162,26 @@ function install(opts: {
         }
         if (method === "Runtime.evaluate" && opts.hangs?.includes(tabId)) return new Promise(() => {});
         commands.push({ tabId, method });
+        sentParams.push({ method, params });
+        const tab = tabs[tabId]!;
+        const originOf = (u: string) => (/^https?:/.test(u) ? new URL(u).origin : "null");
+        const origin = tab.origin ?? originOf(tab.url);
+        if (method === "Page.getFrameTree") {
+          return {
+            frameTree: {
+              frame: { id: `f${tabId}`, url: tab.url, securityOrigin: origin },
+              childFrames: (tab.frames ?? []).map((u, i) => ({
+                frame: { id: `f${tabId}-${i}`, url: u, securityOrigin: originOf(u) },
+              })),
+            },
+          };
+        }
+        if (method === "Page.createIsolatedWorld") return { executionContextId: 99 };
+        if (method === "Network.getResponseBody") return { body: "ok", base64Encoded: false };
+        if (method === "Fetch.takeResponseBodyAsStream") return { stream: "s-1" };
         if (method === "Runtime.evaluate") {
-          const tab = tabs[tabId]!;
-          const origin = tab.origin ?? (/^https?:/.test(tab.url) ? new URL(tab.url).origin : "null");
           const asked = String((params as { expression?: string } | undefined)?.expression ?? "");
-          const value = asked.includes("activeElement") ? JSON.stringify([origin, tab.focused ?? "INPUT"]) : origin;
+          const value = asked.includes("activeElement") ? (tab.focused ?? "INPUT") : (tab.says ?? origin);
           return { result: { type: "string", value } };
         }
         return {};
@@ -220,6 +241,7 @@ function install(opts: {
     live,
     worlds,
     commands,
+    sentParams,
     store,
     banners,
     sent: () => (FakeSocket.all[0]?.sent ?? []).map((s) => JSON.parse(s) as Record<string, unknown>),
@@ -996,7 +1018,7 @@ test("the relay tells the extension QM's own address, which is then off limits",
   h.sockets[0]!.onmessage?.({ data: JSON.stringify({ qm: "origins", app: "https://app.qm.example.com/" }) });
   await new Promise((r) => setTimeout(r, 20));
 
-  assert.equal(h.store.app, "https://app.qm.example.com");
+  assert.deepEqual(h.store.apps, ["https://app.qm.example.com"]);
   const moved = await h.command(83, "qm.switchTab", { tabId: 25 });
   assert.match((moved.error as { message: string }).message, /cannot be driven/);
 });
@@ -1029,4 +1051,114 @@ test("a blank tab too busy to say where it came from is not taken", async () => 
 
   assert.match((moved.error as { message: string }).message, /cannot be driven/);
   assert.ok(!h.live.has(26));
+});
+
+test("cookies are only ever the driven page's own, never a frame it was made to load", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+
+  await h.command(90, "Network.getCookies", {});
+  assert.deepEqual(h.sentParams.at(-1), {
+    method: "Network.getCookies",
+    params: { urls: ["https://mail.google.com/"] },
+  });
+
+  h.tabs[7]!.frames = ["https://qm.example.com/v1/whoami"];
+  const framed = await h.command(91, "Network.getCookies", {});
+  assert.match((framed.error as { message: string }).message, /QM itself open inside it/);
+  for (const [i, method] of ["Input.dispatchMouseEvent", "Page.captureScreenshot", "Runtime.evaluate"].entries()) {
+    const reply = await h.command(92 + i, method, method === "Runtime.evaluate" ? { expression: "1" } : {});
+    assert.match((reply.error as { message: string }).message, /QM itself open inside it/, method);
+  }
+});
+
+test("response bodies and streams are only for requests the agent was shown", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+
+  const guessed = await h.command(95, "Network.getResponseBody", { requestId: "41" });
+  assert.match((guessed.error as { message: string }).message, /not one this tab showed you/);
+
+  h.fire("event", { tabId: 7 }, "Network.requestWillBeSent", {
+    requestId: "42",
+    request: { url: "https://mail.google.com/a" },
+  });
+  h.fire("event", { tabId: 7 }, "Network.requestWillBeSent", {
+    requestId: "43",
+    request: { url: "https://qm.example.com/api" },
+  });
+  h.fire("event", { tabId: 7 }, "Network.loadingFinished", { requestId: "43" });
+  h.fire("event", { tabId: 7 }, "Network.loadingFinished", { requestId: "42" });
+
+  const shown = await h.command(96, "Network.getResponseBody", { requestId: "42" });
+  assert.ok(!shown.error, JSON.stringify(shown.error));
+  const hidden = await h.command(97, "Network.getResponseBody", { requestId: "43" });
+  assert.match((hidden.error as { message: string }).message, /not one this tab showed you/);
+  const finished = h.sent().filter((m) => m.method === "Network.loadingFinished");
+  assert.deepEqual(
+    finished.map((m) => (m.params as { requestId: string }).requestId),
+    ["42"],
+    "a QM request's completion is not even announced",
+  );
+
+  const stray = await h.command(98, "IO.read", { handle: "s-9" });
+  assert.match((stray.error as { message: string }).message, /not one this tab gave you/);
+  h.fire("event", { tabId: 7 }, "Fetch.requestPaused", {
+    requestId: "interception-job-1.0",
+    request: { url: "https://mail.google.com/f" },
+  });
+  await h.command(99, "Fetch.takeResponseBodyAsStream", { requestId: "interception-job-1.0" });
+  const read = await h.command(100, "IO.read", { handle: "s-1" });
+  assert.ok(!read.error, JSON.stringify(read.error));
+});
+
+test("scripts run only in the page itself, and keyboard shortcuts are refused", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+
+  const elsewhere = await h.command(101, "Runtime.evaluate", { expression: "1", contextId: 3 });
+  assert.match((elsewhere.error as { message: string }).message, /only in the page itself/);
+  const paste = await h.command(102, "Input.dispatchKeyEvent", { type: "keyDown", key: "v", modifiers: 4 });
+  assert.match((paste.error as { message: string }).message, /shortcuts/);
+  const command = await h.command(103, "Input.dispatchKeyEvent", { type: "keyDown", commands: ["paste"] });
+  assert.match((command.error as { message: string }).message, /shortcuts/);
+  const enter = await h.command(104, "Input.dispatchKeyEvent", { type: "keyDown", key: "Enter" });
+  assert.ok(!enter.error, JSON.stringify(enter.error));
+});
+
+test("the agent cannot pose as the relay to change what counts as QM's address", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+
+  h.sockets[0]!.onmessage?.({
+    data: JSON.stringify({ id: 105, method: "Page.enable", qm: "origins", app: "https://mail.google.com" }),
+  });
+  await new Promise((r) => setTimeout(r, 30));
+
+  assert.equal(h.store.apps, undefined);
+  const reply = await h.command(106, "Runtime.evaluate", { expression: "1" });
+  assert.ok(!reply.error, "the person's own tab is still usable");
+});
+
+test("a page that lies about its origin in script still cannot receive another site's password", async () => {
+  const h = install({
+    store: { ...PAIRED, attachedTabId: 7 },
+    tabs: { 7: { title: "Sign in", url: "https://evil.example/login", says: "https://accounts.google.com" } },
+  });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+
+  const reply = await h.command(107, "qm.insertText", { text: "s3cret", origin: "https://accounts.google.com" });
+
+  assert.match((reply.error as { message: string }).message, /refusing to type/);
+  assert.ok(!h.commands.some((c) => c.method === "Input.insertText"));
 });

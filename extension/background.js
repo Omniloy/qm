@@ -46,6 +46,24 @@ let attachedTabId = null;
 let previousTabId = null;
 let stopped = false;
 let ownOrigins = [];
+const seenRequests = new Set();
+const issuedStreams = new Set();
+const EVALUATE_PARAMS = new Set(["expression", "returnByValue", "awaitPromise", "userGesture", "timeout"]);
+const NO_SHORTCUTS = 2 | 4;
+const BOUND_TO_REQUEST = new Set([
+  "Network.getResponseBody",
+  "Fetch.takeResponseBodyAsStream",
+  "Fetch.continueRequest",
+  "Fetch.failRequest",
+]);
+const READS_THE_PAGE = new Set([
+  "Runtime.evaluate",
+  "Input.dispatchMouseEvent",
+  "Input.dispatchKeyEvent",
+  "Input.insertText",
+  "Page.captureScreenshot",
+  "Network.getCookies",
+]);
 let pending = null;
 let reconnectDelay = 1000;
 let restoreYielded = false;
@@ -87,14 +105,35 @@ function originOf(url) {
 
 async function learnApp(app) {
   const origin = originOf(app);
-  if (!origin || origin === "null") return;
-  if (!ownOrigins.includes(origin)) ownOrigins = [...ownOrigins, origin];
-  await chrome.storage.local.set({ app: origin }).catch(() => {});
+  if (!origin || origin === "null" || ownOrigins.includes(origin)) return;
+  ownOrigins = [...ownOrigins, origin];
+  const stored = await chrome.storage.local.get("apps").catch(() => ({}));
+  const apps = Array.isArray(stored.apps) ? stored.apps : [];
+  await chrome.storage.local.set({ apps: [...new Set([...apps, origin])].slice(-8) }).catch(() => {});
 }
 
 async function loadOwnOrigins() {
   const { origin, app } = await settings().catch(() => ({ origin: "", app: "" }));
-  ownOrigins = [origin, app].map(originOf).filter((o) => o && o !== "null");
+  const stored = await chrome.storage.local.get("apps").catch(() => ({}));
+  const apps = Array.isArray(stored.apps) ? stored.apps : [];
+  ownOrigins = [...new Set([origin, app, ...apps].map(originOf).filter((o) => o && o !== "null"))];
+}
+
+function remember(set, value) {
+  set.add(value);
+  if (set.size > 4000) set.delete(set.values().next().value);
+}
+
+async function framesOffLimits(tabId) {
+  const tree = await chrome.debugger.sendCommand({ tabId }, "Page.getFrameTree").catch(() => null);
+  const pending = tree?.frameTree ? [tree.frameTree] : [];
+  while (pending.length) {
+    const node = pending.pop();
+    const origin = node.frame?.securityOrigin || originOf(node.frame?.url ?? "");
+    if (ownOrigins.includes(origin) || ownOrigins.includes(originOf(node.frame?.url ?? ""))) return true;
+    pending.push(...(node.childFrames ?? []));
+  }
+  return false;
 }
 
 async function loadStopped() {
@@ -403,15 +442,26 @@ const LOCAL = {
       const want = originOf(String(params?.origin ?? ""));
       const refuse = new Error(`refusing to type: the tab in use is not on ${params?.origin}`);
       if (tabId === null || !want) throw refuse;
+      const here = await tabUrl(tabId);
+      const tree = await withTimeout(chrome.debugger.sendCommand({ tabId }, "Page.getFrameTree"), DRIVE_CHECK_MS);
+      const top = tree?.frameTree?.frame;
+      if (originOf(here ?? "") !== want || top?.securityOrigin !== want) throw refuse;
+      const world = await withTimeout(
+        chrome.debugger.sendCommand({ tabId }, "Page.createIsolatedWorld", {
+          frameId: top.id,
+          worldName: "qm-fill-check",
+        }),
+        DRIVE_CHECK_MS,
+      );
       const probe = await withTimeout(
         chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
-          expression: "JSON.stringify([location.origin, document.activeElement ? document.activeElement.tagName : ''])",
+          expression: "document.activeElement ? document.activeElement.tagName : ''",
+          contextId: world?.executionContextId,
           returnByValue: true,
         }),
         DRIVE_CHECK_MS,
       );
-      const [origin, focused] = JSON.parse(probe?.result?.value ?? "[]");
-      if (origin !== want || /^(IFRAME|FRAME|OBJECT|EMBED)$/i.test(focused ?? "")) throw refuse;
+      if (/^(IFRAME|FRAME|OBJECT|EMBED)$/i.test(String(probe?.result?.value ?? ""))) throw refuse;
       if (stopped) throw new Error(STOPPED_MESSAGE);
       await withTimeout(
         chrome.debugger.sendCommand({ tabId }, "Input.insertText", { text: String(params?.text ?? "") }),
@@ -434,14 +484,31 @@ async function onCommand(frame) {
     if (method === "Fetch.continueRequest" && Object.keys(params ?? {}).some((k) => k !== "requestId")) {
       throw new Error("Fetch.continueRequest can only let a request through unchanged");
     }
+    if (method === "Runtime.evaluate" && Object.keys(params ?? {}).some((k) => !EVALUATE_PARAMS.has(k))) {
+      throw new Error("Runtime.evaluate runs only in the page itself");
+    }
+    if (method === "Input.dispatchKeyEvent" && (params?.commands || Number(params?.modifiers) & NO_SHORTCUTS)) {
+      throw new Error("keyboard shortcuts and editing commands are not available through the Browser Bridge");
+    }
+    if (BOUND_TO_REQUEST.has(method) && !seenRequests.has(String(params?.requestId))) {
+      throw new Error("that request is not one this tab showed you");
+    }
+    if (method.startsWith("IO.") && !issuedStreams.has(String(params?.handle))) {
+      throw new Error("that stream is not one this tab gave you");
+    }
     const tabId = await drivenTab();
     const url = await tabUrl(tabId);
     if (url !== null && !drivable(url)) {
       await lose(tabId);
       throw new Error(OFF_LIMITS_MESSAGE);
     }
+    if (READS_THE_PAGE.has(method) && (await framesOffLimits(tabId))) {
+      throw new Error("this page has QM itself open inside it, so the Browser Bridge will not act on it");
+    }
     if (stopped) throw new Error(STOPPED_MESSAGE);
-    const result = await chrome.debugger.sendCommand({ tabId }, method, params || {});
+    const sent = method === "Network.getCookies" && !params?.urls?.length ? { ...params, urls: [url] } : params || {};
+    const result = await chrome.debugger.sendCommand({ tabId }, method, sent);
+    if (method === "Fetch.takeResponseBodyAsStream" && result?.stream) remember(issuedStreams, String(result.stream));
     send({ id, result: result ?? {} });
   } catch (e) {
     send({ id, error: { code: -32000, message: String((e && e.message) || e) } });
@@ -476,7 +543,7 @@ function connect() {
       } catch {
         return;
       }
-      if (frame?.qm === "origins" && typeof frame.app === "string") {
+      if (frame?.qm === "origins" && frame.id === undefined && typeof frame.app === "string") {
         void learnApp(frame.app);
         return;
       }
@@ -492,14 +559,21 @@ function connect() {
   })();
 }
 
-function aboutOwnOrigin(params) {
+function forwardable(method, params) {
+  if (!FORWARDED.has(method)) return false;
   const url = params?.request?.url ?? params?.response?.url ?? params?.frame?.url ?? params?.url;
-  return typeof url === "string" && ownOrigins.includes(originOf(url));
+  const id = params?.requestId === undefined ? null : String(params.requestId);
+  if (typeof url === "string") {
+    if (ownOrigins.includes(originOf(url))) return false;
+    if (id !== null) remember(seenRequests, id);
+    return true;
+  }
+  return id === null || seenRequests.has(id);
 }
 
 chrome.debugger.onEvent.addListener((source, method, params) => {
   if (stopped || source.tabId !== attachedTabId) return;
-  if (FORWARDED.has(method) && !aboutOwnOrigin(params)) send({ method, params: params ?? {} });
+  if (forwardable(method, params)) send({ method, params: params ?? {} });
   if (method === "Page.frameNavigated") {
     void announce(attachedTabId, true);
     void showBanner(attachedTabId, true);
@@ -573,9 +647,10 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (message.type === "save-settings") {
       const before = await settings().catch(() => ({ origin: "" }));
       await chrome.storage.local.set({ origin: message.origin, token: message.token });
-      if (originOf(before.origin) !== originOf(message.origin))
-        await chrome.storage.local.remove("app").catch(() => {});
+      const moved = originOf(before.origin) !== originOf(message.origin);
+      if (moved) await chrome.storage.local.remove(["app", "apps"]).catch(() => {});
       await loadOwnOrigins();
+      if (moved) socket?.close();
       connect();
       respond({ ok: true });
       return;
