@@ -5,12 +5,20 @@ import { createMockHarness } from "../src/harness/mock-harness.ts";
 import { createAgentTools, type ToolContextRef } from "../src/harness/agent-tools.ts";
 import type { HarnessTurnInput } from "../src/harness/harness.ts";
 import { filterHistoryForAudience } from "../src/resolution/context-filter.ts";
-import type { TurnRequest } from "../src/types.ts";
+import { scopeId, type TurnRequest } from "../src/types.ts";
+import type { BuiltApp } from "../src/wiring.ts";
 import { testConfig } from "./support/test-config.ts";
 
 let executions = 0;
 let observedRelease = "";
 let failRelease = false;
+const SHARED_SKILL = "teammate-crm-fixture";
+
+function fixtureCall(input: string): { tool: string; args: unknown } {
+  if (input.includes("skill")) return { tool: "skills", args: { action: "read", name: SHARED_SKILL } };
+  if (input.includes("shared")) return { tool: "files", args: { action: "read", path: "private.txt" } };
+  return { tool: "execute", args: { command: "printf SCREENING_FIXTURE_BLOCK" } };
+}
 mock.module("../src/harness/mock-harness.ts", {
   namedExports: {
     createMockHarness() {
@@ -30,7 +38,7 @@ mock.module("../src/harness/mock-harness.ts", {
           await turn.emit({ type: "assistant", payload: { text: reply }, scopeLabel: turn.scopeLabel });
           return { reply };
         }
-        if (!turn.input.startsWith("run fixture")) return run(turn);
+        if (!turn.input.includes("run fixture")) return run(turn);
         await turn.emit({ type: "user", payload: { text: turn.input }, scopeLabel: turn.scopeLabel });
         const ref: ToolContextRef = {
           current: {
@@ -50,16 +58,13 @@ mock.module("../src/harness/mock-harness.ts", {
           screenToolResult: turn.screenToolResult,
           pendingApprovals: [],
         };
-        const sharedRead = turn.input.includes("shared");
-        const tool = createAgentTools(ref).find((tool) => tool.name === (sharedRead ? "files" : "execute"))!;
+        const call = fixtureCall(turn.input);
+        const tool = createAgentTools(ref).find((tool) => tool.name === call.tool)!;
         const execute = tool.execute as unknown as (
           id: string,
           args: unknown,
         ) => Promise<{ content: Array<{ text?: string }> }>;
-        const result = await execute(
-          "fixture-call",
-          sharedRead ? { action: "read", path: "private.txt" } : { command: "printf SCREENING_FIXTURE_BLOCK" },
-        );
+        const result = await execute("fixture-call", call.args);
         const reply = result.content.map((part) => part.text ?? "").join("\n");
         await turn.emit({ type: "assistant", payload: { text: reply }, scopeLabel: turn.scopeLabel });
         return { reply, pendingApprovals: ref.pendingApprovals, pausedOnApproval: ref.pausedOnApproval };
@@ -189,4 +194,217 @@ test("released shared content retains scope and survives a failed continuation",
   const replay = await built.app.turn({ ...req, approval });
   assert.equal(replay.status, "refused");
   assert.match(replay.reason ?? "", /expired/);
+});
+
+async function shareTeammateSkill(built: BuiltApp): Promise<string> {
+  const skill = await built.skills.create({
+    scopeId: scopeId("personal", "U2"),
+    manifest: {
+      name: SHARED_SKILL,
+      description: "A teammate's CRM routine",
+      requiredCapabilities: [],
+      body: "SCREENING_FIXTURE_BLOCK",
+    },
+    createdBy: "U2",
+  });
+  await built.skills.review(skill.id, "reviewer", []);
+  await built.skills.publish(skill.id);
+  const shared = await built.app.shareSkill({
+    id: skill.id,
+    toScope: scopeId("personal", "U1"),
+    permission: "read",
+    actorId: "U2",
+    liveActor: true,
+  });
+  assert.ok(shared.ok, JSON.stringify(shared));
+  return skill.id;
+}
+
+function strictScreenApp(onlySurface?: string): BuiltApp {
+  return buildApp(testConfig({ securityPosture: "dangerous", securityScreenAllPostures: true }), {
+    securityScreener: {
+      provider: "fixture-screen",
+      shadow: false,
+      async classify(input) {
+        const strict = !onlySurface || input.metadata?.surface === onlySurface;
+        return {
+          verdict: { decision: strict ? "strict" : "auto", reason: "fixture verdict" },
+          score: strict ? 1 : 0,
+          threshold: 0.5,
+        };
+      },
+    },
+  });
+}
+
+test("a held skill a teammate shares with this conversation is released into it once approved", async () => {
+  const built = strictScreenApp();
+  await shareTeammateSkill(built);
+  const req: TurnRequest = { ...request("teammate-skill"), text: "run fixture skill" };
+  const blocked = await built.app.turn(req);
+  const hold = blocked.pendingApprovals?.[0];
+  assert.equal(hold?.approvalKey, "security-screen-release:skills");
+  observedRelease = "";
+  const approved = await built.app.turn({ ...req, approval: { requestId: hold!.requestId, approved: true } });
+  assert.equal(approved.status, "ok", approved.reason);
+  assert.match(observedRelease, /SCREENING_FIXTURE_BLOCK/);
+  const released = (await built.sessions.getEntries(blocked.sessionId!)).find(
+    (entry) =>
+      entry.type === "user" &&
+      (entry.payload as { securityReleaseRequestId?: string }).securityReleaseRequestId === hold!.requestId,
+  );
+  assert.equal(released?.scopeLabel, scopeId("personal", "U1"));
+});
+
+test("a held skill its owner stopped sharing stays blocked", async () => {
+  const built = strictScreenApp();
+  const skillId = await shareTeammateSkill(built);
+  const req: TurnRequest = { ...request("unshared-skill"), text: "run fixture skill" };
+  const blocked = await built.app.turn(req);
+  const hold = blocked.pendingApprovals?.[0];
+  assert.equal(hold?.approvalKey, "security-screen-release:skills");
+  const unshared = await built.app.unshareSkill({
+    id: skillId,
+    scope: scopeId("personal", "U1"),
+    actorId: "U2",
+    liveActor: true,
+  });
+  assert.ok(unshared.ok, JSON.stringify(unshared));
+  const refused = await built.app.turn({ ...req, approval: { requestId: hold!.requestId, approved: true } });
+  assert.equal(refused.status, "refused");
+  assert.match(refused.reason ?? "", /no longer readable/);
+});
+
+test("a speaker's own skill held in a channel is not released into the channel's history", async () => {
+  const built = strictScreenApp("skills");
+  await built.config.hydrate?.();
+  await built.identity.hydrate();
+  const members = ["U1", "U2", "U3"];
+  await built.directory.replaceChannels(
+    [{ channelId: "C1", name: "engineering", isPrivate: true }],
+    members.map((principalId) => ({ channelId: "C1", principalId })),
+  );
+  await built.config.setSharingPosture(scopeId("org", "default-org"), "open");
+  const skill = await built.skills.create({
+    scopeId: scopeId("personal", "U1"),
+    manifest: {
+      name: SHARED_SKILL,
+      description: "U1's own routine",
+      requiredCapabilities: [],
+      body: "U1_PRIVATE_SKILL",
+    },
+    createdBy: "U1",
+  });
+  await built.skills.review(skill.id, "U1", []);
+  await built.skills.publish(skill.id);
+  const req: TurnRequest = {
+    surface: "test",
+    actor: { externalId: "U1" },
+    origin: { kind: "human" },
+    conversation: {
+      kind: "channel",
+      channelRef: "C1",
+      threadRef: "C1:speaker-skill",
+      audience: members.map((externalId) => ({ externalId })),
+      publishMembers: members.map((externalId) => ({ externalId })),
+    },
+    text: "run fixture skill",
+  };
+  const blocked = await built.app.turn(req);
+  const hold = blocked.pendingApprovals?.[0];
+  assert.equal(hold?.approvalKey, "security-screen-release:skills");
+  assert.match(hold?.summary ?? "", /U1_PRIVATE_SKILL/);
+  const refused = await built.app.turn({ ...req, approval: { requestId: hold!.requestId, approved: true } });
+  assert.equal(refused.status, "refused");
+  assert.match(refused.reason ?? "", /no longer readable/);
+  const entries = await built.sessions.getEntries(blocked.sessionId!);
+  assert.doesNotMatch(
+    JSON.stringify(entries.filter((entry) => entry.scopeLabel !== scopeId("personal", "U1"))),
+    /U1_PRIVATE_SKILL/,
+  );
+});
+
+test("a held skill its owner has since edited stays blocked", async () => {
+  const built = strictScreenApp();
+  const skillId = await shareTeammateSkill(built);
+  const req: TurnRequest = { ...request("edited-skill"), text: "run fixture skill" };
+  const blocked = await built.app.turn(req);
+  const hold = blocked.pendingApprovals?.[0];
+  assert.equal(hold?.approvalKey, "security-screen-release:skills");
+  const current = await built.skills.get(skillId);
+  await built.skills.update(skillId, { ...current!.manifest, body: "EDITED_FIXTURE_BLOCK" });
+  const refused = await built.app.turn({ ...req, approval: { requestId: hold!.requestId, approved: true } });
+  assert.equal(refused.status, "refused");
+  assert.match(refused.reason ?? "", /no longer readable/);
+});
+
+test("a scheduled run's held teammate skill is released when its owner allows it", async () => {
+  const built = strictScreenApp();
+  await built.directory.replace([
+    { principalId: "U1", displayName: "Owner", type: "internal" },
+    { principalId: "U2", displayName: "Teammate", type: "internal" },
+  ]);
+  await shareTeammateSkill(built);
+  const destination = { type: "principal" as const, target: "U1", onBehalfOf: "U1" };
+  const cron = await built.crons.create({
+    ownerScopeId: scopeId("personal", "U1"),
+    owner: "U1",
+    createdBy: "U1",
+    title: "CRM routine",
+    schedule: { everyMs: 3_600_000 },
+    action: "run fixture skill",
+    destination,
+  });
+  const fired = await built.app.turn({
+    surface: "cron",
+    actor: { externalId: "U1" },
+    conversation: { kind: "dm", threadRef: `cron:${cron.id}:fire:fixture` },
+    text: "run fixture skill",
+    triggered: true,
+    triggerDestination: destination,
+  });
+  const hold = fired.pendingApprovals?.[0];
+  assert.equal(hold?.approvalKey, "security-screen-release:skills");
+  observedRelease = "";
+  const decided = await built.app.resolveScheduledHold(hold!.requestId, "U1", true);
+  assert.deepEqual(decided.state === "resolved" ? decided.outcome : decided.state, "allowed");
+  assert.match(observedRelease, /SCREENING_FIXTURE_BLOCK/);
+  const released = (await built.sessions.getEntries(fired.sessionId!)).find(
+    (entry) =>
+      entry.type === "user" &&
+      (entry.payload as { securityReleaseRequestId?: string }).securityReleaseRequestId === hold!.requestId,
+  );
+  assert.equal(released?.scopeLabel, scopeId("personal", "U1"));
+});
+
+test("a held skill granted only to the speaker keeps that grant's label in a channel run", async () => {
+  const built = strictScreenApp();
+  await shareTeammateSkill(built);
+  const req: TurnRequest = {
+    surface: "test",
+    actor: { externalId: "U1" },
+    origin: { kind: "human" },
+    conversation: { kind: "channel", channelRef: "C9", threadRef: "C9:owner-only" },
+    text: "run fixture skill",
+  };
+  const blocked = await built.app.turn(req);
+  const hold = blocked.pendingApprovals?.[0];
+  assert.equal(hold?.approvalKey, "security-screen-release:skills");
+  const approved = await built.app.turn({ ...req, approval: { requestId: hold!.requestId, approved: true } });
+  assert.equal(approved.status, "ok", approved.reason);
+  const released = (await built.sessions.getEntries(blocked.sessionId!)).find(
+    (entry) =>
+      entry.type === "user" &&
+      (entry.payload as { securityReleaseRequestId?: string }).securityReleaseRequestId === hold!.requestId,
+  );
+  assert.equal(released?.scopeLabel, scopeId("personal", "U1"));
+  assert.equal(
+    filterHistoryForAudience(
+      [released!],
+      [{ id: "U3", type: "internal" }],
+      scopeId("channel", "C9"),
+      scopeId("org", "default-org"),
+    ).length,
+    0,
+  );
 });

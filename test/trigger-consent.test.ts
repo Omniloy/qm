@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { runTrigger, type TriggerDeps } from "../src/triggers/run-trigger.ts";
 import {
@@ -10,6 +10,8 @@ import { createDeliveryStore } from "../src/delivery/delivery-store.ts";
 import { createIdempotencyStore } from "../src/idempotency/idempotency-store.ts";
 import { createIdentityService } from "../src/identity/identity-service.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
+import { installPrincipalLinks } from "../src/directory/person.ts";
+import { createPrincipalLinkService } from "../src/identity/principal-links.ts";
 import { scopeId, type Destination, type RecipientConsent, type TurnRequest, type TurnResult } from "../src/types.ts";
 
 describe("consentRequiredRecipient: who must consent before a standing delivery starts", () => {
@@ -41,28 +43,81 @@ describe("consentRequiredRecipient: who must consent before a standing delivery 
 });
 
 describe("recipientConsentSatisfied: the fire-time gate (record present ⇒ must be accepted)", () => {
+  const owner = "carol@acme.test";
   it("no record passes (one-shot / owner / channel / legacy pre-consent crons)", () => {
-    assert.equal(recipientConsentSatisfied({}), true);
+    assert.equal(recipientConsentSatisfied({ owner }), true);
   });
   it("pending withholds, accepted delivers, declined withholds", () => {
-    assert.equal(recipientConsentSatisfied({ recipientConsent: { recipientId: "U-alice", status: "pending" } }), false);
-    assert.equal(recipientConsentSatisfied({ recipientConsent: { recipientId: "U-alice", status: "accepted" } }), true);
-    assert.equal(
-      recipientConsentSatisfied({ recipientConsent: { recipientId: "U-alice", status: "declined" } }),
-      false,
-    );
+    const record = (status: RecipientConsent["status"]) => ({
+      owner,
+      recipientConsent: { recipientId: "alice@acme.test", status },
+    });
+    assert.equal(recipientConsentSatisfied(record("pending")), false);
+    assert.equal(recipientConsentSatisfied(record("accepted")), true);
+    assert.equal(recipientConsentSatisfied(record("declined")), false);
   });
 
   it("a required recipient needs an accepted record bound to that person", () => {
-    assert.equal(recipientConsentSatisfied({}, "U-alice"), false);
+    assert.equal(recipientConsentSatisfied({ owner }, "alice@acme.test"), false);
     assert.equal(
-      recipientConsentSatisfied({ recipientConsent: { recipientId: "U-bob", status: "accepted" } }, "U-alice"),
+      recipientConsentSatisfied(
+        { owner, recipientConsent: { recipientId: "bob@acme.test", status: "accepted" } },
+        "alice@acme.test",
+      ),
       false,
     );
     assert.equal(
-      recipientConsentSatisfied({ recipientConsent: { recipientId: "U-alice", status: "accepted" } }, "U-alice"),
+      recipientConsentSatisfied(
+        { owner, recipientConsent: { recipientId: "alice@acme.test", status: "accepted" } },
+        "alice@acme.test",
+      ),
       true,
     );
+  });
+
+  describe("once a principal link makes the recipient the owner", () => {
+    afterEach(() => installPrincipalLinks(null));
+    const slackEmail = "carol.slack@acme.test";
+    const linkOwner = async () => {
+      const links = createPrincipalLinkService();
+      await links.link({
+        principalId: slackEmail,
+        canonicalId: owner,
+        evidence: "Slack OAuth proved both sign-ins are Carol",
+        linkedBy: owner,
+      });
+      installPrincipalLinks(links);
+    };
+    const destination: Destination = {
+      type: "principal",
+      target: slackEmail,
+      audienceScopeId: scopeId("personal", slackEmail),
+      onBehalfOf: owner,
+    };
+
+    it("a consent still pending from before the link no longer withholds delivery", async () => {
+      const cron = { owner, recipientConsent: { recipientId: slackEmail, status: "pending" as const } };
+      assert.equal(
+        recipientConsentSatisfied(cron, consentRequiredRecipient({ owner, standing: true, destination })),
+        false,
+      );
+      await linkOwner();
+      const required = consentRequiredRecipient({ owner, standing: true, destination });
+      assert.equal(required, undefined);
+      assert.equal(recipientConsentSatisfied(cron, required), true);
+    });
+
+    it("a decline the person recorded still withholds, and a pending consent for someone else still withholds", async () => {
+      await linkOwner();
+      assert.equal(
+        recipientConsentSatisfied({ owner, recipientConsent: { recipientId: slackEmail, status: "declined" } }),
+        false,
+      );
+      assert.equal(
+        recipientConsentSatisfied({ owner, recipientConsent: { recipientId: "alice@acme.test", status: "pending" } }),
+        false,
+      );
+    });
   });
 });
 

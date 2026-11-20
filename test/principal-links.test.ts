@@ -13,6 +13,7 @@ import { createPrincipalLinkService, PrincipalLinkError, type PrincipalLink } fr
 import {
   canonicalPerson,
   installPrincipalLinks,
+  ownsPersonalScope,
   personIds,
   personKey,
   samePerson,
@@ -28,7 +29,8 @@ import { computeUsers } from "../src/admin/users.ts";
 import { mintCapabilityToken, CAPABILITY_TTL_MS } from "../src/auth/capability-token.ts";
 import { mintSignedPayload } from "../src/auth/signed-token.ts";
 import { signedRequestHeaders } from "../src/auth/source-auth-sign.ts";
-import { scopeId } from "../src/types.ts";
+import { scopeId, type SessionEntry } from "../src/types.ts";
+import { filterHistoryForAudience, principalEntitledToScope } from "../src/resolution/context-filter.ts";
 import { testConfig } from "./support/test-config.ts";
 
 const EMAIL = "jordan@acme.test";
@@ -132,6 +134,38 @@ describe("person primitives fold a linked sign-in to its canonical principal", (
     assert.deepEqual(personIds(EMAIL), [EMAIL, OIDC]);
     assert.deepEqual(personIds("U0STRANGER"), ["U0STRANGER"]);
     assert.equal(samePerson(OIDC, "casey@acme.test"), false);
+  });
+
+  it("a linked sign-in reads history labelled with the other sign-in's personal scope", async () => {
+    const label = scopeId("personal", OIDC);
+    const session = scopeId("channel", "C-shared");
+    const org = scopeId("org", "default-org");
+    const jordan = { id: EMAIL, type: "internal" as const };
+    const entry: SessionEntry = {
+      sessionId: "s1",
+      seq: 1,
+      parentSeq: null,
+      type: "user",
+      payload: {},
+      scopeLabel: label,
+      createdAt: 1,
+    };
+    assert.equal(principalEntitledToScope(jordan, label, session, org), false);
+    await installed();
+    assert.equal(principalEntitledToScope(jordan, label, session, org), true);
+    assert.equal(principalEntitledToScope({ id: "casey@acme.test", type: "internal" }, label, session, org), false);
+    assert.equal(filterHistoryForAudience([entry], [jordan], session, org).length, 1);
+  });
+
+  it("ownsPersonalScope recognises each linked sign-in's personal scope and nothing else", async () => {
+    assert.equal(ownsPersonalScope(EMAIL, scopeId("personal", OIDC)), false);
+    await installed();
+    assert.equal(ownsPersonalScope(EMAIL, scopeId("personal", OIDC)), true);
+    assert.equal(ownsPersonalScope(OIDC, scopeId("personal", "Jordan@Acme.test")), true);
+    assert.equal(ownsPersonalScope("casey@acme.test", scopeId("personal", OIDC)), false);
+    assert.equal(ownsPersonalScope(EMAIL, scopeId("team", EMAIL)), false);
+    assert.equal(ownsPersonalScope(EMAIL, undefined), false);
+    assert.equal(ownsPersonalScope(undefined, scopeId("personal", EMAIL)), false);
   });
 
   it("the directory bridge reaches a linked sign-in through the roster row", async () => {

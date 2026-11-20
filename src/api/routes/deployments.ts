@@ -26,6 +26,7 @@ import { FRAME_SESSION_COOKIE, portalSession, portalSessionFrom } from "../../de
 import { EMBED_ANCESTORS_HINT, parseEmbedAncestors } from "../../deploy/embed-ancestors.ts";
 import { proxyHeaders } from "../../util/http-proxy.ts";
 import { appSubdomainOrigin, isAppHostLabel } from "../../deploy/deploy-store.ts";
+import { ownsPersonalScope } from "../../directory/person.ts";
 
 function deploymentProxyAgent(port?: number): { agent?: SocksProxyAgent } {
   if (port === undefined) return {};
@@ -892,7 +893,7 @@ export async function proxyDeploymentSubdomain(ctx: BaseCtx): Promise<boolean> {
       if (
         deps.identity?.deactivationSource(sub) !== "manual" &&
         (await app.deploymentGrantees(deployment.id)).some(
-          (grant) => grant.scope === scopeId("personal", sub.trim().toLowerCase()) && grant.permission === "read",
+          (grant) => ownsPersonalScope(sub, grant.scope) && grant.permission === "read",
         )
       )
         authenticatedPermission = "read";
@@ -1555,7 +1556,7 @@ export async function getDeploymentShares(ctx: ApiCtx): Promise<void> {
   if (!capability) return sendJson(res, 403, { error: "forbidden" });
   const deployment = await app.getDeployment(params.id!);
   if (!deployment) return sendJson(res, 404, { error: "not_found" });
-  if (deployment.ownerScopeId !== `personal:${capability.actorId}`)
+  if (!ownsPersonalScope(capability.actorId, deployment.ownerScopeId))
     return sendJson(res, 403, { error: "forbidden", message: "Only the owner can edit app permissions." });
   return sendJson(res, 200, {
     public: deployment.public === true,

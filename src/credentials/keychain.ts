@@ -1,12 +1,12 @@
 import { createMemoryAdvisoryLock, type AdvisoryLock } from "../persistence/advisory-lock.ts";
 import { orgId as configOrgId } from "../config.ts";
 import { randomBytes } from "node:crypto";
-import { scopeId as toScopeId, parseScopeId, type Destination, type ScopeId } from "../types.ts";
+import { parseScopeId, type Destination, type ScopeId } from "../types.ts";
 import { CAPABILITY_CURL_AUTH, keychainUseCommand } from "../api/contract.ts";
 import type { DurableMap } from "../persistence/durable-map.ts";
 import { encryptSecret, decryptSecret, type SecretKey } from "../connectors/connector-client-store.ts";
 import { errMessage } from "../util/errors.ts";
-import { canonicalPerson, personIds, personKey, samePerson } from "../directory/person.ts";
+import { canonicalPerson, ownsPersonalScope, personIds, personKey, samePerson } from "../directory/person.ts";
 import { cronIdOf } from "../sessions/session-store.ts";
 import { hashId } from "../util/crypto.ts";
 import { shq } from "../util/shell.ts";
@@ -1529,7 +1529,7 @@ export function createKeychain(deps: {
     },
 
     async materializeOwnById(ownerId, credentialId, scopeId) {
-      if (scopeId !== toScopeId("personal", ownerId)) {
+      if (!ownsPersonalScope(ownerId, scopeId)) {
         throw new KeychainError(
           403,
           "a credential id loads only in its owner's own personal conversation — anywhere else needs a grant from the owner",
@@ -1552,7 +1552,7 @@ export function createKeychain(deps: {
     },
 
     async materializeFill(ownerId, credentialId, scopeId) {
-      if (scopeId !== toScopeId("personal", ownerId)) {
+      if (!ownsPersonalScope(ownerId, scopeId)) {
         throw new KeychainError(403, "a browser fill credential fills only in its owner's own personal conversation");
       }
       const cred = await deps.creds.get(credentialId);
@@ -1798,7 +1798,7 @@ export function renderKeychainManifest(input: KeychainManifestInput, now: number
       ? `STANDING grant for this conversation (purpose: "${g.purpose}")`
       : `one-time grant \`${g.id}\` available (purpose: "${g.purpose}")`;
   };
-  const ownPersonal = input.scopeId === toScopeId("personal", input.actorId);
+  const ownPersonal = ownsPersonalScope(input.actorId, input.scopeId);
   const openSpeaker =
     input.openSpeakerKeychain === true && (input.conversationKind === "channel" || input.conversationKind === "group");
   const OWN_NOTE = openSpeaker
