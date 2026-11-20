@@ -23,6 +23,7 @@ export interface BrowserRelayOptions {
   auditLog?: Pick<AuditLog, "record">;
   appUrl?: string;
   idleMs?: number;
+  pairingRecheckMs?: number;
 }
 
 const DEFAULT_IDLE_MS = 10 * 60_000;
@@ -87,6 +88,7 @@ export function attachBrowserRelay(server: Server, opts: BrowserRelayOptions = {
   const hub = opts.hub ?? createRelayHub();
   const secret = opts.capabilitySecret;
   const idleMs = opts.idleMs ?? DEFAULT_IDLE_MS;
+  const recheckMs = opts.pairingRecheckMs ?? PAIRING_RECHECK_MS;
   const wss = new WebSocketServer({ noServer: true });
 
   const refuse = (socket: Duplex, code: number, text: string): void => {
@@ -118,19 +120,23 @@ export function attachBrowserRelay(server: Server, opts: BrowserRelayOptions = {
         if (side === "extension" && opts.appUrl) relayed.send(JSON.stringify({ qm: "origins", app: opts.appUrl }));
 
         let expiresAt = claims.exp;
-        let checkedAt = 0;
         let checking = false;
+        const cutOff = (code: number, reason: string) => {
+          hub.detach(owner, side, relayed);
+          ws.close(code, reason);
+        };
         const recheck = () => {
-          if (side !== "extension" || checking) return;
-          const now = Date.now();
-          const left = expiresAt - now;
-          const renewDue = left > 0 && left <= RENEW_WITHIN_MS;
-          if (!renewDue && now - checkedAt < PAIRING_RECHECK_MS) return;
+          if (checking) return;
           checking = true;
-          checkedAt = now;
           void (async () => {
-            if (!(await pairingStillCurrent(claims, opts))) return ws.close(1008, PAIRING_REVOKED);
-            if (!renewDue) return;
+            const current = await pairingStillCurrent(claims, opts).catch((e: unknown) => {
+              console.error("[browser-relay] pairing check failed:", errMessage(e));
+              return null;
+            });
+            if (current === null) return cutOff(1011, "the pairing could not be checked");
+            if (!current) return cutOff(1008, PAIRING_REVOKED);
+            const left = expiresAt - Date.now();
+            if (left <= 0 || left > RENEW_WITHIN_MS) return;
             const generation = claims.pairingGeneration ?? 0;
             const next = await mintBrowserRelayPairing(owner, secret, generation);
             expiresAt = next.expiresAt;
@@ -144,26 +150,28 @@ export function attachBrowserRelay(server: Server, opts: BrowserRelayOptions = {
               detail: `pairing generation ${generation}`,
             });
           })()
-            .catch((e: unknown) => console.error("[browser-relay] pairing check failed:", errMessage(e)))
+            .catch((e: unknown) => console.error("[browser-relay] pairing renewal failed:", errMessage(e)))
             .finally(() => {
               checking = false;
             });
         };
-        recheck();
+        const rechecks = side === "extension" ? setInterval(recheck, recheckMs) : undefined;
+        if (side === "extension") recheck();
 
         let idle = setTimeout(() => ws.close(1000, "idle"), idleMs);
         const touch = () => {
           clearTimeout(idle);
           idle = setTimeout(() => ws.close(1000, "idle"), idleMs);
-          recheck();
         };
         ws.on("message", (data: Buffer | string) => {
+          if (ws.readyState !== ws.OPEN) return;
           touch();
           hub.deliver(owner, side, typeof data === "string" ? data : data.toString("utf8"));
         });
         ws.on("pong", touch);
         ws.on("close", () => {
           clearTimeout(idle);
+          clearInterval(rechecks);
           hub.detach(owner, side, relayed);
         });
         ws.on("error", () => ws.close());

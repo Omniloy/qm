@@ -30,20 +30,22 @@ day, so a pairing lasts about 30 days from the last time Chrome was connected.
 
 ## Ending a pairing
 
-Each person has one current pairing, and QM keeps its number with their browser choice. Every
-token carries the number of the pairing it belongs to, and QM refuses one from an older pairing,
-both when it connects and before handing it a fresh token.
+Each person has one current pairing, and QM keeps its number in its database. Every token
+carries the number of the pairing it belongs to. QM refuses one from an older pairing when it
+connects, and checks an open connection again every minute, before it would hand it a fresh token.
 
 - **Disconnect Chrome** (QM → Keychain → Browser → Your Chrome) ends the pairing: the extension
-  is cut off at once, every token it ever held stops working, and the agent stops using your
-  Chrome. To use it again, download the extension and load it fresh.
+  is cut off within a minute, every token it ever held stops working, and the agent stops using
+  your Chrome. To use it again, download the extension and load it fresh.
 - **Download again** starts a new pairing, so the copy you had loaded stops connecting. Remove
   it and load the new folder.
 
-If the extension is connected to a different QM server from the one you used, that server cuts
-it off within a minute. Tokens from before pairings were numbered count as the first pairing, so they keep
-working, and keep being renewed, until the person downloads again or disconnects. Rotating QM's
-capability secret still ends every pairing at once.
+The QM server you used cuts the extension off at once; another one notices on its next check. If
+QM cannot read the pairing, it closes the connection rather than trust it.
+
+Tokens from before pairings were numbered count as pairing 0, the number everyone starts with, so
+they keep working, and keep being renewed, until the person downloads again or disconnects.
+Rotating QM's capability secret still ends every pairing at once.
 
 ## Install (unpacked, for now)
 

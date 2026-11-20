@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
+import { connect, type AddressInfo, type Socket } from "node:net";
 import { test } from "node:test";
 import WebSocket from "ws";
 import {
@@ -206,6 +207,7 @@ const renewals = (frames: Array<Record<string, unknown>>) => frames.filter((f) =
 const pairing = (expiresIn: number) => mint({ aud: BROWSER_RELAY_AUD, exp: Date.now() + expiresIn });
 
 const HOUR = 60 * 60_000;
+const RECHECK = 20;
 
 test("a pairing token over a day old is swapped for a fresh one for the same person", async () => {
   const { server, url } = await relayServer();
@@ -253,26 +255,23 @@ test("a pairing token under a day old is not renewed, and the agent's key never 
   }
 });
 
-test("a connection that stays up is renewed once a day on its keepalive, one token per day", async (t) => {
+test("a connection that stays up is renewed once a day by its periodic check, one token per day", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
-  const { server, url } = await relayServer();
+  const { server, url } = await relayServer({ pairingRecheckMs: RECHECK });
   try {
     const ext = await listen(`${url}/v1/browser-relay/extension?t=${await pairing(30 * DAY - HOUR)}`);
-    ext.ws.pong();
     await settle();
     assert.deepEqual(renewals(ext.frames), [], "minted within the day");
 
     t.mock.timers.tick(DAY);
-    for (let i = 0; i < 10; i++) ext.ws.send(JSON.stringify({ qm: "ping" }));
     assert.ok(await until(() => renewals(ext.frames).length > 0), "renewed without reconnecting");
     await settle();
-    assert.equal(renewals(ext.frames).length, 1, "a burst of keepalives mints one token, not one each");
+    assert.equal(renewals(ext.frames).length, 1, "the checks after it mint nothing more that day");
     const fresh = await verifyCapabilityToken(String(renewals(ext.frames)[0]!.token), SECRET);
     assert.ok(fresh!.exp > Date.now() + 29 * DAY);
 
     t.mock.timers.tick(DAY + HOUR);
-    ext.ws.pong();
-    assert.ok(await until(() => renewals(ext.frames).length === 2), "and again on a pong the next day");
+    assert.ok(await until(() => renewals(ext.frames).length === 2), "and again the next day");
   } finally {
     hangUp(server);
   }
@@ -280,12 +279,10 @@ test("a connection that stays up is renewed once a day on its keepalive, one tok
 
 test("a connection whose token ran out while it stayed open is not renewed", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
-  const { server, url } = await relayServer();
+  const { server, url } = await relayServer({ pairingRecheckMs: RECHECK });
   try {
     const ext = await listen(`${url}/v1/browser-relay/extension?t=${await pairing(30 * DAY - HOUR)}`);
     t.mock.timers.tick(31 * DAY);
-    ext.ws.pong();
-    ext.ws.send(JSON.stringify({ qm: "ping" }));
     await settle();
     assert.deepEqual(renewals(ext.frames), []);
   } finally {
@@ -404,13 +401,14 @@ test("a token from before pairings had generations still connects, and is renewe
   }
 });
 
-test("an open connection whose pairing was replaced is closed on its keepalive, never renewed", async (t) => {
+test("an open connection whose pairing was replaced is closed by its next check, never renewed", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   let current = 1;
   const audits: AuditEvent[] = [];
   const { server, url } = await relayServer({
     pairingGeneration: async () => current,
     auditLog: { record: (e) => audits.push(e) },
+    pairingRecheckMs: RECHECK,
   });
   try {
     const ext = await listen(`${url}/v1/browser-relay/extension?t=${await pairingAt(1)}`);
@@ -418,7 +416,6 @@ test("an open connection whose pairing was replaced is closed on its keepalive, 
     await settle();
     current = 2;
     t.mock.timers.tick(DAY);
-    ext.ws.pong();
     assert.deepEqual(await closed, { code: 1008, reason: PAIRING_REVOKED });
     assert.deepEqual(renewals(ext.frames), [], "the renewal it was due is never sent");
     assert.deepEqual(audits, []);
@@ -427,8 +424,7 @@ test("an open connection whose pairing was replaced is closed on its keepalive, 
   }
 });
 
-test("a replaced pairing drops an open connection within a minute even with no renewal due", async (t) => {
-  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+test("a silent connection whose pairing was replaced is still cut off by the periodic check", async () => {
   let current = 4;
   const asked: string[] = [];
   const { server, url } = await relayServer({
@@ -436,19 +432,99 @@ test("a replaced pairing drops an open connection within a minute even with no r
       asked.push(actorId);
       return current;
     },
+    pairingRecheckMs: RECHECK,
   });
   try {
     const ext = await listen(`${url}/v1/browser-relay/extension?t=${await pairingAt(4)}`);
     const closed = closeOf(ext.ws);
     await settle();
+    assert.equal(ext.ws.readyState, WebSocket.OPEN);
     current = 5;
-    ext.ws.pong();
+    assert.deepEqual(await closed, { code: 1008, reason: PAIRING_REVOKED }, "with no frame or pong from it");
+    assert.ok(asked.length > 2 && asked.every((id) => id === ALICE));
+  } finally {
+    hangUp(server);
+  }
+});
+
+test("an open connection is cut off when its pairing can no longer be checked", async () => {
+  let failing = false;
+  const { server, url } = await relayServer({
+    pairingGeneration: async () => {
+      if (failing) throw new Error("the store is down");
+      return 0;
+    },
+    pairingRecheckMs: RECHECK,
+  });
+  try {
+    const ext = await listen(`${url}/v1/browser-relay/extension?t=${await pairingAt(undefined)}`);
+    const closed = closeOf(ext.ws);
     await settle();
-    assert.equal(ext.ws.readyState, WebSocket.OPEN, "a keepalive within the minute does not read the store again");
-    t.mock.timers.tick(61_000);
-    ext.ws.pong();
-    assert.deepEqual(await closed, { code: 1008, reason: PAIRING_REVOKED });
-    assert.ok(asked.every((id) => id === ALICE));
+    failing = true;
+    assert.equal((await closed).code, 1011, "it fails closed, like the check at connect");
+  } finally {
+    hangUp(server);
+  }
+});
+
+function maskedFrame(text: string): Buffer {
+  const payload = Buffer.from(text);
+  const mask = randomBytes(4);
+  const head =
+    payload.length < 126
+      ? Buffer.from([0x81, 0x80 | payload.length])
+      : Buffer.from([0x81, 0x80 | 126, payload.length >> 8, payload.length & 255]);
+  return Buffer.concat([head, mask, Buffer.from(payload.map((byte, i) => byte ^ mask[i % 4]!))]);
+}
+
+function rawExtension(url: string, token: string): Promise<{ sock: Socket; received: () => string }> {
+  const { port } = new URL(url);
+  return new Promise((resolve, reject) => {
+    const sock = connect(Number(port), "127.0.0.1");
+    let seen = "";
+    sock.on("data", (d) => {
+      seen += d.toString("latin1");
+      if (!seen.includes("\r\n\r\n")) return;
+      if (seen.startsWith("HTTP/1.1 101")) resolve({ sock, received: () => seen });
+      else reject(new Error(seen.split("\r\n")[0]));
+    });
+    sock.on("connect", () =>
+      sock.write(
+        `GET /v1/browser-relay/extension?t=${encodeURIComponent(token)} HTTP/1.1\r\nHost: relay\r\n` +
+          `Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${randomBytes(16).toString("base64")}\r\n` +
+          "Sec-WebSocket-Version: 13\r\n\r\n",
+      ),
+    );
+  });
+}
+
+test("a cut-off socket that ignores its close frame cannot speak to the person's next Chrome", async () => {
+  let current = 1;
+  const shares: boolean[] = [];
+  const hub = createRelayHub({ onShareChanged: (_p, sharing) => shares.push(sharing) });
+  const server = createServer();
+  attachBrowserRelay(server, { hub, capabilitySecret: SECRET, pairingGeneration: async () => current });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    const stale = await rawExtension(url, await pairingAt(1));
+    assert.ok(await until(() => hub.connected(ALICE).extension));
+    current = 2;
+    hub.disconnect(ALICE, PAIRING_REVOKED);
+    assert.ok(await until(() => stale.received().includes(PAIRING_REVOKED)), "the close frame went out");
+
+    const next = await listen(`${url}/v1/browser-relay/extension?t=${await pairingAt(2)}`);
+    const agent = await listen(`${url}/v1/browser-relay/cdp?t=${await cdpToken()}`);
+    assert.ok(await until(() => hub.connected(ALICE).extension && hub.connected(ALICE).cdp));
+    stale.sock.write(maskedFrame(JSON.stringify({ qm: "attached", title: "spoofed", url: "https://evil.example/" })));
+    stale.sock.write(maskedFrame(JSON.stringify({ id: 7, result: { spoofed: true } })));
+    await settle();
+
+    assert.deepEqual(agent.frames, [], "the agent never hears from it");
+    assert.deepEqual(shares, [], "and it cannot choose Chrome again");
+    assert.equal(hub.describe(ALICE), null);
+    assert.equal(next.ws.readyState, WebSocket.OPEN);
+    stale.sock.destroy();
   } finally {
     hangUp(server);
   }

@@ -261,6 +261,10 @@ test("Disconnect Chrome asks first, then revokes the pairing through the web UI'
   assert.match(ask, /action: "Disconnect Chrome"/);
   assert.match(ask, /beginKeychainMutation\(\)/, "one keychain change at a time");
   assert.match(panel, /api\("\/api\/browser-relay\/disconnect", \{ method: "POST"/);
-  assert.match(connectorsSource, /canDisconnectExtension\(provider, activeBrowser\)/);
+  assert.match(
+    connectorsSource,
+    /isExtensionTab\(shown\.id\)\s*\?\s*html`<button\s+class="kc-text-action danger"/,
+    "offered on the Your Chrome tab whatever this core sees, since another core may hold the socket",
+  );
   assert.match(connectorsSource, /data-confirm-key="disconnect:chrome"/, "focus returns to the button on cancel");
 });

@@ -24,7 +24,6 @@ import {
   browserById,
   browserSummary,
   browserTabs,
-  canDisconnectExtension,
   connectDraft,
   extensionLabel,
   extensionNote,
@@ -501,6 +500,7 @@ function extensionPanel(provider: BrowserProvider): TemplateResult {
               </ol>
               <p class="kc-browser-note">
                 The download carries a token that lets it connect as you — treat the unzipped folder like a password.
+                Each download replaces your pairing, so a copy loaded before stops connecting.
               </p>`
       }
     </div>
@@ -654,7 +654,7 @@ function browserCard(): TemplateResult {
             : ""
         }
         ${
-          canDisconnectExtension(provider, activeBrowser)
+          isExtensionTab(shown.id)
             ? html`<button
                 class="kc-text-action danger"
                 type="button"
@@ -675,7 +675,7 @@ function disconnectChrome(): void {
   confirmationOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   confirmation = {
     title: "Disconnect your Chrome?",
-    body: "The agent loses your Chrome right away, and the extension's pairing stops working wherever it is installed. To use your Chrome again, download the extension and load it fresh.",
+    body: "The agent loses your Chrome within a minute, and the extension's pairing stops working wherever it is installed. To use your Chrome again, download the extension and load it fresh.",
     action: "Disconnect Chrome",
     run: async () => {
       const operation = beginKeychainMutation();
