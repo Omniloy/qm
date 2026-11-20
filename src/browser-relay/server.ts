@@ -26,7 +26,7 @@ export interface BrowserRelayOptions {
 
 const DEFAULT_IDLE_MS = 10 * 60_000;
 const PAIRING_TTL_MS = 30 * 24 * 60 * 60_000;
-const RENEW_WITHIN_MS = 7 * 24 * 60 * 60_000;
+const RENEW_WITHIN_MS = PAIRING_TTL_MS - 24 * 60 * 60_000;
 
 export async function mintBrowserRelayPairing(
   actorId: string,
@@ -115,18 +115,19 @@ export function attachBrowserRelay(server: Server, opts: BrowserRelayOptions = {
 
         let expiresAt = claims.exp;
         const renew = () => {
-          if (side !== "extension" || expiresAt - Date.now() > RENEW_WITHIN_MS) return;
+          const left = expiresAt - Date.now();
+          if (side !== "extension" || left <= 0 || left > RENEW_WITHIN_MS) return;
+          const current = expiresAt;
           expiresAt = Number.POSITIVE_INFINITY;
-          mintBrowserRelayPairing(owner, secret).then(
-            (next) => {
+          void mintBrowserRelayPairing(owner, secret)
+            .then((next) => {
               expiresAt = next.expiresAt;
               relayed.send(JSON.stringify({ qm: "token", token: next.token }));
-            },
-            (e: unknown) => {
-              expiresAt = claims.exp;
+            })
+            .catch((e: unknown) => {
+              expiresAt = current;
               console.error("[browser-relay] pairing renewal failed:", errMessage(e));
-            },
-          );
+            });
         };
         renew();
 
@@ -134,15 +135,13 @@ export function attachBrowserRelay(server: Server, opts: BrowserRelayOptions = {
         const touch = () => {
           clearTimeout(idle);
           idle = setTimeout(() => ws.close(1000, "idle"), idleMs);
+          renew();
         };
         ws.on("message", (data: Buffer | string) => {
           touch();
           hub.deliver(owner, side, typeof data === "string" ? data : data.toString("utf8"));
         });
-        ws.on("pong", () => {
-          touch();
-          renew();
-        });
+        ws.on("pong", touch);
         ws.on("close", () => {
           clearTimeout(idle);
           hub.detach(owner, side, relayed);

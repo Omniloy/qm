@@ -580,7 +580,10 @@ function connect() {
         return;
       }
       if (frame?.qm === "token" && frame.id === undefined && typeof frame.token === "string" && frame.token) {
-        void chrome.storage.local.set({ token: frame.token }).catch(() => {});
+        void (async () => {
+          const stored = await chrome.storage.local.get("token");
+          if (stored.token === token) await chrome.storage.local.set({ token: frame.token });
+        })().catch(() => {});
         return;
       }
       if (typeof frame?.id === "number" && typeof frame.method === "string") void onCommand(frame);
@@ -711,7 +714,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       const moved = originOf(before.origin) !== originOf(message.origin);
       if (moved) await chrome.storage.local.remove(["app", "apps"]).catch(() => {});
       await loadOwnOrigins();
-      if (moved) socket?.close();
+      if (moved || before.token !== message.token) socket?.close();
       connect();
       respond({ ok: true });
       return;

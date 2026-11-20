@@ -1409,3 +1409,19 @@ test("a fresh pairing token does not undo a Stop", async () => {
   assert.match((refused.error as { message: string }).message, /stopped/);
   assert.deepEqual(h.created, []);
 });
+
+test("a token the person saves is not overwritten by a renewal meant for the old one", async () => {
+  const h = install({ store: { ...PAIRED }, tabs: GMAIL });
+  await bootWorker();
+  await booted(h);
+  const old = h.sockets[0]!;
+
+  await h.message({ type: "save-settings", origin: PAIRED.origin, token: "mine" });
+  assert.equal(old.readyState, 3, "a new token drops the old connection at once");
+  old.onmessage?.({ data: JSON.stringify({ qm: "token", token: "renewed-old" }) });
+  await new Promise((r) => setTimeout(r, 30));
+
+  assert.equal(h.store.token, "mine");
+  assert.ok(await until(() => h.sockets.length > 1));
+  assert.equal(new URL(h.sockets.at(-1)!.url).searchParams.get("t"), "mine");
+});
