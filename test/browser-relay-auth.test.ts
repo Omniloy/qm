@@ -447,11 +447,14 @@ test("a silent connection whose pairing was replaced is still cut off by the per
   }
 });
 
-test("an open connection is cut off when its pairing can no longer be checked", async () => {
-  let failing = false;
+test("an open connection rides out one failed check, and is cut off when the store stays unreadable", async () => {
+  let failures = 0;
   const { server, url } = await relayServer({
     pairingGeneration: async () => {
-      if (failing) throw new Error("the store is down");
+      if (failures > 0) {
+        failures -= 1;
+        throw new Error("the store is down");
+      }
       return 0;
     },
     pairingRecheckMs: RECHECK,
@@ -460,8 +463,11 @@ test("an open connection is cut off when its pairing can no longer be checked", 
     const ext = await listen(`${url}/v1/browser-relay/extension?t=${await pairingAt(undefined)}`);
     const closed = closeOf(ext.ws);
     await settle();
-    failing = true;
-    assert.equal((await closed).code, 1011, "it fails closed, like the check at connect");
+    failures = 1;
+    await settle();
+    assert.equal(ext.ws.readyState, WebSocket.OPEN, "one blip does not drop the person's Chrome");
+    failures = Number.POSITIVE_INFINITY;
+    assert.equal((await closed).code, 1011, "a second failure in a row fails closed, like the check at connect");
   } finally {
     hangUp(server);
   }

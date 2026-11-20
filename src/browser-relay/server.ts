@@ -121,24 +121,31 @@ export function attachBrowserRelay(server: Server, opts: BrowserRelayOptions = {
 
         let expiresAt = claims.exp;
         let checking = false;
+        let unreadable = 0;
         const cutOff = (code: number, reason: string) => {
           hub.detach(owner, side, relayed);
           ws.close(code, reason);
         };
         const recheck = () => {
-          if (checking) return;
+          if (checking || ws.readyState !== ws.OPEN) return;
           checking = true;
           void (async () => {
             const current = await pairingStillCurrent(claims, opts).catch((e: unknown) => {
               console.error("[browser-relay] pairing check failed:", errMessage(e));
               return null;
             });
-            if (current === null) return cutOff(1011, "the pairing could not be checked");
+            if (current === null) {
+              unreadable += 1;
+              if (unreadable > 1) cutOff(1011, "the pairing could not be checked");
+              return;
+            }
+            unreadable = 0;
             if (!current) return cutOff(1008, PAIRING_REVOKED);
             const left = expiresAt - Date.now();
             if (left <= 0 || left > RENEW_WITHIN_MS) return;
             const generation = claims.pairingGeneration ?? 0;
             const next = await mintBrowserRelayPairing(owner, secret, generation);
+            if (ws.readyState !== ws.OPEN) return;
             expiresAt = next.expiresAt;
             relayed.send(JSON.stringify({ qm: "token", token: next.token }));
             opts.auditLog?.record({

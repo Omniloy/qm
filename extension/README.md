@@ -41,7 +41,7 @@ connects, and checks an open connection again every minute, before it would hand
   it and load the new folder.
 
 The QM server you used cuts the extension off at once; another one notices on its next check. If
-QM cannot read the pairing, it closes the connection rather than trust it.
+QM cannot read the pairing twice in a row, it closes the connection rather than trust it.
 
 Tokens from before pairings were numbered count as pairing 0, the number everyone starts with, so
 they keep working, and keep being renewed, until the person downloads again or disconnects.
