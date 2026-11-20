@@ -81,6 +81,7 @@ const READS_THE_PAGE = new Set([
 ]);
 let pending = null;
 let reconnectDelay = 1000;
+let settingsEpoch = 0;
 let restoreYielded = false;
 const ready = (async () => {
   await bootstrapFromConfig().catch(() => {});
@@ -550,8 +551,9 @@ async function onCommand(frame) {
 function connect() {
   void (async () => {
     await ready;
+    const epoch = settingsEpoch;
     const { origin, token } = await settings().catch(() => ({ origin: "", token: "" }));
-    if (!origin || !token) return;
+    if (epoch !== settingsEpoch || !origin || !token) return;
     if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
 
     const ws = new WebSocket(`${origin.replace(/^http/, "ws")}${RELAY_PATH}?t=${encodeURIComponent(token)}`);
@@ -711,7 +713,10 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       const before = await settings().catch(() => ({ origin: "", token: "" }));
       const moved = originOf(before.origin) !== originOf(message.origin);
       const token = message.token || (moved ? "" : before.token);
-      if (moved || token !== before.token) socket?.close();
+      if (moved || token !== before.token) {
+        settingsEpoch += 1;
+        socket?.close();
+      }
       await chrome.storage.local.set({ origin: message.origin, token });
       if (moved) await chrome.storage.local.remove(["app", "apps"]).catch(() => {});
       await loadOwnOrigins();

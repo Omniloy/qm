@@ -1432,22 +1432,43 @@ test("every renewal on a long-lived connection is kept, not just the first", asy
   await booted(h);
 
   h.sockets[0]!.onmessage?.({ data: JSON.stringify({ qm: "token", token: "day1" }) });
+  assert.ok(await until(() => h.store.token === "day1"));
   h.sockets[0]!.onmessage?.({ data: JSON.stringify({ qm: "token", token: "day2" }) });
 
   assert.ok(await until(() => h.store.token === "day2"));
 });
 
-test("a renewal that lands while the person is saving loses to what they saved", async () => {
+function slowStorage(plan: { reads: number[]; write: number }): void {
+  const { local } = (
+    (globalThis as Record<string, unknown>).chrome as {
+      storage: { local: Record<string, (...a: unknown[]) => Promise<unknown>> };
+    }
+  ).storage;
+  const get = local.get!;
+  const set = local.set!;
+  let reads = 0;
+  local.get = (keys) => {
+    const wait = Array.isArray(keys) && keys.includes("token") ? (plan.reads[reads++] ?? 0) : 0;
+    return get(keys).then((v) => new Promise((r) => setTimeout(() => r(v), wait)));
+  };
+  local.set = (patch) => set(patch).then(() => new Promise((r) => setTimeout(r, plan.write)));
+}
+
+test("a reconnect already reading the old settings when the person saves does not win", async () => {
   const h = install({ store: { ...PAIRED }, tabs: GMAIL });
   await bootWorker();
   await booted(h);
-  const old = h.sockets[0]!;
+  h.sockets[0]!.close();
+  slowStorage({ reads: [5, 0], write: 15 });
 
-  const saving = h.message({ type: "save-settings", origin: PAIRED.origin, token: "mine" });
-  old.onmessage?.({ data: JSON.stringify({ qm: "token", token: "renewed-old" }) });
-  await saving;
+  h.fire("alarm");
+  await h.message({ type: "save-settings", origin: "https://new.example.com", token: "mine" });
+  await new Promise((r) => setTimeout(r, 20));
 
-  assert.equal(h.store.token, "mine");
+  const live = h.sockets.filter((s) => s.readyState === 1);
+  assert.equal(live.length, 1, JSON.stringify(h.sockets.map((s) => s.url)));
+  assert.equal(new URL(live[0]!.url).host, "new.example.com");
+  assert.equal(new URL(live[0]!.url).searchParams.get("t"), "mine");
 });
 
 test("saving with the token field left blank keeps the pairing", async () => {
