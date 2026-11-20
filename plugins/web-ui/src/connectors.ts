@@ -24,6 +24,7 @@ import {
   browserById,
   browserSummary,
   browserTabs,
+  canDisconnectExtension,
   connectDraft,
   extensionLabel,
   extensionNote,
@@ -478,7 +479,7 @@ function extensionPanel(provider: BrowserProvider): TemplateResult {
               <p class="kc-browser-note">
                 Updating? Download and unzip it, then in <code>chrome://extensions</code> press
                 <strong>Remove</strong> on the old one, <strong>Load unpacked</strong> the new folder, and delete the
-                old folder.
+                old folder. Each download replaces your pairing, so the copy loaded now stops connecting.
               </p>`
       }
       ${
@@ -652,9 +653,57 @@ function browserCard(): TemplateResult {
               </button>`
             : ""
         }
+        ${
+          canDisconnectExtension(provider, activeBrowser)
+            ? html`<button
+                class="kc-text-action danger"
+                type="button"
+                data-confirm-key="disconnect:chrome"
+                ?disabled=${keychainOperations.mutationInFlight}
+                @click=${disconnectChrome}
+              >
+                Disconnect Chrome
+              </button>`
+            : ""
+        }
       </div>
     </article>
   `;
+}
+
+function disconnectChrome(): void {
+  confirmationOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  confirmation = {
+    title: "Disconnect your Chrome?",
+    body: "The agent loses your Chrome right away, and the extension's pairing stops working wherever it is installed. To use your Chrome again, download the extension and load it fresh.",
+    action: "Disconnect Chrome",
+    run: async () => {
+      const operation = beginKeychainMutation();
+      if (!operation) return;
+      confirmation = null;
+      confirmationOpener = null;
+      drawConnectors();
+      try {
+        await performDisconnectChrome(operation.epoch);
+      } finally {
+        if (keychainOperations.finishMutation(operation)) drawConnectors();
+      }
+    },
+  };
+  drawConnectors();
+}
+
+async function performDisconnectChrome(stateEpoch: number): Promise<void> {
+  connectorNotice = "";
+  try {
+    await api("/api/browser-relay/disconnect", { method: "POST", body: "{}" });
+    if (keychainOperations.isCurrentEpoch(stateEpoch))
+      connectorNotice = "Your Chrome is disconnected, and its pairing no longer works.";
+  } catch (e) {
+    if (keychainOperations.isCurrentEpoch(stateEpoch))
+      connectorNotice = errMessage(e, "Could not disconnect your Chrome.");
+  }
+  if (keychainOperations.isCurrentEpoch(stateEpoch)) await renderConnectors();
 }
 
 async function submitBrowserKey(): Promise<void> {

@@ -26,8 +26,24 @@ re-opens until you press Share this tab again, or remove and reinstall the exten
 Because that capability is real, treat the pairing token like a password: anyone holding it
 and able to reach your QM can stand in for your Chrome in front of your agent, seeing the pages
 it opens and what it types. While the extension is connected, QM hands it a fresh token once a
-day, so a pairing lasts about 30 days from the last time Chrome was connected. QM cannot revoke
-a single pairing yet; only rotating its capability secret ends one early.
+day, so a pairing lasts about 30 days from the last time Chrome was connected.
+
+## Ending a pairing
+
+Each person has one current pairing, and QM keeps its number with their browser choice. Every
+token carries the number of the pairing it belongs to, and QM refuses one from an older pairing,
+both when it connects and before handing it a fresh token.
+
+- **Disconnect Chrome** (QM → Keychain → Browser → Your Chrome) ends the pairing: the extension
+  is cut off at once, every token it ever held stops working, and the agent stops using your
+  Chrome. To use it again, download the extension and load it fresh.
+- **Download again** starts a new pairing, so the copy you had loaded stops connecting. Remove
+  it and load the new folder.
+
+If the extension is connected to a different QM server from the one you used, that server cuts
+it off within a minute. Tokens from before pairings were numbered count as the first pairing, so they keep
+working, and keep being renewed, until the person downloads again or disconnects. Rotating QM's
+capability secret still ends every pairing at once.
 
 ## Install (unpacked, for now)
 

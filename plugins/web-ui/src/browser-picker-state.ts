@@ -77,6 +77,10 @@ export function isExtensionTab(id: string): boolean {
   return id === EXTENSION_BROWSER_ID;
 }
 
+export function canDisconnectExtension(provider: BrowserProvider, activeId: string | null): boolean {
+  return isExtensionTab(provider.id) && (Boolean(provider.connected) || activeId === EXTENSION_BROWSER_ID);
+}
+
 export interface DropDraft {
   service: string;
   purpose: string;

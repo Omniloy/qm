@@ -21,6 +21,7 @@ const SESSION_ID = "qm-extension-session";
 export interface RelayHub {
   attach(principalId: string, side: RelaySide, socket: RelaySocket): void;
   detach(principalId: string, side: RelaySide, socket: RelaySocket): void;
+  disconnect(principalId: string, reason: string): void;
   deliver(principalId: string, side: RelaySide, raw: string): void;
   connected(principalId: string): { extension: boolean; cdp: boolean; sharing: boolean };
   describe(principalId: string): { title?: string; url?: string } | null;
@@ -88,6 +89,17 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
     return found;
   };
 
+  const detach = (principalId: string, side: RelaySide, socket: RelaySocket): void => {
+    const pair = pairs.get(principalId);
+    if (!pair || pair[side] !== socket) return;
+    delete pair[side];
+    if (side === "extension") {
+      pair.cdp?.close(1001, "the extension disconnected");
+      delete pair.cdp;
+    }
+    if (!pair.extension && !pair.cdp) pairs.delete(principalId);
+  };
+
   return {
     attach(principalId, side, socket) {
       const pair = pairOf(principalId);
@@ -95,15 +107,13 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
       pair[side] = socket;
     },
 
-    detach(principalId, side, socket) {
-      const pair = pairs.get(principalId);
-      if (!pair || pair[side] !== socket) return;
-      delete pair[side];
-      if (side === "extension") {
-        pair.cdp?.close(1001, "the extension disconnected");
-        delete pair.cdp;
-      }
-      if (!pair.extension && !pair.cdp) pairs.delete(principalId);
+    detach,
+
+    disconnect(principalId, reason) {
+      const extension = pairs.get(principalId)?.extension;
+      if (!extension) return;
+      detach(principalId, "extension", extension);
+      extension.close(1008, reason);
     },
 
     deliver(principalId, side, raw) {

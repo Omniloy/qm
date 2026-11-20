@@ -4,6 +4,7 @@ import {
   browserAction,
   browserById,
   browserTabs,
+  canDisconnectExtension,
   connectDraft,
   extensionLabel,
   extensionNote,
@@ -176,4 +177,24 @@ test("a stale sharing flag cannot outlive the connection", () => {
   };
 
   assert.deepEqual(extensionState(provider), { kind: "absent" }, "no socket means nothing is shared");
+});
+
+const CHROME: BrowserProvider = {
+  id: "extension",
+  name: "Your Chrome",
+  summary: "Your own Chrome.",
+  keyEnv: "",
+  keyService: "",
+};
+
+test("Disconnect Chrome is offered while the extension is connected or is the chosen browser", () => {
+  assert.equal(canDisconnectExtension({ ...CHROME, connected: true }, null), true, "connected, even if not chosen");
+  assert.equal(canDisconnectExtension({ ...CHROME, connected: false }, "extension"), true, "chosen, Chrome closed");
+  assert.equal(canDisconnectExtension({ ...CHROME, connected: false }, null), false, "nothing paired to cut off");
+  assert.equal(canDisconnectExtension({ ...CHROME, connected: false }, "anchor"), false);
+});
+
+test("Disconnect Chrome never shows on a hosted provider's tab", () => {
+  assert.equal(canDisconnectExtension(ANCHOR, "extension"), false);
+  assert.equal(canDisconnectExtension({ ...KERNEL, connected: true }, "kernel"), false);
 });
