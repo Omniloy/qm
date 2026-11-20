@@ -1425,3 +1425,52 @@ test("a token the person saves is not overwritten by a renewal meant for the old
   assert.ok(await until(() => h.sockets.length > 1));
   assert.equal(new URL(h.sockets.at(-1)!.url).searchParams.get("t"), "mine");
 });
+
+test("every renewal on a long-lived connection is kept, not just the first", async () => {
+  const h = install({ store: { ...PAIRED }, tabs: GMAIL });
+  await bootWorker();
+  await booted(h);
+
+  h.sockets[0]!.onmessage?.({ data: JSON.stringify({ qm: "token", token: "day1" }) });
+  h.sockets[0]!.onmessage?.({ data: JSON.stringify({ qm: "token", token: "day2" }) });
+
+  assert.ok(await until(() => h.store.token === "day2"));
+});
+
+test("a renewal that lands while the person is saving loses to what they saved", async () => {
+  const h = install({ store: { ...PAIRED }, tabs: GMAIL });
+  await bootWorker();
+  await booted(h);
+  const old = h.sockets[0]!;
+
+  const saving = h.message({ type: "save-settings", origin: PAIRED.origin, token: "mine" });
+  old.onmessage?.({ data: JSON.stringify({ qm: "token", token: "renewed-old" }) });
+  await saving;
+
+  assert.equal(h.store.token, "mine");
+});
+
+test("saving with the token field left blank keeps the pairing", async () => {
+  const h = install({ store: { ...PAIRED }, tabs: GMAIL });
+  await bootWorker();
+  await booted(h);
+
+  await h.message({ type: "save-settings", origin: PAIRED.origin, token: "" });
+
+  assert.equal(h.store.token, "tok");
+  assert.equal(h.sockets.length, 1, "the connection is kept");
+  assert.equal(h.sockets[0]!.readyState, 1);
+});
+
+test("a blank token field never carries the old token to a different QM", async () => {
+  const h = install({ store: { ...PAIRED }, tabs: GMAIL });
+  await bootWorker();
+  await booted(h);
+
+  await h.message({ type: "save-settings", origin: "https://other.example", token: "" });
+  await new Promise((r) => setTimeout(r, 30));
+
+  assert.equal(h.store.token, "");
+  assert.equal(h.sockets[0]!.readyState, 3, "the old connection is dropped");
+  assert.ok(!h.sockets.some((s) => s.url.includes("other.example")), "nothing is sent to the new address");
+});

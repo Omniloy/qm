@@ -580,10 +580,9 @@ function connect() {
         return;
       }
       if (frame?.qm === "token" && frame.id === undefined && typeof frame.token === "string" && frame.token) {
-        void (async () => {
-          const stored = await chrome.storage.local.get("token");
-          if (stored.token === token) await chrome.storage.local.set({ token: frame.token });
-        })().catch(() => {});
+        if (socket === ws && ws.readyState === WebSocket.OPEN) {
+          void chrome.storage.local.set({ token: frame.token }).catch(() => {});
+        }
         return;
       }
       if (typeof frame?.id === "number" && typeof frame.method === "string") void onCommand(frame);
@@ -709,12 +708,13 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       return;
     }
     if (message.type === "save-settings") {
-      const before = await settings().catch(() => ({ origin: "" }));
-      await chrome.storage.local.set({ origin: message.origin, token: message.token });
+      const before = await settings().catch(() => ({ origin: "", token: "" }));
       const moved = originOf(before.origin) !== originOf(message.origin);
+      const token = message.token || (moved ? "" : before.token);
+      if (moved || token !== before.token) socket?.close();
+      await chrome.storage.local.set({ origin: message.origin, token });
       if (moved) await chrome.storage.local.remove(["app", "apps"]).catch(() => {});
       await loadOwnOrigins();
-      if (moved || before.token !== message.token) socket?.close();
       connect();
       respond({ ok: true });
       return;
