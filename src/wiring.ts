@@ -735,15 +735,23 @@ export function buildApp(
     },
   });
   const browserProviders = loadBrowserProviders(config.skillsSeedDir);
+  const shareTurns = new Map<string, number>();
   const browserRelay = createRelayHub({
     onShareChanged(principalId, sharing) {
       const scope = personalScope(principalId);
-      const current = configStore.getBrowserProvider(scope);
+      const turn = (shareTurns.get(scope) ?? 0) + 1;
+      shareTurns.set(scope, turn);
       if (sharing) {
-        if (current !== EXTENSION_BROWSER_ID) configStore.setBrowserProvider(scope, EXTENSION_BROWSER_ID);
+        configStore.setBrowserProvider(scope, EXTENSION_BROWSER_ID);
         return;
       }
-      if (current === EXTENSION_BROWSER_ID) configStore.setBrowserProvider(scope, null);
+      void configStore
+        .getBrowserProviderDurable(scope)
+        .then((current) => {
+          if (shareTurns.get(scope) === turn && current === EXTENSION_BROWSER_ID)
+            configStore.setBrowserProvider(scope, null);
+        })
+        .catch(swallowAs("browser choice after Stop", undefined));
     },
   });
   const harnessAuth = createHarnessAuthStore({

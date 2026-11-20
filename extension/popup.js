@@ -9,14 +9,17 @@ async function refresh() {
 
   const sharing = s?.sharedTabId != null;
   const connected = Boolean(s?.connected);
-  $("dot").className = "dot" + (sharing && connected ? " on" : "");
+  $("dot").className = "dot" + (connected && !s?.stopped ? " on" : "");
 
-  if (sharing) {
-    $("state").textContent = "Sharing a tab";
-    $("detail").textContent = s.sharedTitle || "the tab you shared";
+  if (s?.stopped) {
+    $("state").textContent = "Stopped";
+    $("detail").textContent = "Share this tab lets QM back in";
+  } else if (sharing) {
+    $("state").textContent = "QM is using a tab";
+    $("detail").textContent = s.sharedTitle || "a tab in this browser";
   } else if (connected) {
     $("state").textContent = "Connected to QM";
-    $("detail").textContent = "Ready — click Share this tab";
+    $("detail").textContent = "Ready — QM opens a tab when it needs one";
   } else if (s?.origin && s?.hasToken) {
     $("state").textContent = "Connecting…";
     $("detail").textContent = s.origin;

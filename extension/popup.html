@@ -161,19 +161,19 @@
   <span class="mark">Q</span>
   <h1>Browser Bridge</h1>
 </div>
-<p class="sub">Shares one tab with your QM agent, so it works with your own sign-ins.</p>
+<p class="sub">Lets your QM agent use this browser, so it works with your own sign-ins.</p>
 
 <div class="status">
   <span class="dot" id="dot"></span>
   <div class="lines">
     <div class="title" id="state">Not connected</div>
-    <div class="meta" id="detail">Set up below, then share a tab</div>
+    <div class="meta" id="detail">Set up below, and QM can use this browser</div>
   </div>
 </div>
 
 <div class="row">
   <button class="primary" id="share">Share this tab</button>
-  <button id="stop">Stop sharing</button>
+  <button id="stop">Stop</button>
 </div>
 
 <details id="settings">
@@ -189,6 +189,7 @@
 </details>
 
 <p class="foot">
-  While a tab is shared your agent can read and act on it as you — only that tab, nothing else in this browser.
+  While connected, your agent can open tabs and read and act on any tab in this browser as you. Share this tab points it
+  at the tab you are on; Stop keeps it out until you share a tab again.
 </p>
 <script src="popup.js"></script>

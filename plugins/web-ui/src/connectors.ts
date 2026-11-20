@@ -473,11 +473,12 @@ function extensionPanel(provider: BrowserProvider): TemplateResult {
                 <button class="btn" type="button" ?disabled=${relayChecking} @click=${() => void recheckExtension()}>
                   ${relayChecking ? "Checking…" : "Re-check"}
                 </button>
-                <a class="btn" href=${withBase("/api/browser-relay/extension.zip")} download>Download again</a>
+                ${extensionDownload("Download again")}
               </div>
               <p class="kc-browser-note">
-                Updating? Download, unzip over the old folder, then press the reload arrow on the extension in
-                <code>chrome://extensions</code>.
+                Updating? Download and unzip it, then in <code>chrome://extensions</code> press
+                <strong>Remove</strong> on the old one, <strong>Load unpacked</strong> the new folder, and delete the
+                old folder.
               </p>`
       }
       ${
@@ -485,16 +486,17 @@ function extensionPanel(provider: BrowserProvider): TemplateResult {
           ? ""
           : html`<ol class="kc-ext-steps">
                 <li>
-                  <a class="btn" href=${withBase("/api/browser-relay/extension.zip")} download
-                    >Download the extension</a
-                  >
-                  and unzip it. It comes set up with your ${brandName()} address and a pairing token — nothing to paste.
+                  ${extensionDownload("Download the extension")} and unzip it. It comes set up with your ${brandName()}
+                  address and a pairing token — nothing to paste.
                 </li>
                 <li>
                   Open <code>chrome://extensions</code> (copy-paste it — Chrome blocks links there), turn on
                   <strong>Developer mode</strong>, click <strong>Load unpacked</strong>, and pick the unzipped folder.
                 </li>
-                <li>Click the extension, then <strong>Share this tab</strong> on any tab you want the agent to use.</li>
+                <li>
+                  That's it — the agent opens a tab when it needs one, and can use any tab you have open. Press
+                  <strong>Stop</strong> in the extension to keep it out.
+                </li>
               </ol>
               <p class="kc-browser-note">
                 The download carries a token that lets it connect as you — treat the unzipped folder like a password.
@@ -502,6 +504,12 @@ function extensionPanel(provider: BrowserProvider): TemplateResult {
       }
     </div>
   `;
+}
+
+function extensionDownload(label: string): TemplateResult {
+  return html`<form class="kc-download" method="post" action=${withBase("/api/browser-relay/extension.zip")}>
+    <button class="btn" type="submit">${label}</button>
+  </form>`;
 }
 
 function browserActionTpl(action: BrowserAction, tabId: string, provider: BrowserProvider): TemplateResult {

@@ -1,29 +1,31 @@
 # QM Browser Bridge
 
-Lets your QM agent drive **one tab** in your own Chrome, so it works with your real
-sign-ins and doesn't look like automation. It exists because Chrome refuses
-`--remote-debugging-port` on a real profile on purpose — an extension using
-`chrome.debugger` is the only supported way into the browser where you are actually
-logged in.
+Lets your QM agent use **your own Chrome**, so it works with your real sign-ins and doesn't
+look like automation. It exists because Chrome refuses `--remote-debugging-port` on a real
+profile on purpose — an extension using `chrome.debugger` is the only supported way into the
+browser where you are actually logged in.
 
 ## What it does, and its boundary
 
-While you share a tab, the agent can read and act on that tab as you — including reading
-its cookies (HttpOnly ones too) and the tokens it holds. That is the point: a site that
-blocks a sandbox browser, or needs a login you already have, works because this _is_ your
-browser.
+While the extension is connected, the agent can open tabs of its own and read and act on any
+tab in this browser as you — including reading its cookies (HttpOnly ones too) and the tokens
+it holds. That is the point: a site that blocks a sandbox browser, or needs a login you already
+have, works because this _is_ your browser.
 
-The boundary is one tab at a time, inside the window you shared from. The extension attaches
-Chrome's debugger to a single tab, and the agent can list the other tabs in that window and
-move to one of them — so a receipt that opens in a new tab still works. Other windows, and
-the rest of Chrome, stay out of reach. A tab your shared tab opens is followed automatically,
-which does mean a page you are on can move the share within that window. The green banner and
-the toolbar badge always mark the tab being driven. Stop sharing (or close the tab) and the
-agent is locked out again.
+There is nothing to click first. When the agent needs a page and is not already on one, the
+extension opens a tab in your front window and drives it. The agent can list every open tab,
+in every window, and move to any of them; Chrome's own pages, the Web Store and other
+extensions' pages stay off limits. It drives one tab at a time: the green banner and the
+toolbar badge always mark that tab. A tab it opens is followed automatically, and when the
+tab it is on closes it goes back to the one before.
+
+**Share this tab** points the agent at the tab you are on. **Stop** (or Cancel on Chrome's
+"started debugging this browser" bar) is a real stop: the agent is locked out, and nothing
+re-opens until you press Share this tab again, or remove and reinstall the extension.
 
 Because that capability is real, treat the pairing token like a password: anyone holding it
-and able to reach your QM can pair _their_ agent to a browser you share. The token expires
-on its own, and you can revoke it in QM.
+and able to reach your QM can pair _their_ agent to your browser. The token expires on its
+own, and you can revoke it in QM.
 
 ## Install (unpacked, for now)
 
@@ -31,16 +33,17 @@ on its own, and you can revoke it in QM.
 2. **Load unpacked**, and pick this `extension/` folder.
 3. Click the extension, enter your QM address and the pairing token from
    **QM → Keychain → Browser → Your Chrome**, and Save.
-4. On any tab you want the agent to use, click the extension and **Share this tab**. A green
-   `ON` badge means it is live.
+4. That's it — the agent opens a tab when it needs one. To point it at a tab you already have
+   open, click the extension and **Share this tab**. A green `●` badge marks the tab in use.
 
 ## How it connects
 
 The extension opens a WebSocket to QM's relay and speaks the Chrome DevTools Protocol over
 it. QM pairs your extension with your agent by the identity inside your token, and relays the
 protocol between them. Your agent points its existing `open --cdp` at the relay, so every
-browse verb works against your tab unchanged.
+browse verb works against your tabs unchanged. The extension sends a small keepalive every
+20 seconds so Chrome does not put it to sleep and the agent can always reach it.
 
-Only your own agent, working live in your DM with QM, can reach the tab. Each such turn gets
+Only your own agent, working live in your DM with QM, can reach your browser. Each such turn gets
 its own short-lived relay key; channel, group, and scheduled turns never get one, so nothing
 other people start, and nothing that runs on a timer, can drive your browser.
