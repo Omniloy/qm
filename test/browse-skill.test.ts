@@ -242,10 +242,11 @@ test("open refuses when no browser is connected, rather than launching one", () 
   assert.doesNotMatch(open, /start_watchdog|spawn_chromium/, "and it does not try to launch anything");
 });
 
-test("a relay with no shared tab stops the turn rather than switching browsers", () => {
+test("a Chrome that does not answer stops the turn rather than switching browsers", () => {
   const open = openBlock();
   assert.match(open, /via_extension/, "the extension path is distinguished from a hosted --cdp");
-  assert.match(open, /not sharing a tab/);
+  assert.match(open, /Their Chrome did not answer: \{str\(e\)/, "and passes on the real reason");
+  assert.doesNotMatch(open, /not sharing a tab/, "there is no tab to share first any more");
   assert.match(open, /Do NOT quietly attach to a different browser/);
   assert.match(open, /clear_state\(\)/, "and it leaves no remote state behind to be reused");
 });
@@ -257,8 +258,14 @@ test("the relay token is read from the current turn, never persisted to the stat
 });
 
 test("the skill tells the agent to ask rather than switch browsers on its own", () => {
-  assert.match(SKILL, /stop and ask/i);
-  assert.match(SKILL, /Do \*\*not\*\* attach to a different browser on your own/);
+  assert.match(SKILL, /Ask them only when\s+`open` says their Chrome \*\*did not answer\*\*/);
+  assert.match(SKILL, /Do\s+\*\*not\*\* attach to a different browser on your own/);
+});
+
+test("the skill does not send the person to share a tab before the agent can act", () => {
+  assert.match(SKILL, /nothing for them to share first/);
+  assert.match(SKILL, /run `tabs` first and move there with `tab ID`/);
+  assert.doesNotMatch(SKILL, /fails when no tab is shared/);
 });
 
 test("a temp file per process, so concurrent writes cannot interleave", () => {
@@ -321,10 +328,23 @@ test("a sign-in wall is not saved as if it were the file", () => {
   assert.match(dl, /returned a web page, not a file/);
 });
 
-test("a tab the shared one opens is followed, and others can be picked", () => {
+test("a tab the driven one opens is followed, and any other can be picked", () => {
   assert.match(SKILL, /A new tab is not lost/);
   assert.match(CLI, /qm\.listTabs/);
   assert.match(CLI, /qm\.switchTab/);
+});
+
+test("a page can be opened in a new tab of their Chrome, and only there", () => {
+  assert.match(SKILL, /go URL --new-tab/);
+  const go = /if a\.cmd == "go":[\s\S]*?wait_ready/.exec(CLI)?.[0] ?? "";
+  assert.match(go, /if a\.new_tab:[\s\S]*?provider"\) != "extension"[\s\S]*?die\(/);
+  assert.match(
+    go,
+    /tabs = c\.call\("qm\.listTabs"\)[\s\S]*?"front" not in t[\s\S]*?older version[\s\S]*?Target\.createTarget", url="about:blank"/,
+    "an older extension is caught before any tab is opened, and the new tab loads through Page.navigate",
+  );
+  assert.doesNotMatch(go, /Target\.closeTarget/);
+  assert.match(go, /nav = c\.call\("Page\.navigate", url=url\)/);
 });
 
 test("a file with no findable URL is caught by clicking for it", () => {
@@ -370,4 +390,43 @@ test("a download that lands in a new tab says where it went", () => {
 test("waiting for an interception cannot end in a socket traceback", () => {
   const wait = /def wait_event\([\s\S]{0,900}/.exec(CLI)?.[0] ?? "";
   assert.match(wait, /socket\.timeout|TimeoutError/);
+});
+
+test("a ref only matches in the page the snapshot that listed it read", () => {
+  assert.match(CLI, /el\.setAttribute\('data-qmref', SNAP \+ '-' \+ n\)/);
+  assert.match(CLI, /SNAPSHOT_JS\.replace\("__QMSNAP__", snap\)/);
+  assert.match(CLI, /write_state\(\{\*\*state, "snap": snap\}\)/);
+  const lookups = CLI.match(/data-qmref=/g) ?? [];
+  assert.equal(lookups.length, 1, "every lookup goes through ref_selector");
+  assert.match(CLI, /def box_of[\s\S]*?ref_selector\(ref\)/);
+  assert.match(CLI, /def href_behind[\s\S]*?ref_selector\(ref\)/);
+});
+
+test("closing lets go of the person's tab rather than leaving the banner up", () => {
+  const close = /if a\.cmd == "close":[\s\S]*?\n {4}c, state = connect\(\)/.exec(CLI)?.[0] ?? "";
+  assert.match(close, /c\.call\("qm\.release"\)/);
+  assert.match(close, /Let go of their tab/);
+});
+
+test("a download only blames a new tab the driven one opened", () => {
+  assert.match(CLI, /def new_tab_url[\s\S]*?openerTabId[\s\S]*?== driven/);
+});
+
+test("status does not open a tab in the person's Chrome just to describe it", () => {
+  const status = /if a\.cmd == "status":[\s\S]*?\n {4}if a\.cmd == "download":/.exec(CLI)?.[0] ?? "";
+  assert.match(status, /tab_list\(c\)/);
+  assert.match(status, /no tab in use yet/);
+});
+
+test("a stored password is typed by the extension, pinned to its site in the same step", () => {
+  const fill = /elif a\.cmd == "type-secret":[\s\S]*?elif a\.cmd == "key":/.exec(CLI)?.[0] ?? "";
+  assert.match(fill, /c\.call\("qm\.insertText", text=payload\["value"\], origin=origin\)/);
+  assert.match(fill, /if "unknown control command" not in str\(e\):\s+die\(/, "a refusal is never retried unpinned");
+});
+
+test("a download named by the server lands through the same workspace check, in a folder it creates", () => {
+  assert.match(CLI, /def safe_output_path[\s\S]*?os\.makedirs\(outdir, exist_ok=True\)\n\s+return outdir, path/);
+  const dl = /if a\.cmd == "download":[\s\S]*?if a\.cmd in \("tabs", "tab"\):/.exec(CLI)?.[0] ?? "";
+  assert.match(dl, /name = urllib\.parse\.unquote[\s\S]*?outdir, path = safe_output_path\(a\.dir, name\)/);
+  assert.doesNotMatch(dl, /path = os\.path\.join\(outdir/);
 });

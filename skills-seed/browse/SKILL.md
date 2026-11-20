@@ -33,21 +33,25 @@ they made deliberately.
   a scheduled run the relay is withheld on purpose; `open` says so, and you tell them to ask
   from their DM instead of retrying or switching browsers.
 
-  When `open` says their Chrome is not sharing a tab, **stop and ask**. Chrome stops the
-  extension when it goes quiet, so this is ordinary rather than alarming: tell them plainly
-  that the extension is not sharing, ask them to press **Share this tab**, and run `open`
-  again. Do **not** attach to a different browser on your own — their own Chrome holds sign-ins
-  no other browser has, and they chose it for a reason. Switch only if they say to, and say
-  which browser you used.
+  There is nothing for them to share first: the extension opens a tab of its own the first
+  time you act, and `tabs` / `tab ID` reach any tab they already have open. Ask them only when
+  `open` says their Chrome **did not answer** — not connected means Chrome is closed or the
+  extension is off, so ask them to open Chrome and run `open` again; stopped means they pressed
+  Stop, so ask whether they want you back before asking them to press **Share this tab**. Do
+  **not** attach to a different browser on your own — their own Chrome holds sign-ins no other
+  browser has, and they chose it for a reason. Switch only if they say to, and say which
+  browser you used.
 
 - **Any other value** — a hosted provider. Do NOT run plain `open`. Read
   `skills/browse/providers/$BROWSE_PROVIDER.md`, create the browser it describes, then
   `open --cdp "$CDP_URL"`. Every verb behaves the same afterwards.
 
-- **Unset** — the person has connected no browser. Plain `open` will refuse and say so. In a DM,
-  tell them they have no browser yet and can connect one in **Keychain → Linked accounts →
-  Browser**: either install the extension to drive their own Chrome, or paste a hosted
-  provider's key. Do not guess a browser; there is nothing to launch.
+- **Unset** — the person has connected no browser, or pressed Stop in the extension. Plain
+  `open` will refuse and say so. In a DM, tell them so: if they have the extension, pressing
+  **Share this tab** in it turns their Chrome back on; otherwise they connect a browser in
+  **Keychain → Linked accounts → Browser** — install the extension to use their own Chrome, or
+  paste a hosted provider's key. Do not guess a browser; there is nothing to launch. Choosing
+  their own Chrome is theirs to do: the API refuses it from a turn.
 
 ## The verbs
 
@@ -55,6 +59,7 @@ they made deliberately.
 python3 skills/browse/scripts/browser.py open          # attach to the person's Chrome, or reattach
 python3 skills/browse/scripts/browser.py open --cdp URL # drive a browser running elsewhere
 python3 skills/browse/scripts/browser.py go URL
+python3 skills/browse/scripts/browser.py go URL --new-tab # their Chrome: open it in a new tab and drive that one
 python3 skills/browse/scripts/browser.py snapshot      # numbered interactive elements
 python3 skills/browse/scripts/browser.py read [--selector S] [--max N]
 python3 skills/browse/scripts/browser.py click REF | --selector S
@@ -70,8 +75,8 @@ python3 skills/browse/scripts/browser.py cookies [--url U | --domain D]   # site
 python3 skills/browse/scripts/browser.py storage [--session] [--key K]    # localStorage as JSON
 python3 skills/browse/scripts/browser.py net SUBSTR [--for N] [--bodies]  # capture matching traffic
 python3 skills/browse/scripts/browser.py download URL|--click REF [--as NAME]  # save a file here
-python3 skills/browse/scripts/browser.py tabs                     # tabs you can move to
-python3 skills/browse/scripts/browser.py tab ID                   # move the share to one
+python3 skills/browse/scripts/browser.py tabs                     # every open tab, every window
+python3 skills/browse/scripts/browser.py tab ID                   # move to one of them
 ```
 
 `open` is idempotent — if a browser is already attached it reattaches rather than starting a
@@ -130,18 +135,22 @@ saved, that is what the keychain is for.
 ## Your own Chrome, the primary browser
 
 The person's own Chrome is the one browser that both holds their real sign-ins and looks like
-them rather than like automation — so QM can drive a single tab in it through a small
-extension the person installs. It holds their cookies because it _is_ their browser.
+them rather than like automation — so QM can drive it through a small extension the person
+installs. It holds their cookies because it _is_ their browser.
 
 When `$BROWSE_PROVIDER` is `extension` (or the person asks to use their own browser), plain
-`open` is all you need — it resolves the relay for you. The person shares a tab from the
-extension, and every verb — including the three above — works against that tab. There is no
-pane to fill: it is on their own screen, in front of them. Tell them plainly that while a tab
-is shared you can read and act on it as them, and only that one tab.
+`open` is all you need — it resolves the relay for you. Every verb — including the three above
+— works against the tab you are driving: the one they pointed you at with **Share this tab**,
+or, when there is none, a tab the extension opens in their front window the moment you act.
+There is no pane to fill: it is on their own screen, in front of them.
 
-`open` fails when no tab is shared, which is the common case after their Chrome has been
-idle. That is a question for them, not a reason to switch browsers — see **Which browser**
-above.
+When the task is about something they already have open — "reply to that email", "what does
+this page say" — run `tabs` first and move there with `tab ID` rather than opening it again in
+a new tab. Act in their existing tabs only for the task they gave you: they are working in
+them, and anything you type there is typed as them.
+
+`open` fails only when their Chrome did not answer. That is a question for them, not a reason
+to switch browsers — see **Which browser** above.
 
 ## When a site refuses automation
 
@@ -208,8 +217,7 @@ shared room.
 
 **Never navigate to a file.** Opening a PDF, or clicking something that starts a download,
 replaces the tab's document with something the bridge cannot drive — in the person's own
-Chrome that ends the share, and you are left pressing them to share a tab again. It is also
-pointless: a file the browser downloads lands in _their_ Downloads folder, not here.
+Chrome you lose that tab and whatever you were doing in it. It is also pointless: a file the browser downloads lands in _their_ Downloads folder, not here.
 
 `download` avoids all of it. It asks for the URL from inside the page, so the request carries
 their session exactly as a click would, takes the bytes as they arrive, and stops the browser
@@ -229,18 +237,22 @@ first response that comes back as a file, letting everything else through untouc
 
 If that ref turns out to sit in a plain link, it follows the href instead of clicking, and
 says so. That is the important case for a PDF that **opens in the browser** rather than
-downloading: clicking would turn the tab into Chrome's PDF viewer, which ends the share and
-leaves you with nothing to drive. Fetching the same URL leaves the tab exactly where it is.
+downloading: clicking would turn the tab into Chrome's PDF viewer, which the bridge cannot
+drive. Fetching the same URL leaves the tab exactly where it is.
 
 It names the file from the server's `Content-Disposition` when you do not. If it answers with
 a web page rather than a file, it stops and says so — that is a sign-in wall, and the fix is
-to open the page in the shared tab first so the session exists, then download the real file
+to open the page in the tab you are driving first so the session exists, then download the real file
 URL. Find that URL the way you would anything else: `snapshot` and read the link's href.
 
-**A new tab is not lost.** A tab the shared one opens is followed automatically, so a flow
-that pops a receipt into a new tab keeps working. For a tab the person opened themselves,
-`tabs` lists what is open in that window and `tab ID` moves you there. You still drive exactly
-one tab at a time, and the banner moves with you so they can see which.
+**A new tab is not lost.** A tab the one you are driving opens is followed automatically, so a
+flow that pops a receipt into a new tab keeps working, and when that tab closes you are moved
+back to the one before. For any other tab, `tabs` lists every tab open in their Chrome, in
+every window, and `tab ID` moves you there. To open a page in a tab of its own, leaving the one
+you were on as it was, use `go URL --new-tab`: it opens in front of them. You drive exactly one
+tab at a time, and the banner moves with you so they can see which. Refs belong to the snapshot
+that listed them: after you move tabs, or are moved back when one closes, run `snapshot` again
+before you click.
 
 ## Sign-ins
 
@@ -291,9 +303,10 @@ run unless the person's standing instruction named it.
 python3 skills/browse/scripts/browser.py close
 ```
 
-`close` detaches — it does not stop the browser. The person's own Chrome keeps running as it
-was; a hosted browser bills until its own timeout, so follow the provider doc's Clean up step
-to actually stop it.
+`close` detaches — it does not stop the browser. In the person's own Chrome it lets go of the
+tab you were driving (the banner goes) and their Chrome keeps running as it was; a hosted
+browser bills until its own timeout, so follow the provider doc's Clean up step to actually
+stop it.
 
 **Do not detach just because your answer is ready.** For the extension, the person is watching
 their own screen; for a hosted browser, the pane below the conversation is how they see what you

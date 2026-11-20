@@ -23,16 +23,16 @@ export function extensionState(provider: BrowserProvider): ExtensionState {
 }
 
 export function extensionLabel(state: ExtensionState): string {
-  if (state.kind === "sharing") return "Sharing";
-  return state.kind === "idle" ? "No tab shared" : "Not connected";
+  if (state.kind === "sharing") return "In use";
+  return state.kind === "idle" ? "Ready" : "Not connected";
 }
 
 export function extensionNote(state: ExtensionState): { tone: "ok" | "warning" | "neutral"; text: string } {
-  if (state.kind === "sharing") return { tone: "ok", text: `${state.tab} — the agent can act on that tab as you.` };
+  if (state.kind === "sharing") return { tone: "ok", text: `${state.tab} — the agent is working in that tab as you.` };
   if (state.kind === "idle") {
     return {
-      tone: "warning",
-      text: "The extension is connected, but no tab is shared — open it and press Share this tab.",
+      tone: "ok",
+      text: "Connected — the agent opens a tab when it needs one, and can use any tab you have open.",
     };
   }
   return { tone: "neutral", text: "Install the extension, then paste the pairing token into it." };

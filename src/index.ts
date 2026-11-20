@@ -9,6 +9,8 @@ import { buildApp, serverDeps, stopWithBackstop } from "./wiring.ts";
 import { shutdownOnUncaught } from "./util/process-guard.ts";
 import { createServer } from "./api/server.ts";
 import { attachBrowserRelay } from "./browser-relay/server.ts";
+import { EXTENSION_BROWSER_ID } from "./connectors/browser-providers.ts";
+import { personalScope } from "./types.ts";
 import { dockerDaemonFailure } from "./deploy/docker-deploy-provider.ts";
 import { errMessage, reportFailureAs } from "./util/errors.ts";
 import { slackAccountConfigsFromEnv, slackPluginConfigFromEnv, startSlackPlugin } from "./slack/index.ts";
@@ -54,6 +56,9 @@ attachBrowserRelay(server, {
   hub: built.browserRelay,
   authorizesScope: async (claims) =>
     built.identity.classify(claims.actorId).type === "internal" && (await built.app.authorizesCapabilityScope(claims)),
+  stillChosen: async (actorId) =>
+    (await built.config.getBrowserProviderDurable(personalScope(actorId))) === EXTENSION_BROWSER_ID,
+  ...(config.publicUrl ? { appUrl: config.publicUrl } : {}),
   ...(config.capabilitySecret ? { capabilitySecret: config.capabilitySecret } : {}),
 });
 
