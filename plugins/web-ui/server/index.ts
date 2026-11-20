@@ -2571,6 +2571,11 @@ const apiRoutes: readonly WebRoute[] = [
     handle: async (c) => relayCore(c.res, "POST", "/v1/browser-relay/pairing", "{}"),
   },
   {
+    method: "POST",
+    path: "/api/browser-relay/disconnect",
+    handle: async (c) => relayCore(c.res, "POST", "/v1/browser-relay/disconnect", "{}"),
+  },
+  {
     method: "DELETE",
     path: "/api/keychain/credentials/:id",
     handle: async (c) => {

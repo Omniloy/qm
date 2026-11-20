@@ -4,7 +4,7 @@ import { defaultOrgPolicy } from "../policy/command-policy.ts";
 import { randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { DurableMap } from "../persistence/durable-map.ts";
-import { createMemoryMap } from "../persistence/durable-map.ts";
+import { createMemoryMap, requireAtomic } from "../persistence/durable-map.ts";
 import { createKeyedQueue } from "../util/async.ts";
 import { foldPrincipalId, peopleListAllows, type PersonLookup } from "../directory/person.ts";
 import { canonicalModelId, isHarnessId, modelSupportedByHarness } from "../model/pi-models.ts";
@@ -188,6 +188,10 @@ export interface PersistedBrowserProvider {
   scopeId: ScopeId;
   providerId: string;
 }
+export interface PersistedBrowserPairing {
+  scopeId: ScopeId;
+  generation: number;
+}
 interface AutoFlaggerConfig {
   harnessId: string;
   modelId: string;
@@ -329,6 +333,8 @@ export interface ScopedConfigStore {
   getBrowserProvider(id: ScopeId): string | null;
   setBrowserProvider(id: ScopeId, providerId: string | null): void;
   getBrowserProviderDurable(id: ScopeId): Promise<string | null>;
+  getBrowserPairingGenerationDurable(id: ScopeId): Promise<number>;
+  bumpBrowserPairingGeneration(id: ScopeId): Promise<number>;
   getAutoFlaggerConfig(): AutoFlaggerConfig | null;
   setAutoFlaggerConfig(config: AutoFlaggerConfig | null): void;
   getTurnWallClockSecDurable(id: ScopeId): Promise<number | null>;
@@ -420,6 +426,7 @@ export function createMemoryConfigStore(
     browseMaxSteps?: DurableMap<PersistedBrowseMaxSteps>;
     browseModels?: DurableMap<PersistedBrowseModel>;
     browserProviders?: DurableMap<PersistedBrowserProvider>;
+    browserPairings?: DurableMap<PersistedBrowserPairing>;
     autoFlaggerConfigs?: DurableMap<PersistedAutoFlaggerConfig>;
     turnWallClocks?: DurableMap<PersistedTurnWallClock>;
     appIdleStops?: DurableMap<PersistedAppIdleStop>;
@@ -520,6 +527,7 @@ export function createMemoryConfigStore(
     withCanonicalModel,
   );
   const browserProviderStore = opts.browserProviders ?? createMemoryMap<PersistedBrowserProvider>();
+  const browserPairingStore = requireAtomic(opts.browserPairings ?? createMemoryMap<PersistedBrowserPairing>());
   const autoFlaggerStore = canonicalRows(
     opts.autoFlaggerConfigs ?? createMemoryMap<PersistedAutoFlaggerConfig>(),
     withCanonicalModel,
@@ -1305,6 +1313,13 @@ export function createMemoryConfigStore(
     getBrowserProviderDurable: async (id) =>
       (await browserProviderStore.get(id))?.providerId ??
       (id === org ? null : ((await browserProviderStore.get(org))?.providerId ?? null)),
+    getBrowserPairingGenerationDurable: async (id) => (await browserPairingStore.get(id))?.generation ?? 0,
+    async bumpBrowserPairingGeneration(id) {
+      await browserPairingStore.putIfAbsent(id, { scopeId: id, generation: 0 });
+      const bumped = await browserPairingStore.update(id, (row) => ({ ...row, generation: row.generation + 1 }));
+      if (!bumped) throw new Error(`the browser pairing for ${id} vanished while it was being replaced`);
+      return bumped.generation;
+    },
     getAutoFlaggerConfig: () => autoFlaggerConfig,
     setAutoFlaggerConfig(config) {
       autoFlaggerConfig = config && withCanonicalModel(config);

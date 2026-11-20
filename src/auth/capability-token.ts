@@ -53,6 +53,7 @@ export interface CapabilityClaims {
   triggered?: boolean;
   grants?: string[];
   threadRef?: string;
+  pairingGeneration?: number;
   exp: number;
 }
 
@@ -135,6 +136,11 @@ export async function verifyCapabilityToken(
   if (claims.runId !== undefined && typeof claims.runId !== "string") return null;
   if (claims.sessionId !== undefined && (typeof claims.sessionId !== "string" || !claims.sessionId)) return null;
   if (claims.runAttempt !== undefined && (!Number.isSafeInteger(claims.runAttempt) || claims.runAttempt < 1))
+    return null;
+  if (
+    claims.pairingGeneration !== undefined &&
+    (!Number.isSafeInteger(claims.pairingGeneration) || claims.pairingGeneration < 0)
+  )
     return null;
   if (claims.runLeaseToken !== undefined && (typeof claims.runLeaseToken !== "string" || !claims.runLeaseToken))
     return null;
