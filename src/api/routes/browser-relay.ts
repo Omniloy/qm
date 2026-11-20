@@ -1,12 +1,9 @@
-import { mintCapabilityToken } from "../../auth/capability-token.ts";
-import { BROWSER_RELAY_AUD } from "../../browser-relay/server.ts";
+import { mintBrowserRelayPairing } from "../../browser-relay/server.ts";
 import { EXTENSION_BROWSER_ID } from "../../connectors/browser-providers.ts";
 import { personalScope } from "../../types.ts";
 import { sendJson } from "../http.ts";
 import type { ApiCtx, Route } from "./route.ts";
 import { audit } from "./shared.ts";
-
-const PAIRING_TTL_MS = 30 * 24 * 60 * 60_000;
 
 function callerOf(ctx: ApiCtx): string | null {
   return ctx.capability?.actorId ?? ctx.actor?.p ?? null;
@@ -22,16 +19,7 @@ async function mintRelayPairing(ctx: ApiCtx): Promise<void> {
       error: "forbidden",
       message: "pairing is only available to the person themselves, from their own web session",
     });
-  const expiresAt = Date.now() + PAIRING_TTL_MS;
-  const token = await mintCapabilityToken(
-    {
-      actorId: principalId,
-      aud: BROWSER_RELAY_AUD,
-      scopeId: personalScope(principalId),
-      exp: expiresAt,
-    },
-    secret,
-  );
+  const { token, expiresAt } = await mintBrowserRelayPairing(principalId, secret);
   deps.config?.setBrowserProvider(personalScope(principalId), EXTENSION_BROWSER_ID);
   audit(deps, {
     principalId,

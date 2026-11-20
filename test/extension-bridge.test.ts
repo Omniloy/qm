@@ -1365,3 +1365,133 @@ test("scripts cannot claim a user gesture", async () => {
 
   assert.match((reply.error as { message: string }).message, /only in the page itself/);
 });
+
+test("a fresh pairing token from the relay is kept and used to reconnect", async () => {
+  const h = install({ store: { ...PAIRED }, tabs: GMAIL });
+  await bootWorker();
+  await booted(h);
+
+  h.sockets[0]!.onmessage?.({ data: JSON.stringify({ qm: "token", token: "fresh" }) });
+  assert.ok(await until(() => h.store.token === "fresh"), "the new token is saved");
+
+  h.sockets[0]!.close();
+  h.fire("alarm");
+  assert.ok(await until(() => h.sockets.length > 1), "reconnected");
+  assert.equal(new URL(h.sockets[1]!.url).searchParams.get("t"), "fresh");
+});
+
+test("the agent cannot plant a pairing token by posing as the relay", async () => {
+  const h = install({ store: { ...PAIRED }, tabs: GMAIL });
+  await bootWorker();
+  await booted(h);
+
+  h.sockets[0]!.onmessage?.({
+    data: JSON.stringify({ id: 120, method: "Page.enable", qm: "token", token: "planted" }),
+  });
+  h.sockets[0]!.onmessage?.({ data: JSON.stringify({ qm: "token", token: "" }) });
+  await new Promise((r) => setTimeout(r, 30));
+
+  assert.equal(h.store.token, "tok");
+});
+
+test("a fresh pairing token does not undo a Stop", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: GMAIL, activeTab: 7 });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => shares(h).length > 0));
+  await h.message({ type: "stop-sharing" });
+
+  h.sockets[0]!.onmessage?.({ data: JSON.stringify({ qm: "token", token: "fresh" }) });
+  assert.ok(await until(() => h.store.token === "fresh"));
+
+  assert.equal(h.store.stopped, true);
+  const refused = await h.command(121, "Page.navigate", { url: "https://x.test/" });
+  assert.match((refused.error as { message: string }).message, /stopped/);
+  assert.deepEqual(h.created, []);
+});
+
+test("a token the person saves is not overwritten by a renewal meant for the old one", async () => {
+  const h = install({ store: { ...PAIRED }, tabs: GMAIL });
+  await bootWorker();
+  await booted(h);
+  const old = h.sockets[0]!;
+
+  await h.message({ type: "save-settings", origin: PAIRED.origin, token: "mine" });
+  assert.equal(old.readyState, 3, "a new token drops the old connection at once");
+  old.onmessage?.({ data: JSON.stringify({ qm: "token", token: "renewed-old" }) });
+  await new Promise((r) => setTimeout(r, 30));
+
+  assert.equal(h.store.token, "mine");
+  assert.ok(await until(() => h.sockets.length > 1));
+  assert.equal(new URL(h.sockets.at(-1)!.url).searchParams.get("t"), "mine");
+});
+
+test("every renewal on a long-lived connection is kept, not just the first", async () => {
+  const h = install({ store: { ...PAIRED }, tabs: GMAIL });
+  await bootWorker();
+  await booted(h);
+
+  h.sockets[0]!.onmessage?.({ data: JSON.stringify({ qm: "token", token: "day1" }) });
+  assert.ok(await until(() => h.store.token === "day1"));
+  h.sockets[0]!.onmessage?.({ data: JSON.stringify({ qm: "token", token: "day2" }) });
+
+  assert.ok(await until(() => h.store.token === "day2"));
+});
+
+function slowStorage(plan: { reads: number[]; write: number }): void {
+  const { local } = (
+    (globalThis as Record<string, unknown>).chrome as {
+      storage: { local: Record<string, (...a: unknown[]) => Promise<unknown>> };
+    }
+  ).storage;
+  const get = local.get!;
+  const set = local.set!;
+  let reads = 0;
+  local.get = (keys) => {
+    const wait = Array.isArray(keys) && keys.includes("token") ? (plan.reads[reads++] ?? 0) : 0;
+    return get(keys).then((v) => new Promise((r) => setTimeout(() => r(v), wait)));
+  };
+  local.set = (patch) => set(patch).then(() => new Promise((r) => setTimeout(r, plan.write)));
+}
+
+test("a reconnect already reading the old settings when the person saves does not win", async () => {
+  const h = install({ store: { ...PAIRED }, tabs: GMAIL });
+  await bootWorker();
+  await booted(h);
+  h.sockets[0]!.close();
+  slowStorage({ reads: [5, 0], write: 15 });
+
+  h.fire("alarm");
+  await h.message({ type: "save-settings", origin: "https://new.example.com", token: "mine" });
+  await new Promise((r) => setTimeout(r, 20));
+
+  const live = h.sockets.filter((s) => s.readyState === 1);
+  assert.equal(live.length, 1, JSON.stringify(h.sockets.map((s) => s.url)));
+  assert.equal(new URL(live[0]!.url).host, "new.example.com");
+  assert.equal(new URL(live[0]!.url).searchParams.get("t"), "mine");
+});
+
+test("saving with the token field left blank keeps the pairing", async () => {
+  const h = install({ store: { ...PAIRED }, tabs: GMAIL });
+  await bootWorker();
+  await booted(h);
+
+  await h.message({ type: "save-settings", origin: PAIRED.origin, token: "" });
+
+  assert.equal(h.store.token, "tok");
+  assert.equal(h.sockets.length, 1, "the connection is kept");
+  assert.equal(h.sockets[0]!.readyState, 1);
+});
+
+test("a blank token field never carries the old token to a different QM", async () => {
+  const h = install({ store: { ...PAIRED }, tabs: GMAIL });
+  await bootWorker();
+  await booted(h);
+
+  await h.message({ type: "save-settings", origin: "https://other.example", token: "" });
+  await new Promise((r) => setTimeout(r, 30));
+
+  assert.equal(h.store.token, "");
+  assert.equal(h.sockets[0]!.readyState, 3, "the old connection is dropped");
+  assert.ok(!h.sockets.some((s) => s.url.includes("other.example")), "nothing is sent to the new address");
+});

@@ -1,7 +1,7 @@
 import type { Server, IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
-import { verifyCapabilityToken, type CapabilityClaims } from "../auth/capability-token.ts";
+import { mintCapabilityToken, verifyCapabilityToken, type CapabilityClaims } from "../auth/capability-token.ts";
 import { personalScope } from "../types.ts";
 import { errMessage } from "../util/errors.ts";
 import { createRelayHub, relaySocket, type RelayHub, type RelaySide } from "./relay.ts";
@@ -25,6 +25,20 @@ export interface BrowserRelayOptions {
 }
 
 const DEFAULT_IDLE_MS = 10 * 60_000;
+const PAIRING_TTL_MS = 30 * 24 * 60 * 60_000;
+const RENEW_WITHIN_MS = PAIRING_TTL_MS - 24 * 60 * 60_000;
+
+export async function mintBrowserRelayPairing(
+  actorId: string,
+  secret: string,
+): Promise<{ token: string; expiresAt: number }> {
+  const expiresAt = Date.now() + PAIRING_TTL_MS;
+  const token = await mintCapabilityToken(
+    { actorId, aud: BROWSER_RELAY_AUD, scopeId: personalScope(actorId), exp: expiresAt },
+    secret,
+  );
+  return { token, expiresAt };
+}
 
 export function isLivePersonalClaim(claims: CapabilityClaims): boolean {
   return (
@@ -42,21 +56,21 @@ function relaySideFor(pathname: string): RelaySide | null {
   return null;
 }
 
-async function relayPrincipalFor(
+async function relayClaimsFor(
   token: string | null,
   side: RelaySide,
   secret: string,
   authorizesScope?: ScopeAuthorizer,
   stillChosen?: ChoiceCheck,
-): Promise<string | null> {
+): Promise<CapabilityClaims | null> {
   if (!token) return null;
   const claims = await verifyCapabilityToken(token, secret);
   if (!claims?.actorId) return null;
-  if (side === "extension") return claims.aud === BROWSER_RELAY_AUD ? claims.actorId : null;
+  if (side === "extension") return claims.aud === BROWSER_RELAY_AUD ? claims : null;
   if (claims.aud !== BROWSER_RELAY_CDP_AUD || !isLivePersonalClaim(claims)) return null;
   if (authorizesScope && !(await authorizesScope(claims))) return null;
   if (stillChosen && !(await stillChosen(claims.actorId))) return null;
-  return claims.actorId;
+  return claims;
 }
 
 export function attachBrowserRelay(server: Server, opts: BrowserRelayOptions = {}): RelayHub {
@@ -82,29 +96,46 @@ export function attachBrowserRelay(server: Server, opts: BrowserRelayOptions = {
     if (!secret) return refuse(socket, 503, "Service Unavailable");
 
     void (async () => {
-      let principalId: string | null = null;
-      try {
-        principalId = await relayPrincipalFor(
-          url.searchParams.get("t"),
-          side,
-          secret,
-          opts.authorizesScope,
-          opts.stillChosen,
-        );
-      } catch (e) {
+      const claims = await relayClaimsFor(
+        url.searchParams.get("t"),
+        side,
+        secret,
+        opts.authorizesScope,
+        opts.stillChosen,
+      ).catch((e: unknown) => {
         console.error("[browser-relay] token check failed:", errMessage(e));
-      }
-      if (!principalId) return refuse(socket, 401, "Unauthorized");
+        return null;
+      });
+      if (!claims) return refuse(socket, 401, "Unauthorized");
       wss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
-        const owner = principalId!;
+        const owner = claims.actorId;
         const relayed = relaySocket(ws);
         hub.attach(owner, side, relayed);
         if (side === "extension" && opts.appUrl) relayed.send(JSON.stringify({ qm: "origins", app: opts.appUrl }));
+
+        let expiresAt = claims.exp;
+        const renew = () => {
+          const left = expiresAt - Date.now();
+          if (side !== "extension" || left <= 0 || left > RENEW_WITHIN_MS) return;
+          const current = expiresAt;
+          expiresAt = Number.POSITIVE_INFINITY;
+          void mintBrowserRelayPairing(owner, secret)
+            .then((next) => {
+              expiresAt = next.expiresAt;
+              relayed.send(JSON.stringify({ qm: "token", token: next.token }));
+            })
+            .catch((e: unknown) => {
+              expiresAt = current;
+              console.error("[browser-relay] pairing renewal failed:", errMessage(e));
+            });
+        };
+        renew();
 
         let idle = setTimeout(() => ws.close(1000, "idle"), idleMs);
         const touch = () => {
           clearTimeout(idle);
           idle = setTimeout(() => ws.close(1000, "idle"), idleMs);
+          renew();
         };
         ws.on("message", (data: Buffer | string) => {
           touch();

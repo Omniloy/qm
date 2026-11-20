@@ -165,6 +165,128 @@ test("the extension leg takes only a pairing token", async () => {
   }
 });
 
+const DAY = 24 * 60 * 60_000;
+
+const listening = new Set<WebSocket>();
+
+function hangUp(server: Server): void {
+  for (const ws of listening) ws.terminate();
+  listening.clear();
+  server.close();
+}
+
+function listen(url: string): Promise<{ ws: WebSocket; frames: Array<Record<string, unknown>> }> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(url);
+    listening.add(ws);
+    const frames: Array<Record<string, unknown>> = [];
+    ws.on("message", (data) => frames.push(JSON.parse(String(data)) as Record<string, unknown>));
+    ws.once("open", () => resolve({ ws, frames }));
+    ws.once("error", reject);
+  });
+}
+
+async function until(cond: () => boolean, ms = 2000): Promise<boolean> {
+  const stop = performance.now() + ms;
+  while (performance.now() < stop) {
+    if (cond()) return true;
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  return cond();
+}
+
+const settle = () => new Promise((r) => setTimeout(r, 100));
+const renewals = (frames: Array<Record<string, unknown>>) => frames.filter((f) => f.qm === "token");
+const pairing = (expiresIn: number) => mint({ aud: BROWSER_RELAY_AUD, exp: Date.now() + expiresIn });
+
+const HOUR = 60 * 60_000;
+
+test("a pairing token over a day old is swapped for a fresh one for the same person", async () => {
+  const { server, url } = await relayServer();
+  try {
+    const agent = await listen(`${url}/v1/browser-relay/cdp?t=${await cdpToken()}`);
+    const ext = await listen(`${url}/v1/browser-relay/extension?t=${await pairing(20 * DAY)}`);
+    assert.ok(await until(() => renewals(ext.frames).length > 0), "the extension is handed a fresh token");
+
+    const token = String(renewals(ext.frames)[0]!.token);
+    const fresh = await verifyCapabilityToken(token, SECRET);
+    assert.equal(fresh?.actorId, ALICE);
+    assert.equal(fresh?.aud, BROWSER_RELAY_AUD);
+    assert.equal(fresh?.scopeId, personalScope(ALICE));
+    assert.ok(fresh!.exp > Date.now() + 29 * DAY, "good for another 30 days");
+    assert.equal(await dial(`${url}/v1/browser-relay/cdp?t=${encodeURIComponent(token)}`), 401, "not an agent key");
+    assert.deepEqual(agent.frames, [], "the agent's side never sees it");
+  } finally {
+    hangUp(server);
+  }
+});
+
+test("a pairing token under a day old is not renewed, and the agent's key never is", async () => {
+  const { server, url } = await relayServer();
+  try {
+    const young = await listen(`${url}/v1/browser-relay/extension?t=${await pairing(30 * DAY - HOUR)}`);
+    const agent = await listen(`${url}/v1/browser-relay/cdp?t=${await cdpToken()}`);
+    young.ws.pong();
+    agent.ws.pong();
+    agent.ws.send(JSON.stringify({ id: 1, method: "Browser.getVersion" }));
+
+    const bobToken = await mint({
+      actorId: "bob",
+      scopeId: personalScope("bob"),
+      aud: BROWSER_RELAY_AUD,
+      exp: Date.now() + 10 * DAY,
+    });
+    const bob = await listen(`${url}/v1/browser-relay/extension?t=${bobToken}`);
+    assert.ok(await until(() => renewals(bob.frames).length > 0), "an older token on the same relay is renewed");
+    await settle();
+
+    assert.deepEqual(renewals(young.frames), [], "a token minted within the day is left alone");
+    assert.deepEqual(renewals(agent.frames), [], "the agent's hour-long key is never answered with a pairing token");
+  } finally {
+    hangUp(server);
+  }
+});
+
+test("a connection that stays up is renewed once a day on its keepalive, one token per day", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  const { server, url } = await relayServer();
+  try {
+    const ext = await listen(`${url}/v1/browser-relay/extension?t=${await pairing(30 * DAY - HOUR)}`);
+    ext.ws.pong();
+    await settle();
+    assert.deepEqual(renewals(ext.frames), [], "minted within the day");
+
+    t.mock.timers.tick(DAY);
+    for (let i = 0; i < 10; i++) ext.ws.send(JSON.stringify({ qm: "ping" }));
+    assert.ok(await until(() => renewals(ext.frames).length > 0), "renewed without reconnecting");
+    await settle();
+    assert.equal(renewals(ext.frames).length, 1, "a burst of keepalives mints one token, not one each");
+    const fresh = await verifyCapabilityToken(String(renewals(ext.frames)[0]!.token), SECRET);
+    assert.ok(fresh!.exp > Date.now() + 29 * DAY);
+
+    t.mock.timers.tick(DAY + HOUR);
+    ext.ws.pong();
+    assert.ok(await until(() => renewals(ext.frames).length === 2), "and again on a pong the next day");
+  } finally {
+    hangUp(server);
+  }
+});
+
+test("a connection whose token ran out while it stayed open is not renewed", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  const { server, url } = await relayServer();
+  try {
+    const ext = await listen(`${url}/v1/browser-relay/extension?t=${await pairing(30 * DAY - HOUR)}`);
+    t.mock.timers.tick(31 * DAY);
+    ext.ws.pong();
+    ext.ws.send(JSON.stringify({ qm: "ping" }));
+    await settle();
+    assert.deepEqual(renewals(ext.frames), []);
+  } finally {
+    hangUp(server);
+  }
+});
+
 function pairingCtx(over: { capability?: CapabilityClaims; actor?: { p: string } }) {
   const out = { status: 0, body: undefined as unknown };
   const res = {
@@ -197,6 +319,8 @@ test("pairing is minted only for a portal identity, never from any capability to
   const minted = await verifyCapabilityToken((portal.out.body as { token: string }).token, SECRET);
   assert.equal(minted?.aud, BROWSER_RELAY_AUD);
   assert.equal(minted?.actorId, ALICE);
+  assert.equal(minted?.scopeId, personalScope(ALICE));
+  assert.ok(minted!.exp > Date.now() + 29 * DAY);
   assert.equal(pair.auth, "source");
 
   const refused: Record<string, Partial<CapabilityClaims>> = {
