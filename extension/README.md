@@ -24,8 +24,10 @@ tab it is on closes it goes back to the one before.
 re-opens until you press Share this tab again, or remove and reinstall the extension.
 
 Because that capability is real, treat the pairing token like a password: anyone holding it
-and able to reach your QM can pair _their_ agent to your browser. The token expires on its
-own, and you can revoke it in QM.
+and able to reach your QM can pair _their_ agent to your browser. The token lasts 30 days;
+while the extension is connected in its last week, QM hands it a fresh one, so a Chrome you
+keep using stays paired. A token left unused past its 30 days expires, and you can revoke it
+in QM.
 
 ## Install (unpacked, for now)
 

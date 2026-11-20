@@ -579,6 +579,10 @@ function connect() {
         void learnApp(frame.app);
         return;
       }
+      if (frame?.qm === "token" && frame.id === undefined && typeof frame.token === "string" && frame.token) {
+        void chrome.storage.local.set({ token: frame.token }).catch(() => {});
+        return;
+      }
       if (typeof frame?.id === "number" && typeof frame.method === "string") void onCommand(frame);
     };
     ws.onclose = () => {

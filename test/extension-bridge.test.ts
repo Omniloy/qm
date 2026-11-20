@@ -1365,3 +1365,47 @@ test("scripts cannot claim a user gesture", async () => {
 
   assert.match((reply.error as { message: string }).message, /only in the page itself/);
 });
+
+test("a fresh pairing token from the relay is kept and used to reconnect", async () => {
+  const h = install({ store: { ...PAIRED }, tabs: GMAIL });
+  await bootWorker();
+  await booted(h);
+
+  h.sockets[0]!.onmessage?.({ data: JSON.stringify({ qm: "token", token: "fresh" }) });
+  assert.ok(await until(() => h.store.token === "fresh"), "the new token is saved");
+
+  h.sockets[0]!.close();
+  h.fire("alarm");
+  assert.ok(await until(() => h.sockets.length > 1), "reconnected");
+  assert.equal(new URL(h.sockets[1]!.url).searchParams.get("t"), "fresh");
+});
+
+test("the agent cannot plant a pairing token by posing as the relay", async () => {
+  const h = install({ store: { ...PAIRED }, tabs: GMAIL });
+  await bootWorker();
+  await booted(h);
+
+  h.sockets[0]!.onmessage?.({
+    data: JSON.stringify({ id: 120, method: "Page.enable", qm: "token", token: "planted" }),
+  });
+  h.sockets[0]!.onmessage?.({ data: JSON.stringify({ qm: "token", token: "" }) });
+  await new Promise((r) => setTimeout(r, 30));
+
+  assert.equal(h.store.token, "tok");
+});
+
+test("a fresh pairing token does not undo a Stop", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: GMAIL, activeTab: 7 });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => shares(h).length > 0));
+  await h.message({ type: "stop-sharing" });
+
+  h.sockets[0]!.onmessage?.({ data: JSON.stringify({ qm: "token", token: "fresh" }) });
+  assert.ok(await until(() => h.store.token === "fresh"));
+
+  assert.equal(h.store.stopped, true);
+  const refused = await h.command(121, "Page.navigate", { url: "https://x.test/" });
+  assert.match((refused.error as { message: string }).message, /stopped/);
+  assert.deepEqual(h.created, []);
+});
