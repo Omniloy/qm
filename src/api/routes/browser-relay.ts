@@ -129,10 +129,15 @@ async function chooseBrowser(ctx: ApiCtx): Promise<void> {
   const scope = personalScope(principalId);
   if (typeof wanted === "string" && !(await bridgeBrowsers(deps, principalId)).some((b) => b.id === wanted))
     return sendJson(res, 404, { error: "not_found", message: "no browser with that id has connected" });
-  const at = Date.now();
-  await config.setActiveBridgeBrowser(scope, wanted, at);
+  const saved = await config.setActiveBridgeBrowser(scope, wanted, Date.now());
+  deps.browserRelay?.setActive(principalId, saved.active, saved.at);
+  if (saved.active !== wanted)
+    return sendJson(res, 409, {
+      error: "conflict",
+      message: "a newer browser choice was made a moment ago — check the list and choose again",
+      browsers: await bridgeBrowsers(deps, principalId),
+    });
   if (wanted) config.setBrowserProvider(scope, EXTENSION_BROWSER_ID);
-  deps.browserRelay?.setActive(principalId, wanted, at);
   audit(deps, {
     principalId,
     action: "browser-relay.choose",

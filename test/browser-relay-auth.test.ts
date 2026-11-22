@@ -800,3 +800,15 @@ test("the cap never drops the browser the agent uses", async () => {
   assert.equal(after.active, "chosen-0001");
   assert.ok("chosen-0001" in after.browsers);
 });
+
+test("a choice that loses to a newer one says so instead of claiming success", async () => {
+  const hub = createRelayHub();
+  const config = createMemoryConfigStore("org");
+  hub.attach(ALICE, "extension", silent(), { id: "chrome-0001", name: "Chrome" });
+  hub.attach(ALICE, "extension", silent(), { id: "dia-00000001", name: "Dia" });
+  await config.setActiveBridgeBrowser(personalScope(ALICE), "dia-00000001", Date.now() + 60_000);
+  const r = pairingCtx({ actor: { p: ALICE }, body: { browserId: "chrome-0001" } }, { browserRelay: hub, config });
+  await choose.handle(r.ctx);
+  assert.equal(r.out.status, 409);
+  assert.equal(hub.browsers(ALICE).active, "dia-00000001", "the hub follows what was actually saved");
+});
