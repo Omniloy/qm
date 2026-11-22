@@ -160,6 +160,11 @@ async function forgetBrowser(ctx: ApiCtx): Promise<void> {
     });
   const wanted = (body as { browserId?: unknown } | undefined)?.browserId;
   if (typeof wanted !== "string") return sendJson(res, 400, { error: "bad_request", message: "browserId is required" });
+  if (deps.browserRelay?.browsers(principalId).live.some((b) => b.id === wanted))
+    return sendJson(res, 409, {
+      error: "conflict",
+      message: "that browser is connected right now — close it or turn its Browser Bridge off, then forget it",
+    });
   const scope = personalScope(principalId);
   const after = await config.forgetBridgeBrowser(scope, wanted);
   if (after.active === null) deps.browserRelay?.setActive(principalId, null, after.at);

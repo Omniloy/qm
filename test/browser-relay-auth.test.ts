@@ -812,3 +812,23 @@ test("a choice that loses to a newer one says so instead of claiming success", a
   assert.equal(r.out.status, 409);
   assert.equal(hub.browsers(ALICE).active, "dia-00000001", "the hub follows what was actually saved");
 });
+
+test("a browser that is still connected cannot be forgotten, so Forget never looks like it did nothing", async () => {
+  const hub = createRelayHub();
+  const config = createMemoryConfigStore("org");
+  hub.attach(ALICE, "extension", silent(), { id: "dia-00000001", name: "Dia" });
+  await config.noteBridgeBrowser(personalScope(ALICE), "dia-00000001", { name: "Dia" });
+  const r = pairingCtx({ actor: { p: ALICE }, body: { browserId: "dia-00000001" } }, { browserRelay: hub, config });
+  await forget.handle(r.ctx);
+  assert.equal(r.out.status, 409);
+  assert.ok("dia-00000001" in (await config.getBridgeBrowsers(personalScope(ALICE))).browsers);
+});
+
+test("forgetting with no saved browsers answers cleanly", async () => {
+  const r = pairingCtx(
+    { actor: { p: ALICE }, body: { browserId: "chrome-0001" } },
+    { browserRelay: createRelayHub(), config: createMemoryConfigStore("org") },
+  );
+  await forget.handle(r.ctx);
+  assert.equal(r.out.status, 200);
+});
