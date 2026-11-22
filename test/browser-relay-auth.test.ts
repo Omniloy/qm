@@ -704,3 +704,40 @@ test("a browser's identity from the connect URL is checked and cleaned", () => {
   assert.equal(q(`browser=dia-00000001&name=${encodeURIComponent("<img src=x>")}`)!.name, "img srcx");
   assert.equal(q("browser=dia-00000001&name=" + "a".repeat(200))!.name.length, 60);
 });
+
+test("picking a browser also turns the Browser Bridge back on after a Stop", async () => {
+  const hub = createRelayHub();
+  const config = createMemoryConfigStore("org");
+  hub.attach(ALICE, "extension", silent(), { id: "dia-00000001", name: "Dia" });
+  config.setBrowserProvider(personalScope(ALICE), null);
+  const r = pairingCtx({ actor: { p: ALICE }, body: { browserId: "dia-00000001" } }, { browserRelay: hub, config });
+  await choose.handle(r.ctx);
+  assert.equal(r.out.status, 200);
+  assert.equal(await config.getBrowserProviderDurable(personalScope(ALICE)), "extension");
+});
+
+test("the agent's status call never lists the person's other browsers", async () => {
+  const hub = createRelayHub();
+  const config = createMemoryConfigStore("org");
+  hub.attach(ALICE, "extension", silent(), { id: "dia-00000001", name: "Dia" });
+  const status = routeAt("/v1/browser-relay/status");
+  const agent = pairingCtx(
+    { capability: await claims({ aud: CONTROL_PLANE_AUD, liveActor: true }) },
+    { browserRelay: hub, config },
+  );
+  await status.handle(agent.ctx);
+  assert.equal(agent.out.status, 200);
+  assert.ok(!("browsers" in (agent.out.body as object)));
+  const person = pairingCtx({ actor: { p: ALICE } }, { browserRelay: hub, config });
+  await status.handle(person.ctx);
+  assert.equal((person.out.body as { browsers: unknown[] }).browsers.length, 1);
+});
+
+test("the browser registry keeps only the most recent browsers", async () => {
+  const config = createMemoryConfigStore("org");
+  const scope = personalScope(ALICE);
+  for (let i = 0; i < 14; i += 1) {
+    await config.noteBridgeBrowser(scope, `browser-${String(i).padStart(4, "0")}`, { name: `B${i}` });
+  }
+  assert.equal(Object.keys((await config.getBridgeBrowsers(scope)).browsers).length, 10);
+});

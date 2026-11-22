@@ -755,6 +755,14 @@ export function buildApp(
         .catch(swallowAs("browser choice after Stop", undefined));
     },
     onActiveChanged(principalId, browserId) {
+      auditLog.record({
+        at: Date.now(),
+        principalId,
+        action: "browser-relay.choose",
+        resource: "browser-relay",
+        scopeLabel: personalScope(principalId),
+        detail: `share in ${browserId}`,
+      });
       void configStore
         .setActiveBridgeBrowser(personalScope(principalId), browserId)
         .catch(swallowAs("active browser after Share", undefined));

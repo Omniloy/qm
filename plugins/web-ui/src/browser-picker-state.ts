@@ -27,11 +27,13 @@ export interface BridgeBrowser {
 }
 
 export type ExtensionState =
-  { kind: "absent" } | { kind: "unchosen" } | { kind: "idle" } | { kind: "sharing"; tab: string };
+  { kind: "absent" } | { kind: "unchosen" } | { kind: "offline" } | { kind: "idle" } | { kind: "sharing"; tab: string };
 
 export function extensionState(provider: BrowserProvider): ExtensionState {
   if (!provider.connected) {
-    return (provider.browsers ?? []).some((b) => b.connected) ? { kind: "unchosen" } : { kind: "absent" };
+    const browsers = provider.browsers ?? [];
+    if (browsers.some((b) => b.active)) return { kind: "offline" };
+    return browsers.some((b) => b.connected) ? { kind: "unchosen" } : { kind: "absent" };
   }
   if (!provider.sharing) return { kind: "idle" };
   return { kind: "sharing", tab: provider.sharedTabTitle ?? "a tab" };
@@ -40,6 +42,7 @@ export function extensionState(provider: BrowserProvider): ExtensionState {
 export function extensionLabel(state: ExtensionState): string {
   if (state.kind === "sharing") return "In use";
   if (state.kind === "unchosen") return "No browser chosen";
+  if (state.kind === "offline") return "Offline";
   return state.kind === "idle" ? "Ready" : "Not connected";
 }
 
@@ -50,6 +53,9 @@ export function extensionNote(state: ExtensionState): { tone: "ok" | "warning" |
       tone: "ok",
       text: "Connected — the agent opens a tab when it needs one, and can use any tab you have open.",
     };
+  }
+  if (state.kind === "offline") {
+    return { tone: "warning", text: "The browser the agent uses is offline. Open it, or pick another below." };
   }
   if (state.kind === "unchosen") {
     return { tone: "warning", text: "Your browsers are connected, but none is active for the agent. Pick one below." };

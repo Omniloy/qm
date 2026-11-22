@@ -105,7 +105,7 @@ function targetOf(pair: Pair): Extension | undefined {
 
 function notConnectedReason(pair: Pair): string {
   if (pair.active === null) {
-    return "no browser is active for the agent — the person turned them all off in Keychain → Linked accounts → Browser";
+    return "no browser is chosen for the agent — the person picks one in Keychain → Linked accounts → Browser, or presses Share this tab in it";
   }
   if (pair.extensions.size > 1) {
     const names = [...pair.extensions.values()].map((e) => e.name).join(", ");
@@ -183,9 +183,7 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
         return;
       }
       const id = browser?.id ?? LEGACY_BROWSER_ID;
-      const previous = pair.extensions.get(id);
-      const wasTarget = previous !== undefined && targetOf(pair) === previous;
-      previous?.socket.close(1000, "replaced by a newer connection");
+      pair.extensions.get(id)?.socket.close(1000, "replaced by a newer connection");
       pair.extensions.set(id, {
         id,
         name: browser?.name ?? "Browser",
@@ -193,7 +191,6 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
         socket,
         sharing: false,
       });
-      if (wasTarget) dropAgent(pair, "the extension reconnected");
       tellActive(pair);
     },
 

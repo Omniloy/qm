@@ -83,7 +83,16 @@ let pending = null;
 let reconnectDelay = 1000;
 let activeHere = null;
 
-async function browserIdentity() {
+let identity = null;
+
+function browserIdentity() {
+  identity ??= readIdentity().finally(() => {
+    identity = null;
+  });
+  return identity;
+}
+
+async function readIdentity() {
   const stored = await chrome.storage.local.get("browserId").catch(() => ({}));
   let id = typeof stored.browserId === "string" ? stored.browserId : "";
   if (!/^[A-Za-z0-9-]{8,64}$/.test(id)) {

@@ -149,7 +149,9 @@ export function attachBrowserRelay(server: Server, opts: BrowserRelayOptions = {
         const owner = claims.actorId;
         const relayed = relaySocket(ws);
         if (side === "extension" && opts.appUrl) relayed.send(JSON.stringify({ qm: "origins", app: opts.appUrl }));
-        if (active !== undefined) hub.setActive(owner, active);
+        if (active !== undefined && (side === "cdp" || hub.browsers(owner).active === undefined)) {
+          hub.setActive(owner, active);
+        }
         hub.attach(owner, side, relayed, browser);
 
         let expiresAt = claims.exp;
@@ -195,7 +197,14 @@ export function attachBrowserRelay(server: Server, opts: BrowserRelayOptions = {
               checking = false;
             });
         };
-        const rechecks = side === "extension" ? setInterval(recheck, recheckMs) : undefined;
+        const followChoice = () => {
+          void chosenBrowser("cdp", owner, undefined, opts)
+            .then((chosen) => {
+              if (chosen !== undefined && ws.readyState === ws.OPEN) hub.setActive(owner, chosen);
+            })
+            .catch((e: unknown) => console.error("[browser-relay] browser registry unavailable:", errMessage(e)));
+        };
+        const rechecks = setInterval(side === "extension" ? recheck : followChoice, recheckMs);
         if (side === "extension") recheck();
 
         let idle = setTimeout(() => ws.close(1000, "idle"), idleMs);

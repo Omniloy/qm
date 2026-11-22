@@ -413,7 +413,7 @@ test("turning every browser off refuses the agent with the reason", () => {
 
   hub.deliver(PERSON, "cdp", JSON.stringify({ id: 1, method: "Runtime.evaluate", params: {} }));
 
-  assert.match((parse(cdp.sent[0]!).error as { message: string }).message, /no browser is active/);
+  assert.match((parse(cdp.sent[0]!).error as { message: string }).message, /no browser is chosen for the agent/);
 });
 
 test("Share this tab in the other browser makes it the active one and drops the agent's old connection", () => {
@@ -480,4 +480,19 @@ test("an agent's replies come only from the browser it is using", () => {
     cdp.sent.map((s) => (parse(s).result as { from: string }).from),
     ["chrome"],
   );
+});
+
+test("the browser the agent uses reconnecting keeps the agent's connection", () => {
+  const hub = createRelayHub();
+  hub.attach(PERSON, "extension", fake(), CHROME);
+  hub.setActive(PERSON, CHROME.id);
+  const cdp = fake();
+  hub.attach(PERSON, "cdp", cdp);
+  const again = fake();
+
+  hub.attach(PERSON, "extension", again, CHROME);
+  hub.deliver(PERSON, "cdp", JSON.stringify({ id: 4, method: "Runtime.evaluate", params: {} }));
+
+  assert.deepEqual(cdp.closed, [], "a worker restart mid-task does not end the task");
+  assert.equal(again.sent.length, 1);
 });

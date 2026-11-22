@@ -221,3 +221,17 @@ test("browsers connected with none chosen ask the person to pick, not to install
   assert.equal(extensionLabel(state), "No browser chosen");
   assert.match(extensionNote(state).text, /Pick one below/);
 });
+
+test("a chosen browser that is offline says so, instead of asking to install", () => {
+  const state = extensionState({
+    id: "extension",
+    name: "Your Chrome",
+    summary: "",
+    keyEnv: "",
+    keyService: "",
+    connected: false,
+    browsers: [{ id: "a", name: "Chrome", connected: false, active: true, sharing: false }],
+  });
+  assert.deepEqual(state, { kind: "offline" });
+  assert.match(extensionNote(state).text, /offline/);
+});

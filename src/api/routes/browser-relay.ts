@@ -129,6 +129,7 @@ async function chooseBrowser(ctx: ApiCtx): Promise<void> {
   if (typeof wanted === "string" && !(await bridgeBrowsers(deps, principalId)).some((b) => b.id === wanted))
     return sendJson(res, 404, { error: "not_found", message: "no browser with that id has connected" });
   await config.setActiveBridgeBrowser(scope, wanted);
+  if (wanted) config.setBrowserProvider(scope, EXTENSION_BROWSER_ID);
   deps.browserRelay?.setActive(principalId, wanted);
   audit(deps, {
     principalId,
@@ -178,7 +179,7 @@ async function relayStatus(ctx: ApiCtx): Promise<void> {
     sharing: state.sharing,
     inUse: state.cdp,
     ...hub.describe(principalId),
-    browsers: await bridgeBrowsers(deps, principalId),
+    ...(personThemselves(ctx) ? { browsers: await bridgeBrowsers(deps, principalId) } : {}),
   });
 }
 

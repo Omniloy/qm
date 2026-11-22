@@ -193,6 +193,7 @@ interface PersistedBridgeBrowser {
   version?: string;
   lastSeenAt: number;
 }
+const MAX_BRIDGE_BROWSERS = 10;
 export interface PersistedBrowserPairing {
   scopeId: ScopeId;
   generation: number;
@@ -1344,10 +1345,18 @@ export function createMemoryConfigStore(
       const row = await browserPairingStore.update(id, (current) => ({
         ...current,
         ...(current.activeBrowser === undefined ? { activeBrowser: browserId } : {}),
-        browsers: {
-          ...current.browsers,
-          [browserId]: { name: seen.name, ...(seen.version ? { version: seen.version } : {}), lastSeenAt: Date.now() },
-        },
+        browsers: Object.fromEntries(
+          Object.entries({
+            ...current.browsers,
+            [browserId]: {
+              name: seen.name,
+              ...(seen.version ? { version: seen.version } : {}),
+              lastSeenAt: Date.now(),
+            },
+          })
+            .sort(([, a], [, b]) => b.lastSeenAt - a.lastSeenAt)
+            .slice(0, MAX_BRIDGE_BROWSERS),
+        ),
       }));
       return { active: row?.activeBrowser, browsers: row?.browsers ?? {} };
     },
