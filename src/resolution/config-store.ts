@@ -188,9 +188,20 @@ export interface PersistedBrowserProvider {
   scopeId: ScopeId;
   providerId: string;
 }
+interface PersistedBridgeBrowser {
+  name: string;
+  version?: string;
+  lastSeenAt: number;
+}
 export interface PersistedBrowserPairing {
   scopeId: ScopeId;
   generation: number;
+  activeBrowser?: string | null;
+  browsers?: Record<string, PersistedBridgeBrowser>;
+}
+interface BridgeBrowsers {
+  active: string | null | undefined;
+  browsers: Record<string, PersistedBridgeBrowser>;
 }
 interface AutoFlaggerConfig {
   harnessId: string;
@@ -335,6 +346,10 @@ export interface ScopedConfigStore {
   getBrowserProviderDurable(id: ScopeId): Promise<string | null>;
   getBrowserPairingGenerationDurable(id: ScopeId): Promise<number>;
   bumpBrowserPairingGeneration(id: ScopeId): Promise<number>;
+  getBridgeBrowsers(id: ScopeId): Promise<BridgeBrowsers>;
+  noteBridgeBrowser(id: ScopeId, browserId: string, seen: { name: string; version?: string }): Promise<BridgeBrowsers>;
+  setActiveBridgeBrowser(id: ScopeId, browserId: string | null): Promise<void>;
+  forgetBridgeBrowser(id: ScopeId, browserId: string): Promise<BridgeBrowsers>;
   getAutoFlaggerConfig(): AutoFlaggerConfig | null;
   setAutoFlaggerConfig(config: AutoFlaggerConfig | null): void;
   getTurnWallClockSecDurable(id: ScopeId): Promise<number | null>;
@@ -1319,6 +1334,34 @@ export function createMemoryConfigStore(
       const bumped = await browserPairingStore.update(id, (row) => ({ ...row, generation: row.generation + 1 }));
       if (!bumped) throw new Error(`the browser pairing for ${id} vanished while it was being replaced`);
       return bumped.generation;
+    },
+    async getBridgeBrowsers(id) {
+      const row = await browserPairingStore.get(id);
+      return { active: row?.activeBrowser, browsers: row?.browsers ?? {} };
+    },
+    async noteBridgeBrowser(id, browserId, seen) {
+      await browserPairingStore.putIfAbsent(id, { scopeId: id, generation: 0 });
+      const row = await browserPairingStore.update(id, (current) => ({
+        ...current,
+        ...(current.activeBrowser === undefined ? { activeBrowser: browserId } : {}),
+        browsers: {
+          ...current.browsers,
+          [browserId]: { name: seen.name, ...(seen.version ? { version: seen.version } : {}), lastSeenAt: Date.now() },
+        },
+      }));
+      return { active: row?.activeBrowser, browsers: row?.browsers ?? {} };
+    },
+    async setActiveBridgeBrowser(id, browserId) {
+      await browserPairingStore.putIfAbsent(id, { scopeId: id, generation: 0 });
+      await browserPairingStore.update(id, (current) => ({ ...current, activeBrowser: browserId }));
+    },
+    async forgetBridgeBrowser(id, browserId) {
+      const row = await browserPairingStore.update(id, (current) => {
+        const browsers = { ...current.browsers };
+        delete browsers[browserId];
+        return { ...current, browsers, ...(current.activeBrowser === browserId ? { activeBrowser: null } : {}) };
+      });
+      return { active: row?.activeBrowser, browsers: row?.browsers ?? {} };
     },
     getAutoFlaggerConfig: () => autoFlaggerConfig,
     setAutoFlaggerConfig(config) {

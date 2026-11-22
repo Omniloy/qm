@@ -25,6 +25,7 @@ import {
   browserSummary,
   browserTabs,
   connectDraft,
+  bridgeBrowserRows,
   extensionLabel,
   extensionNote,
   extensionState,
@@ -466,6 +467,7 @@ function extensionPanel(provider: BrowserProvider): TemplateResult {
         <span class="kc-state ${note.tone}">${label}</span>
         ${note.text}
       </p>
+      ${bridgeBrowserList(provider)}
       ${
         state.kind === "absent"
           ? ""
@@ -505,6 +507,93 @@ function extensionPanel(provider: BrowserProvider): TemplateResult {
       }
     </div>
   `;
+}
+
+function bridgeBrowserList(provider: BrowserProvider): TemplateResult | string {
+  const rows = bridgeBrowserRows(provider.browsers ?? []);
+  if (!rows.length) return "";
+  const busy = keychainOperations.mutationInFlight;
+  return html`<ul class="kc-bridge-browsers" aria-label="Browsers with the Browser Bridge">
+    ${rows.map(
+      (row) =>
+        html`<li class="kc-bridge-browser">
+          <div class="kc-bridge-browser-text">
+            <strong>${row.name}</strong>
+            <span class="kc-state ${row.active ? "ok" : "neutral"}">${row.status}</span>
+          </div>
+          <div class="kc-bridge-browser-actions">
+            ${
+              row.canUse
+                ? html`<button
+                    class="btn"
+                    type="button"
+                    ?disabled=${busy}
+                    @click=${() => void chooseBridgeBrowser(row.id)}
+                  >
+                    Use this one
+                  </button>`
+                : html`<button
+                    class="kc-text-action"
+                    type="button"
+                    ?disabled=${busy}
+                    @click=${() => void chooseBridgeBrowser(null)}
+                  >
+                    Stop using
+                  </button>`
+            }
+            ${
+              row.canForget
+                ? html`<button
+                    class="kc-text-action"
+                    type="button"
+                    ?disabled=${busy}
+                    @click=${() => void forgetBridgeBrowser(row.id)}
+                  >
+                    Forget
+                  </button>`
+                : ""
+            }
+          </div>
+        </li>`,
+    )}
+  </ul>`;
+}
+
+async function updateBridgeBrowsers(path: string, browserId: string | null, done: string): Promise<void> {
+  const operation = beginKeychainMutation();
+  if (!operation) return;
+  connectorNotice = "";
+  drawConnectors();
+  try {
+    await api(path, { method: "POST", body: JSON.stringify({ browserId }) });
+    if (!keychainOperations.isCurrentEpoch(operation.epoch)) return;
+    connectorNotice = done;
+  } catch (e) {
+    if (!keychainOperations.isCurrentEpoch(operation.epoch)) return;
+    connectorNotice = errMessage(e, "Could not change your browsers.");
+  } finally {
+    if (keychainOperations.finishMutation(operation)) drawConnectors();
+  }
+  if (keychainOperations.isCurrentEpoch(operation.epoch)) await renderConnectors();
+}
+
+function bridgeBrowserName(id: string): string {
+  const extension = browserProviders.find((p) => p.id === "extension");
+  return extension?.browsers?.find((b) => b.id === id)?.name ?? "That browser";
+}
+
+async function chooseBridgeBrowser(browserId: string | null): Promise<void> {
+  await updateBridgeBrowsers(
+    "/api/browser-relay/active",
+    browserId,
+    browserId
+      ? `The agent now uses ${bridgeBrowserName(browserId)}.`
+      : "No browser is active: the agent will ask before using one.",
+  );
+}
+
+async function forgetBridgeBrowser(browserId: string): Promise<void> {
+  await updateBridgeBrowsers("/api/browser-relay/forget", browserId, `${bridgeBrowserName(browserId)} is forgotten.`);
 }
 
 function extensionDownload(label: string): TemplateResult {

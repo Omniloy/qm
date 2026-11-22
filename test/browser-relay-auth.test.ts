@@ -19,9 +19,10 @@ import {
   BROWSER_RELAY_CDP_AUD,
   PAIRING_REVOKED,
   attachBrowserRelay,
+  browserFromQuery,
   type BrowserRelayOptions,
 } from "../src/browser-relay/server.ts";
-import { createRelayHub } from "../src/browser-relay/relay.ts";
+import { createRelayHub, type RelaySocket } from "../src/browser-relay/relay.ts";
 import { browserRelayRoutes } from "../src/api/routes/browser-relay.ts";
 import type { ApiCtx } from "../src/api/routes/route.ts";
 import type { AuditEvent } from "../src/audit/audit-log.ts";
@@ -291,7 +292,7 @@ test("a connection whose token ran out while it stayed open is not renewed", asy
 });
 
 function pairingCtx(
-  over: { capability?: CapabilityClaims; actor?: { p: string; imp?: string } },
+  over: { capability?: CapabilityClaims; actor?: { p: string; imp?: string }; body?: unknown },
   deps: Record<string, unknown> = {},
 ) {
   const out = { status: 0, body: undefined as unknown };
@@ -626,4 +627,80 @@ test("only the person, from their own web session, can disconnect their Chrome",
   }
   assert.equal(await config.getBrowserPairingGenerationDurable(personalScope(ALICE)), 0, "nothing was revoked");
   assert.equal(disconnect.auth, "source");
+});
+
+const choose = routeAt("/v1/browser-relay/active");
+const forget = routeAt("/v1/browser-relay/forget");
+const silent = (): RelaySocket => ({ send: () => undefined, close: () => undefined });
+
+test("the first browser to connect becomes active, and a second one never takes over by itself", async () => {
+  const config = createMemoryConfigStore("org");
+  const scope = personalScope(ALICE);
+  assert.equal((await config.noteBridgeBrowser(scope, "chrome-0001", { name: "Chrome" })).active, "chrome-0001");
+  const after = await config.noteBridgeBrowser(scope, "dia-00000001", { name: "Dia", version: "0.2.3" });
+  assert.equal(after.active, "chrome-0001");
+  assert.deepEqual(Object.keys(after.browsers).sort(), ["chrome-0001", "dia-00000001"]);
+  await config.setActiveBridgeBrowser(scope, null);
+  assert.equal(
+    (await config.noteBridgeBrowser(scope, "chrome-0001", { name: "Chrome" })).active,
+    null,
+    "turning every browser off is kept, not undone by the next connect",
+  );
+});
+
+test("only the person picks which browser the agent uses, and only one that has connected", async () => {
+  const hub = createRelayHub();
+  const config = createMemoryConfigStore("org");
+  hub.attach(ALICE, "extension", silent(), { id: "chrome-0001", name: "Chrome" });
+  hub.attach(ALICE, "extension", silent(), { id: "dia-00000001", name: "Dia" });
+  const deps = { browserRelay: hub, config };
+
+  const unknown = pairingCtx({ actor: { p: ALICE }, body: { browserId: "nobody-0000" } }, deps);
+  await choose.handle(unknown.ctx);
+  assert.equal(unknown.out.status, 404);
+
+  const agent = pairingCtx(
+    { capability: await claims({ aud: CONTROL_PLANE_AUD, liveActor: true }), body: { browserId: "dia-00000001" } },
+    deps,
+  );
+  await choose.handle(agent.ctx);
+  assert.equal(agent.out.status, 403, "the agent cannot move itself to another browser");
+
+  const person = pairingCtx({ actor: { p: ALICE }, body: { browserId: "dia-00000001" } }, deps);
+  await choose.handle(person.ctx);
+  assert.equal(person.out.status, 200);
+  assert.equal(hub.browsers(ALICE).active, "dia-00000001");
+  assert.equal((await config.getBridgeBrowsers(personalScope(ALICE))).active, "dia-00000001");
+  const listed = (person.out.body as { browsers: Array<{ id: string; active: boolean; connected: boolean }> }).browsers;
+  assert.deepEqual(listed.map((b) => [b.id, b.active, b.connected]).sort(), [
+    ["chrome-0001", false, true],
+    ["dia-00000001", true, true],
+  ]);
+});
+
+test("forgetting the active browser leaves none active rather than silently picking another", async () => {
+  const hub = createRelayHub();
+  const config = createMemoryConfigStore("org");
+  const scope = personalScope(ALICE);
+  await config.noteBridgeBrowser(scope, "chrome-0001", { name: "Chrome" });
+  await config.noteBridgeBrowser(scope, "dia-00000001", { name: "Dia" });
+  const r = pairingCtx({ actor: { p: ALICE }, body: { browserId: "chrome-0001" } }, { browserRelay: hub, config });
+  await forget.handle(r.ctx);
+  assert.equal(r.out.status, 200);
+  const after = await config.getBridgeBrowsers(scope);
+  assert.equal(after.active, null);
+  assert.deepEqual(Object.keys(after.browsers), ["dia-00000001"]);
+});
+
+test("a browser's identity from the connect URL is checked and cleaned", () => {
+  const q = (s: string) => browserFromQuery(new URLSearchParams(s));
+  assert.equal(q("browser=short"), undefined);
+  assert.equal(q("browser=../../etc/passwd0"), undefined);
+  assert.deepEqual(q("browser=dia-00000001&name=Dia%20%C2%B7%20macOS&v=0.2.3"), {
+    id: "dia-00000001",
+    name: "Dia · macOS",
+    version: "0.2.3",
+  });
+  assert.equal(q(`browser=dia-00000001&name=${encodeURIComponent("<img src=x>")}`)!.name, "img srcx");
+  assert.equal(q("browser=dia-00000001&name=" + "a".repeat(200))!.name.length, 60);
 });

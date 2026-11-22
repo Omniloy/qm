@@ -3804,6 +3804,18 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                   }: ToolResultScreenInput): Promise<ToolResultScreen> => {
                     if (provenance !== "external") return { outcome: "allow" };
                     const toolLabel = toolLabelOf(tool);
+                    if (context?.kind === "skill" && context.builtIn) {
+                      deps.auditLog.record({
+                        at: Date.now(),
+                        principalId: actor.id,
+                        action: "security_posture.tool_result_built_in_skill",
+                        resource: input.surface ?? "unknown",
+                        scopeLabel: scopeId,
+                        status: "allowed",
+                        detail: JSON.stringify({ tool: toolLabel, skillId: context.skillId, version: context.version }),
+                      });
+                      return { outcome: "allow" };
+                    }
                     if (context?.kind === "skill") {
                       const trust = await trustedSkillVersion(deps.skillTrusts, context).catch(
                         swallowAs("orchestrator: skill trust lookup", null),

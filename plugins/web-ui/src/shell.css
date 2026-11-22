@@ -13826,3 +13826,32 @@ img.browser-pane-view.drivable:focus-visible {
     grid-template-columns: 22px minmax(0, 1fr);
   }
 }
+
+.kc-bridge-browsers {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.kc-bridge-browser {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.kc-bridge-browser-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.kc-bridge-browser-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}

@@ -754,6 +754,11 @@ export function buildApp(
         })
         .catch(swallowAs("browser choice after Stop", undefined));
     },
+    onActiveChanged(principalId, browserId) {
+      void configStore
+        .setActiveBridgeBrowser(personalScope(principalId), browserId)
+        .catch(swallowAs("active browser after Share", undefined));
+    },
   });
   const harnessAuth = createHarnessAuthStore({
     backing: artifactMap("harness_credentials"),

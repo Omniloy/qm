@@ -14,6 +14,9 @@ async function refresh() {
   if (s?.stopped) {
     $("state").textContent = "Stopped";
     $("detail").textContent = "Share this tab lets QM back in";
+  } else if (connected && s?.activeHere === false) {
+    $("state").textContent = "QM uses another browser";
+    $("detail").textContent = "Share this tab to use this browser instead";
   } else if (sharing) {
     $("state").textContent = "QM is using a tab";
     $("detail").textContent = s.sharedTitle || "a tab in this browser";

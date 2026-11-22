@@ -5,7 +5,7 @@ import type { AuditLog } from "../audit/audit-log.ts";
 import { mintCapabilityToken, verifyCapabilityToken, type CapabilityClaims } from "../auth/capability-token.ts";
 import { personalScope } from "../types.ts";
 import { errMessage } from "../util/errors.ts";
-import { createRelayHub, relaySocket, type RelayHub, type RelaySide } from "./relay.ts";
+import { createRelayHub, relaySocket, type BridgeBrowser, type RelayHub, type RelaySide } from "./relay.ts";
 
 export const BROWSER_RELAY_AUD = "browser-relay";
 export const BROWSER_RELAY_CDP_AUD = "browser-relay-cdp";
@@ -20,6 +20,8 @@ export interface BrowserRelayOptions {
   authorizesScope?: (claims: CapabilityClaims) => Promise<boolean>;
   stillChosen?: (actorId: string) => Promise<boolean>;
   pairingGeneration?: (actorId: string) => Promise<number>;
+  noteBrowser?: (actorId: string, browser: BridgeBrowser) => Promise<string | null | undefined>;
+  activeBrowser?: (actorId: string) => Promise<string | null | undefined>;
   auditLog?: Pick<AuditLog, "record">;
   appUrl?: string;
   idleMs?: number;
@@ -52,6 +54,31 @@ export function isLivePersonalClaim(claims: CapabilityClaims): boolean {
     claims.deployment === undefined &&
     claims.scopeId === personalScope(claims.actorId)
   );
+}
+
+const BROWSER_ID = /^[A-Za-z0-9-]{8,64}$/;
+
+export function browserFromQuery(params: URLSearchParams): BridgeBrowser | undefined {
+  const id = params.get("browser") ?? "";
+  if (!BROWSER_ID.test(id)) return undefined;
+  const name =
+    (params.get("name") ?? "")
+      .replace(/[^\p{L}\p{N} ._()·-]/gu, "")
+      .trim()
+      .slice(0, 60) || "Browser";
+  const version = (params.get("v") ?? "").replace(/[^0-9.]/g, "").slice(0, 20);
+  return { id, name, ...(version ? { version } : {}) };
+}
+
+async function chosenBrowser(
+  side: RelaySide,
+  actorId: string,
+  browser: BridgeBrowser | undefined,
+  opts: BrowserRelayOptions,
+): Promise<string | null | undefined> {
+  if (side === "cdp") return opts.activeBrowser?.(actorId);
+  if (!browser || !opts.noteBrowser) return undefined;
+  return opts.noteBrowser(actorId, browser);
 }
 
 function relaySideFor(pathname: string): RelaySide | null {
@@ -113,11 +140,17 @@ export function attachBrowserRelay(server: Server, opts: BrowserRelayOptions = {
         return null;
       });
       if (!claims) return refuse(socket, 401, "Unauthorized");
+      const browser = side === "extension" ? browserFromQuery(url.searchParams) : undefined;
+      const active = await chosenBrowser(side, claims.actorId, browser, opts).catch((e: unknown) => {
+        console.error("[browser-relay] browser registry unavailable:", errMessage(e));
+        return undefined;
+      });
       wss.handleUpgrade(req, socket, head, (ws: WebSocket) => {
         const owner = claims.actorId;
         const relayed = relaySocket(ws);
-        hub.attach(owner, side, relayed);
         if (side === "extension" && opts.appUrl) relayed.send(JSON.stringify({ qm: "origins", app: opts.appUrl }));
+        if (active !== undefined) hub.setActive(owner, active);
+        hub.attach(owner, side, relayed, browser);
 
         let expiresAt = claims.exp;
         let checking = false;
@@ -173,7 +206,7 @@ export function attachBrowserRelay(server: Server, opts: BrowserRelayOptions = {
         ws.on("message", (data: Buffer | string) => {
           if (ws.readyState !== ws.OPEN) return;
           touch();
-          hub.deliver(owner, side, typeof data === "string" ? data : data.toString("utf8"));
+          hub.deliver(owner, side, typeof data === "string" ? data : data.toString("utf8"), relayed);
         });
         ws.on("pong", touch);
         ws.on("close", () => {

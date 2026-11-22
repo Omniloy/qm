@@ -81,6 +81,22 @@ const READS_THE_PAGE = new Set([
 ]);
 let pending = null;
 let reconnectDelay = 1000;
+let activeHere = null;
+
+async function browserIdentity() {
+  const stored = await chrome.storage.local.get("browserId").catch(() => ({}));
+  let id = typeof stored.browserId === "string" ? stored.browserId : "";
+  if (!/^[A-Za-z0-9-]{8,64}$/.test(id)) {
+    id = crypto.randomUUID();
+    await chrome.storage.local.set({ browserId: id }).catch(() => {});
+  }
+  const brands = (navigator.userAgentData?.brands ?? [])
+    .map((b) => b.brand)
+    .filter((brand) => !/not.?a.?brand|chromium/i.test(brand));
+  const platform = navigator.userAgentData?.platform;
+  const name = `${brands[0] ?? "Chromium browser"}${platform ? ` · ${platform}` : ""}`;
+  return { id, name, version: chrome.runtime.getManifest().version };
+}
 let settingsEpoch = 0;
 let restoreYielded = false;
 const ready = (async () => {
@@ -556,7 +572,11 @@ function connect() {
     if (epoch !== settingsEpoch || !origin || !token) return;
     if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
 
-    const ws = new WebSocket(`${origin.replace(/^http/, "ws")}${RELAY_PATH}?t=${encodeURIComponent(token)}`);
+    const me = await browserIdentity();
+    if (epoch !== settingsEpoch) return;
+    if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
+    const query = new URLSearchParams({ t: token, browser: me.id, name: me.name, v: me.version });
+    const ws = new WebSocket(`${origin.replace(/^http/, "ws")}${RELAY_PATH}?${query}`);
     socket = ws;
 
     ws.onopen = () => {
@@ -581,6 +601,10 @@ function connect() {
         void learnApp(frame.app);
         return;
       }
+      if (frame?.qm === "active" && frame.id === undefined && typeof frame.active === "boolean") {
+        if (socket === ws) activeHere = frame.active;
+        return;
+      }
       if (frame?.qm === "token" && frame.id === undefined && typeof frame.token === "string" && frame.token) {
         if (socket === ws && ws.readyState === WebSocket.OPEN) {
           void chrome.storage.local.set({ token: frame.token }).catch(() => {});
@@ -592,6 +616,7 @@ function connect() {
     ws.onclose = () => {
       if (socket !== ws) return;
       socket = null;
+      activeHere = null;
       reconnectDelay = Math.min(reconnectDelay * 2, 30000);
       setTimeout(connect, reconnectDelay);
     };
@@ -739,6 +764,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         hasToken: Boolean(token),
         connected: Boolean(socket && socket.readyState === WebSocket.OPEN),
         stopped: await isStopped(),
+        activeHere,
         sharedTabId: attachedTabId,
         sharedTitle,
       });

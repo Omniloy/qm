@@ -59,6 +59,9 @@ attachBrowserRelay(server, {
   stillChosen: async (actorId) =>
     (await built.config.getBrowserProviderDurable(personalScope(actorId))) === EXTENSION_BROWSER_ID,
   pairingGeneration: (actorId) => built.config.getBrowserPairingGenerationDurable(personalScope(actorId)),
+  noteBrowser: async (actorId, browser) =>
+    (await built.config.noteBridgeBrowser(personalScope(actorId), browser.id, browser)).active,
+  activeBrowser: async (actorId) => (await built.config.getBridgeBrowsers(personalScope(actorId))).active,
   auditLog: built.auditLog,
   ...(config.publicUrl ? { appUrl: config.publicUrl } : {}),
   ...(config.capabilitySecret ? { capabilitySecret: config.capabilitySecret } : {}),

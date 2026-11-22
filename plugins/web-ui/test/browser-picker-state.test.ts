@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  bridgeBrowserRows,
   browserAction,
   browserById,
   browserTabs,
@@ -176,4 +177,47 @@ test("a stale sharing flag cannot outlive the connection", () => {
   };
 
   assert.deepEqual(extensionState(provider), { kind: "absent" }, "no socket means nothing is shared");
+});
+
+test("each browser shows whether the agent uses it and whether it is online", () => {
+  const now = 1_000_000_000;
+  const rows = bridgeBrowserRows(
+    [
+      {
+        id: "a",
+        name: "Google Chrome · macOS",
+        version: "0.2.3",
+        connected: true,
+        active: true,
+        sharing: true,
+        title: "LangSmith",
+      },
+      { id: "b", name: "Dia · macOS", connected: true, active: false, sharing: false },
+      { id: "c", name: "Old copy", connected: false, active: false, sharing: false, lastSeenAt: now - 3 * 3_600_000 },
+    ],
+    now,
+  );
+  assert.deepEqual(
+    rows.map((r) => [r.name, r.status, r.canUse, r.canForget]),
+    [
+      ["Google Chrome · macOS · 0.2.3", "Active · Connected · working in LangSmith", false, false],
+      ["Dia · macOS", "Inactive · Connected", true, false],
+      ["Old copy", "Inactive · Offline · last seen 3 h ago", true, true],
+    ],
+  );
+});
+
+test("browsers connected with none chosen ask the person to pick, not to install", () => {
+  const state = extensionState({
+    id: "extension",
+    name: "Your Chrome",
+    summary: "",
+    keyEnv: "",
+    keyService: "",
+    connected: false,
+    browsers: [{ id: "b", name: "Dia", connected: true, active: false, sharing: false }],
+  });
+  assert.deepEqual(state, { kind: "unchosen" });
+  assert.equal(extensionLabel(state), "No browser chosen");
+  assert.match(extensionNote(state).text, /Pick one below/);
 });

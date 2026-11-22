@@ -2576,6 +2576,26 @@ const apiRoutes: readonly WebRoute[] = [
     handle: async (c) => relayCore(c.res, "POST", "/v1/browser-relay/disconnect", "{}"),
   },
   {
+    method: "POST",
+    path: "/api/browser-relay/active",
+    handle: async (c) => {
+      const p = await readJson<{ browserId?: unknown }>(c.req, c.res, false);
+      if (!p) return;
+      const browserId = typeof p.browserId === "string" ? p.browserId : null;
+      return relayCore(c.res, "POST", "/v1/browser-relay/active", JSON.stringify({ browserId }));
+    },
+  },
+  {
+    method: "POST",
+    path: "/api/browser-relay/forget",
+    handle: async (c) => {
+      const p = await readJson<{ browserId?: unknown }>(c.req, c.res, false);
+      if (!p) return;
+      if (typeof p.browserId !== "string") return json(c.res, 400, { error: "bad_request" });
+      return relayCore(c.res, "POST", "/v1/browser-relay/forget", JSON.stringify({ browserId: p.browserId }));
+    },
+  },
+  {
     method: "DELETE",
     path: "/api/keychain/credentials/:id",
     handle: async (c) => {
