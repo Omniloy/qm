@@ -349,7 +349,7 @@ test("two browsers stay connected side by side instead of knocking each other of
   const dia = fake();
   hub.attach(PERSON, "extension", chrome, CHROME);
   hub.attach(PERSON, "extension", dia, DIA);
-  hub.setActive(PERSON, CHROME.id);
+  hub.setActive(PERSON, CHROME.id, Date.now());
   const cdp = fake();
   hub.attach(PERSON, "cdp", cdp);
 
@@ -407,7 +407,7 @@ test("with a single browser and nothing chosen, that browser is used", () => {
 test("turning every browser off refuses the agent with the reason", () => {
   const hub = createRelayHub();
   hub.attach(PERSON, "extension", fake(), CHROME);
-  hub.setActive(PERSON, null);
+  hub.setActive(PERSON, null, Date.now());
   const cdp = fake();
   hub.attach(PERSON, "cdp", cdp);
 
@@ -423,7 +423,7 @@ test("Share this tab in the other browser makes it the active one and drops the 
   const dia = fake();
   hub.attach(PERSON, "extension", chrome, CHROME);
   hub.attach(PERSON, "extension", dia, DIA);
-  hub.setActive(PERSON, CHROME.id);
+  hub.setActive(PERSON, CHROME.id, Date.now());
   const cdp = fake();
   hub.attach(PERSON, "cdp", cdp);
 
@@ -442,7 +442,7 @@ test("the status describes only the active browser, never a stale share from ano
   const dia = fake();
   hub.attach(PERSON, "extension", chrome, CHROME);
   hub.attach(PERSON, "extension", dia, DIA);
-  hub.setActive(PERSON, CHROME.id);
+  hub.setActive(PERSON, CHROME.id, Date.now());
   hub.deliver(PERSON, "extension", JSON.stringify({ qm: "attached", title: "LangSmith", restored: true }), dia);
 
   assert.equal(hub.describe(PERSON), null);
@@ -456,7 +456,7 @@ test("Stop in a browser the agent does not use leaves the person's browser choic
   const dia = fake();
   hub.attach(PERSON, "extension", chrome, CHROME);
   hub.attach(PERSON, "extension", dia, DIA);
-  hub.setActive(PERSON, CHROME.id);
+  hub.setActive(PERSON, CHROME.id, Date.now());
 
   hub.deliver(PERSON, "extension", JSON.stringify({ qm: "detached" }), dia);
 
@@ -469,7 +469,7 @@ test("an agent's replies come only from the browser it is using", () => {
   const dia = fake();
   hub.attach(PERSON, "extension", chrome, CHROME);
   hub.attach(PERSON, "extension", dia, DIA);
-  hub.setActive(PERSON, CHROME.id);
+  hub.setActive(PERSON, CHROME.id, Date.now());
   const cdp = fake();
   hub.attach(PERSON, "cdp", cdp);
 
@@ -485,7 +485,7 @@ test("an agent's replies come only from the browser it is using", () => {
 test("the browser the agent uses reconnecting keeps the agent's connection", () => {
   const hub = createRelayHub();
   hub.attach(PERSON, "extension", fake(), CHROME);
-  hub.setActive(PERSON, CHROME.id);
+  hub.setActive(PERSON, CHROME.id, Date.now());
   const cdp = fake();
   hub.attach(PERSON, "cdp", cdp);
   const again = fake();

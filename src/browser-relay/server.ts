@@ -20,8 +20,8 @@ export interface BrowserRelayOptions {
   authorizesScope?: (claims: CapabilityClaims) => Promise<boolean>;
   stillChosen?: (actorId: string) => Promise<boolean>;
   pairingGeneration?: (actorId: string) => Promise<number>;
-  noteBrowser?: (actorId: string, browser: BridgeBrowser) => Promise<string | null | undefined>;
-  activeBrowser?: (actorId: string) => Promise<string | null | undefined>;
+  noteBrowser?: (actorId: string, browser: BridgeBrowser) => Promise<BridgeChoice>;
+  activeBrowser?: (actorId: string) => Promise<BridgeChoice>;
   auditLog?: Pick<AuditLog, "record">;
   appUrl?: string;
   idleMs?: number;
@@ -70,12 +70,17 @@ export function browserFromQuery(params: URLSearchParams): BridgeBrowser | undef
   return { id, name, ...(version ? { version } : {}) };
 }
 
+interface BridgeChoice {
+  active: string | null | undefined;
+  at: number;
+}
+
 async function chosenBrowser(
   side: RelaySide,
   actorId: string,
   browser: BridgeBrowser | undefined,
   opts: BrowserRelayOptions,
-): Promise<string | null | undefined> {
+): Promise<BridgeChoice | undefined> {
   if (side === "cdp") return opts.activeBrowser?.(actorId);
   if (!browser || !opts.noteBrowser) return undefined;
   return opts.noteBrowser(actorId, browser);
@@ -149,8 +154,16 @@ export function attachBrowserRelay(server: Server, opts: BrowserRelayOptions = {
         const owner = claims.actorId;
         const relayed = relaySocket(ws);
         if (side === "extension" && opts.appUrl) relayed.send(JSON.stringify({ qm: "origins", app: opts.appUrl }));
-        if (active !== undefined && (side === "cdp" || hub.browsers(owner).active === undefined)) {
-          hub.setActive(owner, active);
+        if (active && active.active !== undefined) hub.setActive(owner, active.active, active.at);
+        if (browser && hub.browsers(owner).live.some((b) => b.id === browser.id)) {
+          opts.auditLog?.record({
+            at: Date.now(),
+            principalId: owner,
+            action: "browser-relay.reconnect",
+            resource: "browser-relay",
+            scopeLabel: personalScope(owner),
+            detail: `${browser.id} replaced its own connection`,
+          });
         }
         hub.attach(owner, side, relayed, browser);
 
@@ -200,7 +213,9 @@ export function attachBrowserRelay(server: Server, opts: BrowserRelayOptions = {
         const followChoice = () => {
           void chosenBrowser("cdp", owner, undefined, opts)
             .then((chosen) => {
-              if (chosen !== undefined && ws.readyState === ws.OPEN) hub.setActive(owner, chosen);
+              if (chosen && chosen.active !== undefined && ws.readyState === ws.OPEN) {
+                hub.setActive(owner, chosen.active, chosen.at);
+              }
             })
             .catch((e: unknown) => console.error("[browser-relay] browser registry unavailable:", errMessage(e)));
         };

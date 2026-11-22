@@ -213,7 +213,7 @@ async function handleKeychain(ctx: ApiCtx): Promise<void> {
           connected: live?.extension ?? false,
           sharing: live?.sharing ?? false,
           ...(sharedTab ? { sharedTabTitle: sharedTab } : {}),
-          browsers: await bridgeBrowsers(deps, actorId),
+          ...(capability.portalSession === true ? { browsers: await bridgeBrowsers(deps, actorId) } : {}),
         });
       }
       const stored = await deps.config?.getBrowserProviderDurable(personalScope(actorId));

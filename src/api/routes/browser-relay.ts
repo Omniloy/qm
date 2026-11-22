@@ -87,6 +87,7 @@ export interface BridgeBrowserView {
 export async function bridgeBrowsers(deps: ServerDeps, principalId: string): Promise<BridgeBrowserView[]> {
   const known = (await deps.config?.getBridgeBrowsers(personalScope(principalId))) ?? {
     active: undefined,
+    at: 0,
     browsers: {},
   };
   const live = deps.browserRelay?.browsers(principalId) ?? { active: undefined, live: [] };
@@ -128,9 +129,10 @@ async function chooseBrowser(ctx: ApiCtx): Promise<void> {
   const scope = personalScope(principalId);
   if (typeof wanted === "string" && !(await bridgeBrowsers(deps, principalId)).some((b) => b.id === wanted))
     return sendJson(res, 404, { error: "not_found", message: "no browser with that id has connected" });
-  await config.setActiveBridgeBrowser(scope, wanted);
+  const at = Date.now();
+  await config.setActiveBridgeBrowser(scope, wanted, at);
   if (wanted) config.setBrowserProvider(scope, EXTENSION_BROWSER_ID);
-  deps.browserRelay?.setActive(principalId, wanted);
+  deps.browserRelay?.setActive(principalId, wanted, at);
   audit(deps, {
     principalId,
     action: "browser-relay.choose",
@@ -155,7 +157,7 @@ async function forgetBrowser(ctx: ApiCtx): Promise<void> {
   if (typeof wanted !== "string") return sendJson(res, 400, { error: "bad_request", message: "browserId is required" });
   const scope = personalScope(principalId);
   const after = await config.forgetBridgeBrowser(scope, wanted);
-  if (after.active === null) deps.browserRelay?.setActive(principalId, null);
+  if (after.active === null) deps.browserRelay?.setActive(principalId, null, after.at);
   audit(deps, {
     principalId,
     action: "browser-relay.forget",

@@ -198,11 +198,27 @@ export interface PersistedBrowserPairing {
   scopeId: ScopeId;
   generation: number;
   activeBrowser?: string | null;
+  activeBrowserAt?: number;
   browsers?: Record<string, PersistedBridgeBrowser>;
 }
 interface BridgeBrowsers {
   active: string | null | undefined;
+  at: number;
   browsers: Record<string, PersistedBridgeBrowser>;
+}
+
+function bridgeBrowsersOf(row: PersistedBrowserPairing | null | undefined): BridgeBrowsers {
+  return { active: row?.activeBrowser, at: row?.activeBrowserAt ?? 0, browsers: row?.browsers ?? {} };
+}
+
+function keepRecent(
+  browsers: Record<string, PersistedBridgeBrowser>,
+  active: string | null | undefined,
+): Record<string, PersistedBridgeBrowser> {
+  const recent = Object.entries(browsers)
+    .sort(([, a], [, b]) => b.lastSeenAt - a.lastSeenAt)
+    .filter(([id], i) => id === active || i < MAX_BRIDGE_BROWSERS);
+  return Object.fromEntries(recent.slice(0, MAX_BRIDGE_BROWSERS + 1));
 }
 interface AutoFlaggerConfig {
   harnessId: string;
@@ -349,7 +365,7 @@ export interface ScopedConfigStore {
   bumpBrowserPairingGeneration(id: ScopeId): Promise<number>;
   getBridgeBrowsers(id: ScopeId): Promise<BridgeBrowsers>;
   noteBridgeBrowser(id: ScopeId, browserId: string, seen: { name: string; version?: string }): Promise<BridgeBrowsers>;
-  setActiveBridgeBrowser(id: ScopeId, browserId: string | null): Promise<void>;
+  setActiveBridgeBrowser(id: ScopeId, browserId: string | null, at: number): Promise<BridgeBrowsers>;
   forgetBridgeBrowser(id: ScopeId, browserId: string): Promise<BridgeBrowsers>;
   getAutoFlaggerConfig(): AutoFlaggerConfig | null;
   setAutoFlaggerConfig(config: AutoFlaggerConfig | null): void;
@@ -1337,40 +1353,38 @@ export function createMemoryConfigStore(
       return bumped.generation;
     },
     async getBridgeBrowsers(id) {
-      const row = await browserPairingStore.get(id);
-      return { active: row?.activeBrowser, browsers: row?.browsers ?? {} };
+      return bridgeBrowsersOf(await browserPairingStore.get(id));
     },
     async noteBridgeBrowser(id, browserId, seen) {
       await browserPairingStore.putIfAbsent(id, { scopeId: id, generation: 0 });
-      const row = await browserPairingStore.update(id, (current) => ({
-        ...current,
-        ...(current.activeBrowser === undefined ? { activeBrowser: browserId } : {}),
-        browsers: Object.fromEntries(
-          Object.entries({
-            ...current.browsers,
-            [browserId]: {
-              name: seen.name,
-              ...(seen.version ? { version: seen.version } : {}),
-              lastSeenAt: Date.now(),
-            },
-          })
-            .sort(([, a], [, b]) => b.lastSeenAt - a.lastSeenAt)
-            .slice(0, MAX_BRIDGE_BROWSERS),
-        ),
-      }));
-      return { active: row?.activeBrowser, browsers: row?.browsers ?? {} };
+      const now = Date.now();
+      const row = await browserPairingStore.update(id, (current) => {
+        const first = current.activeBrowser === undefined;
+        const active = first ? browserId : current.activeBrowser;
+        const seenNow = { name: seen.name, ...(seen.version ? { version: seen.version } : {}), lastSeenAt: now };
+        return {
+          ...current,
+          ...(first ? { activeBrowser: browserId, activeBrowserAt: now } : {}),
+          browsers: keepRecent({ ...current.browsers, [browserId]: seenNow }, active),
+        };
+      });
+      return bridgeBrowsersOf(row);
     },
-    async setActiveBridgeBrowser(id, browserId) {
+    async setActiveBridgeBrowser(id, browserId, at) {
       await browserPairingStore.putIfAbsent(id, { scopeId: id, generation: 0 });
-      await browserPairingStore.update(id, (current) => ({ ...current, activeBrowser: browserId }));
+      const row = await browserPairingStore.update(id, (current) =>
+        at < (current.activeBrowserAt ?? 0) ? current : { ...current, activeBrowser: browserId, activeBrowserAt: at },
+      );
+      return bridgeBrowsersOf(row);
     },
     async forgetBridgeBrowser(id, browserId) {
       const row = await browserPairingStore.update(id, (current) => {
         const browsers = { ...current.browsers };
         delete browsers[browserId];
-        return { ...current, browsers, ...(current.activeBrowser === browserId ? { activeBrowser: null } : {}) };
+        if (current.activeBrowser !== browserId) return { ...current, browsers };
+        return { ...current, browsers, activeBrowser: null, activeBrowserAt: Date.now() };
       });
-      return { active: row?.activeBrowser, browsers: row?.browsers ?? {} };
+      return bridgeBrowsersOf(row);
     },
     getAutoFlaggerConfig: () => autoFlaggerConfig,
     setAutoFlaggerConfig(config) {

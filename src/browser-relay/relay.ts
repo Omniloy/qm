@@ -30,6 +30,7 @@ interface Pair {
   extensions: Map<string, Extension>;
   cdp?: RelaySocket;
   active?: string | null;
+  activeAt?: number;
 }
 
 const LEGACY_BROWSER_ID = "legacy";
@@ -41,7 +42,7 @@ export interface RelayHub {
   detach(principalId: string, side: RelaySide, socket: RelaySocket): void;
   disconnect(principalId: string, reason: string): void;
   deliver(principalId: string, side: RelaySide, raw: string, socket?: RelaySocket): void;
-  setActive(principalId: string, browserId: string | null | undefined): void;
+  setActive(principalId: string, browserId: string | null | undefined, at: number): void;
   connected(principalId: string): { extension: boolean; cdp: boolean; sharing: boolean };
   describe(principalId: string): { title?: string; url?: string } | null;
   browsers(principalId: string): { active: string | null | undefined; live: LiveBrowser[] };
@@ -119,7 +120,7 @@ function notConnectedReason(pair: Pair): string {
 
 export interface RelayHubOptions {
   onShareChanged?(principalId: string, sharing: boolean): void;
-  onActiveChanged?(principalId: string, browserId: string): void;
+  onActiveChanged?(principalId: string, browserId: string, at: number): void;
 }
 
 export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
@@ -237,8 +238,10 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
         ext.sharing = true;
         if (frame.restored) return;
         if (!isTarget) {
+          const at = Date.now();
+          pair.activeAt = at;
           choose(pair, ext.id);
-          opts.onActiveChanged?.(principalId, ext.id);
+          opts.onActiveChanged?.(principalId, ext.id, at);
         }
         opts.onShareChanged?.(principalId, true);
         return;
@@ -251,10 +254,11 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
       }
     },
 
-    setActive(principalId, browserId) {
+    setActive(principalId, browserId, at) {
       const pair = pairOf(principalId);
-      if (pair.active === browserId) return;
-      choose(pair, browserId);
+      if (at < (pair.activeAt ?? 0)) return;
+      pair.activeAt = at;
+      if (pair.active !== browserId) choose(pair, browserId);
       prune(principalId, pair);
     },
 

@@ -640,7 +640,7 @@ test("the first browser to connect becomes active, and a second one never takes 
   const after = await config.noteBridgeBrowser(scope, "dia-00000001", { name: "Dia", version: "0.2.3" });
   assert.equal(after.active, "chrome-0001");
   assert.deepEqual(Object.keys(after.browsers).sort(), ["chrome-0001", "dia-00000001"]);
-  await config.setActiveBridgeBrowser(scope, null);
+  await config.setActiveBridgeBrowser(scope, null, Date.now());
   assert.equal(
     (await config.noteBridgeBrowser(scope, "chrome-0001", { name: "Chrome" })).active,
     null,
@@ -739,5 +739,64 @@ test("the browser registry keeps only the most recent browsers", async () => {
   for (let i = 0; i < 14; i += 1) {
     await config.noteBridgeBrowser(scope, `browser-${String(i).padStart(4, "0")}`, { name: `B${i}` });
   }
-  assert.equal(Object.keys((await config.getBridgeBrowsers(scope)).browsers).length, 10);
+  const kept = (await config.getBridgeBrowsers(scope)).browsers;
+  assert.ok(Object.keys(kept).length <= 11, "the ten most recent, plus the active one");
+  assert.ok("browser-0000" in kept, "the first browser stays because it is the active one");
+});
+
+test("a choice saved on another instance reaches an agent that is already connected", async () => {
+  const hub = createRelayHub();
+  const config = createMemoryConfigStore("org");
+  const scope = personalScope(ALICE);
+  const { server, url } = await relayServer({
+    hub,
+    pairingRecheckMs: RECHECK,
+    noteBrowser: (actor, browser) => config.noteBridgeBrowser(personalScope(actor), browser.id, browser),
+    activeBrowser: (actor) => config.getBridgeBrowsers(personalScope(actor)),
+  });
+  try {
+    const token = await pairing(20 * DAY);
+    await listen(`${url}/v1/browser-relay/extension?t=${token}&browser=chrome-0001&name=Chrome`);
+    await listen(`${url}/v1/browser-relay/extension?t=${token}&browser=dia-00000001&name=Dia`);
+    assert.ok(await until(() => hub.browsers(ALICE).live.length === 2));
+    const agent = await listen(`${url}/v1/browser-relay/cdp?t=${await cdpToken()}`);
+    assert.equal(hub.browsers(ALICE).active, "chrome-0001", "the first browser to connect");
+
+    const closed = closeOf(agent.ws);
+    await config.setActiveBridgeBrowser(scope, "dia-00000001", Date.now());
+    assert.ok(await until(() => hub.browsers(ALICE).active === "dia-00000001"), "followed within a recheck");
+    assert.equal((await closed).reason, "the browser the agent uses changed");
+  } finally {
+    hangUp(server);
+  }
+});
+
+test("a stale saved choice never undoes a newer Share", async () => {
+  const hub = createRelayHub();
+  hub.attach(ALICE, "extension", silent(), { id: "chrome-0001", name: "Chrome" });
+  const dia = silent();
+  hub.attach(ALICE, "extension", dia, { id: "dia-00000001", name: "Dia" });
+  const saved = Date.now() - 1000;
+  hub.setActive(ALICE, "chrome-0001", saved);
+  hub.deliver(ALICE, "extension", JSON.stringify({ qm: "attached", title: "LangSmith" }), dia);
+  hub.setActive(ALICE, "chrome-0001", saved);
+  assert.equal(hub.browsers(ALICE).active, "dia-00000001");
+
+  const config = createMemoryConfigStore("org");
+  const scope = personalScope(ALICE);
+  await config.setActiveBridgeBrowser(scope, "dia-00000001", Date.now());
+  await config.setActiveBridgeBrowser(scope, "chrome-0001", saved);
+  assert.equal((await config.getBridgeBrowsers(scope)).active, "dia-00000001", "an older write loses");
+});
+
+test("the cap never drops the browser the agent uses", async () => {
+  const config = createMemoryConfigStore("org");
+  const scope = personalScope(ALICE);
+  await config.noteBridgeBrowser(scope, "chosen-0001", { name: "Chosen" });
+  for (let i = 0; i < 14; i += 1) {
+    await config.noteBridgeBrowser(scope, `other-${String(i).padStart(4, "0")}`, { name: `B${i}` });
+  }
+  const after = await config.getBridgeBrowsers(scope);
+  assert.equal(after.active, "chosen-0001");
+  assert.ok("chosen-0001" in after.browsers);
 });

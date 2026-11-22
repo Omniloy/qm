@@ -754,7 +754,7 @@ export function buildApp(
         })
         .catch(swallowAs("browser choice after Stop", undefined));
     },
-    onActiveChanged(principalId, browserId) {
+    onActiveChanged(principalId, browserId, at) {
       auditLog.record({
         at: Date.now(),
         principalId,
@@ -764,7 +764,7 @@ export function buildApp(
         detail: `share in ${browserId}`,
       });
       void configStore
-        .setActiveBridgeBrowser(personalScope(principalId), browserId)
+        .setActiveBridgeBrowser(personalScope(principalId), browserId, at)
         .catch(swallowAs("active browser after Share", undefined));
     },
   });
