@@ -1,6 +1,5 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { skillFilesNote } from "../src/harness/agent-tools.ts";
 import { createToolContext, type SkillResult } from "../src/tools/primitives.ts";
 import type { Sandbox, SandboxHandle } from "../src/sandbox/sandbox.ts";
 import { scopeId } from "../src/types.ts";
@@ -96,10 +95,3 @@ function createToolContextWithout() {
   });
   return { tc };
 }
-
-test("a skill read says its skills/ paths live in the turn's folder, not an old copy in the workspace", () => {
-  const note = skillFilesNote(".agent-turn/a1/b2/skills/browse", undefined, "");
-  assert.match(note, /skill files synced to \.agent-turn\/a1\/b2\/skills\/browse\//);
-  assert.match(note, /start with skills\/ are under \.agent-turn\/a1\/b2\/, so run them from there/);
-  assert.doesNotMatch(skillFilesNote("elsewhere", undefined, ""), /start with skills\//);
-});

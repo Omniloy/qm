@@ -155,7 +155,8 @@ class WS:
 def bridge_reason(reason):
     if "chrome-extension:// URL of different extension" in str(reason):
         return ("this tab shows a file, usually a PDF, in Chrome's own viewer, which cannot be read or "
-                "clicked. Save it into the workspace instead: run tabs to see its URL, then download <that URL>")
+                "clicked. Run tabs to see its URL, move off it (tab <another id>, or go to a web page), "
+                "then download <that URL> to save it into the workspace")
     return reason
 
 
@@ -474,7 +475,7 @@ READ_JS = r"""
 BLOCK_JS = r"""
 (() => {
   const t = (document.body ? document.body.innerText : '').replace(/\s+/g, ' ').trim();
-  const hit = /just a moment|checking your browser|verify you are human|unusual traffic|
+  const hit = /just a moment|checking your browser|verify you are human|verifying you are human|unusual traffic|access to this page has been denied|
 access denied|are you a robot|enable javascript and cookies|access is temporarily restricted|
 developer or inspection tools/i.test(t);
   // An all-but-empty document on a real http(s) page is the other tell: a
@@ -489,9 +490,13 @@ developer or inspection tools/i.test(t);
 
 def settled_block(c, seconds=6):
     end = time.time() + seconds
+    verdict = {}
     while True:
-        verdict = json.loads(c.eval(BLOCK_JS))
-        if verdict.get("hit") or not verdict.get("empty") or time.time() >= end:
+        try:
+            verdict = json.loads(c.eval(BLOCK_JS))
+        except Exception:
+            verdict = {}
+        if verdict.get("hit") or (verdict and not verdict.get("empty")) or time.time() >= end:
             return verdict
         time.sleep(0.5)
 
@@ -1074,9 +1079,9 @@ def main():
             nav = c.call("Page.navigate", url=url)
             wait_ready(c, 30)
             time.sleep(0.4)
+            blocked = settled_block(c)
             info = json.loads(c.eval(
                 "JSON.stringify({url: location.href, title: document.title})"))
-            blocked = settled_block(c)
             print(f"{info['title'][:80]}\n{info['url']}")
             if nav.get("errorText"):
                 print(f"\nThe page did not load: {nav['errorText']} ({url}). The browser is fine; "

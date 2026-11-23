@@ -361,15 +361,6 @@ export type CoreToolOptions = Omit<
   "readOnly" | "surfaceTools" | "surfaceName" | "delegateWork" | "clientTools"
 >;
 
-export function skillFilesNote(dir: string, packDir: string | undefined, onSandbox: string): string {
-  const base = dir.replace(/\/skills\/[^/]+\/?$/, "");
-  const relative =
-    base !== dir
-      ? `; paths in it that start with skills/ are under ${base}/, so run them from there, never from a skills/ folder in the workspace, which is an old copy`
-      : "";
-  return `[skill files synced to ${dir}/${packDir ? `; pack files at ${packDir}/` : ""}${onSandbox}${relative}]\n\n`;
-}
-
 export function coreToolOptions(config: Config): CoreToolOptions {
   return {
     sandboxResources: config.sandboxResourcesEnabled,
@@ -1128,7 +1119,9 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       const onSandbox = p.sandbox_id
         ? ` on sandbox ${p.sandbox_id}; reach them with execute using that sandbox_id`
         : "";
-      const where = dir ? skillFilesNote(dir, packDir, onSandbox) : "";
+      const where = dir
+        ? `[skill files synced to ${dir}/${packDir ? `; pack files at ${packDir}/` : ""}${onSandbox}]\n\n`
+        : "";
       return recordResult(
         callId,
         {
