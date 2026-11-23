@@ -13,6 +13,7 @@ import {
   type PersistedPeopleDirectoryUrl,
   type PersistedBrowseMaxSteps,
   type PersistedBrowseModel,
+  type PersistedBrowserPairing,
   type PersistedTurnWallClock,
   type PersistedDeploymentIdentity,
 } from "../src/resolution/config-store.ts";
@@ -44,6 +45,7 @@ const TABLES = [
   "people_directory_urls",
   "browse_max_steps_configs",
   "browse_model_configs",
+  "browser_relay_pairings",
   "turn_wall_clock_configs",
   "deployment_identity",
 ];
@@ -69,6 +71,7 @@ const maps = (f: PostgresArtifactMaps) => ({
   peopleDirectoryUrls: f.map<PersistedPeopleDirectoryUrl>("people_directory_urls"),
   browseMaxSteps: f.map<PersistedBrowseMaxSteps>("browse_max_steps_configs"),
   browseModels: f.map<PersistedBrowseModel>("browse_model_configs"),
+  browserPairings: f.map<PersistedBrowserPairing>("browser_relay_pairings"),
   turnWallClocks: f.map<PersistedTurnWallClock>("turn_wall_clock_configs"),
   deploymentIdentity: f.map<PersistedDeploymentIdentity>("deployment_identity"),
 });
@@ -425,5 +428,37 @@ test(
     assert.equal(b.getPeopleDirectoryUrl(ch), null, "a cleared people-directory url stays cleared after restart");
     assert.equal(b.getBrowseMaxSteps(ch), null, "a cleared browse step limit stays cleared after restart");
     assert.equal(b.getBrowseModel(ch), null, "a cleared browse model stays cleared after restart");
+  },
+);
+
+test(
+  "pg config store: concurrent pairings on two cores each get their own generation, and a cold core sees the last",
+  { skip },
+  async () => {
+    const f = createPostgresMapFactory(URL!);
+    const me = scopeId("personal", "U-pairing");
+    const left = createMemoryConfigStore("default-org", maps(f));
+    const right = createMemoryConfigStore("default-org", maps(f));
+    assert.equal(await left.getBrowserPairingGenerationDurable(me), 0, "never paired reads as generation 0");
+
+    const bumped = await Promise.all([
+      left.bumpBrowserPairingGeneration(me),
+      right.bumpBrowserPairingGeneration(me),
+      left.bumpBrowserPairingGeneration(me),
+      right.bumpBrowserPairingGeneration(me),
+    ]);
+    assert.deepEqual(
+      bumped.toSorted((a, b) => a - b),
+      [1, 2, 3, 4],
+      "no two pairings share a generation",
+    );
+
+    const cold = createMemoryConfigStore("default-org", maps(f));
+    assert.equal(
+      await cold.getBrowserPairingGenerationDurable(me),
+      4,
+      "read from Postgres, not from any core's memory",
+    );
+    assert.equal(await cold.getBrowserPairingGenerationDurable(scopeId("personal", "U-other")), 0);
   },
 );

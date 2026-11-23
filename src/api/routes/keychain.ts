@@ -18,6 +18,7 @@ import { audit, resolveCapabilityDestination, verifiedConversationSpeaker } from
 import { swallow, swallowAs } from "../../util/errors.ts";
 import { cronIdOf } from "../../sessions/session-store.ts";
 import { keychainUseCommand } from "../contract.ts";
+import { bridgeBrowsers, type BridgeBrowserView } from "./browser-relay.ts";
 
 const CONSENT_ON_TRIGGERED_TURN =
   "consent can only be recorded on a turn its owner themself sent — this turn was fired by a trigger, not a person";
@@ -34,6 +35,7 @@ interface BrowserPickerEntry {
   connected: boolean;
   sharing?: boolean;
   sharedTabTitle?: string;
+  browsers?: BridgeBrowserView[];
 }
 
 async function resolveScopeNames(
@@ -211,6 +213,7 @@ async function handleKeychain(ctx: ApiCtx): Promise<void> {
           connected: live?.extension ?? false,
           sharing: live?.sharing ?? false,
           ...(sharedTab ? { sharedTabTitle: sharedTab } : {}),
+          ...(capability.portalSession === true ? { browsers: await bridgeBrowsers(deps, actorId) } : {}),
         });
       }
       const stored = await deps.config?.getBrowserProviderDurable(personalScope(actorId));

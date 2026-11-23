@@ -26,6 +26,8 @@ const core = createServer(built.app, {
   capabilitySecret: TEST_CAPABILITY_SECRET,
   config: built.config,
   relayPublicUrl: "http://relay.test",
+  auditLog: built.auditLog,
+  browserRelay: built.browserRelay,
   ...(built.keychain ? { keychain: built.keychain } : {}),
 });
 core.listen(0);
@@ -162,4 +164,78 @@ test("downloading the extension is a POST, so a link cannot pair it and pick the
     viaButton.status === 200 || /not bundled/.test(body ?? ""),
     `the button's POST reaches the download route (${viaButton.status} ${body})`,
   );
+});
+
+const DISCONNECT = "/v1/browser-relay/disconnect";
+
+async function pairAs(user: string): Promise<string> {
+  const path = withSourceAuthNonce(PAIRING, SECRET);
+  const r = await fetch(`${coreBase}${path}`, {
+    method: "POST",
+    headers: { ...signedHeaders(SECRET, "POST", path, "{}"), ...portal(user) },
+    body: "{}",
+  });
+  assert.equal(r.status, 200);
+  return ((await r.json()) as { token: string }).token;
+}
+
+const generationOf = async (token: string) =>
+  (await verifyCapabilityToken(token, TEST_CAPABILITY_SECRET))?.pairingGeneration;
+
+test("each pairing stamps a newer generation, which is the only one that stays current", async () => {
+  const first = await pairAs("U8");
+  const second = await pairAs("U8");
+  assert.equal(await generationOf(first), 1);
+  assert.equal(await generationOf(second), 2);
+  assert.equal(await built.config.getBrowserPairingGenerationDurable(personalScope("U8")), 2);
+});
+
+test("the web UI's Disconnect Chrome revokes the signed-in person's pairing", async () => {
+  const token = await pairAs("U9");
+  assert.equal(await activeBrowser("U9"), "extension");
+  const r = await fetch(`${webBase}/api/browser-relay/disconnect`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie: "webuiuser=U9", ...portal("U9") },
+    body: "{}",
+  });
+  assert.equal(r.status, 200);
+  assert.equal(
+    await built.config.getBrowserPairingGenerationDurable(personalScope("U9")),
+    (await generationOf(token))! + 1,
+    "the downloaded token is now a generation behind",
+  );
+  assert.equal(await activeBrowser("U9"), null, "the agent stops reaching for the person's Chrome");
+  const rows = await built.auditLog.tail({
+    limit: 10,
+    scopeLabel: personalScope("U9"),
+    action: "browser-relay.disconnect",
+  });
+  assert.deepEqual(
+    rows.map((row) => [row.principalId, row.detail]),
+    [["U9", "pairing generation 2"]],
+  );
+});
+
+test("an admin impersonating the person cannot disconnect their Chrome", async () => {
+  await pairAs("U10");
+  const path = withSourceAuthNonce(DISCONNECT, SECRET);
+  const r = await fetch(`${coreBase}${path}`, {
+    method: "POST",
+    headers: { ...signedHeaders(SECRET, "POST", path, "{}"), ...portal("U10", "U2") },
+    body: "{}",
+  });
+  assert.equal(r.status, 403);
+  assert.equal(await built.config.getBrowserPairingGenerationDurable(personalScope("U10")), 1);
+  assert.equal(await activeBrowser("U10"), "extension");
+});
+
+test("an agent's live personal turn token cannot disconnect the person's Chrome", async () => {
+  await pairAs("U11");
+  const r = await fetch(`${coreBase}${DISCONNECT}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", [CAPABILITY_HEADER]: await asAgent("U11") },
+    body: "{}",
+  });
+  assert.equal(r.status, 403);
+  assert.equal(await built.config.getBrowserPairingGenerationDurable(personalScope("U11")), 1);
 });

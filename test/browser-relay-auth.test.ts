@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
+import { connect, type AddressInfo, type Socket } from "node:net";
 import { test } from "node:test";
 import WebSocket from "ws";
 import {
@@ -13,9 +14,19 @@ import {
   verifyCapabilityToken,
   type CapabilityClaims,
 } from "../src/auth/capability-token.ts";
-import { BROWSER_RELAY_AUD, BROWSER_RELAY_CDP_AUD, attachBrowserRelay } from "../src/browser-relay/server.ts";
+import {
+  BROWSER_RELAY_AUD,
+  BROWSER_RELAY_CDP_AUD,
+  PAIRING_REVOKED,
+  attachBrowserRelay,
+  browserFromQuery,
+  type BrowserRelayOptions,
+} from "../src/browser-relay/server.ts";
+import { createRelayHub, type RelaySocket } from "../src/browser-relay/relay.ts";
 import { browserRelayRoutes } from "../src/api/routes/browser-relay.ts";
 import type { ApiCtx } from "../src/api/routes/route.ts";
+import type { AuditEvent } from "../src/audit/audit-log.ts";
+import { createMemoryConfigStore } from "../src/resolution/config-store.ts";
 import { personalScope, type ScopeId } from "../src/types.ts";
 
 const SECRET = "relay-test-secret";
@@ -28,19 +39,12 @@ function mint(claims: Partial<CapabilityClaims>): Promise<string> {
 
 const cdpToken = () => mint({ aud: BROWSER_RELAY_CDP_AUD, liveActor: true });
 
-async function relayServer(
-  authorizesScope?: (c: CapabilityClaims) => Promise<boolean>,
-  stillChosen?: (actorId: string) => Promise<boolean>,
-): Promise<{
+async function relayServer(opts: Omit<BrowserRelayOptions, "capabilitySecret"> = {}): Promise<{
   server: Server;
   url: string;
 }> {
   const server = createServer();
-  attachBrowserRelay(server, {
-    capabilitySecret: SECRET,
-    ...(authorizesScope ? { authorizesScope } : {}),
-    ...(stillChosen ? { stillChosen } : {}),
-  });
+  attachBrowserRelay(server, { capabilitySecret: SECRET, ...opts });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   return { server, url: `ws://127.0.0.1:${(server.address() as AddressInfo).port}` };
 }
@@ -100,9 +104,11 @@ test("the CDP leg opens only for the dedicated live, personal, untriggered relay
 
 test("the CDP leg re-checks the scope with the core authorizer", async () => {
   const seen: CapabilityClaims[] = [];
-  const { server, url } = await relayServer(async (c) => {
-    seen.push(c);
-    return false;
+  const { server, url } = await relayServer({
+    authorizesScope: async (c) => {
+      seen.push(c);
+      return false;
+    },
   });
   try {
     assert.equal(await dial(`${url}/v1/browser-relay/cdp?t=${await cdpToken()}`), 401);
@@ -115,9 +121,11 @@ test("the CDP leg re-checks the scope with the core authorizer", async () => {
 test("a turn's relay key stops working once the person stops or switches browsers", async () => {
   let chosen = true;
   const asked: string[] = [];
-  const { server, url } = await relayServer(undefined, async (actorId) => {
-    asked.push(actorId);
-    return chosen;
+  const { server, url } = await relayServer({
+    stillChosen: async (actorId) => {
+      asked.push(actorId);
+      return chosen;
+    },
   });
   try {
     const key = await cdpToken();
@@ -200,6 +208,7 @@ const renewals = (frames: Array<Record<string, unknown>>) => frames.filter((f) =
 const pairing = (expiresIn: number) => mint({ aud: BROWSER_RELAY_AUD, exp: Date.now() + expiresIn });
 
 const HOUR = 60 * 60_000;
+const RECHECK = 20;
 
 test("a pairing token over a day old is swapped for a fresh one for the same person", async () => {
   const { server, url } = await relayServer();
@@ -247,26 +256,23 @@ test("a pairing token under a day old is not renewed, and the agent's key never 
   }
 });
 
-test("a connection that stays up is renewed once a day on its keepalive, one token per day", async (t) => {
+test("a connection that stays up is renewed once a day by its periodic check, one token per day", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
-  const { server, url } = await relayServer();
+  const { server, url } = await relayServer({ pairingRecheckMs: RECHECK });
   try {
     const ext = await listen(`${url}/v1/browser-relay/extension?t=${await pairing(30 * DAY - HOUR)}`);
-    ext.ws.pong();
     await settle();
     assert.deepEqual(renewals(ext.frames), [], "minted within the day");
 
     t.mock.timers.tick(DAY);
-    for (let i = 0; i < 10; i++) ext.ws.send(JSON.stringify({ qm: "ping" }));
     assert.ok(await until(() => renewals(ext.frames).length > 0), "renewed without reconnecting");
     await settle();
-    assert.equal(renewals(ext.frames).length, 1, "a burst of keepalives mints one token, not one each");
+    assert.equal(renewals(ext.frames).length, 1, "the checks after it mint nothing more that day");
     const fresh = await verifyCapabilityToken(String(renewals(ext.frames)[0]!.token), SECRET);
     assert.ok(fresh!.exp > Date.now() + 29 * DAY);
 
     t.mock.timers.tick(DAY + HOUR);
-    ext.ws.pong();
-    assert.ok(await until(() => renewals(ext.frames).length === 2), "and again on a pong the next day");
+    assert.ok(await until(() => renewals(ext.frames).length === 2), "and again the next day");
   } finally {
     hangUp(server);
   }
@@ -274,12 +280,10 @@ test("a connection that stays up is renewed once a day on its keepalive, one tok
 
 test("a connection whose token ran out while it stayed open is not renewed", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
-  const { server, url } = await relayServer();
+  const { server, url } = await relayServer({ pairingRecheckMs: RECHECK });
   try {
     const ext = await listen(`${url}/v1/browser-relay/extension?t=${await pairing(30 * DAY - HOUR)}`);
     t.mock.timers.tick(31 * DAY);
-    ext.ws.pong();
-    ext.ws.send(JSON.stringify({ qm: "ping" }));
     await settle();
     assert.deepEqual(renewals(ext.frames), []);
   } finally {
@@ -287,7 +291,10 @@ test("a connection whose token ran out while it stayed open is not renewed", asy
   }
 });
 
-function pairingCtx(over: { capability?: CapabilityClaims; actor?: { p: string } }) {
+function pairingCtx(
+  over: { capability?: CapabilityClaims; actor?: { p: string; imp?: string }; body?: unknown },
+  deps: Record<string, unknown> = {},
+) {
   const out = { status: 0, body: undefined as unknown };
   const res = {
     writeHead(status: number) {
@@ -300,13 +307,20 @@ function pairingCtx(over: { capability?: CapabilityClaims; actor?: { p: string }
   };
   const ctx = {
     res,
-    deps: { capabilitySecret: SECRET, auditLog: { record: () => undefined } },
+    deps: {
+      capabilitySecret: SECRET,
+      auditLog: { record: () => undefined },
+      config: createMemoryConfigStore("org"),
+      ...deps,
+    },
     ...over,
   } as unknown as ApiCtx;
   return { ctx, out };
 }
 
-const pair = browserRelayRoutes[0]!;
+const routeAt = (path: string) => browserRelayRoutes.find((route) => "path" in route && route.path === path)!;
+const pair = routeAt("/v1/browser-relay/pairing");
+const disconnect = routeAt("/v1/browser-relay/disconnect");
 
 async function claims(c: Partial<CapabilityClaims>): Promise<CapabilityClaims> {
   return (await verifyCapabilityToken(await mint(c), SECRET))!;
@@ -321,6 +335,7 @@ test("pairing is minted only for a portal identity, never from any capability to
   assert.equal(minted?.actorId, ALICE);
   assert.equal(minted?.scopeId, personalScope(ALICE));
   assert.ok(minted!.exp > Date.now() + 29 * DAY);
+  assert.equal(minted?.pairingGeneration, 1, "a first pairing retires every token from before generations");
   assert.equal(pair.auth, "source");
 
   const refused: Record<string, Partial<CapabilityClaims>> = {
@@ -332,4 +347,488 @@ test("pairing is minted only for a portal identity, never from any capability to
     await pair.handle(r.ctx);
     assert.equal(r.out.status, 403, label);
   }
+});
+
+const pairingAt = (generation: number | undefined, expiresIn = 30 * DAY - HOUR) =>
+  mint({
+    aud: BROWSER_RELAY_AUD,
+    exp: Date.now() + expiresIn,
+    ...(generation === undefined ? {} : { pairingGeneration: generation }),
+  });
+
+function closeOf(ws: WebSocket, ms = 2000): Promise<{ code: number; reason: string }> {
+  return new Promise((resolve) => {
+    const open = setTimeout(() => resolve({ code: 0, reason: "still open" }), ms);
+    ws.once("close", (code, reason) => {
+      clearTimeout(open);
+      resolve({ code, reason: String(reason) });
+    });
+  });
+}
+
+test("a pairing token from before the person's latest pairing is refused at connect", async () => {
+  let current = 2;
+  const { server, url } = await relayServer({ pairingGeneration: async () => current });
+  try {
+    const ext = async (t: string) => dial(`${url}/v1/browser-relay/extension?t=${encodeURIComponent(t)}`);
+    assert.equal(await ext(await pairingAt(2)), "open");
+    assert.equal(await ext(await pairingAt(1, 10 * DAY)), 401, "an older pairing, even one due for renewal");
+    assert.equal(await ext(await pairingAt(undefined)), 401, "a token from before generations is generation 0");
+    current = 3;
+    assert.equal(await ext(await pairingAt(2)), 401, "the same token once the person pairs again");
+  } finally {
+    server.close();
+  }
+});
+
+test("a token from before pairings had generations still connects, and is renewed as generation 0", async () => {
+  const audits: AuditEvent[] = [];
+  const { server, url } = await relayServer({
+    pairingGeneration: async () => 0,
+    auditLog: { record: (e) => audits.push(e) },
+  });
+  try {
+    const ext = await listen(`${url}/v1/browser-relay/extension?t=${await pairingAt(undefined, 20 * DAY)}`);
+    assert.ok(await until(() => renewals(ext.frames).length > 0), "nobody has to download the extension again");
+    const fresh = await verifyCapabilityToken(String(renewals(ext.frames)[0]!.token), SECRET);
+    assert.equal(fresh?.pairingGeneration, 0);
+    assert.deepEqual(
+      audits.map((a) => [a.action, a.principalId, a.scopeLabel, a.detail]),
+      [["browser-relay.renew", ALICE, personalScope(ALICE), "pairing generation 0"]],
+      "every renewal leaves an audit row",
+    );
+  } finally {
+    hangUp(server);
+  }
+});
+
+test("an open connection whose pairing was replaced is closed by its next check, never renewed", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  let current = 1;
+  const audits: AuditEvent[] = [];
+  const { server, url } = await relayServer({
+    pairingGeneration: async () => current,
+    auditLog: { record: (e) => audits.push(e) },
+    pairingRecheckMs: RECHECK,
+  });
+  try {
+    const ext = await listen(`${url}/v1/browser-relay/extension?t=${await pairingAt(1)}`);
+    const closed = closeOf(ext.ws);
+    await settle();
+    current = 2;
+    t.mock.timers.tick(DAY);
+    assert.deepEqual(await closed, { code: 1008, reason: PAIRING_REVOKED });
+    assert.deepEqual(renewals(ext.frames), [], "the renewal it was due is never sent");
+    assert.deepEqual(audits, []);
+  } finally {
+    hangUp(server);
+  }
+});
+
+test("a silent connection whose pairing was replaced is still cut off by the periodic check", async () => {
+  let current = 4;
+  const asked: string[] = [];
+  const { server, url } = await relayServer({
+    pairingGeneration: async (actorId) => {
+      asked.push(actorId);
+      return current;
+    },
+    pairingRecheckMs: RECHECK,
+  });
+  try {
+    const ext = await listen(`${url}/v1/browser-relay/extension?t=${await pairingAt(4)}`);
+    const closed = closeOf(ext.ws);
+    await settle();
+    assert.equal(ext.ws.readyState, WebSocket.OPEN);
+    current = 5;
+    assert.deepEqual(await closed, { code: 1008, reason: PAIRING_REVOKED }, "with no frame or pong from it");
+    assert.ok(asked.length > 2 && asked.every((id) => id === ALICE));
+  } finally {
+    hangUp(server);
+  }
+});
+
+test("an open connection rides out one failed check, and is cut off when the store stays unreadable", async () => {
+  let failures = 0;
+  const { server, url } = await relayServer({
+    pairingGeneration: async () => {
+      if (failures > 0) {
+        failures -= 1;
+        throw new Error("the store is down");
+      }
+      return 0;
+    },
+    pairingRecheckMs: RECHECK,
+  });
+  try {
+    const ext = await listen(`${url}/v1/browser-relay/extension?t=${await pairingAt(undefined)}`);
+    const closed = closeOf(ext.ws);
+    await settle();
+    failures = 1;
+    await settle();
+    assert.equal(ext.ws.readyState, WebSocket.OPEN, "one blip does not drop the person's Chrome");
+    failures = Number.POSITIVE_INFINITY;
+    assert.equal((await closed).code, 1011, "a second failure in a row fails closed, like the check at connect");
+  } finally {
+    hangUp(server);
+  }
+});
+
+function maskedFrame(text: string): Buffer {
+  const payload = Buffer.from(text);
+  const mask = randomBytes(4);
+  const head =
+    payload.length < 126
+      ? Buffer.from([0x81, 0x80 | payload.length])
+      : Buffer.from([0x81, 0x80 | 126, payload.length >> 8, payload.length & 255]);
+  return Buffer.concat([head, mask, Buffer.from(payload.map((byte, i) => byte ^ mask[i % 4]!))]);
+}
+
+function rawExtension(url: string, token: string): Promise<{ sock: Socket; received: () => string }> {
+  const { port } = new URL(url);
+  return new Promise((resolve, reject) => {
+    const sock = connect(Number(port), "127.0.0.1");
+    let seen = "";
+    sock.on("data", (d) => {
+      seen += d.toString("latin1");
+      if (!seen.includes("\r\n\r\n")) return;
+      if (seen.startsWith("HTTP/1.1 101")) resolve({ sock, received: () => seen });
+      else reject(new Error(seen.split("\r\n")[0]));
+    });
+    sock.on("connect", () =>
+      sock.write(
+        `GET /v1/browser-relay/extension?t=${encodeURIComponent(token)} HTTP/1.1\r\nHost: relay\r\n` +
+          `Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: ${randomBytes(16).toString("base64")}\r\n` +
+          "Sec-WebSocket-Version: 13\r\n\r\n",
+      ),
+    );
+  });
+}
+
+test("a cut-off socket that ignores its close frame cannot speak to the person's next Chrome", async () => {
+  let current = 1;
+  const shares: boolean[] = [];
+  const hub = createRelayHub({ onShareChanged: (_p, sharing) => shares.push(sharing) });
+  const server = createServer();
+  attachBrowserRelay(server, { hub, capabilitySecret: SECRET, pairingGeneration: async () => current });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    const stale = await rawExtension(url, await pairingAt(1));
+    assert.ok(await until(() => hub.connected(ALICE).extension));
+    current = 2;
+    hub.disconnect(ALICE, PAIRING_REVOKED);
+    assert.ok(await until(() => stale.received().includes(PAIRING_REVOKED)), "the close frame went out");
+
+    const next = await listen(`${url}/v1/browser-relay/extension?t=${await pairingAt(2)}`);
+    const agent = await listen(`${url}/v1/browser-relay/cdp?t=${await cdpToken()}`);
+    assert.ok(await until(() => hub.connected(ALICE).extension && hub.connected(ALICE).cdp));
+    stale.sock.write(maskedFrame(JSON.stringify({ qm: "attached", title: "spoofed", url: "https://evil.example/" })));
+    stale.sock.write(maskedFrame(JSON.stringify({ id: 7, result: { spoofed: true } })));
+    await settle();
+
+    assert.deepEqual(agent.frames, [], "the agent never hears from it");
+    assert.deepEqual(shares, [], "and it cannot choose Chrome again");
+    assert.equal(hub.describe(ALICE), null);
+    assert.equal(next.ws.readyState, WebSocket.OPEN);
+    stale.sock.destroy();
+  } finally {
+    hangUp(server);
+  }
+});
+
+test("Disconnect Chrome closes the person's live sockets and their token never connects again", async () => {
+  const config = createMemoryConfigStore("org");
+  const hub = createRelayHub();
+  const server = createServer();
+  attachBrowserRelay(server, {
+    hub,
+    capabilitySecret: SECRET,
+    pairingGeneration: (actorId) => config.getBrowserPairingGenerationDurable(personalScope(actorId)),
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const audits: AuditEvent[] = [];
+  const deps = { config, browserRelay: hub, auditLog: { record: (e: AuditEvent) => audits.push(e) } };
+  try {
+    const paired = pairingCtx({ actor: { p: ALICE } }, deps);
+    await pair.handle(paired.ctx);
+    const token = (paired.out.body as { token: string }).token;
+    const ext = await listen(`${url}/v1/browser-relay/extension?t=${encodeURIComponent(token)}`);
+    const agent = await listen(`${url}/v1/browser-relay/cdp?t=${await cdpToken()}`);
+    const bobToken = await mint({ actorId: "bob", scopeId: personalScope("bob"), aud: BROWSER_RELAY_AUD });
+    const bob = await listen(`${url}/v1/browser-relay/extension?t=${bobToken}`);
+    assert.ok(await until(() => hub.connected(ALICE).extension && hub.connected(ALICE).cdp));
+    const extClosed = closeOf(ext.ws);
+    const agentClosed = closeOf(agent.ws);
+
+    const done = pairingCtx({ actor: { p: ALICE } }, deps);
+    await disconnect.handle(done.ctx);
+    assert.equal(done.out.status, 200);
+    assert.deepEqual(hub.connected(ALICE), { extension: false, cdp: false, sharing: false }, "gone at once");
+    assert.deepEqual(await extClosed, { code: 1008, reason: PAIRING_REVOKED });
+    assert.equal((await agentClosed).code, 1001, "the agent's leg goes with it");
+    assert.equal(await dial(`${url}/v1/browser-relay/extension?t=${encodeURIComponent(token)}`), 401);
+    assert.equal(await config.getBrowserProviderDurable(personalScope(ALICE)), null, "Chrome is no longer chosen");
+    assert.equal(bob.ws.readyState, WebSocket.OPEN, "someone else's Chrome is untouched");
+    assert.deepEqual(
+      audits.map((a) => [a.action, a.principalId, a.detail]),
+      [
+        ["browser-relay.pair", ALICE, "pairing generation 1"],
+        ["browser-relay.disconnect", ALICE, "pairing generation 2"],
+      ],
+    );
+  } finally {
+    hangUp(server);
+  }
+});
+
+test("pairing again cuts off the Chrome connected with the previous pairing", async () => {
+  const config = createMemoryConfigStore("org");
+  const hub = createRelayHub();
+  const server = createServer();
+  attachBrowserRelay(server, {
+    hub,
+    capabilitySecret: SECRET,
+    pairingGeneration: (actorId) => config.getBrowserPairingGenerationDurable(personalScope(actorId)),
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const deps = { config, browserRelay: hub };
+  try {
+    const first = pairingCtx({ actor: { p: ALICE } }, deps);
+    await pair.handle(first.ctx);
+    const old = (first.out.body as { token: string }).token;
+    const ext = await listen(`${url}/v1/browser-relay/extension?t=${encodeURIComponent(old)}`);
+    const closed = closeOf(ext.ws);
+
+    const second = pairingCtx({ actor: { p: ALICE } }, deps);
+    await pair.handle(second.ctx);
+    const next = (second.out.body as { token: string }).token;
+    assert.equal((await closed).code, 1008);
+    assert.equal(await dial(`${url}/v1/browser-relay/extension?t=${encodeURIComponent(old)}`), 401);
+    assert.equal(await dial(`${url}/v1/browser-relay/extension?t=${encodeURIComponent(next)}`), "open");
+  } finally {
+    hangUp(server);
+  }
+});
+
+test("only the person, from their own web session, can disconnect their Chrome", async () => {
+  const config = createMemoryConfigStore("org");
+  const refused: Record<string, Parameters<typeof pairingCtx>[0]> = {
+    "the agent's own live personal turn": { capability: await claims({ aud: CONTROL_PLANE_AUD, liveActor: true }) },
+    "a web session capability": { capability: await claims({ liveActor: true }) },
+    "an admin impersonating the person": { actor: { p: ALICE, imp: "admin" } },
+  };
+  for (const [label, over] of Object.entries(refused)) {
+    const r = pairingCtx(over, { config });
+    await disconnect.handle(r.ctx);
+    assert.equal(r.out.status, 403, label);
+  }
+  assert.equal(await config.getBrowserPairingGenerationDurable(personalScope(ALICE)), 0, "nothing was revoked");
+  assert.equal(disconnect.auth, "source");
+});
+
+const choose = routeAt("/v1/browser-relay/active");
+const forget = routeAt("/v1/browser-relay/forget");
+const silent = (): RelaySocket => ({ send: () => undefined, close: () => undefined });
+
+test("the first browser to connect becomes active, and a second one never takes over by itself", async () => {
+  const config = createMemoryConfigStore("org");
+  const scope = personalScope(ALICE);
+  assert.equal((await config.noteBridgeBrowser(scope, "chrome-0001", { name: "Chrome" })).active, "chrome-0001");
+  const after = await config.noteBridgeBrowser(scope, "dia-00000001", { name: "Dia", version: "0.2.3" });
+  assert.equal(after.active, "chrome-0001");
+  assert.deepEqual(Object.keys(after.browsers).sort(), ["chrome-0001", "dia-00000001"]);
+  await config.setActiveBridgeBrowser(scope, null, Date.now());
+  assert.equal(
+    (await config.noteBridgeBrowser(scope, "chrome-0001", { name: "Chrome" })).active,
+    null,
+    "turning every browser off is kept, not undone by the next connect",
+  );
+});
+
+test("only the person picks which browser the agent uses, and only one that has connected", async () => {
+  const hub = createRelayHub();
+  const config = createMemoryConfigStore("org");
+  hub.attach(ALICE, "extension", silent(), { id: "chrome-0001", name: "Chrome" });
+  hub.attach(ALICE, "extension", silent(), { id: "dia-00000001", name: "Dia" });
+  const deps = { browserRelay: hub, config };
+
+  const unknown = pairingCtx({ actor: { p: ALICE }, body: { browserId: "nobody-0000" } }, deps);
+  await choose.handle(unknown.ctx);
+  assert.equal(unknown.out.status, 404);
+
+  const agent = pairingCtx(
+    { capability: await claims({ aud: CONTROL_PLANE_AUD, liveActor: true }), body: { browserId: "dia-00000001" } },
+    deps,
+  );
+  await choose.handle(agent.ctx);
+  assert.equal(agent.out.status, 403, "the agent cannot move itself to another browser");
+
+  const person = pairingCtx({ actor: { p: ALICE }, body: { browserId: "dia-00000001" } }, deps);
+  await choose.handle(person.ctx);
+  assert.equal(person.out.status, 200);
+  assert.equal(hub.browsers(ALICE).active, "dia-00000001");
+  assert.equal((await config.getBridgeBrowsers(personalScope(ALICE))).active, "dia-00000001");
+  const listed = (person.out.body as { browsers: Array<{ id: string; active: boolean; connected: boolean }> }).browsers;
+  assert.deepEqual(listed.map((b) => [b.id, b.active, b.connected]).sort(), [
+    ["chrome-0001", false, true],
+    ["dia-00000001", true, true],
+  ]);
+});
+
+test("forgetting the active browser leaves none active rather than silently picking another", async () => {
+  const hub = createRelayHub();
+  const config = createMemoryConfigStore("org");
+  const scope = personalScope(ALICE);
+  await config.noteBridgeBrowser(scope, "chrome-0001", { name: "Chrome" });
+  await config.noteBridgeBrowser(scope, "dia-00000001", { name: "Dia" });
+  const r = pairingCtx({ actor: { p: ALICE }, body: { browserId: "chrome-0001" } }, { browserRelay: hub, config });
+  await forget.handle(r.ctx);
+  assert.equal(r.out.status, 200);
+  const after = await config.getBridgeBrowsers(scope);
+  assert.equal(after.active, null);
+  assert.deepEqual(Object.keys(after.browsers), ["dia-00000001"]);
+});
+
+test("a browser's identity from the connect URL is checked and cleaned", () => {
+  const q = (s: string) => browserFromQuery(new URLSearchParams(s));
+  assert.equal(q("browser=short"), undefined);
+  assert.equal(q("browser=../../etc/passwd0"), undefined);
+  assert.deepEqual(q("browser=dia-00000001&name=Dia%20%C2%B7%20macOS&v=0.2.3"), {
+    id: "dia-00000001",
+    name: "Dia · macOS",
+    version: "0.2.3",
+  });
+  assert.equal(q(`browser=dia-00000001&name=${encodeURIComponent("<img src=x>")}`)!.name, "img srcx");
+  assert.equal(q("browser=dia-00000001&name=" + "a".repeat(200))!.name.length, 60);
+});
+
+test("picking a browser also turns the Browser Bridge back on after a Stop", async () => {
+  const hub = createRelayHub();
+  const config = createMemoryConfigStore("org");
+  hub.attach(ALICE, "extension", silent(), { id: "dia-00000001", name: "Dia" });
+  config.setBrowserProvider(personalScope(ALICE), null);
+  const r = pairingCtx({ actor: { p: ALICE }, body: { browserId: "dia-00000001" } }, { browserRelay: hub, config });
+  await choose.handle(r.ctx);
+  assert.equal(r.out.status, 200);
+  assert.equal(await config.getBrowserProviderDurable(personalScope(ALICE)), "extension");
+});
+
+test("the agent's status call never lists the person's other browsers", async () => {
+  const hub = createRelayHub();
+  const config = createMemoryConfigStore("org");
+  hub.attach(ALICE, "extension", silent(), { id: "dia-00000001", name: "Dia" });
+  const status = routeAt("/v1/browser-relay/status");
+  const agent = pairingCtx(
+    { capability: await claims({ aud: CONTROL_PLANE_AUD, liveActor: true }) },
+    { browserRelay: hub, config },
+  );
+  await status.handle(agent.ctx);
+  assert.equal(agent.out.status, 200);
+  assert.ok(!("browsers" in (agent.out.body as object)));
+  const person = pairingCtx({ actor: { p: ALICE } }, { browserRelay: hub, config });
+  await status.handle(person.ctx);
+  assert.equal((person.out.body as { browsers: unknown[] }).browsers.length, 1);
+});
+
+test("the browser registry keeps only the most recent browsers", async () => {
+  const config = createMemoryConfigStore("org");
+  const scope = personalScope(ALICE);
+  for (let i = 0; i < 14; i += 1) {
+    await config.noteBridgeBrowser(scope, `browser-${String(i).padStart(4, "0")}`, { name: `B${i}` });
+  }
+  const kept = (await config.getBridgeBrowsers(scope)).browsers;
+  assert.ok(Object.keys(kept).length <= 11, "the ten most recent, plus the active one");
+  assert.ok("browser-0000" in kept, "the first browser stays because it is the active one");
+});
+
+test("a choice saved on another instance reaches an agent that is already connected", async () => {
+  const hub = createRelayHub();
+  const config = createMemoryConfigStore("org");
+  const scope = personalScope(ALICE);
+  const { server, url } = await relayServer({
+    hub,
+    pairingRecheckMs: RECHECK,
+    noteBrowser: (actor, browser) => config.noteBridgeBrowser(personalScope(actor), browser.id, browser),
+    activeBrowser: (actor) => config.getBridgeBrowsers(personalScope(actor)),
+  });
+  try {
+    const token = await pairing(20 * DAY);
+    await listen(`${url}/v1/browser-relay/extension?t=${token}&browser=chrome-0001&name=Chrome`);
+    await listen(`${url}/v1/browser-relay/extension?t=${token}&browser=dia-00000001&name=Dia`);
+    assert.ok(await until(() => hub.browsers(ALICE).live.length === 2));
+    const agent = await listen(`${url}/v1/browser-relay/cdp?t=${await cdpToken()}`);
+    assert.equal(hub.browsers(ALICE).active, "chrome-0001", "the first browser to connect");
+
+    const closed = closeOf(agent.ws);
+    await config.setActiveBridgeBrowser(scope, "dia-00000001", Date.now());
+    assert.ok(await until(() => hub.browsers(ALICE).active === "dia-00000001"), "followed within a recheck");
+    assert.equal((await closed).reason, "the browser the agent uses changed");
+  } finally {
+    hangUp(server);
+  }
+});
+
+test("a stale saved choice never undoes a newer Share", async () => {
+  const hub = createRelayHub();
+  hub.attach(ALICE, "extension", silent(), { id: "chrome-0001", name: "Chrome" });
+  const dia = silent();
+  hub.attach(ALICE, "extension", dia, { id: "dia-00000001", name: "Dia" });
+  const saved = Date.now() - 1000;
+  hub.setActive(ALICE, "chrome-0001", saved);
+  hub.deliver(ALICE, "extension", JSON.stringify({ qm: "attached", title: "LangSmith" }), dia);
+  hub.setActive(ALICE, "chrome-0001", saved);
+  assert.equal(hub.browsers(ALICE).active, "dia-00000001");
+
+  const config = createMemoryConfigStore("org");
+  const scope = personalScope(ALICE);
+  await config.setActiveBridgeBrowser(scope, "dia-00000001", Date.now());
+  await config.setActiveBridgeBrowser(scope, "chrome-0001", saved);
+  assert.equal((await config.getBridgeBrowsers(scope)).active, "dia-00000001", "an older write loses");
+});
+
+test("the cap never drops the browser the agent uses", async () => {
+  const config = createMemoryConfigStore("org");
+  const scope = personalScope(ALICE);
+  await config.noteBridgeBrowser(scope, "chosen-0001", { name: "Chosen" });
+  for (let i = 0; i < 14; i += 1) {
+    await config.noteBridgeBrowser(scope, `other-${String(i).padStart(4, "0")}`, { name: `B${i}` });
+  }
+  const after = await config.getBridgeBrowsers(scope);
+  assert.equal(after.active, "chosen-0001");
+  assert.ok("chosen-0001" in after.browsers);
+});
+
+test("a choice that loses to a newer one says so instead of claiming success", async () => {
+  const hub = createRelayHub();
+  const config = createMemoryConfigStore("org");
+  hub.attach(ALICE, "extension", silent(), { id: "chrome-0001", name: "Chrome" });
+  hub.attach(ALICE, "extension", silent(), { id: "dia-00000001", name: "Dia" });
+  await config.setActiveBridgeBrowser(personalScope(ALICE), "dia-00000001", Date.now() + 60_000);
+  const r = pairingCtx({ actor: { p: ALICE }, body: { browserId: "chrome-0001" } }, { browserRelay: hub, config });
+  await choose.handle(r.ctx);
+  assert.equal(r.out.status, 409);
+  assert.equal(hub.browsers(ALICE).active, "dia-00000001", "the hub follows what was actually saved");
+});
+
+test("a browser that is still connected cannot be forgotten, so Forget never looks like it did nothing", async () => {
+  const hub = createRelayHub();
+  const config = createMemoryConfigStore("org");
+  hub.attach(ALICE, "extension", silent(), { id: "dia-00000001", name: "Dia" });
+  await config.noteBridgeBrowser(personalScope(ALICE), "dia-00000001", { name: "Dia" });
+  const r = pairingCtx({ actor: { p: ALICE }, body: { browserId: "dia-00000001" } }, { browserRelay: hub, config });
+  await forget.handle(r.ctx);
+  assert.equal(r.out.status, 409);
+  assert.ok("dia-00000001" in (await config.getBridgeBrowsers(personalScope(ALICE))).browsers);
+});
+
+test("forgetting with no saved browsers answers cleanly", async () => {
+  const r = pairingCtx(
+    { actor: { p: ALICE }, body: { browserId: "chrome-0001" } },
+    { browserRelay: createRelayHub(), config: createMemoryConfigStore("org") },
+  );
+  await forget.handle(r.ctx);
+  assert.equal(r.out.status, 200);
 });

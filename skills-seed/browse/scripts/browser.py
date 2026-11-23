@@ -410,7 +410,7 @@ def connect():
         raise
     except Exception as e:
         clear_state()
-        die(f"The browser that was open has gone ({str(e)[:80]}). Run: browser.py open")
+        die(f"The browser that was open has gone ({str(e)[:400]}). Run: browser.py open")
 
 
 # ------------------------------------------------------------------- verbs
@@ -817,6 +817,9 @@ def main():
                     "Stopped means they pressed Stop: ask whether they want you back, and if so to press\n"
                     "Share this tab in the extension, then run: open\n"
                     "Unauthorized means this turn's access ended: they switched browsers or pressed Stop.\n"
+                    "Several browsers connected, or the chosen one not connected, means they have the extension in\n"
+                    "more than one browser: ask which one to use. They pick it in Keychain → Linked accounts →\n"
+                    "Browser, or press Share this tab in that browser. Then run: open\n"
                     "No tab is shared means their extension is an older version: ask them to download it\n"
                     "again from Keychain → Linked accounts → Browser, Remove the old one in chrome://extensions,\n"
                     "Load unpacked the new folder and delete the old folder, or to press Share this tab.\n"

@@ -147,10 +147,10 @@ test("keychain overview wires managed connector grants into account controls", (
 test("destructive controls settle duplicate attempts while a mutation is busy", () => {
   assert.match(connectorsSource, /\?disabled=\$\{keychainOperations\.mutationInFlight\}/);
   assert.match(connectorsSource, /connectorNotice = "Another keychain change is still in progress\."/);
-  assert.equal(connectorsSource.match(/const operation = beginKeychainMutation\(\)/g)?.length, 5);
+  assert.equal(connectorsSource.match(/const operation = beginKeychainMutation\(\)/g)?.length, 7);
   assert.equal(
     connectorsSource.match(/if \(keychainOperations\.finishMutation\(operation\)\) drawConnectors\(\)/g)?.length,
-    5,
+    7,
   );
 });
 
@@ -252,4 +252,19 @@ test("the disconnect dialog and the sign-in return notice name MCP servers by th
   const loaded = connectorsSource.slice(connectorsSource.indexOf("connectorProviders = Object.fromEntries("));
   assert.ok(loaded.indexOf("applyConnectorResult();") < loaded.indexOf("drawConnectors();"));
   assert.doesNotMatch(connectorsSource, /CONNECTOR_LABELS\[provider\]\?\.name \?\? provider/);
+});
+
+test("Disconnect Chrome asks first, then revokes the pairing through the web UI's own route", () => {
+  const panel = connectorsSource.slice(connectorsSource.indexOf("function disconnectChrome("));
+  const ask = panel.slice(0, panel.indexOf("async function performDisconnectChrome("));
+  assert.match(ask, /confirmation = \{/, "the button opens the confirmation, it does not revoke on its own");
+  assert.match(ask, /action: "Disconnect Chrome"/);
+  assert.match(ask, /beginKeychainMutation\(\)/, "one keychain change at a time");
+  assert.match(panel, /api\("\/api\/browser-relay\/disconnect", \{ method: "POST"/);
+  assert.match(
+    connectorsSource,
+    /isExtensionTab\(shown\.id\)\s*\?\s*html`<button\s+class="kc-text-action danger"/,
+    "offered on the Your Chrome tab whatever this core sees, since another core may hold the socket",
+  );
+  assert.match(connectorsSource, /data-confirm-key="disconnect:chrome"/, "focus returns to the button on cancel");
 });

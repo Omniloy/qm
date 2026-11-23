@@ -7,23 +7,45 @@ export interface RelaySocket {
   close(code?: number, reason?: string): void;
 }
 
-interface Pair {
-  extension?: RelaySocket;
-  cdp?: RelaySocket;
-  title?: string;
-  url?: string;
-  sharing?: boolean;
+export interface BridgeBrowser {
+  id: string;
+  name: string;
+  version?: string;
 }
 
+interface LiveBrowser extends BridgeBrowser {
+  sharing: boolean;
+  title?: string;
+  url?: string;
+}
+
+interface Extension extends BridgeBrowser {
+  socket: RelaySocket;
+  sharing: boolean;
+  title?: string;
+  url?: string;
+}
+
+interface Pair {
+  extensions: Map<string, Extension>;
+  cdp?: RelaySocket;
+  active?: string | null;
+  activeAt?: number;
+}
+
+const LEGACY_BROWSER_ID = "legacy";
 const TARGET_ID = "qm-extension-page";
 const SESSION_ID = "qm-extension-session";
 
 export interface RelayHub {
-  attach(principalId: string, side: RelaySide, socket: RelaySocket): void;
+  attach(principalId: string, side: RelaySide, socket: RelaySocket, browser?: BridgeBrowser): void;
   detach(principalId: string, side: RelaySide, socket: RelaySocket): void;
-  deliver(principalId: string, side: RelaySide, raw: string): void;
+  disconnect(principalId: string, reason: string): void;
+  deliver(principalId: string, side: RelaySide, raw: string, socket?: RelaySocket): void;
+  setActive(principalId: string, browserId: string | null | undefined, at: number): void;
   connected(principalId: string): { extension: boolean; cdp: boolean; sharing: boolean };
   describe(principalId: string): { title?: string; url?: string } | null;
+  browsers(principalId: string): { active: string | null | undefined; live: LiveBrowser[] };
 }
 
 function parseFrame<T extends object>(raw: string): T | null {
@@ -44,20 +66,20 @@ function refuse(socket: RelaySocket, id: number | undefined, message: string): v
   socket.send(JSON.stringify({ id, error: { code: -32000, message } }));
 }
 
-function handshake(pair: Pair, method: string, id: number, cdp: RelaySocket): boolean {
+function handshake(target: Extension | undefined, method: string, id: number, cdp: RelaySocket): boolean {
   if (method === "Browser.close" || method === "Browser.getVersion") {
     reply(cdp, id, method === "Browser.close" ? {} : { product: "Chrome/extension", protocolVersion: "1.3" });
     return true;
   }
-  if (!pair.sharing) return false;
+  if (!target?.sharing) return false;
   if (method === "Target.getTargets") {
     reply(cdp, id, {
       targetInfos: [
         {
           targetId: TARGET_ID,
           type: "page",
-          title: pair.title ?? "Your Chrome",
-          url: pair.url ?? "about:blank",
+          title: target.title ?? "Your Chrome",
+          url: target.url ?? "about:blank",
           attached: true,
           canAccessOpener: false,
         },
@@ -76,37 +98,115 @@ function handshake(pair: Pair, method: string, id: number, cdp: RelaySocket): bo
   return false;
 }
 
+function targetOf(pair: Pair): Extension | undefined {
+  if (typeof pair.active === "string") return pair.extensions.get(pair.active);
+  if (pair.active === undefined && pair.extensions.size === 1) return [...pair.extensions.values()][0];
+  return undefined;
+}
+
+function notConnectedReason(pair: Pair): string {
+  if (pair.active === null) {
+    return "no browser is chosen for the agent — the person picks one in Keychain → Linked accounts → Browser, or presses Share this tab in it";
+  }
+  if (pair.extensions.size > 1) {
+    const names = [...pair.extensions.values()].map((e) => e.name).join(", ");
+    return `several browsers are connected (${names}) and none is chosen — the person picks one in Keychain → Linked accounts → Browser, or presses Share this tab in the one to use`;
+  }
+  if (pair.extensions.size > 0) {
+    return "the browser chosen for the agent is not connected — it is closed, or its Browser Bridge extension is off; the person can open it or pick another in Keychain → Linked accounts → Browser";
+  }
+  return "your Chrome is not connected — Chrome is closed, or the Browser Bridge extension is off or not paired";
+}
+
 export interface RelayHubOptions {
   onShareChanged?(principalId: string, sharing: boolean): void;
+  onActiveChanged?(principalId: string, browserId: string, at: number): void;
 }
 
 export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
   const pairs = new Map<string, Pair>();
   const pairOf = (id: string): Pair => {
-    const found = pairs.get(id) ?? {};
+    const found = pairs.get(id) ?? { extensions: new Map() };
     pairs.set(id, found);
     return found;
   };
+  const prune = (principalId: string, pair: Pair): void => {
+    if (!pair.extensions.size && !pair.cdp && pair.active === undefined) pairs.delete(principalId);
+  };
+  const tellActive = (pair: Pair): void => {
+    const target = targetOf(pair);
+    for (const ext of pair.extensions.values()) {
+      ext.socket.send(JSON.stringify({ qm: "active", active: ext === target }));
+    }
+  };
+  const dropAgent = (pair: Pair, reason: string): void => {
+    pair.cdp?.close(1001, reason);
+    delete pair.cdp;
+  };
+  const choose = (pair: Pair, browserId: string | null | undefined): boolean => {
+    const before = targetOf(pair);
+    pair.active = browserId;
+    const after = targetOf(pair);
+    tellActive(pair);
+    if (before === after) return false;
+    dropAgent(pair, "the browser the agent uses changed");
+    return true;
+  };
+  const extensionBySocket = (pair: Pair, socket: RelaySocket | undefined): Extension | undefined => {
+    for (const ext of pair.extensions.values()) if (ext.socket === socket) return ext;
+    return undefined;
+  };
+
+  const detach = (principalId: string, side: RelaySide, socket: RelaySocket): void => {
+    const pair = pairs.get(principalId);
+    if (!pair) return;
+    if (side === "cdp") {
+      if (pair.cdp !== socket) return;
+      delete pair.cdp;
+      prune(principalId, pair);
+      return;
+    }
+    const ext = extensionBySocket(pair, socket);
+    if (!ext) return;
+    const wasTarget = targetOf(pair) === ext;
+    pair.extensions.delete(ext.id);
+    if (wasTarget) dropAgent(pair, "the extension disconnected");
+    tellActive(pair);
+    prune(principalId, pair);
+  };
 
   return {
-    attach(principalId, side, socket) {
+    attach(principalId, side, socket, browser) {
       const pair = pairOf(principalId);
-      pair[side]?.close(1000, "replaced by a newer connection");
-      pair[side] = socket;
-    },
-
-    detach(principalId, side, socket) {
-      const pair = pairs.get(principalId);
-      if (!pair || pair[side] !== socket) return;
-      delete pair[side];
-      if (side === "extension") {
-        pair.cdp?.close(1001, "the extension disconnected");
-        delete pair.cdp;
+      if (side === "cdp") {
+        pair.cdp?.close(1000, "replaced by a newer connection");
+        pair.cdp = socket;
+        return;
       }
-      if (!pair.extension && !pair.cdp) pairs.delete(principalId);
+      const id = browser?.id ?? LEGACY_BROWSER_ID;
+      pair.extensions.get(id)?.socket.close(1000, "replaced by a newer connection");
+      pair.extensions.set(id, {
+        id,
+        name: browser?.name ?? "Browser",
+        ...(browser?.version ? { version: browser.version } : {}),
+        socket,
+        sharing: false,
+      });
+      tellActive(pair);
     },
 
-    deliver(principalId, side, raw) {
+    detach,
+
+    disconnect(principalId, reason) {
+      const pair = pairs.get(principalId);
+      if (!pair) return;
+      for (const ext of pair.extensions.values()) {
+        detach(principalId, "extension", ext.socket);
+        ext.socket.close(1008, reason);
+      }
+    },
+
+    deliver(principalId, side, raw, socket) {
       const pair = pairs.get(principalId);
       if (!pair) return;
       if (side === "cdp") {
@@ -114,52 +214,85 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
         const frame = parseFrame<{ id?: number; method?: string }>(raw);
         if (!frame) return;
         if (typeof frame.id !== "number" || typeof frame.method !== "string") return;
-        if (handshake(pair, frame.method, frame.id, pair.cdp)) return;
-        if (!pair.extension) {
-          refuse(
-            pair.cdp,
-            frame.id,
-            "your Chrome is not connected — Chrome is closed, or the Browser Bridge extension is off or not paired",
-          );
+        const target = targetOf(pair);
+        if (handshake(target, frame.method, frame.id, pair.cdp)) return;
+        if (!target) {
+          refuse(pair.cdp, frame.id, notConnectedReason(pair));
           return;
         }
-        pair.extension.send(raw);
+        target.socket.send(raw);
         return;
       }
+      const ext = socket ? extensionBySocket(pair, socket) : targetOf(pair);
+      if (!ext) return;
       const frame = parseFrame<{ qm?: unknown; title?: string; url?: string; restored?: boolean }>(raw);
       if (!frame) return;
+      const isTarget = targetOf(pair) === ext;
       if (frame.qm === undefined) {
-        pair.cdp?.send(raw);
+        if (isTarget) pair.cdp?.send(raw);
         return;
       }
       if (frame.qm === "attached") {
-        pair.title = frame.title ?? pair.title;
-        pair.url = frame.url ?? pair.url;
-        pair.sharing = true;
-        if (!frame.restored) opts.onShareChanged?.(principalId, true);
+        ext.title = frame.title ?? ext.title;
+        ext.url = frame.url ?? ext.url;
+        ext.sharing = true;
+        if (frame.restored) return;
+        if (!isTarget) {
+          const at = Date.now();
+          pair.activeAt = at;
+          choose(pair, ext.id);
+          opts.onActiveChanged?.(principalId, ext.id, at);
+        }
+        opts.onShareChanged?.(principalId, true);
         return;
       }
       if (frame.qm === "released" || frame.qm === "detached") {
-        pair.sharing = false;
-        delete pair.title;
-        delete pair.url;
-        if (frame.qm === "detached") opts.onShareChanged?.(principalId, false);
+        ext.sharing = false;
+        delete ext.title;
+        delete ext.url;
+        if (frame.qm === "detached" && isTarget) opts.onShareChanged?.(principalId, false);
       }
+    },
+
+    setActive(principalId, browserId, at) {
+      const pair = pairOf(principalId);
+      if (at < (pair.activeAt ?? 0)) return;
+      pair.activeAt = at;
+      if (pair.active !== browserId) choose(pair, browserId);
+      prune(principalId, pair);
     },
 
     connected(principalId) {
       const pair = pairs.get(principalId);
+      const target = pair ? targetOf(pair) : undefined;
       return {
-        extension: Boolean(pair?.extension),
+        extension: Boolean(target),
         cdp: Boolean(pair?.cdp),
-        sharing: Boolean(pair?.extension && pair.sharing),
+        sharing: Boolean(target?.sharing),
       };
     },
 
     describe(principalId) {
       const pair = pairs.get(principalId);
-      if (!pair?.extension || !pair.sharing) return null;
-      return { ...(pair.title ? { title: pair.title } : {}), ...(pair.url ? { url: pair.url } : {}) };
+      const target = pair ? targetOf(pair) : undefined;
+      if (!target?.sharing) return null;
+      return { ...(target.title ? { title: target.title } : {}), ...(target.url ? { url: target.url } : {}) };
+    },
+
+    browsers(principalId) {
+      const pair = pairs.get(principalId);
+      if (!pair) return { active: undefined, live: [] };
+      return {
+        active: pair.active,
+        live: [...pair.extensions.values()].map((ext) => ({
+          id: ext.id,
+          name: ext.name,
+          ...(ext.version ? { version: ext.version } : {}),
+          sharing: ext.sharing,
+          ...(ext.title ? { title: ext.title } : {}),
+          ...(ext.url ? { url: ext.url } : {}),
+        })),
+      };
     },
   };
 }

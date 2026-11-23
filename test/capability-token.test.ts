@@ -186,6 +186,24 @@ test("a deployment claim round-trips and must be a non-empty string", async () =
   }
 });
 
+test("a pairing generation round-trips as a whole number and rejects anything else", async () => {
+  for (const pairingGeneration of [0, 7]) {
+    const minted = claims({ pairingGeneration });
+    assert.equal(
+      (await verifyCapabilityToken(await mintCapabilityToken(minted, SECRET), SECRET))?.pairingGeneration,
+      pairingGeneration,
+    );
+  }
+  for (const pairingGeneration of [-1, 1.5, "2", null]) {
+    const forged = claims({ pairingGeneration } as unknown as Partial<CapabilityClaims>);
+    assert.equal(
+      await verifyCapabilityToken(await mintCapabilityToken(forged, SECRET), SECRET),
+      null,
+      String(pairingGeneration),
+    );
+  }
+});
+
 test("session and run-attempt claims round-trip and reject malformed values", async () => {
   const bound = claims({ sessionId: "session", runAttempt: 2, runLeaseToken: "lease" });
   assert.deepEqual(await verifyCapabilityToken(await mintCapabilityToken(bound, SECRET), SECRET), {

@@ -107,6 +107,7 @@ import {
   type PersistedVoiceConfig,
   type PersistedBrowseMaxSteps,
   type PersistedBrowseModel,
+  type PersistedBrowserPairing,
   type PersistedBrowserProvider,
   type PersistedAutoFlaggerConfig,
   type PersistedTurnWallClock,
@@ -753,6 +754,19 @@ export function buildApp(
         })
         .catch(swallowAs("browser choice after Stop", undefined));
     },
+    onActiveChanged(principalId, browserId, at) {
+      auditLog.record({
+        at: Date.now(),
+        principalId,
+        action: "browser-relay.choose",
+        resource: "browser-relay",
+        scopeLabel: personalScope(principalId),
+        detail: `share in ${browserId}`,
+      });
+      void configStore
+        .setActiveBridgeBrowser(personalScope(principalId), browserId, at)
+        .catch(swallowAs("active browser after Share", undefined));
+    },
   });
   const harnessAuth = createHarnessAuthStore({
     backing: artifactMap("harness_credentials"),
@@ -817,6 +831,7 @@ export function buildApp(
     browseMaxSteps: artifactMap<PersistedBrowseMaxSteps>("browse_max_steps_configs"),
     browseModels: artifactMap<PersistedBrowseModel>("browse_model_configs"),
     browserProviders: artifactMap<PersistedBrowserProvider>("browser_provider_configs"),
+    browserPairings: artifactMap<PersistedBrowserPairing>("browser_relay_pairings"),
     autoFlaggerConfigs: artifactMap<PersistedAutoFlaggerConfig>("auto_flagger_configs"),
     turnWallClocks: artifactMap<PersistedTurnWallClock>("turn_wall_clock_configs"),
     appIdleStops: artifactMap<PersistedAppIdleStop>("app_idle_stop_configs"),

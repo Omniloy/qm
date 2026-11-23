@@ -25,6 +25,7 @@ import {
   browserSummary,
   browserTabs,
   connectDraft,
+  bridgeBrowserRows,
   extensionLabel,
   extensionNote,
   extensionState,
@@ -466,6 +467,7 @@ function extensionPanel(provider: BrowserProvider): TemplateResult {
         <span class="kc-state ${note.tone}">${label}</span>
         ${note.text}
       </p>
+      ${bridgeBrowserList(provider)}
       ${
         state.kind === "absent"
           ? ""
@@ -478,7 +480,7 @@ function extensionPanel(provider: BrowserProvider): TemplateResult {
               <p class="kc-browser-note">
                 Updating? Download and unzip it, then in <code>chrome://extensions</code> press
                 <strong>Remove</strong> on the old one, <strong>Load unpacked</strong> the new folder, and delete the
-                old folder.
+                old folder. Each download replaces your pairing, so the copy loaded now stops connecting.
               </p>`
       }
       ${
@@ -500,10 +502,98 @@ function extensionPanel(provider: BrowserProvider): TemplateResult {
               </ol>
               <p class="kc-browser-note">
                 The download carries a token that lets it connect as you — treat the unzipped folder like a password.
+                Each download replaces your pairing, so a copy loaded before stops connecting.
               </p>`
       }
     </div>
   `;
+}
+
+function bridgeBrowserList(provider: BrowserProvider): TemplateResult | string {
+  const rows = bridgeBrowserRows(provider.browsers ?? []);
+  if (!rows.length) return "";
+  const busy = keychainOperations.mutationInFlight;
+  return html`<ul class="kc-bridge-browsers" aria-label="Browsers with the Browser Bridge">
+    ${rows.map(
+      (row) =>
+        html`<li class="kc-bridge-browser">
+          <div class="kc-bridge-browser-text">
+            <strong>${row.name}</strong>
+            <span class="kc-state ${row.active ? "ok" : "neutral"}">${row.status}</span>
+          </div>
+          <div class="kc-bridge-browser-actions">
+            ${
+              row.canUse
+                ? html`<button
+                    class="btn"
+                    type="button"
+                    ?disabled=${busy}
+                    @click=${() => void chooseBridgeBrowser(row.id)}
+                  >
+                    Use this one
+                  </button>`
+                : html`<button
+                    class="kc-text-action"
+                    type="button"
+                    ?disabled=${busy}
+                    @click=${() => void chooseBridgeBrowser(null)}
+                  >
+                    Stop using
+                  </button>`
+            }
+            ${
+              row.canForget
+                ? html`<button
+                    class="kc-text-action"
+                    type="button"
+                    ?disabled=${busy}
+                    @click=${() => void forgetBridgeBrowser(row.id)}
+                  >
+                    Forget
+                  </button>`
+                : ""
+            }
+          </div>
+        </li>`,
+    )}
+  </ul>`;
+}
+
+async function updateBridgeBrowsers(path: string, browserId: string | null, done: string): Promise<void> {
+  const operation = beginKeychainMutation();
+  if (!operation) return;
+  connectorNotice = "";
+  drawConnectors();
+  try {
+    await api(path, { method: "POST", body: JSON.stringify({ browserId }) });
+    if (!keychainOperations.isCurrentEpoch(operation.epoch)) return;
+    connectorNotice = done;
+  } catch (e) {
+    if (!keychainOperations.isCurrentEpoch(operation.epoch)) return;
+    connectorNotice = errMessage(e, "Could not change your browsers.");
+  } finally {
+    if (keychainOperations.finishMutation(operation)) drawConnectors();
+  }
+  if (keychainOperations.isCurrentEpoch(operation.epoch)) await renderConnectors();
+}
+
+function bridgeBrowserName(id: string): string {
+  const extension = browserProviders.find((p) => p.id === "extension");
+  return extension?.browsers?.find((b) => b.id === id)?.name ?? "That browser";
+}
+
+async function chooseBridgeBrowser(browserId: string | null): Promise<void> {
+  await updateBridgeBrowsers(
+    "/api/browser-relay/active",
+    browserId,
+    browserId
+      ? `The agent now uses ${bridgeBrowserName(browserId)}.`
+      : "No browser is active: the agent will ask before using one.",
+  );
+}
+
+async function forgetBridgeBrowser(browserId: string): Promise<void> {
+  await updateBridgeBrowsers("/api/browser-relay/forget", browserId, `${bridgeBrowserName(browserId)} is forgotten.`);
 }
 
 function extensionDownload(label: string): TemplateResult {
@@ -652,9 +742,57 @@ function browserCard(): TemplateResult {
               </button>`
             : ""
         }
+        ${
+          isExtensionTab(shown.id)
+            ? html`<button
+                class="kc-text-action danger"
+                type="button"
+                data-confirm-key="disconnect:chrome"
+                ?disabled=${keychainOperations.mutationInFlight}
+                @click=${disconnectChrome}
+              >
+                Disconnect Chrome
+              </button>`
+            : ""
+        }
       </div>
     </article>
   `;
+}
+
+function disconnectChrome(): void {
+  confirmationOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  confirmation = {
+    title: "Disconnect your Chrome?",
+    body: "The agent loses your Chrome within a minute, and the extension's pairing stops working wherever it is installed. To use your Chrome again, download the extension and load it fresh.",
+    action: "Disconnect Chrome",
+    run: async () => {
+      const operation = beginKeychainMutation();
+      if (!operation) return;
+      confirmation = null;
+      confirmationOpener = null;
+      drawConnectors();
+      try {
+        await performDisconnectChrome(operation.epoch);
+      } finally {
+        if (keychainOperations.finishMutation(operation)) drawConnectors();
+      }
+    },
+  };
+  drawConnectors();
+}
+
+async function performDisconnectChrome(stateEpoch: number): Promise<void> {
+  connectorNotice = "";
+  try {
+    await api("/api/browser-relay/disconnect", { method: "POST", body: "{}" });
+    if (keychainOperations.isCurrentEpoch(stateEpoch))
+      connectorNotice = "Your Chrome is disconnected, and its pairing no longer works.";
+  } catch (e) {
+    if (keychainOperations.isCurrentEpoch(stateEpoch))
+      connectorNotice = errMessage(e, "Could not disconnect your Chrome.");
+  }
+  if (keychainOperations.isCurrentEpoch(stateEpoch)) await renderConnectors();
 }
 
 async function submitBrowserKey(): Promise<void> {
