@@ -188,9 +188,37 @@ export interface PersistedBrowserProvider {
   scopeId: ScopeId;
   providerId: string;
 }
+interface PersistedBridgeBrowser {
+  name: string;
+  version?: string;
+  lastSeenAt: number;
+}
+const MAX_BRIDGE_BROWSERS = 10;
 export interface PersistedBrowserPairing {
   scopeId: ScopeId;
   generation: number;
+  activeBrowser?: string | null;
+  activeBrowserAt?: number;
+  browsers?: Record<string, PersistedBridgeBrowser>;
+}
+interface BridgeBrowsers {
+  active: string | null | undefined;
+  at: number;
+  browsers: Record<string, PersistedBridgeBrowser>;
+}
+
+function bridgeBrowsersOf(row: PersistedBrowserPairing | null | undefined): BridgeBrowsers {
+  return { active: row?.activeBrowser, at: row?.activeBrowserAt ?? 0, browsers: row?.browsers ?? {} };
+}
+
+function keepRecent(
+  browsers: Record<string, PersistedBridgeBrowser>,
+  active: string | null | undefined,
+): Record<string, PersistedBridgeBrowser> {
+  const recent = Object.entries(browsers)
+    .sort(([, a], [, b]) => b.lastSeenAt - a.lastSeenAt)
+    .filter(([id], i) => id === active || i < MAX_BRIDGE_BROWSERS);
+  return Object.fromEntries(recent.slice(0, MAX_BRIDGE_BROWSERS + 1));
 }
 interface AutoFlaggerConfig {
   harnessId: string;
@@ -335,6 +363,10 @@ export interface ScopedConfigStore {
   getBrowserProviderDurable(id: ScopeId): Promise<string | null>;
   getBrowserPairingGenerationDurable(id: ScopeId): Promise<number>;
   bumpBrowserPairingGeneration(id: ScopeId): Promise<number>;
+  getBridgeBrowsers(id: ScopeId): Promise<BridgeBrowsers>;
+  noteBridgeBrowser(id: ScopeId, browserId: string, seen: { name: string; version?: string }): Promise<BridgeBrowsers>;
+  setActiveBridgeBrowser(id: ScopeId, browserId: string | null, at: number): Promise<BridgeBrowsers>;
+  forgetBridgeBrowser(id: ScopeId, browserId: string): Promise<BridgeBrowsers>;
   getAutoFlaggerConfig(): AutoFlaggerConfig | null;
   setAutoFlaggerConfig(config: AutoFlaggerConfig | null): void;
   getTurnWallClockSecDurable(id: ScopeId): Promise<number | null>;
@@ -1319,6 +1351,40 @@ export function createMemoryConfigStore(
       const bumped = await browserPairingStore.update(id, (row) => ({ ...row, generation: row.generation + 1 }));
       if (!bumped) throw new Error(`the browser pairing for ${id} vanished while it was being replaced`);
       return bumped.generation;
+    },
+    async getBridgeBrowsers(id) {
+      return bridgeBrowsersOf(await browserPairingStore.get(id));
+    },
+    async noteBridgeBrowser(id, browserId, seen) {
+      await browserPairingStore.putIfAbsent(id, { scopeId: id, generation: 0 });
+      const now = Date.now();
+      const row = await browserPairingStore.update(id, (current) => {
+        const first = current.activeBrowser === undefined;
+        const active = first ? browserId : current.activeBrowser;
+        const seenNow = { name: seen.name, ...(seen.version ? { version: seen.version } : {}), lastSeenAt: now };
+        return {
+          ...current,
+          ...(first ? { activeBrowser: browserId, activeBrowserAt: now } : {}),
+          browsers: keepRecent({ ...current.browsers, [browserId]: seenNow }, active),
+        };
+      });
+      return bridgeBrowsersOf(row);
+    },
+    async setActiveBridgeBrowser(id, browserId, at) {
+      await browserPairingStore.putIfAbsent(id, { scopeId: id, generation: 0 });
+      const row = await browserPairingStore.update(id, (current) =>
+        at < (current.activeBrowserAt ?? 0) ? current : { ...current, activeBrowser: browserId, activeBrowserAt: at },
+      );
+      return bridgeBrowsersOf(row);
+    },
+    async forgetBridgeBrowser(id, browserId) {
+      const row = await browserPairingStore.update(id, (current) => {
+        const browsers = { ...current.browsers };
+        delete browsers[browserId];
+        if (current.activeBrowser !== browserId) return { ...current, browsers };
+        return { ...current, browsers, activeBrowser: null, activeBrowserAt: Date.now() };
+      });
+      return bridgeBrowsersOf(row);
     },
     getAutoFlaggerConfig: () => autoFlaggerConfig,
     setAutoFlaggerConfig(config) {

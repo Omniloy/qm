@@ -4,13 +4,23 @@ import { createRelayHub, type RelaySocket } from "../src/browser-relay/relay.ts"
 
 const PERSON = "someone@example.com";
 
-function fake(): RelaySocket & { sent: string[]; closed: Array<{ code?: number; reason?: string }> } {
+function fake(): RelaySocket & {
+  sent: string[];
+  told: boolean[];
+  closed: Array<{ code?: number; reason?: string }>;
+} {
   const sent: string[] = [];
+  const told: boolean[] = [];
   const closed: Array<{ code?: number; reason?: string }> = [];
   return {
     sent,
+    told,
     closed,
-    send: (data) => void sent.push(data),
+    send: (data) => {
+      const frame = JSON.parse(data) as { qm?: string; active?: boolean };
+      if (frame.qm === "active") told.push(frame.active === true);
+      else sent.push(data);
+    },
     close: (code, reason) => void closed.push({ ...(code ? { code } : {}), ...(reason ? { reason } : {}) }),
   };
 }
@@ -328,4 +338,161 @@ test("only real commands cross from the agent to the extension", () => {
   hub.deliver(PERSON, "cdp", JSON.stringify({ method: "Page.enable" }));
 
   assert.deepEqual(ext.sent, [], "a control frame or an id-less message from the agent is dropped");
+});
+
+const CHROME = { id: "chrome-0001", name: "Google Chrome · macOS" };
+const DIA = { id: "dia-00000001", name: "Dia · macOS" };
+
+test("two browsers stay connected side by side instead of knocking each other off", () => {
+  const hub = createRelayHub();
+  const chrome = fake();
+  const dia = fake();
+  hub.attach(PERSON, "extension", chrome, CHROME);
+  hub.attach(PERSON, "extension", dia, DIA);
+  hub.setActive(PERSON, CHROME.id, Date.now());
+  const cdp = fake();
+  hub.attach(PERSON, "cdp", cdp);
+
+  hub.deliver(PERSON, "cdp", JSON.stringify({ id: 7, method: "Runtime.evaluate", params: { expression: "1" } }));
+
+  assert.deepEqual(chrome.closed, []);
+  assert.deepEqual(dia.closed, []);
+  assert.equal(chrome.sent.length, 1, "the chosen browser gets the command");
+  assert.equal(dia.sent.length, 0, "the other one gets nothing");
+  assert.equal(chrome.told.at(-1), true);
+  assert.equal(dia.told.at(-1), false);
+});
+
+test("a browser reconnecting replaces only its own old socket", () => {
+  const hub = createRelayHub();
+  const chrome = fake();
+  const dia = fake();
+  const chromeAgain = fake();
+  hub.attach(PERSON, "extension", chrome, CHROME);
+  hub.attach(PERSON, "extension", dia, DIA);
+  hub.attach(PERSON, "extension", chromeAgain, CHROME);
+
+  assert.equal(chrome.closed.length, 1);
+  assert.deepEqual(dia.closed, []);
+  assert.deepEqual(
+    hub.browsers(PERSON).live.map((b) => b.id),
+    [CHROME.id, DIA.id],
+  );
+});
+
+test("with two browsers and none chosen, the agent is told to ask which one", () => {
+  const hub = createRelayHub();
+  hub.attach(PERSON, "extension", fake(), CHROME);
+  hub.attach(PERSON, "extension", fake(), DIA);
+  const cdp = fake();
+  hub.attach(PERSON, "cdp", cdp);
+
+  hub.deliver(PERSON, "cdp", JSON.stringify({ id: 1, method: "Runtime.evaluate", params: {} }));
+
+  const message = (parse(cdp.sent[0]!).error as { message: string }).message;
+  assert.match(message, /several browsers are connected \(Google Chrome · macOS, Dia · macOS\)/);
+});
+
+test("with a single browser and nothing chosen, that browser is used", () => {
+  const hub = createRelayHub();
+  const chrome = fake();
+  hub.attach(PERSON, "extension", chrome, CHROME);
+  hub.attach(PERSON, "cdp", fake());
+
+  hub.deliver(PERSON, "cdp", JSON.stringify({ id: 1, method: "Runtime.evaluate", params: {} }));
+
+  assert.equal(chrome.sent.length, 1);
+});
+
+test("turning every browser off refuses the agent with the reason", () => {
+  const hub = createRelayHub();
+  hub.attach(PERSON, "extension", fake(), CHROME);
+  hub.setActive(PERSON, null, Date.now());
+  const cdp = fake();
+  hub.attach(PERSON, "cdp", cdp);
+
+  hub.deliver(PERSON, "cdp", JSON.stringify({ id: 1, method: "Runtime.evaluate", params: {} }));
+
+  assert.match((parse(cdp.sent[0]!).error as { message: string }).message, /no browser is chosen for the agent/);
+});
+
+test("Share this tab in the other browser makes it the active one and drops the agent's old connection", () => {
+  const chosen: string[] = [];
+  const hub = createRelayHub({ onActiveChanged: (_p, id) => void chosen.push(id) });
+  const chrome = fake();
+  const dia = fake();
+  hub.attach(PERSON, "extension", chrome, CHROME);
+  hub.attach(PERSON, "extension", dia, DIA);
+  hub.setActive(PERSON, CHROME.id, Date.now());
+  const cdp = fake();
+  hub.attach(PERSON, "cdp", cdp);
+
+  hub.deliver(PERSON, "extension", JSON.stringify({ qm: "attached", title: "LangSmith" }), dia);
+
+  assert.deepEqual(chosen, [DIA.id]);
+  assert.equal(cdp.closed.length, 1, "tab ids from the old browser cannot leak into the new one");
+  assert.equal(dia.told.at(-1), true);
+  assert.equal(chrome.told.at(-1), false);
+  assert.deepEqual(hub.describe(PERSON), { title: "LangSmith" });
+});
+
+test("the status describes only the active browser, never a stale share from another", () => {
+  const hub = createRelayHub();
+  const chrome = fake();
+  const dia = fake();
+  hub.attach(PERSON, "extension", chrome, CHROME);
+  hub.attach(PERSON, "extension", dia, DIA);
+  hub.setActive(PERSON, CHROME.id, Date.now());
+  hub.deliver(PERSON, "extension", JSON.stringify({ qm: "attached", title: "LangSmith", restored: true }), dia);
+
+  assert.equal(hub.describe(PERSON), null);
+  assert.deepEqual(hub.connected(PERSON), { extension: true, cdp: false, sharing: false });
+});
+
+test("Stop in a browser the agent does not use leaves the person's browser choice alone", () => {
+  const changes: boolean[] = [];
+  const hub = createRelayHub({ onShareChanged: (_p, sharing) => void changes.push(sharing) });
+  const chrome = fake();
+  const dia = fake();
+  hub.attach(PERSON, "extension", chrome, CHROME);
+  hub.attach(PERSON, "extension", dia, DIA);
+  hub.setActive(PERSON, CHROME.id, Date.now());
+
+  hub.deliver(PERSON, "extension", JSON.stringify({ qm: "detached" }), dia);
+
+  assert.deepEqual(changes, []);
+});
+
+test("an agent's replies come only from the browser it is using", () => {
+  const hub = createRelayHub();
+  const chrome = fake();
+  const dia = fake();
+  hub.attach(PERSON, "extension", chrome, CHROME);
+  hub.attach(PERSON, "extension", dia, DIA);
+  hub.setActive(PERSON, CHROME.id, Date.now());
+  const cdp = fake();
+  hub.attach(PERSON, "cdp", cdp);
+
+  hub.deliver(PERSON, "extension", JSON.stringify({ id: 3, result: { from: "dia" } }), dia);
+  hub.deliver(PERSON, "extension", JSON.stringify({ id: 3, result: { from: "chrome" } }), chrome);
+
+  assert.deepEqual(
+    cdp.sent.map((s) => (parse(s).result as { from: string }).from),
+    ["chrome"],
+  );
+});
+
+test("the browser the agent uses reconnecting keeps the agent's connection", () => {
+  const hub = createRelayHub();
+  hub.attach(PERSON, "extension", fake(), CHROME);
+  hub.setActive(PERSON, CHROME.id, Date.now());
+  const cdp = fake();
+  hub.attach(PERSON, "cdp", cdp);
+  const again = fake();
+
+  hub.attach(PERSON, "extension", again, CHROME);
+  hub.deliver(PERSON, "cdp", JSON.stringify({ id: 4, method: "Runtime.evaluate", params: {} }));
+
+  assert.deepEqual(cdp.closed, [], "a worker restart mid-task does not end the task");
+  assert.equal(again.sent.length, 1);
 });

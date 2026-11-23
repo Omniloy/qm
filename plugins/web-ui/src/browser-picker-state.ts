@@ -12,18 +12,37 @@ export interface BrowserProvider {
   connected?: boolean;
   sharing?: boolean;
   sharedTabTitle?: string;
+  browsers?: BridgeBrowser[];
 }
 
-export type ExtensionState = { kind: "absent" } | { kind: "idle" } | { kind: "sharing"; tab: string };
+export interface BridgeBrowser {
+  id: string;
+  name: string;
+  version?: string;
+  connected: boolean;
+  active: boolean;
+  sharing: boolean;
+  title?: string;
+  lastSeenAt?: number;
+}
+
+export type ExtensionState =
+  { kind: "absent" } | { kind: "unchosen" } | { kind: "offline" } | { kind: "idle" } | { kind: "sharing"; tab: string };
 
 export function extensionState(provider: BrowserProvider): ExtensionState {
-  if (!provider.connected) return { kind: "absent" };
+  if (!provider.connected) {
+    const browsers = provider.browsers ?? [];
+    if (browsers.some((b) => b.active)) return { kind: "offline" };
+    return browsers.some((b) => b.connected) ? { kind: "unchosen" } : { kind: "absent" };
+  }
   if (!provider.sharing) return { kind: "idle" };
   return { kind: "sharing", tab: provider.sharedTabTitle ?? "a tab" };
 }
 
 export function extensionLabel(state: ExtensionState): string {
   if (state.kind === "sharing") return "In use";
+  if (state.kind === "unchosen") return "No browser chosen";
+  if (state.kind === "offline") return "Offline";
   return state.kind === "idle" ? "Ready" : "Not connected";
 }
 
@@ -35,7 +54,50 @@ export function extensionNote(state: ExtensionState): { tone: "ok" | "warning" |
       text: "Connected — the agent opens a tab when it needs one, and can use any tab you have open.",
     };
   }
+  if (state.kind === "offline") {
+    return { tone: "warning", text: "The browser the agent uses is offline. Open it, or pick another below." };
+  }
+  if (state.kind === "unchosen") {
+    return { tone: "warning", text: "Your browsers are connected, but none is active for the agent. Pick one below." };
+  }
   return { tone: "neutral", text: "Install the extension, then paste the pairing token into it." };
+}
+
+export interface BridgeBrowserRow {
+  id: string;
+  name: string;
+  status: string;
+  active: boolean;
+  canUse: boolean;
+  canForget: boolean;
+}
+
+function ago(at: number, now: number): string {
+  const minutes = Math.max(0, Math.round((now - at) / 60_000));
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours} h ago`;
+  return `${Math.round(hours / 24)} days ago`;
+}
+
+function presenceOf(b: BridgeBrowser, now: number): string {
+  if (b.connected) return b.sharing && b.title ? `Connected · working in ${b.title}` : "Connected";
+  return b.lastSeenAt ? `Offline · last seen ${ago(b.lastSeenAt, now)}` : "Offline";
+}
+
+export function bridgeBrowserRows(browsers: readonly BridgeBrowser[], now = Date.now()): BridgeBrowserRow[] {
+  return browsers.map((b) => {
+    const presence = presenceOf(b, now);
+    return {
+      id: b.id,
+      name: b.version ? `${b.name} · ${b.version}` : b.name,
+      status: `${b.active ? "Active" : "Inactive"} · ${presence}`,
+      active: b.active,
+      canUse: !b.active,
+      canForget: !b.connected,
+    };
+  });
 }
 
 export interface BrowserTab {

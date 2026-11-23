@@ -221,6 +221,7 @@ function install(opts: {
     runtime: {
       id: "test",
       getURL: (p: string) => `chrome-extension://test/${p}`,
+      getManifest: () => ({ version: "0.2.3" }),
       onMessage: on("message"),
       onStartup: on("startup"),
       onInstalled: on("installed"),
@@ -1494,4 +1495,30 @@ test("a blank token field never carries the old token to a different QM", async 
   assert.equal(h.store.token, "");
   assert.equal(h.sockets[0]!.readyState, 3, "the old connection is dropped");
   assert.ok(!h.sockets.some((s) => s.url.includes("other.example")), "nothing is sent to the new address");
+});
+
+test("each browser connects with its own lasting identity, so two browsers never look like one", async () => {
+  const h = install({ store: { ...PAIRED }, tabs: DASHBOARD });
+  await bootWorker();
+  await booted(h);
+  const first = new URL(h.sockets.at(-1)!.url);
+  const id = first.searchParams.get("browser") ?? "";
+  assert.match(id, /^[A-Za-z0-9-]{8,64}$/);
+  assert.equal(h.store.browserId, id, "kept, so a restart is the same browser");
+  assert.equal(first.searchParams.get("v"), "0.2.3");
+  assert.ok(first.searchParams.get("name"));
+
+  h.sockets.at(-1)!.close();
+  assert.ok(await until(() => h.sockets.length > 1, 4000), "it reconnects");
+  assert.equal(new URL(h.sockets.at(-1)!.url).searchParams.get("browser"), id);
+});
+
+test("the popup says when QM uses another browser", async () => {
+  const h = install({ store: { ...PAIRED }, tabs: DASHBOARD });
+  await bootWorker();
+  await booted(h);
+  h.sockets.at(-1)!.onmessage?.({ data: JSON.stringify({ qm: "active", active: false }) });
+  assert.equal((await h.message({ type: "status" })).activeHere, false);
+  h.sockets.at(-1)!.onmessage?.({ data: JSON.stringify({ qm: "active", active: true }) });
+  assert.equal((await h.message({ type: "status" })).activeHere, true);
 });
