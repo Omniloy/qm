@@ -152,6 +152,13 @@ class WS:
             pass
 
 
+def bridge_reason(reason):
+    if "chrome-extension:// URL of different extension" in str(reason):
+        return ("this tab shows a file, usually a PDF, in Chrome's own viewer, which cannot be read or "
+                "clicked. Save it into the workspace instead: run tabs to see its URL, then download <that URL>")
+    return reason
+
+
 class CDP:
     """A CDP connection, optionally scoped to one page.
 
@@ -179,7 +186,7 @@ class CDP:
             msg = json.loads(self.ws.recv())
             if msg.get("id") == mid:
                 if "error" in msg:
-                    raise RuntimeError(f"{method}: {msg['error'].get('message', msg['error'])}")
+                    raise RuntimeError(f"{method}: {bridge_reason(msg['error'].get('message', msg['error']))}")
                 return msg.get("result", {})
             if msg.get("method"):
                 self.events.append(msg)
@@ -473,10 +480,20 @@ developer or inspection tools/i.test(t);
   // An all-but-empty document on a real http(s) page is the other tell: a
   // challenge that refused to render. about:blank is legitimately empty.
   const real = location.protocol.startsWith('http');
-  return JSON.stringify({blocked: hit || (real && t.length < 40),
+  const shown = document.querySelectorAll('a[href], button, input, img, svg, canvas, [role]').length;
+  return JSON.stringify({hit, empty: real && t.length < 40 && shown < 3,
                          chars: t.length, sample: t.slice(0, 160)});
 })()
 """.replace("|\n", "|")
+
+
+def settled_block(c, seconds=6):
+    end = time.time() + seconds
+    while True:
+        verdict = json.loads(c.eval(BLOCK_JS))
+        if verdict.get("hit") or not verdict.get("empty") or time.time() >= end:
+            return verdict
+        time.sleep(0.5)
 
 
 def wait_ready(c, seconds=25):
@@ -1059,13 +1076,13 @@ def main():
             time.sleep(0.4)
             info = json.loads(c.eval(
                 "JSON.stringify({url: location.href, title: document.title})"))
-            blocked = json.loads(c.eval(BLOCK_JS))
+            blocked = settled_block(c)
             print(f"{info['title'][:80]}\n{info['url']}")
             if nav.get("errorText"):
                 print(f"\nThe page did not load: {nav['errorText']} ({url}). The browser is fine; "
                       "the site refused or could not be reached. Tell the person what failed and "
                       "ask them to fix it or give you access, then try again.")
-            if blocked.get("blocked"):
+            if blocked.get("hit") or blocked.get("empty"):
                 print("\nThis page looks like an automation block rather than the real "
                       "content. Nothing is wrong with the browser — the site refuses "
                       "automated visits. Tell the person, and try a hosted browser for "

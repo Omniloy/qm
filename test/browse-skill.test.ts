@@ -430,3 +430,14 @@ test("a download named by the server lands through the same workspace check, in 
   assert.match(dl, /name = urllib\.parse\.unquote[\s\S]*?outdir, path = safe_output_path\(a\.dir, name\)/);
   assert.doesNotMatch(dl, /path = os\.path\.join\(outdir/);
 });
+
+test("a single-page app is given time to render before it is called a bot wall", () => {
+  assert.match(CLI, /def settled_block\(c, seconds=6\)/);
+  assert.match(CLI, /blocked = settled_block\(c\)/);
+  assert.match(CLI, /empty: real && t\.length < 40 && shown < 3/, "a page with controls on it is not empty");
+});
+
+test("a PDF in Chrome's viewer is explained, with the download that saves it", () => {
+  assert.match(CLI, /def bridge_reason[\s\S]*?chrome-extension:\/\/ URL of different extension/);
+  assert.match(CLI, /then download <that URL>/);
+});
