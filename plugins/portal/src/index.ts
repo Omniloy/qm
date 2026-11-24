@@ -1714,12 +1714,41 @@ async function trustedAuth(req: IncomingMessage, res: ServerResponse, url: URL):
 
 async function sessionCheck(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
   const returnTo = sanitizeReturnTo(url.searchParams.get("returnTo"), PUBLIC_URL, APPS_DOMAIN);
-  const session = renewSessionCookie(req, res) ?? currentSession(req);
+  const framed = req.headers["sec-fetch-dest"] === "iframe";
+  const session =
+    renewSessionCookie(req, res) ??
+    currentSession(req) ??
+    (framed
+      ? openSession(
+          readCookie(req.headers.cookie, FRAME_SESSION_COOKIE),
+          sessionKey,
+          Date.now(),
+          ORG,
+          SESSION_MAX_TTL_S,
+        )
+      : null);
   const state = session && !session.anon ? await ialabsSessionState(req, session) : "gone";
   if (state === "unavailable") return identityUnavailable(req, res);
-  if (state === "gone") setSession(res, clearedSessionCookies());
-  const location = state === "ok" ? returnTo : `/auth/login?returnTo=${encodeURIComponent(returnTo)}`;
-  res.writeHead(302, { location, "cache-control": "no-store" });
+  if (state === "ok") {
+    res.writeHead(302, { location: returnTo, "cache-control": "no-store" });
+    return void res.end();
+  }
+  if (session && state === "gone") setSession(res, clearedSessionCookies());
+  if (framed) {
+    return sendHtml(
+      res,
+      401,
+      signInErrorHtml(
+        "Your session could not be confirmed inside this embedded app. Open it in its own tab to sign in.",
+      ),
+    );
+  }
+  const loginPath =
+    trustedEntry && url.searchParams.get("login") === "/auth/trusted/login" ? "/auth/trusted/login" : "/auth/login";
+  res.writeHead(302, {
+    location: `${loginPath}?returnTo=${encodeURIComponent(returnTo)}`,
+    "cache-control": "no-store",
+  });
   res.end();
 }
 

@@ -866,8 +866,10 @@ export async function proxyDeploymentSubdomain(ctx: BaseCtx): Promise<boolean> {
   if (!sub && !isPublic) {
     const qs = url.searchParams.toString();
     const returnTo = `https://${rawHost}${safePathname}?${qs ? `${qs}&` : ""}dpl_signin=1`;
-    const loginPath = recheck ? "/auth/session/check" : (deps.deployAppsLoginPath ?? "/auth/login");
-    const signIn = `${loginUrl}${loginPath}?returnTo=${encodeURIComponent(returnTo)}`;
+    const loginPath = deps.deployAppsLoginPath ?? "/auth/login";
+    const signIn = recheck
+      ? `${loginUrl}/auth/session/check?login=${encodeURIComponent(loginPath)}&returnTo=${encodeURIComponent(returnTo)}`
+      : `${loginUrl}${loginPath}?returnTo=${encodeURIComponent(returnTo)}`;
     if (!wantsHtml) {
       sendJson(res, 401, { error: "unauthorized", message: "sign-in required", loginUrl: signIn });
     } else if (signInAttempted) {

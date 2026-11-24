@@ -288,18 +288,32 @@ does, server side:
      token that fails only on timing claims or names an unknown key is kept as "not verified
      yet": the rotated refresh token is stored and nothing is revoked.
    - 429, 503, and other error responses keep the session and back off (`Retry-After`,
-     else 60 s) before the next attempt.
+     else 60 s) before the next attempt. This favours availability: while MS-AUTH keeps
+     failing this way, a session stays alive up to the MS-AUTH session cap (7 days by
+     default), even for someone MS-AUTH would have cut off. Availability comes first: while MS-AUTH keeps
+     failing this way, people keep access until the MS-AUTH session cap (at most 7 days by
+     default), even if they were removed in the meantime.
    - A timeout, a lost response, or a 500, 502, or 504 is ambiguous, since MS-AUTH may have
      rotated the token anyway. The session is kept and the lease is left to expire, so the
      old token is not sent again within the lease. After the lease expires the old token is
      sent again; if MS-AUTH had in fact committed that rotation, it treats the second use as
      reuse and ends the session, and the person signs in again. Closing that gap needs a
-     reuse grace window in MS-AUTH.
+     reuse grace window in MS-AUTH. While the lease is held (about a minute), an app on the
+     apps domain whose session is due for a recheck may show "sign-in failed" until the
+     lease ends. While such a lease is held (about 60 s), an app on the
+     apps domain whose session is due for a recheck can briefly show its "sign-in failed"
+     page; reloading after the lease clears it.
    - Deployed apps on the apps domain accept the session only while its record exists and
      was checked within two refresh intervals, or is in its outage backoff. Otherwise they
-     send the viewer through `/auth/session/check?returnTo=…`, which refreshes the session if
-     due and returns to the app (the same `returnTo` rules as sign-in), or goes to sign-in
-     when the session is gone.
+     send the viewer through `/auth/session/check?login=…&returnTo=…` on the same portal
+     address as `DEPLOY_APPS_LOGIN_URL`. It refreshes the session if due and returns to the
+     app (the same `returnTo` rules as sign-in), or goes to the configured sign-in path
+     (`DEPLOY_APPS_LOGIN_PATH`) when the session is gone. Inside an embedded app it reads the
+     frame cookie and, when it cannot confirm the session, answers 401 instead of starting
+     a sign-in the frame could not finish. Core builds that address from `DEPLOY_APPS_LOGIN_URL` (or
+     `PUBLIC_WEB_URL`), exactly as it builds the sign-in address, so that URL must be the
+     portal. In an embedded app the check reads the frame cookie and, when the session
+     cannot be confirmed, answers 401 instead of sending the frame to sign-in.
 5. A page load near the MS-AUTH session cap (7 days by default in MS-AUTH) signs in again,
    usually silently through Entra SSO, so API calls never hit the cap. The window is
    `IALABS_REAUTH_BEFORE_S`, capped at half the session's lifetime so a fresh sign-in never

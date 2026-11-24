@@ -485,7 +485,7 @@ test("subdomain ingress admits an ialabs session only while its record is recent
     assert.equal(stale.status, 401, "a record not checked for two refresh intervals is not admitted");
     const loginUrl = String((JSON.parse(stale.body) as { loginUrl?: unknown }).loginUrl);
     assert.ok(
-      loginUrl.startsWith(`${LOGIN_URL}/auth/session/check?returnTo=`),
+      loginUrl.startsWith(`${LOGIN_URL}/auth/session/check?login=%2Fauth%2Flogin&returnTo=`),
       "a stale ialabs session is rechecked by the portal instead of signing in again",
     );
     const claim = await portalSessions.claim(sid, 60_000);

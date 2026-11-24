@@ -570,6 +570,7 @@ test("the session check refreshes a due session and returns to a sanitized addre
   assert.equal(cookieValue(signedOut, "portal_session"), "");
   const anonymous = await check("/chat", "");
   assert.equal(anonymous.headers.get("location"), "/auth/login?returnTo=%2Fchat");
+  assert.equal(cookieValue(anonymous, "portal_session"), null);
 });
 
 test("the session check is open to app-only sessions", async () => {
@@ -592,4 +593,57 @@ test("the session check is open to app-only sessions", async () => {
   });
   assert.equal(response.status, 302);
   assert.equal(response.headers.get("location"), "/chat");
+});
+
+test("the session check reads the frame cookie for embedded apps and never bounces a frame to sign-in", async () => {
+  const { cookie } = seeded({ checkedAtMs: Date.now() });
+  const frameCookie = cookie.replace(/^portal_session=/, "portal_session_x=");
+  const framed = (sessionCookie: string) =>
+    fetch(`${base}/auth/session/check?returnTo=%2Fchat`, {
+      headers: { cookie: sessionCookie, accept: "text/html", "sec-fetch-dest": "iframe" },
+      redirect: "manual",
+    });
+  const embedded = await framed(frameCookie);
+  assert.equal(embedded.status, 302);
+  assert.equal(embedded.headers.get("location"), "/chat");
+  const empty = await framed("");
+  assert.equal(empty.status, 401);
+  assert.equal(empty.headers.get("location"), null);
+  assert.equal(cookieValue(empty, "portal_session"), null);
+  const removed = seeded();
+  records.delete(removed.sid);
+  const gone = await framed(removed.cookie.replace(/^portal_session=/, "portal_session_x="));
+  assert.equal(gone.status, 401);
+  assert.equal(cookieValue(gone, "portal_session_x"), "");
+});
+
+test("the session check reads the frame cookie in an embedded app and never bounces a frame to sign-in", async () => {
+  const { sid, cookie } = seeded();
+  const old = records.get(sid)!.refreshToken;
+  const frameCookie = cookie.replace(/^portal_session=/, "portal_session_x=");
+  const check = (sessionCookie: string) =>
+    fetch(`${base}/auth/session/check?returnTo=%2Fchat`, {
+      headers: { cookie: sessionCookie, accept: "text/html", "sec-fetch-dest": "iframe" },
+      redirect: "manual",
+    });
+  const framed = await check(frameCookie);
+  assert.equal(framed.status, 302);
+  assert.equal(framed.headers.get("location"), "/chat");
+  assert.equal(refreshesSent.filter((token) => token === old).length, 1);
+  const unreadable = await check("");
+  assert.equal(unreadable.status, 401);
+  assert.equal(cookieValue(unreadable, "portal_session"), null);
+  assert.equal(unreadable.headers.get("location"), null);
+  const gone = seeded();
+  records.delete(gone.sid);
+  const goneFramed = await check(gone.cookie.replace(/^portal_session=/, "portal_session_x="));
+  assert.equal(goneFramed.status, 401);
+  assert.equal(cookieValue(goneFramed, "portal_session"), "");
+});
+
+test("the session check only honours a known sign-in path", async () => {
+  const response = await fetch(`${base}/auth/session/check?login=https%3A%2F%2Fevil.example&returnTo=%2Fchat`, {
+    redirect: "manual",
+  });
+  assert.equal(response.headers.get("location"), "/auth/login?returnTo=%2Fchat");
 });
