@@ -40,7 +40,10 @@ test("memory portal sessions lease one refresh at a time and settle by lease", a
   now += 31_000;
   const afterCrash = await store.claim(SID, 60_000, 30_000);
   assert.equal(afterCrash.state, "claimed");
-  assert.equal(await store.settle(SID, afterCrash.state === "claimed" ? afterCrash.lease : "", { kind: "revoked" }), true);
+  assert.equal(
+    await store.settle(SID, afterCrash.state === "claimed" ? afterCrash.lease : "", { kind: "revoked" }),
+    true,
+  );
   assert.equal((await store.claim(SID, 60_000, 30_000)).state, "missing");
   assert.equal(await store.active(SID), false);
 });
@@ -92,7 +95,12 @@ async function call(base: string, action: string, body: unknown, sign = true) {
 test("portal-session routes need a signed caller and validate their input", async (t) => {
   const srv = start();
   t.after(() => srv.close());
-  const grant = { sessionId: SID, principal: "ana@laberit.com", refreshToken: "rt-1", expiresAtMs: Date.now() + 60_000 };
+  const grant = {
+    sessionId: SID,
+    principal: "ana@laberit.com",
+    refreshToken: "rt-1",
+    expiresAtMs: Date.now() + 60_000,
+  };
   assert.equal((await call(srv.base, "", grant, false)).status, 401);
   assert.equal((await call(srv.base, "", { ...grant, sessionId: "short" })).status, 400);
   assert.equal((await call(srv.base, "", { ...grant, expiresAtMs: Date.now() - 1 })).status, 400);
@@ -104,7 +112,12 @@ test("portal-session routes need a signed caller and validate their input", asyn
 test("portal-session routes start, claim, settle, and end a session", async (t) => {
   const srv = start();
   t.after(() => srv.close());
-  const grant = { sessionId: SID, principal: "ana@laberit.com", refreshToken: "rt-1", expiresAtMs: Date.now() + 60_000 };
+  const grant = {
+    sessionId: SID,
+    principal: "ana@laberit.com",
+    refreshToken: "rt-1",
+    expiresAtMs: Date.now() + 60_000,
+  };
   assert.deepEqual((await call(srv.base, "", grant)).json, { ok: true });
   const claimed = await call(srv.base, "/claim", { sessionId: SID, staleAfterMs: 0, leaseMs: 30_000 });
   assert.equal(claimed.json.state, "claimed");
@@ -122,5 +135,8 @@ test("portal-session routes start, claim, settle, and end a session", async (t) 
   });
   assert.deepEqual(settled.json, { settled: true });
   assert.deepEqual((await call(srv.base, "/end", { sessionId: SID })).json, { refreshToken: "rt-2" });
-  assert.equal((await call(srv.base, "/claim", { sessionId: SID, staleAfterMs: 0, leaseMs: 30_000 })).json.state, "missing");
+  assert.equal(
+    (await call(srv.base, "/claim", { sessionId: SID, staleAfterMs: 0, leaseMs: 30_000 })).json.state,
+    "missing",
+  );
 });

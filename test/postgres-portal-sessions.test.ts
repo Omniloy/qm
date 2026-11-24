@@ -32,7 +32,10 @@ test(
       assert.equal(winner.state === "claimed" && winner.refreshToken, "rt-secret-1");
       const lease = winner.state === "claimed" ? winner.lease : "";
       assert.equal(await b.settle(sid, "other-lease", { kind: "revoked" }), false);
-      assert.equal(await b.settle(sid, lease, { kind: "rotated", refreshToken: "rt-secret-2", expiresAtMs: day() }), true);
+      assert.equal(
+        await b.settle(sid, lease, { kind: "rotated", refreshToken: "rt-secret-2", expiresAtMs: day() }),
+        true,
+      );
       assert.equal((await a.claim(sid, 60_000, 30_000)).state, "current");
       const next = await a.claim(sid, 0, 30_000);
       assert.equal(next.state === "claimed" && next.refreshToken, "rt-secret-2");
@@ -43,7 +46,10 @@ test(
       );
       const recovered = await b.claim(sid, 0, 30_000);
       assert.equal(recovered.state, "claimed");
-      assert.equal(await b.settle(sid, recovered.state === "claimed" ? recovered.lease : "", { kind: "revoked" }), true);
+      assert.equal(
+        await b.settle(sid, recovered.state === "claimed" ? recovered.lease : "", { kind: "revoked" }),
+        true,
+      );
       assert.equal(await a.active(sid), false);
       assert.equal((await a.claim(sid, 0, 30_000)).state, "missing");
       await a.start(sid, { principal: "ana@laberit.com", refreshToken: "rt-secret-3", expiresAtMs: day() });

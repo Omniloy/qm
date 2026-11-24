@@ -138,13 +138,13 @@ export interface IalabsConfig {
   redirectUri: string;
 }
 
-export interface IalabsTokens {
+interface IalabsTokens {
   accessToken: string;
   refreshToken: string;
   refreshExpiresAtMs: number;
 }
 
-export interface IalabsIdentity {
+interface IalabsIdentity {
   sub: string;
   email: string;
   name: string;

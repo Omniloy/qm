@@ -2,21 +2,19 @@ import { createHash, randomBytes } from "node:crypto";
 import { decryptSecret, encryptSecret, type SecretKey } from "../connectors/connector-client-store.ts";
 import { createPgPool } from "../persistence/pg-pool.ts";
 
-export interface PortalSessionGrant {
+interface PortalSessionGrant {
   principal: string;
   refreshToken: string;
   expiresAtMs: number;
 }
 
-export type PortalSessionClaim =
+type PortalSessionClaim =
   | { state: "missing" }
   | { state: "current" | "busy"; principal: string; expiresAtMs: number }
   | { state: "claimed"; principal: string; expiresAtMs: number; lease: string; refreshToken: string };
 
-export type PortalSessionOutcome =
-  | { kind: "rotated"; refreshToken: string; expiresAtMs: number }
-  | { kind: "revoked" }
-  | { kind: "unavailable" };
+type PortalSessionOutcome =
+  { kind: "rotated"; refreshToken: string; expiresAtMs: number } | { kind: "revoked" } | { kind: "unavailable" };
 
 export interface PortalSessionStore {
   readonly durable: boolean;
@@ -151,25 +149,25 @@ export function createPostgresPortalSessions(connectionString: string, key: Secr
       return { state: found.fresh === true ? "current" : "busy", ...view(found) };
     },
     async settle(sessionId, lease, outcome) {
-      const result =
-        outcome.kind === "revoked"
-          ? await pg.query("DELETE FROM portal_sessions WHERE session_hash = $1 AND lease_id = $2", [
-              keyOf(sessionId),
-              lease,
-            ])
-          : outcome.kind === "rotated"
-            ? await pg.query(
-                `UPDATE portal_sessions SET refresh_token_enc = $3, expires_at = to_timestamp($4 / 1000.0),
-                   checked_at = now(), lease_id = NULL, lease_until = NULL
-                 WHERE session_hash = $1 AND lease_id = $2`,
-                [keyOf(sessionId), lease, encryptSecret(outcome.refreshToken, key), outcome.expiresAtMs],
-              )
-            : await pg.query(
-                `UPDATE portal_sessions SET lease_id = NULL, lease_until = NULL
-                 WHERE session_hash = $1 AND lease_id = $2`,
-                [keyOf(sessionId), lease],
-              );
-      return result.rowCount === 1;
+      const params = [keyOf(sessionId), lease];
+      if (outcome.kind === "revoked") {
+        const deleted = await pg.query("DELETE FROM portal_sessions WHERE session_hash = $1 AND lease_id = $2", params);
+        return deleted.rowCount === 1;
+      }
+      if (outcome.kind === "unavailable") {
+        const released = await pg.query(
+          "UPDATE portal_sessions SET lease_id = NULL, lease_until = NULL WHERE session_hash = $1 AND lease_id = $2",
+          params,
+        );
+        return released.rowCount === 1;
+      }
+      const rotated = await pg.query(
+        `UPDATE portal_sessions SET refresh_token_enc = $3, expires_at = to_timestamp($4 / 1000.0),
+           checked_at = now(), lease_id = NULL, lease_until = NULL
+         WHERE session_hash = $1 AND lease_id = $2`,
+        [...params, encryptSecret(outcome.refreshToken, key), outcome.expiresAtMs],
+      );
+      return rotated.rowCount === 1;
     },
     async active(sessionId) {
       const result = await pg.query("SELECT 1 FROM portal_sessions WHERE session_hash = $1 AND expires_at > now()", [

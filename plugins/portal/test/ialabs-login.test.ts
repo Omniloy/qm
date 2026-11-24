@@ -236,7 +236,8 @@ test("sign-in goes to the MS-AUTH authorize endpoint with PKCE and no OIDC param
   assert.equal(location.searchParams.get("code_challenge_method"), "S256");
   assert.ok(location.searchParams.get("code_challenge"));
   assert.ok(location.searchParams.get("state"));
-  for (const absent of ["scope", "nonce", "response_type", "prompt"]) assert.equal(location.searchParams.get(absent), null);
+  for (const absent of ["scope", "nonce", "response_type", "prompt"])
+    assert.equal(location.searchParams.get(absent), null);
 });
 
 test("a verified MS-AUTH token signs in its email and stores the refresh token in core", async () => {
@@ -278,10 +279,9 @@ for (const [label, override, ttl] of [
 }
 
 test("an access_denied callback shows the sign-in error page", async () => {
-  const response = await fetch(
-    `${base}/auth/callback?error=access_denied&error_description=no%20access&state=x`,
-    { redirect: "manual" },
-  );
+  const response = await fetch(`${base}/auth/callback?error=access_denied&error_description=no%20access&state=x`, {
+    redirect: "manual",
+  });
   assert.equal(response.status, 400);
   assert.match(await response.text(), /access_denied/);
 });

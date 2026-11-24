@@ -48,12 +48,7 @@ import {
   verifyIalabsAccessToken,
   type IalabsConfig,
 } from "./oidc.ts";
-import {
-  createIalabsSessions,
-  newSessionId,
-  type IalabsSessions,
-  type IalabsSessionState,
-} from "./ialabs-session.ts";
+import { createIalabsSessions, newSessionId, type IalabsSessions, type IalabsSessionState } from "./ialabs-session.ts";
 import {
   proxyToSurface,
   proxyToDeployment,
@@ -278,10 +273,7 @@ const ialabsSessions = IALABS
     })
   : null;
 
-async function ialabsSessionState(
-  req: IncomingMessage,
-  session: SessionClaims | null,
-): Promise<IalabsSessionState> {
+async function ialabsSessionState(req: IncomingMessage, session: SessionClaims | null): Promise<IalabsSessionState> {
   if (!ialabsSessions || !session?.sid || session.anon) return "ok";
   return ialabsSessions.state(session.sid, session.sub, req.method === "GET" && wantsHtml(req));
 }

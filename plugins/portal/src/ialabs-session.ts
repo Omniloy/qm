@@ -15,7 +15,7 @@ type Claim =
 
 type Known = { principal: string; expiresAtMs: number };
 
-export interface IalabsSessionOptions {
+interface IalabsSessionOptions {
   core: string;
   signingSecret: string | undefined;
   ialabs: IalabsConfig;
@@ -29,7 +29,7 @@ const CORE_TIMEOUT_MS = 4_000;
 const LEASE_MS = 30_000;
 const VERIFIED_TTL_MS = 60_000;
 
-export class CoreUnavailableError extends Error {}
+class CoreUnavailableError extends Error {}
 
 export function newSessionId(): string {
   return randomBytes(32).toString("base64url");

@@ -132,7 +132,7 @@ function grantExpiry(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value > now && value <= now + MAX_PORTAL_SESSION_MS;
 }
 
-function refreshToken(value: unknown): value is string {
+function validToken(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 4096;
 }
 
@@ -150,7 +150,7 @@ async function portalSession(ctx: ApiCtx): Promise<void> {
       typeof b.principal !== "string" ||
       !b.principal ||
       b.principal.length > 320 ||
-      !refreshToken(b.refreshToken) ||
+      !validToken(b.refreshToken) ||
       !grantExpiry(b.expiresAtMs)
     )
       return sendJson(res, 400, { error: "invalid_grant" });
@@ -166,7 +166,7 @@ async function portalSession(ctx: ApiCtx): Promise<void> {
     if (typeof b.lease !== "string" || !b.lease || b.lease.length > 64)
       return sendJson(res, 400, { error: "invalid_lease" });
     if (b.outcome === "rotated") {
-      if (!refreshToken(b.refreshToken) || !grantExpiry(b.expiresAtMs))
+      if (!validToken(b.refreshToken) || !grantExpiry(b.expiresAtMs))
         return sendJson(res, 400, { error: "invalid_grant" });
       return sendJson(res, 200, {
         settled: await store.settle(sessionId, b.lease, {
@@ -176,8 +176,9 @@ async function portalSession(ctx: ApiCtx): Promise<void> {
         }),
       });
     }
-    if (b.outcome !== "revoked" && b.outcome !== "unavailable") return sendJson(res, 400, { error: "invalid_outcome" });
-    return sendJson(res, 200, { settled: await store.settle(sessionId, b.lease, { kind: b.outcome }) });
+    const kind = b.outcome === "revoked" || b.outcome === "unavailable" ? b.outcome : null;
+    if (!kind) return sendJson(res, 400, { error: "invalid_outcome" });
+    return sendJson(res, 200, { settled: await store.settle(sessionId, b.lease, { kind }) });
   }
   return sendJson(res, 200, { refreshToken: await store.end(sessionId) });
 }
