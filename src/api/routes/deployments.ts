@@ -855,7 +855,8 @@ export async function proxyDeploymentSubdomain(ctx: BaseCtx): Promise<boolean> {
   if (!session && sessionSecret && embedAncestors.length) {
     session = portalSessionFrom(req.headers.cookie, FRAME_SESSION_COOKIE, sessionSecret);
   }
-  if (session?.sid !== undefined && !(await deps.portalSessions?.active(session.sid))) session = null;
+  const recheck = session?.sid !== undefined && !(await deps.portalSessions?.active(session.sid));
+  if (recheck) session = null;
   const sub = session?.sub;
   if (embedAncestors.length) res.setHeader("content-security-policy", frameAncestorsDirective(embedAncestors));
   if (!isPublic && (!sessionSecret || !loginUrl)) {
@@ -865,7 +866,8 @@ export async function proxyDeploymentSubdomain(ctx: BaseCtx): Promise<boolean> {
   if (!sub && !isPublic) {
     const qs = url.searchParams.toString();
     const returnTo = `https://${rawHost}${safePathname}?${qs ? `${qs}&` : ""}dpl_signin=1`;
-    const signIn = `${loginUrl}${deps.deployAppsLoginPath ?? "/auth/login"}?returnTo=${encodeURIComponent(returnTo)}`;
+    const loginPath = recheck ? "/auth/session/check" : (deps.deployAppsLoginPath ?? "/auth/login");
+    const signIn = `${loginUrl}${loginPath}?returnTo=${encodeURIComponent(returnTo)}`;
     if (!wantsHtml) {
       sendJson(res, 401, { error: "unauthorized", message: "sign-in required", loginUrl: signIn });
     } else if (signInAttempted) {

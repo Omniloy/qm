@@ -1059,7 +1059,13 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   const brokerPath = brokerRouteFor(method, pathname);
   const reauthentication =
     (method === "GET" &&
-      ["/auth/login", "/auth/callback", "/auth/trusted/login", "/auth/trusted/callback"].includes(pathname)) ||
+      [
+        "/auth/login",
+        "/auth/callback",
+        "/auth/trusted/login",
+        "/auth/trusted/callback",
+        "/auth/session/check",
+      ].includes(pathname)) ||
     (method === "POST" && pathname === "/auth/logout") ||
     brokerPath !== null;
   if (currentSession(req)?.appOnly && !reauthentication) {
@@ -1082,6 +1088,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   if (pathname === "/auth/login" && method === "GET") return authLogin(req, res, url);
+  if (pathname === "/auth/session/check" && method === "GET") return sessionCheck(req, res, url);
   if (pathname === "/auth/callback" && method === "GET") return authCallback(req, res, url);
   if (pathname.startsWith("/auth/trusted/") && method === "GET") return trustedAuth(req, res, url);
   if (pathname === "/auth/desktop" || pathname === "/auth/desktop/redeem") return desktopLogin(req, res, url);
@@ -1703,6 +1710,17 @@ async function trustedAuth(req: IncomingMessage, res: ServerResponse, url: URL):
       signInErrorHtml("Trusted sign-in failed. Please start again from your provider.", "/auth/trusted/login"),
     );
   }
+}
+
+async function sessionCheck(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  const returnTo = sanitizeReturnTo(url.searchParams.get("returnTo"), PUBLIC_URL, APPS_DOMAIN);
+  const session = renewSessionCookie(req, res) ?? currentSession(req);
+  const state = session && !session.anon ? await ialabsSessionState(req, session) : "gone";
+  if (state === "unavailable") return identityUnavailable(req, res);
+  if (state === "gone") setSession(res, clearedSessionCookies());
+  const location = state === "ok" ? returnTo : `/auth/login?returnTo=${encodeURIComponent(returnTo)}`;
+  res.writeHead(302, { location, "cache-control": "no-store" });
+  res.end();
 }
 
 function setAuthenticatedSession(res: ServerResponse, sub: string, name = "", appOnly = false, sid = ""): void {

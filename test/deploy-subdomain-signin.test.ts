@@ -481,7 +481,27 @@ test("subdomain ingress admits an ialabs session only while its record is recent
     });
     assert.equal((await get()).status, 200, "a recently checked record admits the session");
     now += 1_900_000;
-    assert.equal((await get()).status, 401, "a record not checked for two refresh intervals sends it back to sign-in");
+    const stale = await get();
+    assert.equal(stale.status, 401, "a record not checked for two refresh intervals is not admitted");
+    const loginUrl = String((JSON.parse(stale.body) as { loginUrl?: unknown }).loginUrl);
+    assert.ok(
+      loginUrl.startsWith(`${LOGIN_URL}/auth/session/check?returnTo=`),
+      "a stale ialabs session is rechecked by the portal instead of signing in again",
+    );
+    const claim = await portalSessions.claim(sid, 60_000);
+    assert.equal(claim.state, "claimed");
+    await portalSessions.settle(sid, claim.state === "claimed" ? claim.lease : "", {
+      kind: "unavailable",
+      retryAfterMs: 60_000,
+    });
+    assert.equal((await get()).status, 200, "a session in its MS-AUTH outage backoff stays admitted");
+    now += 61_000;
+    assert.equal((await get()).status, 401);
+    const signedOut = await httpGet(port, "/data", {
+      Host: "sidsite.apps.example.com",
+      Accept: "application/json",
+    });
+    assert.ok(String(JSON.parse(signedOut.body).loginUrl).startsWith(`${LOGIN_URL}/auth/login?`));
   } finally {
     server.close();
     upstream.close();

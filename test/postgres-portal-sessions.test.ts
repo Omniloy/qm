@@ -61,6 +61,11 @@ test(
         true,
       );
       assert.equal((await b.claim(sid, 30_000)).state, "current");
+      await pool.query(
+        "UPDATE portal_sessions SET checked_at = now() - interval '200 seconds' WHERE session_hash = $1",
+        [hash],
+      );
+      assert.equal(await a.active(sid), true);
       await age(121);
       assert.equal(await a.active(sid), false);
       await pool.query(

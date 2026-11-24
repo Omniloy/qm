@@ -34,6 +34,8 @@ let refreshStatus = 200;
 let refreshDelayMs = 0;
 let settleFailures = 0;
 let retryAfter = "";
+let tokenKid = "ialabs-key";
+let exchangeStatus = 200;
 const refreshesSent: string[] = [];
 const revoked: string[] = [];
 const exchanges: unknown[] = [];
@@ -48,7 +50,7 @@ async function accessToken(): Promise<string> {
     oid: "entra-oid",
     ...claims,
   })
-    .setProtectedHeader({ alg: "RS256", kid: "ialabs-key", typ: "at+jwt" })
+    .setProtectedHeader({ alg: "RS256", kid: tokenKid, typ: "at+jwt" })
     .setIssuer(issuer)
     .setAudience((claims.aud as string[] | undefined) ?? ["qm"])
     .setSubject("user:7")
@@ -104,6 +106,7 @@ const upstream = createServer((req, res) => {
     if (path === "/auth/.well-known/jwks.json") return send(200, { keys: [jwk] });
     if (path === "/auth/api/tokens") {
       exchanges.push(await readBody(req));
+      if (exchangeStatus !== 200) return send(exchangeStatus, { code: "invalid_grant", detail: "unknown code" });
       return send(200, {
         access_token: await accessToken(),
         token_type: "Bearer",
@@ -445,7 +448,7 @@ function instance(timeoutMs?: number) {
   });
 }
 
-test("a refresh whose outcome is unknown holds the lease and never replays the token", async () => {
+test("a refresh whose outcome is unknown holds the lease and does not replay the token within it", async () => {
   const { sid } = seeded();
   const old = records.get(sid)!.refreshToken;
   refreshDelayMs = 400;
@@ -496,4 +499,97 @@ test("sign-out revokes the MS-AUTH session and deletes the stored token", async 
   assert.equal(response.status, 200);
   assert.equal(records.has(sid), false);
   assert.ok(revoked.includes(token));
+});
+
+test("a 502 from MS-AUTH on refresh is ambiguous and holds the lease", async () => {
+  const { sid } = seeded();
+  const old = records.get(sid)!.refreshToken;
+  refreshStatus = 502;
+  try {
+    assert.equal(await instance().state(sid, "ana.garcia@laberit.com", false, 0), "ok");
+  } finally {
+    refreshStatus = 200;
+  }
+  assert.ok(records.get(sid)!.lease);
+  assert.equal(records.get(sid)!.retryAtMs, undefined);
+  assert.equal(records.get(sid)!.refreshToken, old);
+  assert.equal(await instance().state(sid, "ana.garcia@laberit.com", false, 0), "ok");
+  assert.equal(refreshesSent.filter((token) => token === old).length, 1);
+});
+
+for (const [label, change] of [
+  ["a clock-skewed token", () => (claims = { nbf: Math.floor(Date.now() / 1000) + 300 })],
+  ["a token signed with an unknown key", () => (tokenKid = "rotated-key")],
+] as const) {
+  test(`a refreshed ${label} keeps the session and stores the rotated token`, async () => {
+    const { sid, cookie } = seeded();
+    const old = records.get(sid)!.refreshToken;
+    const revokedBefore = revoked.length;
+    change();
+    try {
+      assert.equal((await api(cookie)).status, 200);
+    } finally {
+      claims = {};
+      tokenKid = "ialabs-key";
+    }
+    assert.ok(records.has(sid));
+    assert.notEqual(records.get(sid)!.refreshToken, old);
+    assert.equal(revoked.length, revokedBefore);
+  });
+}
+
+test("a refused code exchange shows MS-AUTH's error code", async () => {
+  exchangeStatus = 400;
+  try {
+    const response = await signIn();
+    assert.equal(response.status, 400);
+    assert.match(await response.text(), /invalid_grant/);
+  } finally {
+    exchangeStatus = 200;
+  }
+});
+
+test("the session check refreshes a due session and returns to a sanitized address", async () => {
+  const { sid, cookie } = seeded();
+  const old = records.get(sid)!.refreshToken;
+  const check = (returnTo: string, sessionCookie = cookie) =>
+    fetch(`${base}/auth/session/check?returnTo=${encodeURIComponent(returnTo)}`, {
+      headers: { cookie: sessionCookie, accept: "text/html" },
+      redirect: "manual",
+    });
+  const response = await check("/chat?x=1");
+  assert.equal(response.status, 302);
+  assert.equal(response.headers.get("location"), "/chat?x=1");
+  assert.equal(refreshesSent.filter((token) => token === old).length, 1);
+  assert.notEqual(records.get(sid)!.refreshToken, old);
+  assert.equal((await check("https://evil.example/steal")).headers.get("location"), "/");
+  const gone = seeded();
+  records.delete(gone.sid);
+  const signedOut = await check("/chat", gone.cookie);
+  assert.equal(signedOut.headers.get("location"), "/auth/login?returnTo=%2Fchat");
+  assert.equal(cookieValue(signedOut, "portal_session"), "");
+  const anonymous = await check("/chat", "");
+  assert.equal(anonymous.headers.get("location"), "/auth/login?returnTo=%2Fchat");
+});
+
+test("the session check is open to app-only sessions", async () => {
+  const sid = randomBytes(32).toString("base64url");
+  records.set(sid, {
+    principal: "guest@laberit.com",
+    refreshToken: "rt-guest",
+    expiresAtMs: sessionCapMs,
+    refreshAfterMs: 900_000,
+    checkedAtMs: Date.now(),
+  });
+  const now = Math.floor(Date.now() / 1000);
+  const value = seal(
+    { k: "session", sub: "guest@laberit.com", org: "acme", appOnly: true, auth: now, iat: now, exp: now + 3600, sid },
+    sessionKey,
+  );
+  const response = await fetch(`${base}/auth/session/check?returnTo=%2Fchat`, {
+    headers: { cookie: `portal_session=${encodeURIComponent(value)}`, accept: "text/html" },
+    redirect: "manual",
+  });
+  assert.equal(response.status, 302);
+  assert.equal(response.headers.get("location"), "/chat");
 });

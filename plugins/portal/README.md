@@ -283,14 +283,23 @@ does, server side:
    Core leases the refresh, so one tab or instance sends the token and the others wait briefly
    for its result: MS-AUTH revokes the whole session when a refresh token is reused.
    - 401 or 403 ends the portal session: page loads go to `/auth/login`, API calls get
-     `401 {error: "sign in", loginUrl}`. So does a refreshed token that fails verification.
-   - Any other error response keeps the session and backs off (`Retry-After`, else 60 s)
-     before the next attempt.
-   - A timeout or lost response is ambiguous, since MS-AUTH may have rotated the token
-     anyway. The session is kept and the lease is left to expire, so the old token is not
-     sent again meanwhile.
+     `401 {error: "sign in", loginUrl}`. So does a refreshed access token that definitely
+     does not match (issuer, audience, `pty`, `client_id`, email, signature, algorithm). A
+     token that fails only on timing claims or names an unknown key is kept as "not verified
+     yet": the rotated refresh token is stored and nothing is revoked.
+   - 429, 503, and other error responses keep the session and back off (`Retry-After`,
+     else 60 s) before the next attempt.
+   - A timeout, a lost response, or a 500, 502, or 504 is ambiguous, since MS-AUTH may have
+     rotated the token anyway. The session is kept and the lease is left to expire, so the
+     old token is not sent again within the lease. After the lease expires the old token is
+     sent again; if MS-AUTH had in fact committed that rotation, it treats the second use as
+     reuse and ends the session, and the person signs in again. Closing that gap needs a
+     reuse grace window in MS-AUTH.
    - Deployed apps on the apps domain accept the session only while its record exists and
-     was checked within two refresh intervals; otherwise they send the viewer to sign in.
+     was checked within two refresh intervals, or is in its outage backoff. Otherwise they
+     send the viewer through `/auth/session/check?returnTo=…`, which refreshes the session if
+     due and returns to the app (the same `returnTo` rules as sign-in), or goes to sign-in
+     when the session is gone.
 5. A page load near the MS-AUTH session cap (7 days by default in MS-AUTH) signs in again,
    usually silently through Entra SSO, so API calls never hit the cap. The window is
    `IALABS_REAUTH_BEFORE_S`, capped at half the session's lifetime so a fresh sign-in never

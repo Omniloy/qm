@@ -59,7 +59,9 @@ test("memory portal sessions back off after an unavailable refresh", async () =>
   const claim = await store.claim(SID, 30_000);
   assert.equal(await store.settle(SID, leaseOf(claim), { kind: "unavailable", retryAfterMs: 60_000 }), true);
   assert.equal((await store.claim(SID, 30_000)).state, "current");
-  now += 59_000;
+  now += 30_000;
+  assert.equal(await store.active(SID), true, "a session in its outage backoff stays active even when stale");
+  now += 29_000;
   assert.equal((await store.claim(SID, 30_000)).state, "current");
   now += 2_000;
   assert.equal((await store.claim(SID, 30_000)).state, "claimed");

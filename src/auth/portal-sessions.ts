@@ -83,7 +83,8 @@ export function createMemoryPortalSessions(now: () => number = Date.now): Portal
     },
     async active(sessionId) {
       const record = live(sessionId);
-      return record !== undefined && record.checkedAtMs > now() - 2 * record.refreshAfterMs;
+      if (!record) return false;
+      return record.checkedAtMs > now() - 2 * record.refreshAfterMs || (record.retryAtMs ?? 0) > now();
     },
     async end(sessionId) {
       const record = live(sessionId);
@@ -191,7 +192,8 @@ export function createPostgresPortalSessions(connectionString: string, key: Secr
     async active(sessionId) {
       const result = await pg.query(
         `SELECT 1 FROM portal_sessions WHERE session_hash = $1 AND expires_at > now()
-           AND checked_at > now() - 2 * refresh_after_ms * interval '1 millisecond'`,
+           AND (checked_at > now() - 2 * refresh_after_ms * interval '1 millisecond'
+             OR (retry_at IS NOT NULL AND retry_at > now()))`,
         [keyOf(sessionId)],
       );
       return result.rows.length === 1;

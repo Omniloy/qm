@@ -168,15 +168,20 @@ export class IalabsInvalidTokenError extends Error {}
 export const IALABS_TIMEOUT_MS = 25_000;
 const IALABS_RETRY_AFTER_MS = 60_000;
 const UNSENT_CODES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"]);
-const INVALID_TOKEN_ERRORS = [
-  errors.JWTClaimValidationFailed,
+const AMBIGUOUS_STATUSES = new Set([500, 502, 504]);
+const TIMING_CLAIMS = new Set(["nbf", "iat", "exp"]);
+const MISMATCH_ERRORS = [
   errors.JWSSignatureVerificationFailed,
   errors.JWSInvalid,
   errors.JWTInvalid,
   errors.JOSEAlgNotAllowed,
   errors.JOSENotSupported,
-  errors.JWKSNoMatchingKey,
 ];
+
+function definiteMismatch(error: unknown): boolean {
+  if (error instanceof errors.JWTClaimValidationFailed) return !TIMING_CLAIMS.has(error.claim);
+  return MISMATCH_ERRORS.some((kind) => error instanceof kind);
+}
 
 function retryAfterMs(header: string | null): number {
   const seconds = Number(header);
@@ -216,18 +221,12 @@ async function postIalabs(
       throw new IalabsUnavailableError(`ialabs auth unreachable: ${code}`, IALABS_RETRY_AFTER_MS);
     throw error;
   }
-  if (r.status === 401 || r.status === 403) {
-    const json = await readJson(r, "ialabs auth").catch(() => ({}) as Record<string, unknown>);
-    throw new IalabsRejectedError(`ialabs auth refused: ${String(json.code ?? `HTTP ${r.status}`)}`);
-  }
-  if (!r.ok) {
-    await r.body?.cancel().catch(() => undefined);
-    throw new IalabsUnavailableError(
-      `ialabs auth unavailable: HTTP ${r.status}`,
-      retryAfterMs(r.headers.get("retry-after")),
-    );
-  }
-  return r;
+  if (r.ok) return r;
+  const json = await readJson(r, "ialabs auth").catch(() => ({}) as Record<string, unknown>);
+  const detail = typeof json.code === "string" && json.code ? json.code : `HTTP ${r.status}`;
+  if (r.status === 401 || r.status === 403) throw new IalabsRejectedError(`ialabs auth refused: ${detail}`);
+  if (AMBIGUOUS_STATUSES.has(r.status)) throw new Error(`ialabs auth failed mid-request: ${detail}`);
+  throw new IalabsUnavailableError(`ialabs auth declined: ${detail}`, retryAfterMs(r.headers.get("retry-after")));
 }
 
 async function ialabsTokens(r: Response): Promise<IalabsTokens> {
@@ -284,8 +283,7 @@ export async function verifyIalabsAccessToken(
       clockTolerance: 5,
     }));
   } catch (error) {
-    if (INVALID_TOKEN_ERRORS.some((kind) => error instanceof kind))
-      throw new IalabsInvalidTokenError((error as Error).message);
+    if (definiteMismatch(error)) throw new IalabsInvalidTokenError((error as Error).message);
     throw error;
   }
   if (payload.pty !== "user") throw new IalabsInvalidTokenError("the token was not issued to a person");
