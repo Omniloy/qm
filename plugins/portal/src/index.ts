@@ -42,7 +42,18 @@ import {
   type OidcConfig,
   type PrincipalRule,
   hostedDomainHint,
+  buildIalabsAuthorizeUrl,
+  exchangeIalabsCode,
+  revokeIalabsToken,
+  verifyIalabsAccessToken,
+  type IalabsConfig,
 } from "./oidc.ts";
+import {
+  createIalabsSessions,
+  newSessionId,
+  type IalabsSessions,
+  type IalabsSessionState,
+} from "./ialabs-session.ts";
 import {
   proxyToSurface,
   proxyToDeployment,
@@ -179,6 +190,19 @@ const OIDC: OidcConfig = {
   hostedDomain: hostedDomainHint(process.env.OIDC_ISSUER ?? "https://slack.com", process.env.OIDC_ALLOWED_EMAIL_DOMAIN),
 };
 const OIDC_JWKS_CONFIGURED = Boolean(process.env.OIDC_JWKS_URI?.trim());
+const PORTAL_IDP = process.env.PORTAL_IDP?.trim() || "oidc";
+const IALABS: IalabsConfig | null =
+  PORTAL_IDP === "ialabs"
+    ? {
+        baseUrl: (process.env.IALABS_AUTH_URL ?? "").trim().replace(/\/$/, ""),
+        issuer: process.env.IALABS_AUTH_ISSUER?.trim() ?? "",
+        audience: process.env.IALABS_AUTH_AUDIENCE?.trim() || "qm",
+        clientId: OIDC.clientId,
+        redirectUri: OIDC.redirectUri,
+      }
+    : null;
+const IALABS_REFRESH_AFTER_S = Number(process.env.IALABS_REFRESH_AFTER_S ?? 900);
+const IALABS_REAUTH_BEFORE_S = Number(process.env.IALABS_REAUTH_BEFORE_S ?? 86400);
 
 const AUTH_BROKER_UPSTREAM = (process.env.AUTH_BROKER_UPSTREAM ?? "").replace(/\/$/, "");
 const AUTH_BROKER_PREFIX = (process.env.AUTH_BROKER_PREFIX ?? "/idp").replace(/\/$/, "");
@@ -244,6 +268,23 @@ const trustedEntry = trustedOidc
     )
   : null;
 const IMPERSONATE_TTL_S = Number(process.env.PORTAL_IMPERSONATE_TTL_S ?? 3600);
+const ialabsSessions = IALABS
+  ? createIalabsSessions({
+      core: CORE,
+      signingSecret: CORE_SIGNING_SECRET,
+      ialabs: IALABS,
+      refreshAfterMs: IALABS_REFRESH_AFTER_S * 1000,
+      reauthBeforeMs: IALABS_REAUTH_BEFORE_S * 1000,
+    })
+  : null;
+
+async function ialabsSessionState(
+  req: IncomingMessage,
+  session: SessionClaims | null,
+): Promise<IalabsSessionState> {
+  if (!ialabsSessions || !session?.sid || session.anon) return "ok";
+  return ialabsSessions.state(session.sid, session.sub, req.method === "GET" && wantsHtml(req));
+}
 
 const TMP_TTL_S = 600;
 const LOCAL_LOGOUT_COOKIE = "portal_local_logout";
@@ -877,6 +918,16 @@ function sessionCookieSet(value: string, sub: string): string[] {
   return [...sessionCookieHeaders(value, attrs), ...loginProviderCookie(sub)];
 }
 
+function clearedSessionCookies(): string[] {
+  return [
+    clearCookie("portal_session", "/", SECURE_COOKIES, COOKIE_DOMAIN),
+    clearCookie(FRAME_SESSION_COOKIE, "/", SECURE_COOKIES, COOKIE_DOMAIN),
+    ...(COOKIE_DOMAIN
+      ? [clearCookie("portal_session", "/", SECURE_COOKIES), clearCookie(FRAME_SESSION_COOKIE, "/", SECURE_COOKIES)]
+      : []),
+  ];
+}
+
 function setSession(res: ServerResponse, headers: string[]): void {
   res.setHeader("set-cookie", headers);
 }
@@ -1070,13 +1121,14 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       }
     }
     const signedOutSession = currentSession(req);
+    if (ialabsSessions && signedOutSession?.sid) {
+      await ialabsSessions.end(signedOutSession.sid).catch((error: unknown) => {
+        console.warn(`[portal] could not end the ialabs session: ${errMessage(error)}`);
+      });
+    }
     setSession(res, [
       ...(signedOutSession ? loginProviderCookie(signedOutSession.sub) : []),
-      clearCookie("portal_session", "/", SECURE_COOKIES, COOKIE_DOMAIN),
-      clearCookie(FRAME_SESSION_COOKIE, "/", SECURE_COOKIES, COOKIE_DOMAIN),
-      ...(COOKIE_DOMAIN
-        ? [clearCookie("portal_session", "/", SECURE_COOKIES), clearCookie(FRAME_SESSION_COOKIE, "/", SECURE_COOKIES)]
-        : []),
+      ...clearedSessionCookies(),
       clearCookie("portal_oidc_tmp", "/auth", SECURE_COOKIES),
       ...(AUTH_BROKER_UPSTREAM ? [clearCookie("qm_idp_session", AUTH_BROKER_PREFIX, true)] : []),
       ...(LOCAL_AUTH_BYPASS && isLoopbackAddress(req.socket.remoteAddress)
@@ -1110,6 +1162,21 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   let session = renewSessionCookie(req, res) ?? currentSession(req);
+  if (session && !session.anon && (!pathname.startsWith("/auth/") || pathname.startsWith("/auth/impersonate"))) {
+    const ialabsState = await ialabsSessionState(req, session);
+    if (ialabsState === "unavailable") return identityUnavailable(req, res);
+    if (ialabsState === "reauth") {
+      res.writeHead(302, {
+        location: `/auth/login?returnTo=${encodeURIComponent(`${pathname}${url.search}`)}`,
+        "cache-control": "no-store",
+      });
+      return void res.end();
+    }
+    if (ialabsState === "gone") {
+      setSession(res, clearedSessionCookies());
+      session = null;
+    }
+  }
   const authenticatedPrincipal = session?.sub;
   if (session && !session.anon && (!pathname.startsWith("/auth/") || pathname.startsWith("/auth/impersonate"))) {
     const canonical = await canonicalPrincipal(session.sub);
@@ -1447,7 +1514,9 @@ async function desktopLogin(req: IncomingMessage, res: ServerResponse, url: URL)
     return json(res, 400, { error: "invalid_desktop_request" });
   if (req.method === "POST" && !sameOriginRequest(req)) return json(res, 403, { error: "forbidden" });
   const session = renewSessionCookie(req, res) ?? currentSession(req);
-  if (!session || session.anon) {
+  const ialabsState = await ialabsSessionState(req, session);
+  if (ialabsState === "unavailable") return identityUnavailable(req, res);
+  if (!session || session.anon || ialabsState !== "ok") {
     res.writeHead(303, {
       location: `/auth/login?returnTo=${encodeURIComponent(`${url.pathname}${url.search}`)}`,
       "cache-control": "no-store",
@@ -1643,7 +1712,7 @@ async function trustedAuth(req: IncomingMessage, res: ServerResponse, url: URL):
   }
 }
 
-function setAuthenticatedSession(res: ServerResponse, sub: string, name = "", appOnly = false): void {
+function setAuthenticatedSession(res: ServerResponse, sub: string, name = "", appOnly = false, sid = ""): void {
   const now = Math.floor(Date.now() / 1000);
   const session: SessionClaims = {
     k: "session",
@@ -1654,6 +1723,7 @@ function setAuthenticatedSession(res: ServerResponse, sub: string, name = "", ap
     exp: now + SESSION_TTL_S,
     ...(name ? { name } : {}),
     ...(appOnly ? { appOnly: true } : {}),
+    ...(sid ? { sid } : {}),
   };
   setSession(res, [
     ...sessionCookieSet(seal(session, sessionKey), session.sub),
@@ -1698,7 +1768,10 @@ function authLogin(req: IncomingMessage, res: ServerResponse, url: URL): void {
   setSession(res, [
     setCookie("portal_oidc_tmp", seal(tmp, tmpKey), { path: "/auth", maxAge: TMP_TTL_S, secure: SECURE_COOKIES }),
   ]);
-  res.writeHead(302, { location: buildAuthorizeUrl(OIDC, { state, nonce, challenge }), "cache-control": "no-store" });
+  const location = IALABS
+    ? buildIalabsAuthorizeUrl(IALABS, { state, challenge })
+    : buildAuthorizeUrl(OIDC, { state, nonce, challenge });
+  res.writeHead(302, { location, "cache-control": "no-store" });
   res.end();
 }
 
@@ -1717,34 +1790,77 @@ async function authCallback(req: IncomingMessage, res: ServerResponse, url: URL)
   if (!code || !stateParam || !safeEqual(stateParam, tmp.state)) return fail("invalid login state");
   if (!consumeState(tmp.state)) return fail("login already used, please try again");
 
-  let principal: { sub: string; appOnly?: true };
-  let name = "";
+  let signedIn: SignedIn;
   try {
-    const { accessToken, idToken } = await exchangeCode(OIDC, { code, codeVerifier: tmp.pkceVerifier });
-    const claims = await verifyIdToken(OIDC, idToken, tmp.nonce);
-    if (OIDC.expectedTeamId) {
-      const team = claims["https://slack.com/team_id"];
-      if (team !== OIDC.expectedTeamId) throw new Error("workspace not permitted");
-    }
-    const info = await fetchUserinfo(OIDC, accessToken);
-    const infoSub = typeof info.sub === "string" ? info.sub : "";
-    if (!infoSub) throw new Error("userinfo missing sub");
-    if (typeof claims.sub === "string" && claims.sub !== infoSub) throw new Error("subject mismatch");
-    principal = await resolvePrincipal(PRINCIPAL_RULE, { sub: infoSub, claims, userinfo: info }, (email) =>
-      coreEmailAdmission(CORE, CORE_SIGNING_SECRET, email, "portal"),
-    );
-    const rawName = info.name ?? claims.name;
-    if (typeof rawName === "string") name = rawName.trim().slice(0, 200);
+    signedIn =
+      IALABS && ialabsSessions
+        ? await ialabsIdentity(IALABS, ialabsSessions, code, tmp)
+        : await oidcIdentity(code, tmp);
   } catch (e) {
     return fail(errMessage(e, "sign-in failed"));
   }
 
-  setAuthenticatedSession(res, principal.sub, name, principal.appOnly);
+  const previous = currentSession(req)?.sid;
+  if (ialabsSessions && previous && previous !== signedIn.sid) {
+    void ialabsSessions.end(previous).catch((error: unknown) => {
+      console.warn(`[portal] could not end the previous ialabs session: ${errMessage(error)}`);
+    });
+  }
+  setAuthenticatedSession(res, signedIn.principal.sub, signedIn.name, signedIn.principal.appOnly, signedIn.sid);
   res.writeHead(302, {
     location: sanitizeReturnTo(tmp.returnTo, PUBLIC_URL, APPS_DOMAIN),
     "cache-control": "no-store",
   });
   res.end();
+}
+
+interface SignedIn {
+  principal: { sub: string; appOnly?: true };
+  name: string;
+  sid?: string;
+}
+
+function coreAdmission(email: string) {
+  return coreEmailAdmission(CORE, CORE_SIGNING_SECRET, email, "portal");
+}
+
+async function oidcIdentity(code: string, tmp: TmpClaims): Promise<SignedIn> {
+  const { accessToken, idToken } = await exchangeCode(OIDC, { code, codeVerifier: tmp.pkceVerifier });
+  const claims = await verifyIdToken(OIDC, idToken, tmp.nonce);
+  if (OIDC.expectedTeamId) {
+    const team = claims["https://slack.com/team_id"];
+    if (team !== OIDC.expectedTeamId) throw new Error("workspace not permitted");
+  }
+  const info = await fetchUserinfo(OIDC, accessToken);
+  const infoSub = typeof info.sub === "string" ? info.sub : "";
+  if (!infoSub) throw new Error("userinfo missing sub");
+  if (typeof claims.sub === "string" && claims.sub !== infoSub) throw new Error("subject mismatch");
+  const principal = await resolvePrincipal(PRINCIPAL_RULE, { sub: infoSub, claims, userinfo: info }, coreAdmission);
+  const rawName = info.name ?? claims.name;
+  return { principal, name: typeof rawName === "string" ? rawName.trim().slice(0, 200) : "" };
+}
+
+async function ialabsIdentity(
+  cfg: IalabsConfig,
+  sessions: IalabsSessions,
+  code: string,
+  tmp: TmpClaims,
+): Promise<SignedIn> {
+  const tokens = await exchangeIalabsCode(cfg, { code, codeVerifier: tmp.pkceVerifier });
+  try {
+    const identity = await verifyIalabsAccessToken(cfg, tokens.accessToken);
+    const principal = await resolvePrincipal(
+      PRINCIPAL_RULE,
+      { sub: identity.sub, claims: identity.claims, userinfo: { email: identity.email, email_verified: true } },
+      coreAdmission,
+    );
+    const sid = newSessionId();
+    await sessions.start(sid, principal.sub, tokens.refreshToken, tokens.refreshExpiresAtMs);
+    return { principal, name: identity.name, sid };
+  } catch (error) {
+    void revokeIalabsToken(cfg, tokens.refreshToken).catch(() => undefined);
+    throw error;
+  }
 }
 
 export function bootChecks(): void {

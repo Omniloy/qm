@@ -39,6 +39,11 @@ import {
   SUBAGENT_TREE_RUN_CAP,
 } from "./sessions/session-syscalls.ts";
 import { createPostgresBrokerSessions, type BrokerSessionStore } from "./auth/broker-sessions.ts";
+import {
+  createMemoryPortalSessions,
+  createPostgresPortalSessions,
+  type PortalSessionStore,
+} from "./auth/portal-sessions.ts";
 import { createDirectFileUploads, type DirectFileUploads } from "./files/direct-file-upload.ts";
 import { createPostgresFileUploadStore } from "./files/file-upload-store.ts";
 import {
@@ -630,6 +635,7 @@ export interface BuiltApp {
   featureFlags: FeatureFlagStore;
   replayDedupe?: ReplayDedupe;
   brokerSessions?: BrokerSessionStore;
+  portalSessions: PortalSessionStore;
   directory: DirectoryStore;
   projects: ProjectStore;
   environments: EnvironmentStore;
@@ -1792,6 +1798,12 @@ export function buildApp(
   }
 
   const brokerSessions = config.databaseUrl ? createPostgresBrokerSessions(config.databaseUrl) : undefined;
+  const portalSessions = config.databaseUrl
+    ? createPostgresPortalSessions(
+        config.databaseUrl,
+        deriveConnectorKey(config.connectorSecretKey ?? randomBytes(32), "portal-sessions"),
+      )
+    : createMemoryPortalSessions();
   const replayDedupe = config.databaseUrl ? createPostgresReplayDedupe(config.databaseUrl) : createMemoryReplayDedupe();
   const metrics = config.databaseUrl ? createPostgresMetricsSink(config.databaseUrl) : createMetricsSink();
   const credentialUsage = config.databaseUrl
@@ -3260,6 +3272,7 @@ export function buildApp(
     featureFlags,
     ...(replayDedupe ? { replayDedupe } : {}),
     ...(brokerSessions ? { brokerSessions } : {}),
+    portalSessions,
     directory,
     projects,
     environments,
@@ -3318,6 +3331,7 @@ export function serverDeps(
     ...(config.requireSignedPortalIdentity ? { requireSignedPortalIdentity: true } : {}),
     ...(built.replayDedupe ? { replayDedupe: built.replayDedupe } : {}),
     ...(built.brokerSessions ? { brokerSessions: built.brokerSessions } : {}),
+    portalSessions: built.portalSessions,
     config: built.config,
     ...(built.screenSecurity ? { screenSecurity: built.screenSecurity } : {}),
     screeningReports: built.screeningReports,

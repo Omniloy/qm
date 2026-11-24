@@ -120,6 +120,68 @@ async function brokerSession(ctx: ApiCtx): Promise<void> {
   return sendJson(res, 200, await deps.brokerSessions.create(email, idleS, absoluteS));
 }
 
+const SESSION_ID = /^[A-Za-z0-9_-]{43}$/;
+const MAX_PORTAL_SESSION_MS = 90 * 86400 * 1000;
+
+function boundedInt(value: unknown, min: number, max: number): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
+}
+
+function grantExpiry(value: unknown): value is number {
+  const now = Date.now();
+  return typeof value === "number" && Number.isFinite(value) && value > now && value <= now + MAX_PORTAL_SESSION_MS;
+}
+
+function refreshToken(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 4096;
+}
+
+async function portalSession(ctx: ApiCtx): Promise<void> {
+  const { res, deps, body } = ctx;
+  const store = deps.portalSessions;
+  if (!store) return sendJson(res, 503, { error: "not_configured" });
+  const b = isObj(body) ? body : {};
+  if (typeof b.sessionId !== "string" || !SESSION_ID.test(b.sessionId))
+    return sendJson(res, 400, { error: "invalid_session" });
+  const sessionId = b.sessionId;
+  const action = ctx.pathname.slice("/v1/auth/portal-sessions".length);
+  if (action === "") {
+    if (
+      typeof b.principal !== "string" ||
+      !b.principal ||
+      b.principal.length > 320 ||
+      !refreshToken(b.refreshToken) ||
+      !grantExpiry(b.expiresAtMs)
+    )
+      return sendJson(res, 400, { error: "invalid_grant" });
+    await store.start(sessionId, { principal: b.principal, refreshToken: b.refreshToken, expiresAtMs: b.expiresAtMs });
+    return sendJson(res, 200, { ok: true });
+  }
+  if (action === "/claim") {
+    if (!boundedInt(b.staleAfterMs, 0, 86400 * 1000) || !boundedInt(b.leaseMs, 1000, 120_000))
+      return sendJson(res, 400, { error: "invalid_claim" });
+    return sendJson(res, 200, await store.claim(sessionId, b.staleAfterMs, b.leaseMs));
+  }
+  if (action === "/settle") {
+    if (typeof b.lease !== "string" || !b.lease || b.lease.length > 64)
+      return sendJson(res, 400, { error: "invalid_lease" });
+    if (b.outcome === "rotated") {
+      if (!refreshToken(b.refreshToken) || !grantExpiry(b.expiresAtMs))
+        return sendJson(res, 400, { error: "invalid_grant" });
+      return sendJson(res, 200, {
+        settled: await store.settle(sessionId, b.lease, {
+          kind: "rotated",
+          refreshToken: b.refreshToken,
+          expiresAtMs: b.expiresAtMs,
+        }),
+      });
+    }
+    if (b.outcome !== "revoked" && b.outcome !== "unavailable") return sendJson(res, 400, { error: "invalid_outcome" });
+    return sendJson(res, 200, { settled: await store.settle(sessionId, b.lease, { kind: b.outcome }) });
+  }
+  return sendJson(res, 200, { refreshToken: await store.end(sessionId) });
+}
+
 async function trustedAdmin(ctx: ApiCtx): Promise<void> {
   const { deps, res, body } = ctx;
   const secret = deps.portalIdentitySecret;
@@ -221,4 +283,8 @@ export const authBrokerRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "POST", path: "/v1/auth/broker/sessions/revoke", auth: "source", handle: brokerSession },
   { method: "POST", path: "/v1/auth/broker/claim", auth: "source", handle: claimBrokerNonce },
   { method: "GET", path: "/v1/auth/broker/email-allowed", auth: "source", handle: emailAllowed },
+  { method: "POST", path: "/v1/auth/portal-sessions", auth: "source", handle: portalSession },
+  { method: "POST", path: "/v1/auth/portal-sessions/claim", auth: "source", handle: portalSession },
+  { method: "POST", path: "/v1/auth/portal-sessions/settle", auth: "source", handle: portalSession },
+  { method: "POST", path: "/v1/auth/portal-sessions/end", auth: "source", handle: portalSession },
 ];
