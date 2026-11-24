@@ -275,7 +275,8 @@ const ialabsSessions = IALABS
 
 async function ialabsSessionState(req: IncomingMessage, session: SessionClaims | null): Promise<IalabsSessionState> {
   if (!ialabsSessions || !session?.sid || session.anon) return "ok";
-  return ialabsSessions.state(session.sid, session.sub, req.method === "GET" && wantsHtml(req));
+  const page = req.method === "GET" && wantsHtml(req);
+  return ialabsSessions.state(session.sid, session.sub, page, (session.auth ?? session.iat) * 1000);
 }
 
 const TMP_TTL_S = 600;

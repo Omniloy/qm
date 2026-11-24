@@ -20,7 +20,9 @@ interface Record_ {
   principal: string;
   refreshToken: string;
   expiresAtMs: number;
+  refreshAfterMs: number;
   checkedAtMs: number;
+  retryAtMs?: number;
   lease?: string;
   leaseUntilMs?: number;
 }
@@ -30,6 +32,8 @@ let claims: Record<string, unknown> = {};
 let accessTtl: string | number = "15m";
 let refreshStatus = 200;
 let refreshDelayMs = 0;
+let settleFailures = 0;
+let retryAfter = "";
 const refreshesSent: string[] = [];
 const revoked: string[] = [];
 const exchanges: unknown[] = [];
@@ -65,7 +69,8 @@ function claim(body: Record<string, unknown>) {
   const now = Date.now();
   if (!record || record.expiresAtMs <= now) return { state: "missing" };
   const view = { principal: record.principal, expiresAtMs: record.expiresAtMs };
-  if (record.checkedAtMs > now - Number(body.staleAfterMs)) return { state: "current", ...view };
+  if (record.checkedAtMs > now - record.refreshAfterMs || (record.retryAtMs ?? 0) > now)
+    return { state: "current", ...view };
   if (record.leaseUntilMs !== undefined && record.leaseUntilMs > now) return { state: "busy", ...view };
   record.lease = randomBytes(8).toString("hex");
   record.leaseUntilMs = now + Number(body.leaseMs);
@@ -78,7 +83,9 @@ function settle(body: Record<string, unknown>) {
   delete record.lease;
   delete record.leaseUntilMs;
   if (body.outcome === "revoked") records.delete(String(body.sessionId));
+  if (body.outcome === "unavailable") record.retryAtMs = Date.now() + Number(body.retryAfterMs);
   if (body.outcome === "rotated") {
+    delete record.retryAtMs;
     record.refreshToken = String(body.refreshToken);
     record.expiresAtMs = Number(body.expiresAtMs);
     record.checkedAtMs = Date.now();
@@ -110,8 +117,10 @@ const upstream = createServer((req, res) => {
       const body = await readBody(req);
       refreshesSent.push(String(body.refresh_token));
       if (refreshDelayMs) await new Promise((resolve) => setTimeout(resolve, refreshDelayMs));
-      if (refreshStatus !== 200)
+      if (refreshStatus !== 200) {
+        if (retryAfter) res.setHeader("retry-after", retryAfter);
         return send(refreshStatus, { code: "invalid_refresh_token", detail: "the session has ended" });
+      }
       return send(200, {
         access_token: await accessToken(),
         token_type: "Bearer",
@@ -136,12 +145,19 @@ const upstream = createServer((req, res) => {
           principal: String(body.principal),
           refreshToken: String(body.refreshToken),
           expiresAtMs: Number(body.expiresAtMs),
+          refreshAfterMs: Number(body.refreshAfterMs),
           checkedAtMs: Date.now(),
         });
         return send(200, { ok: true });
       }
       if (action === "/claim") return send(200, claim(body));
-      if (action === "/settle") return send(200, settle(body));
+      if (action === "/settle") {
+        if (body.outcome === "rotated" && settleFailures > 0) {
+          settleFailures--;
+          return send(503, { error: "unavailable" });
+        }
+        return send(200, settle(body));
+      }
       const record = records.get(String(body.sessionId));
       records.delete(String(body.sessionId));
       return send(200, { refreshToken: record?.refreshToken ?? null });
@@ -202,18 +218,27 @@ async function signIn(): Promise<Response> {
   });
 }
 
-function seeded(record: Partial<Record_> = {}): { sid: string; cookie: string } {
+function seeded(record: Partial<Record_> = {}, authAgeS = 6 * 86400): { sid: string; cookie: string } {
   const sid = randomBytes(32).toString("base64url");
   records.set(sid, {
     principal: "ana.garcia@laberit.com",
     refreshToken: `rt-${sid.slice(0, 8)}`,
     expiresAtMs: sessionCapMs,
+    refreshAfterMs: 900_000,
     checkedAtMs: Date.now() - 3600_000,
     ...record,
   });
   const now = Math.floor(Date.now() / 1000);
   const value = seal(
-    { k: "session", sub: "ana.garcia@laberit.com", org: "acme", auth: now, iat: now, exp: now + 3600, sid },
+    {
+      k: "session",
+      sub: "ana.garcia@laberit.com",
+      org: "acme",
+      auth: now - authAgeS,
+      iat: now,
+      exp: now + 3600,
+      sid,
+    },
     sessionKey,
   );
   return { sid, cookie: `portal_session=${encodeURIComponent(value)}` };
@@ -320,20 +345,48 @@ test("a refused refresh ends the session: pages go to sign-in, API calls get 401
   }
 });
 
-test("an unavailable MS-AUTH keeps the session and retries on the next request", async () => {
+test("an unavailable MS-AUTH keeps the session and backs off before retrying", async () => {
   refreshStatus = 503;
+  retryAfter = "120";
   const { sid, cookie } = seeded();
   const old = records.get(sid)!.refreshToken;
   try {
     assert.equal((await api(cookie)).status, 200);
     assert.equal(records.get(sid)!.refreshToken, old);
     assert.equal(records.get(sid)!.lease, undefined);
+    const retryAt = records.get(sid)!.retryAtMs!;
+    assert.ok(retryAt > Date.now() + 110_000 && retryAt <= Date.now() + 120_000);
+    assert.equal((await api(cookie)).status, 200);
+    assert.equal(refreshesSent.filter((token) => token === old).length, 1);
+  } finally {
+    refreshStatus = 200;
+    retryAfter = "";
+  }
+});
+
+test("any refusal other than 401 or 403 keeps the session", async () => {
+  refreshStatus = 400;
+  const { sid, cookie } = seeded();
+  try {
+    assert.equal((await api(cookie)).status, 200);
+    assert.ok(records.has(sid));
+    assert.ok(records.get(sid)!.retryAtMs! > Date.now());
   } finally {
     refreshStatus = 200;
   }
-  assert.equal((await api(cookie)).status, 200);
-  assert.equal(refreshesSent.filter((token) => token === old).length, 2);
-  assert.notEqual(records.get(sid)!.refreshToken, old);
+});
+
+test("a refreshed token for another app ends the session and revokes the new MS-AUTH session", async () => {
+  const { sid, cookie } = seeded();
+  const revokedBefore = revoked.length;
+  claims = { client_id: "people" };
+  try {
+    assert.equal((await api(cookie)).status, 401);
+  } finally {
+    claims = {};
+  }
+  assert.equal(records.has(sid), false);
+  assert.equal(revoked.length, revokedBefore + 1);
 });
 
 test("a session missing from the store is signed out", async () => {
@@ -359,8 +412,8 @@ test("concurrent requests across tabs and instances send the refresh token once"
       api(cookie),
       api(cookie),
       page(cookie),
-      other.state(sid, "ana.garcia@laberit.com", false),
-      other.state(sid, "ana.garcia@laberit.com", false),
+      other.state(sid, "ana.garcia@laberit.com", false, 0),
+      other.state(sid, "ana.garcia@laberit.com", false, 0),
     ]);
     assert.deepEqual(
       results.map((result) => (result instanceof Response ? result.status : result)),
@@ -370,6 +423,58 @@ test("concurrent requests across tabs and instances send the refresh token once"
     refreshDelayMs = 0;
   }
   assert.equal(refreshesSent.filter((token) => token === old).length, 1);
+});
+
+function instance(timeoutMs?: number) {
+  return createIalabsSessions({
+    core: upstreamUrl,
+    signingSecret: "ialabs-login-core-secret",
+    ialabs: {
+      baseUrl: `${upstreamUrl}/auth`,
+      issuer,
+      audience: "qm",
+      clientId: "qm",
+      redirectUri: "",
+      ...(timeoutMs ? { timeoutMs } : {}),
+    },
+    refreshAfterMs: 900_000,
+    reauthBeforeMs: 86400_000,
+    pollMs: 10,
+    busyWaitMs: 100,
+    settleRetryMs: 10,
+  });
+}
+
+test("a refresh whose outcome is unknown holds the lease and never replays the token", async () => {
+  const { sid } = seeded();
+  const old = records.get(sid)!.refreshToken;
+  refreshDelayMs = 400;
+  try {
+    assert.equal(await instance(100).state(sid, "ana.garcia@laberit.com", false, 0), "ok");
+    assert.ok(records.get(sid)!.lease, "the lease stays held until it expires");
+    assert.equal(records.get(sid)!.refreshToken, old);
+    assert.equal(await instance(100).state(sid, "ana.garcia@laberit.com", false, 0), "ok");
+    assert.equal(refreshesSent.filter((token) => token === old).length, 1);
+  } finally {
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    refreshDelayMs = 0;
+  }
+});
+
+test("storing the rotated token is retried when core briefly fails", async () => {
+  const { sid } = seeded();
+  const old = records.get(sid)!.refreshToken;
+  settleFailures = 2;
+  assert.equal(await instance().state(sid, "ana.garcia@laberit.com", false, 0), "ok");
+  assert.equal(settleFailures, 0);
+  assert.notEqual(records.get(sid)!.refreshToken, old);
+  assert.equal(records.get(sid)!.lease, undefined);
+  assert.equal(refreshesSent.filter((token) => token === old).length, 1);
+});
+
+test("a fresh session shorter than the reauth window is not sent back to sign-in", async () => {
+  const { cookie } = seeded({ expiresAtMs: Date.now() + 3600_000, checkedAtMs: Date.now() }, 0);
+  assert.equal((await page(cookie)).status, 200);
 });
 
 test("near the MS-AUTH session cap a page load signs in again, an API call does not", async () => {

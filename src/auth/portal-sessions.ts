@@ -6,6 +6,7 @@ interface PortalSessionGrant {
   principal: string;
   refreshToken: string;
   expiresAtMs: number;
+  refreshAfterMs: number;
 }
 
 type PortalSessionClaim =
@@ -14,12 +15,14 @@ type PortalSessionClaim =
   | { state: "claimed"; principal: string; expiresAtMs: number; lease: string; refreshToken: string };
 
 type PortalSessionOutcome =
-  { kind: "rotated"; refreshToken: string; expiresAtMs: number } | { kind: "revoked" } | { kind: "unavailable" };
+  | { kind: "rotated"; refreshToken: string; expiresAtMs: number }
+  | { kind: "revoked" }
+  | { kind: "unavailable"; retryAfterMs: number };
 
 export interface PortalSessionStore {
   readonly durable: boolean;
   start(sessionId: string, grant: PortalSessionGrant): Promise<void>;
-  claim(sessionId: string, staleAfterMs: number, leaseMs: number): Promise<PortalSessionClaim>;
+  claim(sessionId: string, leaseMs: number): Promise<PortalSessionClaim>;
   settle(sessionId: string, lease: string, outcome: PortalSessionOutcome): Promise<boolean>;
   active(sessionId: string): Promise<boolean>;
   end(sessionId: string): Promise<string | null>;
@@ -28,11 +31,9 @@ export interface PortalSessionStore {
 const keyOf = (sessionId: string): string => createHash("sha256").update(sessionId).digest("hex");
 const newLease = (): string => randomBytes(18).toString("base64url");
 
-interface MemoryRecord {
-  principal: string;
-  refreshToken: string;
-  expiresAtMs: number;
+interface MemoryRecord extends PortalSessionGrant {
   checkedAtMs: number;
+  retryAtMs?: number;
   lease?: string;
   leaseUntilMs?: number;
 }
@@ -52,12 +53,13 @@ export function createMemoryPortalSessions(now: () => number = Date.now): Portal
       for (const [key, record] of records) if (record.expiresAtMs <= t) records.delete(key);
       records.set(keyOf(sessionId), { ...grant, checkedAtMs: t });
     },
-    async claim(sessionId, staleAfterMs, leaseMs) {
+    async claim(sessionId, leaseMs) {
       const record = live(sessionId);
       if (!record) return { state: "missing" };
       const t = now();
       const view = { principal: record.principal, expiresAtMs: record.expiresAtMs };
-      if (record.checkedAtMs > t - staleAfterMs) return { state: "current", ...view };
+      if (record.checkedAtMs > t - record.refreshAfterMs || (record.retryAtMs ?? 0) > t)
+        return { state: "current", ...view };
       if (record.leaseUntilMs !== undefined && record.leaseUntilMs > t) return { state: "busy", ...view };
       record.lease = newLease();
       record.leaseUntilMs = t + leaseMs;
@@ -69,15 +71,19 @@ export function createMemoryPortalSessions(now: () => number = Date.now): Portal
       if (outcome.kind === "revoked") return records.delete(keyOf(sessionId));
       delete record.lease;
       delete record.leaseUntilMs;
-      if (outcome.kind === "rotated") {
-        record.refreshToken = outcome.refreshToken;
-        record.expiresAtMs = outcome.expiresAtMs;
-        record.checkedAtMs = now();
+      if (outcome.kind === "unavailable") {
+        record.retryAtMs = now() + outcome.retryAfterMs;
+        return true;
       }
+      record.refreshToken = outcome.refreshToken;
+      record.expiresAtMs = outcome.expiresAtMs;
+      record.checkedAtMs = now();
+      delete record.retryAtMs;
       return true;
     },
     async active(sessionId) {
-      return live(sessionId) !== undefined;
+      const record = live(sessionId);
+      return record !== undefined && record.checkedAtMs > now() - 2 * record.refreshAfterMs;
     },
     async end(sessionId) {
       const record = live(sessionId);
@@ -93,7 +99,9 @@ const SCHEMA = [
     principal TEXT NOT NULL,
     refresh_token_enc TEXT NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,
+    refresh_after_ms INTEGER NOT NULL,
     checked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    retry_at TIMESTAMPTZ,
     lease_id TEXT,
     lease_until TIMESTAMPTZ
   )`,
@@ -111,23 +119,31 @@ export function createPostgresPortalSessions(connectionString: string, key: Secr
     async start(sessionId, grant) {
       await pg.query("DELETE FROM portal_sessions WHERE expires_at <= now()");
       await pg.query(
-        `INSERT INTO portal_sessions (session_hash, principal, refresh_token_enc, expires_at)
-         VALUES ($1, $2, $3, to_timestamp($4 / 1000.0))
+        `INSERT INTO portal_sessions (session_hash, principal, refresh_token_enc, expires_at, refresh_after_ms)
+         VALUES ($1, $2, $3, to_timestamp($4 / 1000.0), $5)
          ON CONFLICT (session_hash) DO UPDATE SET principal = EXCLUDED.principal,
            refresh_token_enc = EXCLUDED.refresh_token_enc, expires_at = EXCLUDED.expires_at,
-           checked_at = now(), lease_id = NULL, lease_until = NULL`,
-        [keyOf(sessionId), grant.principal, encryptSecret(grant.refreshToken, key), grant.expiresAtMs],
+           refresh_after_ms = EXCLUDED.refresh_after_ms, checked_at = now(), retry_at = NULL,
+           lease_id = NULL, lease_until = NULL`,
+        [
+          keyOf(sessionId),
+          grant.principal,
+          encryptSecret(grant.refreshToken, key),
+          grant.expiresAtMs,
+          grant.refreshAfterMs,
+        ],
       );
     },
-    async claim(sessionId, staleAfterMs, leaseMs) {
+    async claim(sessionId, leaseMs) {
       const lease = newLease();
       const claimed = await pg.query(
         `UPDATE portal_sessions SET lease_id = $2, lease_until = now() + $3 * interval '1 millisecond'
          WHERE session_hash = $1 AND expires_at > now()
-           AND checked_at <= now() - $4 * interval '1 millisecond'
+           AND checked_at <= now() - refresh_after_ms * interval '1 millisecond'
+           AND (retry_at IS NULL OR retry_at <= now())
            AND (lease_until IS NULL OR lease_until <= now())
          RETURNING principal, expires_at, refresh_token_enc`,
-        [keyOf(sessionId), lease, leaseMs, staleAfterMs],
+        [keyOf(sessionId), lease, leaseMs],
       );
       const row = claimed.rows[0];
       if (row) {
@@ -140,9 +156,10 @@ export function createPostgresPortalSessions(connectionString: string, key: Secr
       }
       const current = await pg.query(
         `SELECT principal, expires_at,
-           checked_at > now() - $2 * interval '1 millisecond' AS fresh
+           (checked_at > now() - refresh_after_ms * interval '1 millisecond'
+             OR (retry_at IS NOT NULL AND retry_at > now())) AS fresh
          FROM portal_sessions WHERE session_hash = $1 AND expires_at > now()`,
-        [keyOf(sessionId), staleAfterMs],
+        [keyOf(sessionId)],
       );
       const found = current.rows[0];
       if (!found) return { state: "missing" };
@@ -156,23 +173,27 @@ export function createPostgresPortalSessions(connectionString: string, key: Secr
       }
       if (outcome.kind === "unavailable") {
         const released = await pg.query(
-          "UPDATE portal_sessions SET lease_id = NULL, lease_until = NULL WHERE session_hash = $1 AND lease_id = $2",
-          params,
+          `UPDATE portal_sessions SET lease_id = NULL, lease_until = NULL,
+             retry_at = now() + $3 * interval '1 millisecond'
+           WHERE session_hash = $1 AND lease_id = $2`,
+          [...params, outcome.retryAfterMs],
         );
         return released.rowCount === 1;
       }
       const rotated = await pg.query(
         `UPDATE portal_sessions SET refresh_token_enc = $3, expires_at = to_timestamp($4 / 1000.0),
-           checked_at = now(), lease_id = NULL, lease_until = NULL
+           checked_at = now(), retry_at = NULL, lease_id = NULL, lease_until = NULL
          WHERE session_hash = $1 AND lease_id = $2`,
         [...params, encryptSecret(outcome.refreshToken, key), outcome.expiresAtMs],
       );
       return rotated.rowCount === 1;
     },
     async active(sessionId) {
-      const result = await pg.query("SELECT 1 FROM portal_sessions WHERE session_hash = $1 AND expires_at > now()", [
-        keyOf(sessionId),
-      ]);
+      const result = await pg.query(
+        `SELECT 1 FROM portal_sessions WHERE session_hash = $1 AND expires_at > now()
+           AND checked_at > now() - 2 * refresh_after_ms * interval '1 millisecond'`,
+        [keyOf(sessionId)],
+      );
       return result.rows.length === 1;
     },
     async end(sessionId) {

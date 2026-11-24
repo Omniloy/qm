@@ -279,15 +279,24 @@ does, server side:
    from `CONNECTOR_SECRET_KEY`, Postgres table `portal_sessions`), keyed by a session id sealed
    in the `portal_session` cookie, through the signed `/v1/auth/portal-sessions` endpoints.
 4. A request on a session last checked more than `IALABS_REFRESH_AFTER_S` ago refreshes it
-   with MS-AUTH and stores the rotated token. Core leases the refresh, so one tab or instance
-   sends the token and the others wait for its result: MS-AUTH revokes the whole session when
-   a refresh token is reused. A refusal (401/403) ends the portal session: page loads go to
-   `/auth/login`, API calls get `401 {error: "sign in", loginUrl}`. A 5xx or timeout keeps the
-   session and retries on the next request. Deployed apps on the apps domain accept the
-   session only while its record exists.
-5. A page load within `IALABS_REAUTH_BEFORE_S` of the MS-AUTH session cap (7 days by default
-   in MS-AUTH) signs in again, usually silently through Entra SSO, so API calls never hit the
-   cap. Sign-out revokes the MS-AUTH session and deletes the record.
+   with MS-AUTH, verifies the new access token like at sign-in, and stores the rotated token.
+   Core leases the refresh, so one tab or instance sends the token and the others wait briefly
+   for its result: MS-AUTH revokes the whole session when a refresh token is reused.
+   - 401 or 403 ends the portal session: page loads go to `/auth/login`, API calls get
+     `401 {error: "sign in", loginUrl}`. So does a refreshed token that fails verification.
+   - Any other error response keeps the session and backs off (`Retry-After`, else 60 s)
+     before the next attempt.
+   - A timeout or lost response is ambiguous, since MS-AUTH may have rotated the token
+     anyway. The session is kept and the lease is left to expire, so the old token is not
+     sent again meanwhile.
+   - Deployed apps on the apps domain accept the session only while its record exists and
+     was checked within two refresh intervals; otherwise they send the viewer to sign in.
+5. A page load near the MS-AUTH session cap (7 days by default in MS-AUTH) signs in again,
+   usually silently through Entra SSO, so API calls never hit the cap. The window is
+   `IALABS_REAUTH_BEFORE_S`, capped at half the session's lifetime so a fresh sign-in never
+   lands inside it. Sign-out revokes the MS-AUTH session and deletes the record.
+6. The store must be the Postgres one (`DATABASE_URL`); without it core answers 503 and
+   ialabs sign-in fails.
 
 ```
 PORTAL_IDP=ialabs

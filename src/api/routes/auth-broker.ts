@@ -139,7 +139,12 @@ function validToken(value: unknown): value is string {
 async function portalSession(ctx: ApiCtx): Promise<void> {
   const { res, deps, body } = ctx;
   const store = deps.portalSessions;
-  if (!store) return sendJson(res, 503, { error: "not_configured" });
+  if (!store?.durable) {
+    return sendJson(res, 503, {
+      error: "not_configured",
+      message: "portal sessions need the Postgres-backed store; set DATABASE_URL so every instance sees a sign-out",
+    });
+  }
   const b = isObj(body) ? body : {};
   if (typeof b.sessionId !== "string" || !SESSION_ID.test(b.sessionId))
     return sendJson(res, 400, { error: "invalid_session" });
@@ -151,16 +156,21 @@ async function portalSession(ctx: ApiCtx): Promise<void> {
       !b.principal ||
       b.principal.length > 320 ||
       !validToken(b.refreshToken) ||
-      !grantExpiry(b.expiresAtMs)
+      !grantExpiry(b.expiresAtMs) ||
+      !boundedInt(b.refreshAfterMs, 60_000, 3_600_000)
     )
       return sendJson(res, 400, { error: "invalid_grant" });
-    await store.start(sessionId, { principal: b.principal, refreshToken: b.refreshToken, expiresAtMs: b.expiresAtMs });
+    await store.start(sessionId, {
+      principal: b.principal,
+      refreshToken: b.refreshToken,
+      expiresAtMs: b.expiresAtMs,
+      refreshAfterMs: b.refreshAfterMs,
+    });
     return sendJson(res, 200, { ok: true });
   }
   if (action === "/claim") {
-    if (!boundedInt(b.staleAfterMs, 0, 86400 * 1000) || !boundedInt(b.leaseMs, 1000, 120_000))
-      return sendJson(res, 400, { error: "invalid_claim" });
-    return sendJson(res, 200, await store.claim(sessionId, b.staleAfterMs, b.leaseMs));
+    if (!boundedInt(b.leaseMs, 1000, 300_000)) return sendJson(res, 400, { error: "invalid_claim" });
+    return sendJson(res, 200, await store.claim(sessionId, b.leaseMs));
   }
   if (action === "/settle") {
     if (typeof b.lease !== "string" || !b.lease || b.lease.length > 64)
@@ -176,9 +186,13 @@ async function portalSession(ctx: ApiCtx): Promise<void> {
         }),
       });
     }
-    const kind = b.outcome === "revoked" || b.outcome === "unavailable" ? b.outcome : null;
-    if (!kind) return sendJson(res, 400, { error: "invalid_outcome" });
-    return sendJson(res, 200, { settled: await store.settle(sessionId, b.lease, { kind }) });
+    if (b.outcome === "revoked")
+      return sendJson(res, 200, { settled: await store.settle(sessionId, b.lease, { kind: "revoked" }) });
+    if (b.outcome !== "unavailable" || !boundedInt(b.retryAfterMs, 0, 900_000))
+      return sendJson(res, 400, { error: "invalid_outcome" });
+    return sendJson(res, 200, {
+      settled: await store.settle(sessionId, b.lease, { kind: "unavailable", retryAfterMs: b.retryAfterMs }),
+    });
   }
   return sendJson(res, 200, { refreshToken: await store.end(sessionId) });
 }

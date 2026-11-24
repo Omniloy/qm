@@ -1,6 +1,6 @@
 import type { EmailAdmission } from "../../chassis/src/external-members.ts";
 import { createHash, randomBytes } from "node:crypto";
-import { createRemoteJWKSet, customFetch, jwtVerify, type JWTPayload } from "jose";
+import { createRemoteJWKSet, customFetch, errors, jwtVerify, type JWTPayload } from "jose";
 
 type FetchLike = typeof fetch;
 
@@ -136,6 +136,7 @@ export interface IalabsConfig {
   audience: string;
   clientId: string;
   redirectUri: string;
+  timeoutMs?: number;
 }
 
 interface IalabsTokens {
@@ -154,7 +155,35 @@ interface IalabsIdentity {
 
 export class IalabsRejectedError extends Error {}
 
-const IALABS_TIMEOUT_MS = 8_000;
+export class IalabsUnavailableError extends Error {
+  readonly retryAfterMs: number;
+  constructor(message: string, retryAfterMs: number) {
+    super(message);
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+export class IalabsInvalidTokenError extends Error {}
+
+export const IALABS_TIMEOUT_MS = 25_000;
+const IALABS_RETRY_AFTER_MS = 60_000;
+const UNSENT_CODES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"]);
+const INVALID_TOKEN_ERRORS = [
+  errors.JWTClaimValidationFailed,
+  errors.JWSSignatureVerificationFailed,
+  errors.JWSInvalid,
+  errors.JWTInvalid,
+  errors.JOSEAlgNotAllowed,
+  errors.JOSENotSupported,
+  errors.JWKSNoMatchingKey,
+];
+
+function retryAfterMs(header: string | null): number {
+  const seconds = Number(header);
+  if (header?.trim() && Number.isFinite(seconds)) return Math.min(Math.max(seconds * 1000, 1000), 900_000);
+  const date = header ? Date.parse(header) : NaN;
+  return Number.isFinite(date) ? Math.min(Math.max(date - Date.now(), 1000), 900_000) : IALABS_RETRY_AFTER_MS;
+}
 
 export function buildIalabsAuthorizeUrl(cfg: IalabsConfig, args: { state: string; challenge: string }): string {
   const u = new URL(`${cfg.baseUrl}/api/auth/authorize`);
@@ -172,17 +201,32 @@ async function postIalabs(
   body: Record<string, string>,
   fetchImpl: FetchLike,
 ): Promise<Response> {
-  const r = await fetchImpl(`${cfg.baseUrl}${path}`, {
-    method: "POST",
-    headers: { "content-type": "application/json", accept: "application/json" },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(IALABS_TIMEOUT_MS),
-  });
-  if (r.status >= 400 && r.status < 500 && r.status !== 408 && r.status !== 429) {
+  let r: Response;
+  try {
+    r = await fetchImpl(`${cfg.baseUrl}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(cfg.timeoutMs ?? IALABS_TIMEOUT_MS),
+    });
+  } catch (error) {
+    const cause = error instanceof Error ? error.cause : undefined;
+    const code = cause && typeof cause === "object" && "code" in cause ? cause.code : undefined;
+    if (typeof code === "string" && UNSENT_CODES.has(code))
+      throw new IalabsUnavailableError(`ialabs auth unreachable: ${code}`, IALABS_RETRY_AFTER_MS);
+    throw error;
+  }
+  if (r.status === 401 || r.status === 403) {
     const json = await readJson(r, "ialabs auth").catch(() => ({}) as Record<string, unknown>);
     throw new IalabsRejectedError(`ialabs auth refused: ${String(json.code ?? `HTTP ${r.status}`)}`);
   }
-  if (!r.ok) throw new Error(`ialabs auth unavailable: HTTP ${r.status}`);
+  if (!r.ok) {
+    await r.body?.cancel().catch(() => undefined);
+    throw new IalabsUnavailableError(
+      `ialabs auth unavailable: HTTP ${r.status}`,
+      retryAfterMs(r.headers.get("retry-after")),
+    );
+  }
   return r;
 }
 
@@ -230,17 +274,24 @@ export async function verifyIalabsAccessToken(
   accessToken: string,
   fetchImpl: FetchLike = fetch,
 ): Promise<IalabsIdentity> {
-  const { payload } = await jwtVerify(accessToken, keySetFor(`${cfg.baseUrl}/.well-known/jwks.json`, fetchImpl), {
-    issuer: cfg.issuer,
-    audience: cfg.audience,
-    algorithms: ["RS256"],
-    requiredClaims: ["sub", "exp"],
-    clockTolerance: 5,
-  });
-  if (payload.pty !== "user") throw new Error("the token was not issued to a person");
-  if (payload.client_id !== cfg.clientId) throw new Error("the token was issued to another app");
+  let payload: JWTPayload;
+  try {
+    ({ payload } = await jwtVerify(accessToken, keySetFor(`${cfg.baseUrl}/.well-known/jwks.json`, fetchImpl), {
+      issuer: cfg.issuer,
+      audience: cfg.audience,
+      algorithms: ["RS256"],
+      requiredClaims: ["sub", "exp"],
+      clockTolerance: 5,
+    }));
+  } catch (error) {
+    if (INVALID_TOKEN_ERRORS.some((kind) => error instanceof kind))
+      throw new IalabsInvalidTokenError((error as Error).message);
+    throw error;
+  }
+  if (payload.pty !== "user") throw new IalabsInvalidTokenError("the token was not issued to a person");
+  if (payload.client_id !== cfg.clientId) throw new IalabsInvalidTokenError("the token was issued to another app");
   if (typeof payload.email !== "string" || !payload.email.includes("@"))
-    throw new Error("identity provider returned no email");
+    throw new IalabsInvalidTokenError("identity provider returned no email");
   return {
     sub: payload.sub!,
     email: payload.email.trim().toLowerCase(),
