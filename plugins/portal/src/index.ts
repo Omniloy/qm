@@ -1865,7 +1865,12 @@ async function ialabsIdentity(
 
 export function bootChecks(): void {
   const problems: string[] = [];
-  if (!AUTH_BROKER_UPSTREAM && originOf(OIDC.authEndpoint) && originOf(OIDC.authEndpoint) === originOf(PUBLIC_URL)) {
+  if (
+    !IALABS &&
+    !AUTH_BROKER_UPSTREAM &&
+    originOf(OIDC.authEndpoint) &&
+    originOf(OIDC.authEndpoint) === originOf(PUBLIC_URL)
+  ) {
     problems.push(
       "OIDC_AUTH_ENDPOINT is on the portal's own origin but AUTH_BROKER_UPSTREAM is unset — every sign-in would redirect from /auth/login back into the portal forever; wire AUTH_BROKER_UPSTREAM to the auth service or point OIDC_AUTH_ENDPOINT at a real identity provider",
     );
@@ -1913,6 +1918,22 @@ export function bootChecks(): void {
   if (APPS_DOMAIN && COOKIE_DOMAIN && !hostIsWithinDomain(APPS_DOMAIN, COOKIE_DOMAIN)) {
     problems.push(`PORTAL_COOKIE_DOMAIN (${COOKIE_DOMAIN}) must cover PORTAL_APPS_DOMAIN (${APPS_DOMAIN})`);
   }
+  if (PORTAL_IDP !== "oidc" && PORTAL_IDP !== "ialabs") {
+    problems.push(`PORTAL_IDP must be "oidc" or "ialabs" (got "${PORTAL_IDP}")`);
+  }
+  if (IALABS) {
+    if (!originOf(IALABS.baseUrl)) problems.push("IALABS_AUTH_URL is required when PORTAL_IDP=ialabs");
+    if (isMissingOrPlaceholder(IALABS.issuer)) problems.push("IALABS_AUTH_ISSUER is required when PORTAL_IDP=ialabs");
+    if (isMissingOrPlaceholder(IALABS.clientId)) problems.push("OIDC_CLIENT_ID is required when PORTAL_IDP=ialabs");
+    if (PRINCIPAL_RULE.claim !== "email") problems.push("PORTAL_IDP=ialabs requires OIDC_PRINCIPAL_CLAIM=email");
+    if (OIDC.expectedTeamId !== undefined) problems.push("PORTAL_EXPECTED_TEAM_ID applies only to Slack OIDC");
+    if (!Number.isInteger(IALABS_REFRESH_AFTER_S) || IALABS_REFRESH_AFTER_S < 60 || IALABS_REFRESH_AFTER_S > 3600) {
+      problems.push("IALABS_REFRESH_AFTER_S must be an integer between 60 and 3600");
+    }
+    if (!Number.isInteger(IALABS_REAUTH_BEFORE_S) || IALABS_REAUTH_BEFORE_S < 0 || IALABS_REAUTH_BEFORE_S > 259200) {
+      problems.push("IALABS_REAUTH_BEFORE_S must be an integer between 0 and 259200");
+    }
+  }
   if (PRINCIPAL_RULE.claim !== "sub" && PRINCIPAL_RULE.claim !== "email") {
     problems.push(`OIDC_PRINCIPAL_CLAIM must be "sub" or "email" (got "${PRINCIPAL_RULE.claim}")`);
   }
@@ -1934,7 +1955,7 @@ export function bootChecks(): void {
       problems.push("CORE_SIGNING_SECRET is required and may not be a placeholder in production");
     if (isMissingOrPlaceholder(OIDC.clientId))
       problems.push("OIDC_CLIENT_ID is required and may not be a placeholder in production");
-    if (isMissingOrPlaceholder(OIDC.clientSecret))
+    if (!IALABS && isMissingOrPlaceholder(OIDC.clientSecret))
       problems.push("OIDC_CLIENT_SECRET is required and may not be a placeholder in production");
     if (
       PRINCIPAL_RULE.allowedEmailDomain &&
@@ -1962,19 +1983,22 @@ export function bootChecks(): void {
     if (OIDC.expectedTeamId !== undefined && isMissingOrPlaceholder(OIDC.expectedTeamId)) {
       problems.push("PORTAL_EXPECTED_TEAM_ID is optional, but may not be a placeholder when configured");
     }
-    if (!isSlackIssuer(OIDC.issuer) && !OIDC_JWKS_CONFIGURED) {
+    if (!IALABS && !isSlackIssuer(OIDC.issuer) && !OIDC_JWKS_CONFIGURED) {
       problems.push("OIDC_JWKS_URI is required for a non-Slack issuer");
     }
     if (SESSION_SECRET && CORE_SIGNING_SECRET && SESSION_SECRET === CORE_SIGNING_SECRET) {
       problems.push("PORTAL_SESSION_SECRET must differ from CORE_SIGNING_SECRET");
     }
     if (!PUBLIC_URL.startsWith("https://")) problems.push("PORTAL_PUBLIC_URL must be https in production");
-    if (!OIDC.authEndpoint.startsWith("https://")) {
+    if (IALABS && !IALABS.baseUrl.startsWith("https://")) {
+      problems.push(`IALABS_AUTH_URL must be https, since the browser is sent there: ${IALABS.baseUrl}`);
+    }
+    if (!IALABS && !OIDC.authEndpoint.startsWith("https://")) {
       problems.push(`OIDC_AUTH_ENDPOINT must be https, since the browser is sent there: ${OIDC.authEndpoint}`);
     }
     const brokerOrigin =
       AUTH_BROKER_UPSTREAM && isPrivateNetworkUrl(AUTH_BROKER_UPSTREAM) ? originOf(AUTH_BROKER_UPSTREAM) : "";
-    for (const ep of [OIDC.tokenEndpoint, OIDC.userinfoEndpoint, OIDC.jwksUri]) {
+    for (const ep of IALABS ? [] : [OIDC.tokenEndpoint, OIDC.userinfoEndpoint, OIDC.jwksUri]) {
       if (!ep.startsWith("https://") && !(brokerOrigin && originOf(ep) === brokerOrigin)) {
         problems.push(`OIDC endpoint must be https unless it is the built-in broker on the private network: ${ep}`);
       }
@@ -1985,10 +2009,10 @@ export function bootChecks(): void {
           "AUTH_BROKER_UPSTREAM must address a private-network host, since the broker is never exposed directly",
         );
       }
-      if (OIDC.issuer !== `${PUBLIC_URL}${AUTH_BROKER_PREFIX}`) {
+      if (!IALABS && OIDC.issuer !== `${PUBLIC_URL}${AUTH_BROKER_PREFIX}`) {
         problems.push(`OIDC_ISSUER must be ${PUBLIC_URL}${AUTH_BROKER_PREFIX} when the built-in broker is wired`);
       }
-      if (OIDC.authEndpoint !== `${PUBLIC_URL}${AUTH_BROKER_PREFIX}/authorize`) {
+      if (!IALABS && OIDC.authEndpoint !== `${PUBLIC_URL}${AUTH_BROKER_PREFIX}/authorize`) {
         problems.push(
           `OIDC_AUTH_ENDPOINT must be ${PUBLIC_URL}${AUTH_BROKER_PREFIX}/authorize when the built-in broker is wired`,
         );

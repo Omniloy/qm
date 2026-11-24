@@ -260,6 +260,56 @@ The OIDC client is generic, so Google is pure config. One-time setup:
    **once**: `scripts/migrate-principals-to-email.mjs` (dry-run by default; see its header).
    Update the core's `ADMIN_GRANTS` to emails in the same change.
 
+### ialabs-auth-service (MS-AUTH) sign-in
+
+`PORTAL_IDP=ialabs` replaces generic OIDC with ialabs-auth-service, which brokers Entra ID.
+It is not OIDC: there is no id_token, userinfo, or discovery. The portal is a public client
+of the MS-AUTH catalog (no client secret) and does what a browser app such as people-app
+does, server side:
+
+1. `/auth/login` redirects to `{IALABS_AUTH_URL}/api/auth/authorize` with `client_id`,
+   `redirect_uri`, `code_challenge` (S256), and `state`.
+2. `/auth/callback` posts `{code, code_verifier, redirect_uri}` to `/api/tokens`, verifies
+   the access token against `/.well-known/jwks.json` (RS256, `iss` = `IALABS_AUTH_ISSUER`,
+   `aud` contains `IALABS_AUTH_AUDIENCE`, `pty` = `user`, `client_id` = `OIDC_CLIENT_ID`), and
+   signs in the lowercased `email` through the same allowlist, domain, and invitation rules
+   as OIDC. MS-AUTH only issues tokens for Entra accounts, so the email counts as verified.
+   An `error=access_denied` callback (no access to the app) shows the sign-in error page.
+3. The MS-AUTH refresh token never reaches the browser. Core stores it encrypted (key derived
+   from `CONNECTOR_SECRET_KEY`, Postgres table `portal_sessions`), keyed by a session id sealed
+   in the `portal_session` cookie, through the signed `/v1/auth/portal-sessions` endpoints.
+4. A request on a session last checked more than `IALABS_REFRESH_AFTER_S` ago refreshes it
+   with MS-AUTH and stores the rotated token. Core leases the refresh, so one tab or instance
+   sends the token and the others wait for its result: MS-AUTH revokes the whole session when
+   a refresh token is reused. A refusal (401/403) ends the portal session: page loads go to
+   `/auth/login`, API calls get `401 {error: "sign in", loginUrl}`. A 5xx or timeout keeps the
+   session and retries on the next request. Deployed apps on the apps domain accept the
+   session only while its record exists.
+5. A page load within `IALABS_REAUTH_BEFORE_S` of the MS-AUTH session cap (7 days by default
+   in MS-AUTH) signs in again, usually silently through Entra SSO, so API calls never hit the
+   cap. Sign-out revokes the MS-AUTH session and deletes the record.
+
+```
+PORTAL_IDP=ialabs
+IALABS_AUTH_URL=https://labs.laberit.ai/auth
+IALABS_AUTH_ISSUER=<MS-AUTH TOKEN_ISSUER>
+IALABS_AUTH_AUDIENCE=qm
+OIDC_CLIENT_ID=qm
+OIDC_PRINCIPAL_CLAIM=email
+OIDC_ALLOWED_EMAIL_DOMAIN=<org domain>
+IALABS_REFRESH_AFTER_S=900
+IALABS_REAUTH_BEFORE_S=86400
+```
+
+The mode needs `IALABS_AUTH_URL` (https in production), `IALABS_AUTH_ISSUER`, and
+`OIDC_CLIENT_ID`; it does not need `OIDC_CLIENT_SECRET` or the other `OIDC_*` endpoints, and it
+refuses `PORTAL_EXPECTED_TEAM_ID` and `OIDC_PRINCIPAL_CLAIM=sub`. `IALABS_AUTH_AUDIENCE`
+defaults to `qm`; `IALABS_REFRESH_AFTER_S` (60–3600, default 900) and `IALABS_REAUTH_BEFORE_S`
+(0–259200, default 86400) are optional. Register the portal in MS-AUTH as an app whose
+`redirect_uris` include `https://<portal-host>/auth/callback` and whose services include the
+audience. Sessions minted by the other entries (invitation, admin login link, trusted entry)
+carry no MS-AUTH session and are not refreshed; a desktop handoff keeps the ialabs session.
+
 Secrets: `OIDC_CLIENT_SECRET`, `PORTAL_SESSION_SECRET`, and `PORTAL_IDENTITY_SECRET`; each must be
 distinct from `CORE_SIGNING_SECRET`.
 
