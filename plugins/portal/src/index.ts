@@ -282,6 +282,7 @@ async function ialabsSessionState(req: IncomingMessage, session: SessionClaims |
 
 const TMP_TTL_S = 600;
 const LOCAL_LOGOUT_COOKIE = "portal_local_logout";
+const SIGNED_OUT_COOKIE = "portal_signed_out";
 const CONSUMED_STATES_MAX = 10_000;
 export const consumedStates = new LRUCache<string, number>({ max: CONSUMED_STATES_MAX, ttl: 2 * TMP_TTL_S * 1000 });
 export function consumeState(state: string): boolean {
@@ -617,6 +618,18 @@ export function signInErrorHtml(
     extra: `<p class="reason"><strong>Details</strong>${escapeHtml(detail)}</p>`,
     actions: `<a class="btn primary" href="${retryPath}">Try signing in again</a>`,
     help: "Still stuck? Check that your account has access, then contact your admin.",
+  });
+}
+
+export function signedOutHtml(returnTo: string): string {
+  const again = `/auth/login?again=1&returnTo=${encodeURIComponent(returnTo)}`;
+  return cardPage({
+    title: "Signed out",
+    heading: "You're signed out",
+    msg: "You signed out of this browser. Sign in again whenever you're ready.",
+    icon: LOCK_ICON,
+    actions: `<a class="btn primary" href="${escapeHtml(again)}">Sign in</a>`,
+    help: "Signing in again may not ask for your password while your Microsoft session is still open.",
   });
 }
 
@@ -1134,6 +1147,9 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       ...(AUTH_BROKER_UPSTREAM ? [clearCookie("qm_idp_session", AUTH_BROKER_PREFIX, true)] : []),
       ...(LOCAL_AUTH_BYPASS && isLoopbackAddress(req.socket.remoteAddress)
         ? [setCookie(LOCAL_LOGOUT_COOKIE, "1", { path: "/", maxAge: SESSION_TTL_S, secure: SECURE_COOKIES })]
+        : []),
+      ...(IALABS
+        ? [setCookie(SIGNED_OUT_COOKIE, "1", { path: "/", maxAge: SESSION_TTL_S, secure: SECURE_COOKIES })]
         : []),
     ]);
     if (wantsHtml(req)) {
@@ -1801,6 +1817,10 @@ function authLogin(req: IncomingMessage, res: ServerResponse, url: URL): void {
     res.writeHead(302, { location: returnTo, "cache-control": "no-store" });
     return void res.end();
   }
+  const signedOut = readCookie(req.headers.cookie, SIGNED_OUT_COOKIE) === "1";
+  if (IALABS && signedOut && url.searchParams.get("again") !== "1") {
+    return sendHtml(res, 200, signedOutHtml(returnTo));
+  }
   const state = randomToken();
   const nonce = randomToken();
   const { verifier, challenge } = pkcePair();
@@ -1808,6 +1828,7 @@ function authLogin(req: IncomingMessage, res: ServerResponse, url: URL): void {
   const tmp: TmpClaims = { k: "tmp", state, nonce, pkceVerifier: verifier, returnTo, iat: now, exp: now + TMP_TTL_S };
   setSession(res, [
     setCookie("portal_oidc_tmp", seal(tmp, tmpKey), { path: "/auth", maxAge: TMP_TTL_S, secure: SECURE_COOKIES }),
+    ...(signedOut ? [clearCookie(SIGNED_OUT_COOKIE, "/", SECURE_COOKIES)] : []),
   ]);
   const location = IALABS
     ? buildIalabsAuthorizeUrl(IALABS, { state, challenge })

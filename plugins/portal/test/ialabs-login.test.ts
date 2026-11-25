@@ -507,6 +507,32 @@ test("sign-out revokes the MS-AUTH session and deletes the stored token", async 
   assert.ok(revoked.includes(token));
 });
 
+test("after sign-out the portal stays signed out instead of signing in again silently", async () => {
+  const { cookie } = seeded({ checkedAtMs: Date.now() });
+  const logout = await fetch(`${base}/auth/logout`, {
+    method: "POST",
+    headers: { cookie, origin, "sec-fetch-site": "same-origin" },
+    redirect: "manual",
+  });
+  assert.equal(cookieValue(logout, "portal_signed_out"), "1");
+  const signedOut = "portal_signed_out=1";
+  const login = await fetch(`${base}/auth/login?returnTo=%2Fchat`, {
+    headers: { cookie: signedOut },
+    redirect: "manual",
+  });
+  assert.equal(login.status, 200);
+  const html = await login.text();
+  assert.match(html, /You&#39;re signed out/);
+  assert.match(html, /href="\/auth\/login\?again=1&amp;returnTo=%2Fchat"/);
+  const again = await fetch(`${base}/auth/login?again=1&returnTo=%2Fchat`, {
+    headers: { cookie: signedOut },
+    redirect: "manual",
+  });
+  assert.equal(again.status, 302);
+  assert.equal(new URL(again.headers.get("location")!).searchParams.get("client_id"), "laberbrain");
+  assert.equal(cookieValue(again, "portal_signed_out"), "");
+});
+
 test("a 502 from MS-AUTH on refresh is ambiguous and holds the lease", async () => {
   const { sid } = seeded();
   const old = records.get(sid)!.refreshToken;
