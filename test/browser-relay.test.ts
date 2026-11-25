@@ -496,3 +496,15 @@ test("the browser the agent uses reconnecting keeps the agent's connection", () 
   assert.deepEqual(cdp.closed, [], "a worker restart mid-task does not end the task");
   assert.equal(again.sent.length, 1);
 });
+
+test("resume goes only to the browser the agent uses", () => {
+  const hub = createRelayHub();
+  const chrome = fake();
+  const dia = fake();
+  hub.attach(PERSON, "extension", chrome, CHROME);
+  hub.attach(PERSON, "extension", dia, DIA);
+  hub.setActive(PERSON, CHROME.id, Date.now());
+  hub.resume(PERSON);
+  assert.ok(chrome.sent.some((s) => parse(s).qm === "resume"));
+  assert.ok(!dia.sent.some((s) => parse(s).qm === "resume"));
+});

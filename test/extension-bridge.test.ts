@@ -130,7 +130,9 @@ function install(opts: {
           return out;
         },
         set: async (patch: Record<string, unknown>) => void Object.assign(store, patch),
-        remove: async (key: string) => void delete store[key],
+        remove: async (key: string | string[]) => {
+          for (const k of Array.isArray(key) ? key : [key]) delete store[k];
+        },
       },
     },
     tabs: {
@@ -252,7 +254,7 @@ function install(opts: {
     runtime: {
       id: "test",
       getURL: (p: string) => `chrome-extension://test/${p}`,
-      getManifest: () => ({ version: "0.2.6" }),
+      getManifest: () => ({ version: "0.2.7" }),
       onMessage: on("message"),
       onStartup: on("startup"),
       onInstalled: on("installed"),
@@ -1537,7 +1539,7 @@ test("each browser connects with its own lasting identity, so two browsers never
   const id = first.searchParams.get("browser") ?? "";
   assert.match(id, /^[A-Za-z0-9-]{8,64}$/);
   assert.equal(h.store.browserId, id, "kept, so a restart is the same browser");
-  assert.equal(first.searchParams.get("v"), "0.2.6");
+  assert.equal(first.searchParams.get("v"), "0.2.7");
   assert.ok(first.searchParams.get("name"));
 
   h.sockets.at(-1)!.close();
@@ -1685,4 +1687,27 @@ test("Stop pressed while a dropped tab is being reclaimed ends the reclaim", asy
   h.fire("detach", { tabId: 7 }, "target_closed");
   await new Promise((r) => setTimeout(r, 200));
   assert.ok(!h.live.has(7), "nothing re-attaches after Stop");
+});
+
+test("the person choosing this browser in the Keychain lifts a Stop, and the agent can work again", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD });
+  await bootWorker();
+  await booted(h);
+  await h.message({ type: "stop-sharing" });
+  assert.equal((await h.message({ type: "status" })).stopped, true);
+
+  h.sockets.at(-1)!.onmessage?.({ data: JSON.stringify({ qm: "resume" }) });
+
+  assert.ok(await until(() => !("stopped" in h.store)), "and it is remembered");
+  assert.equal((await h.message({ type: "status" })).stopped, false);
+});
+
+test("a command frame cannot pretend to be the Keychain's resume", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD });
+  await bootWorker();
+  await booted(h);
+  await h.message({ type: "stop-sharing" });
+  h.sockets.at(-1)!.onmessage?.({ data: JSON.stringify({ id: 5, qm: "resume", method: "Runtime.evaluate" }) });
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal((await h.message({ type: "status" })).stopped, true);
 });

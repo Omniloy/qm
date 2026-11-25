@@ -431,6 +431,13 @@ function release() {
   });
 }
 
+async function resume() {
+  await settle(async () => {
+    stopped = false;
+    await chrome.storage.local.remove(["stopped", "pendingDetach"]).catch(() => {});
+  });
+}
+
 async function stop() {
   stopped = true;
   await chrome.storage.local.set({ stopped: true }).catch(() => {});
@@ -689,6 +696,10 @@ function connect() {
       }
       if (frame?.qm === "origins" && frame.id === undefined && typeof frame.app === "string") {
         void learnApp(frame.app);
+        return;
+      }
+      if (frame?.qm === "resume" && frame.id === undefined) {
+        if (socket === ws) void resume();
         return;
       }
       if (frame?.qm === "active" && frame.id === undefined && typeof frame.active === "boolean") {

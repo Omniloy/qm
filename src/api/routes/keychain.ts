@@ -276,6 +276,7 @@ async function handleKeychain(ctx: ApiCtx): Promise<void> {
         }
       }
       deps.config.setBrowserProvider(personalScope(actorId), wanted);
+      if (wanted === EXTENSION_BROWSER_ID) deps.browserRelay?.resume(actorId);
       audit(deps, {
         principalId: actorId,
         action: "keychain.browser",

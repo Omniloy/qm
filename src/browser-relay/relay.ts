@@ -43,6 +43,7 @@ export interface RelayHub {
   disconnect(principalId: string, reason: string): void;
   deliver(principalId: string, side: RelaySide, raw: string, socket?: RelaySocket): void;
   setActive(principalId: string, browserId: string | null | undefined, at: number): void;
+  resume(principalId: string): void;
   connected(principalId: string): { extension: boolean; cdp: boolean; sharing: boolean };
   describe(principalId: string): { title?: string; url?: string } | null;
   browsers(principalId: string): { active: string | null | undefined; live: LiveBrowser[] };
@@ -260,6 +261,12 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
       pair.activeAt = at;
       if (pair.active !== browserId) choose(pair, browserId);
       prune(principalId, pair);
+    },
+
+    resume(principalId) {
+      const pair = pairs.get(principalId);
+      const target = pair ? targetOf(pair) : undefined;
+      target?.socket.send(JSON.stringify({ qm: "resume" }));
     },
 
     connected(principalId) {
