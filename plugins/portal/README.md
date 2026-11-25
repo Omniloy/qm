@@ -271,7 +271,7 @@ does, server side:
    `redirect_uri`, `code_challenge` (S256), and `state`.
 2. `/auth/callback` posts `{code, code_verifier, redirect_uri}` to `/api/tokens`, verifies
    the access token against `/.well-known/jwks.json` (RS256, `iss` = `IALABS_AUTH_ISSUER`,
-   `aud` contains `IALABS_AUTH_AUDIENCE`, `pty` = `user`, `client_id` = `OIDC_CLIENT_ID`), and
+   `aud` contains `IALABS_AUTH_AUDIENCE`, `pty` = `user`, `client_id` = `laberbrain`), and
    signs in the lowercased `email` through the same allowlist, domain, and invitation rules
    as OIDC. MS-AUTH only issues tokens for Entra accounts, so the email counts as verified.
    An `error=access_denied` callback (no access to the app) shows the sign-in error page.
@@ -325,18 +325,15 @@ does, server side:
 PORTAL_IDP=ialabs
 IALABS_AUTH_URL=https://labs.laberit.ai/auth
 IALABS_AUTH_ISSUER=<MS-AUTH TOKEN_ISSUER>
-IALABS_AUTH_AUDIENCE=laberbrain
-OIDC_CLIENT_ID=laberbrain
 OIDC_PRINCIPAL_CLAIM=email
 OIDC_ALLOWED_EMAIL_DOMAIN=<org domain>
 IALABS_REFRESH_AFTER_S=900
 IALABS_REAUTH_BEFORE_S=86400
 ```
 
-The mode needs `IALABS_AUTH_URL` (https in production), `IALABS_AUTH_ISSUER`, and
-`OIDC_CLIENT_ID`; it does not need `OIDC_CLIENT_SECRET` or the other `OIDC_*` endpoints, and it
+The mode needs `IALABS_AUTH_URL` (https in production) and `IALABS_AUTH_ISSUER`; the MS-AUTH app id is fixed to `laberbrain`. It does not need `OIDC_CLIENT_SECRET` or the other `OIDC_*` endpoints, and it
 refuses `PORTAL_EXPECTED_TEAM_ID` and `OIDC_PRINCIPAL_CLAIM=sub`. `IALABS_AUTH_AUDIENCE`
-defaults to `OIDC_CLIENT_ID`; `IALABS_REFRESH_AFTER_S` (60–3600, default 900) and `IALABS_REAUTH_BEFORE_S`
+defaults to `laberbrain`; `IALABS_REFRESH_AFTER_S` (60–3600, default 900) and `IALABS_REAUTH_BEFORE_S`
 (0–259200, default 86400) are optional. Register the portal in MS-AUTH as an app whose
 `redirect_uris` include `https://<portal-host>/auth/callback` and whose services include the
 audience. Sessions minted by the other entries (invitation, admin login link, trusted entry)

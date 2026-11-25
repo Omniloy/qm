@@ -186,13 +186,14 @@ const OIDC: OidcConfig = {
 };
 const OIDC_JWKS_CONFIGURED = Boolean(process.env.OIDC_JWKS_URI?.trim());
 const PORTAL_IDP = process.env.PORTAL_IDP?.trim() || "oidc";
+const IALABS_CLIENT_ID = "laberbrain";
 const IALABS: IalabsConfig | null =
   PORTAL_IDP === "ialabs"
     ? {
         baseUrl: (process.env.IALABS_AUTH_URL ?? "").trim().replace(/\/$/, ""),
         issuer: process.env.IALABS_AUTH_ISSUER?.trim() ?? "",
-        audience: process.env.IALABS_AUTH_AUDIENCE?.trim() || OIDC.clientId,
-        clientId: OIDC.clientId,
+        audience: process.env.IALABS_AUTH_AUDIENCE?.trim() || IALABS_CLIENT_ID,
+        clientId: IALABS_CLIENT_ID,
         redirectUri: OIDC.redirectUri,
       }
     : null;
@@ -1964,7 +1965,6 @@ export function bootChecks(): void {
   if (IALABS) {
     if (!originOf(IALABS.baseUrl)) problems.push("IALABS_AUTH_URL is required when PORTAL_IDP=ialabs");
     if (isMissingOrPlaceholder(IALABS.issuer)) problems.push("IALABS_AUTH_ISSUER is required when PORTAL_IDP=ialabs");
-    if (isMissingOrPlaceholder(IALABS.clientId)) problems.push("OIDC_CLIENT_ID is required when PORTAL_IDP=ialabs");
     if (PRINCIPAL_RULE.claim !== "email") problems.push("PORTAL_IDP=ialabs requires OIDC_PRINCIPAL_CLAIM=email");
     if (OIDC.expectedTeamId !== undefined) problems.push("PORTAL_EXPECTED_TEAM_ID applies only to Slack OIDC");
     if (!Number.isInteger(IALABS_REFRESH_AFTER_S) || IALABS_REFRESH_AFTER_S < 60 || IALABS_REFRESH_AFTER_S > 3600) {
@@ -1993,7 +1993,7 @@ export function bootChecks(): void {
       problems.push("PORTAL_SESSION_SECRET is required and may not be a placeholder in production");
     if (isMissingOrPlaceholder(CORE_SIGNING_SECRET))
       problems.push("CORE_SIGNING_SECRET is required and may not be a placeholder in production");
-    if (isMissingOrPlaceholder(OIDC.clientId))
+    if (!IALABS && isMissingOrPlaceholder(OIDC.clientId))
       problems.push("OIDC_CLIENT_ID is required and may not be a placeholder in production");
     if (!IALABS && isMissingOrPlaceholder(OIDC.clientSecret))
       problems.push("OIDC_CLIENT_SECRET is required and may not be a placeholder in production");

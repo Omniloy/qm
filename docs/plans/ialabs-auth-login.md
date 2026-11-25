@@ -107,7 +107,6 @@ and in `bootChecks`. `trusted-entry.ts` uses the same helpers and is left on gen
 PORTAL_IDP=ialabs
 IALABS_AUTH_URL=https://labs.laberit.ai/auth
 IALABS_AUTH_ISSUER=<MS-AUTH TOKEN_ISSUER>
-OIDC_CLIENT_ID=laberbrain
 OIDC_PRINCIPAL_CLAIM=email
 OIDC_ALLOWED_EMAIL_DOMAIN=laberit.com
 ```
