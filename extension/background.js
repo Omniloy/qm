@@ -55,6 +55,7 @@ let socket = null;
 let attachedTabId = null;
 let lastRefusal = null;
 let attachments = 0;
+const reclaims = new Map();
 const enabledDomains = new Map();
 let previousTabId = null;
 let stopped = false;
@@ -320,7 +321,11 @@ function removeForeignFrames() {
 
 function clearForeignFrames(tabId) {
   return withTimeout(
-    chrome.scripting.executeScript({ target: { tabId, allFrames: true }, func: removeForeignFrames }),
+    chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: removeForeignFrames,
+      injectImmediately: true,
+    }),
     DRIVE_CHECK_MS,
   ).catch(() => {});
 }
@@ -720,7 +725,7 @@ async function reattach(tabId, seen) {
       if (await debuggerOn(tabId)) return;
       attachedTabId = null;
       await fallBack(tabId);
-      throw e;
+      throw new Error(refusalOf(e), { cause: e });
     }
     for (const [method, params] of [...enabledDomains]) {
       await chrome.debugger.sendCommand({ tabId }, method, params).catch(() => {});
@@ -729,8 +734,9 @@ async function reattach(tabId, seen) {
 }
 
 async function debuggerOn(tabId) {
-  const targets = await chrome.debugger.getTargets().catch(() => []);
-  return targets.some((target) => target.tabId === tabId && target.attached);
+  return withTimeout(chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", { expression: "1" }), DRIVE_CHECK_MS)
+    .then(() => true)
+    .catch(() => false);
 }
 
 function retryable(error) {
@@ -806,8 +812,10 @@ chrome.debugger.onDetach.addListener((source, reason) => {
     await settle(async () => {
       if (tabId !== attachedTabId) return;
       attachedTabId = null;
-      if (reason !== "replaced_with_devtools") {
-        for (let attempt = 0; attempt < 4; attempt += 1) {
+      const recent = (reclaims.get(tabId) ?? []).filter((at) => Date.now() - at < 30_000);
+      reclaims.set(tabId, [...recent, Date.now()]);
+      if (reason !== "replaced_with_devtools" && recent.length < 5) {
+        for (let attempt = 0; attempt < 4 && !stopped; attempt += 1) {
           if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 300 * attempt));
           if (!(await chrome.tabs.get(tabId).catch(() => null))) break;
           if (await claim(tabId)) {
@@ -816,7 +824,6 @@ chrome.debugger.onDetach.addListener((source, reason) => {
             }
             return;
           }
-          await clearForeignFrames(tabId);
         }
       }
       await fallBack(tabId);
@@ -839,6 +846,7 @@ chrome.webNavigation.onCreatedNavigationTarget.addListener(({ sourceTabId, tabId
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   openedBy.delete(tabId);
+  reclaims.delete(tabId);
   void (async () => {
     await ready;
     await lose(tabId);

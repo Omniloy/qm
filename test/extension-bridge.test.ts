@@ -252,7 +252,7 @@ function install(opts: {
     runtime: {
       id: "test",
       getURL: (p: string) => `chrome-extension://test/${p}`,
-      getManifest: () => ({ version: "0.2.5" }),
+      getManifest: () => ({ version: "0.2.6" }),
       onMessage: on("message"),
       onStartup: on("startup"),
       onInstalled: on("installed"),
@@ -1537,7 +1537,7 @@ test("each browser connects with its own lasting identity, so two browsers never
   const id = first.searchParams.get("browser") ?? "";
   assert.match(id, /^[A-Za-z0-9-]{8,64}$/);
   assert.equal(h.store.browserId, id, "kept, so a restart is the same browser");
-  assert.equal(first.searchParams.get("v"), "0.2.5");
+  assert.equal(first.searchParams.get("v"), "0.2.6");
   assert.ok(first.searchParams.get("name"));
 
   h.sockets.at(-1)!.close();
@@ -1655,4 +1655,34 @@ test("a reconnect that cannot get back in lets go of the tab instead of leaving 
 
   assert.ok(reply.error, "the command fails");
   assert.ok(await until(() => h.store.attachedTabId !== 7), "and the tab is not left looking driven");
+});
+
+test("a tab that keeps getting taken away is given up on rather than reclaimed forever", async () => {
+  const h = install({
+    store: { ...PAIRED, attachedTabId: 7 },
+    tabs: { ...DASHBOARD, 3: { title: "Earlier", url: "https://earlier.example/" } },
+  });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+  for (let i = 0; i < 5; i += 1) {
+    h.live.delete(7);
+    h.fire("detach", { tabId: 7 }, "target_closed");
+    assert.ok(await until(() => h.live.has(7)), `reclaimed after drop ${i + 1}`);
+  }
+  h.live.delete(7);
+  h.fire("detach", { tabId: 7 }, "target_closed");
+  assert.ok(await until(() => h.store.attachedTabId !== 7), "the sixth drop in a short window lets go");
+});
+
+test("Stop pressed while a dropped tab is being reclaimed ends the reclaim", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD, stubbornFrames: [] });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+  await h.message({ type: "stop-sharing" });
+  h.live.delete(7);
+  h.fire("detach", { tabId: 7 }, "target_closed");
+  await new Promise((r) => setTimeout(r, 200));
+  assert.ok(!h.live.has(7), "nothing re-attaches after Stop");
 });
