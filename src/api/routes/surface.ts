@@ -1379,6 +1379,8 @@ async function getSurfaceConfig(ctx: ApiCtx): Promise<void> {
   const harnessId = deps.harnessId ?? "pi";
   const managedKeys = deps.modelCredentials ? await deps.modelCredentials.availability() : null;
   const configuredKeys = deps.providerKeys ?? managedKeys;
+  const storedHarnessAuth =
+    harnessId === "claude" && deps.harnessAuth ? (await deps.harnessAuth.status(harnessId)).configured : false;
   const providerStatus = harnessId === "pi" && managedKeys ? managedKeys : configuredKeys;
   const catalog = managedKeys?.openrouter
     ? await selectableModelCatalog(deps.modelCredentialFetch)
@@ -1408,7 +1410,8 @@ async function getSurfaceConfig(ctx: ApiCtx): Promise<void> {
         providerStatus.openai ||
         providerStatus.openrouter ||
         providerStatus.modelIds?.size ||
-        deps.harnessCarriedModelAuth,
+        deps.harnessCarriedModelAuth ||
+        storedHarnessAuth,
       ),
     }),
     externalSlackParticipants,

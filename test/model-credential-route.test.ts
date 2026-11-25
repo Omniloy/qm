@@ -35,6 +35,7 @@ function start(
     userModelCredentials: built.userModelCredentials,
     modelCredentialFetch,
     harnessId: config.harness ?? "pi",
+    harnessAuth: built.harnessAuth,
     ...(harnessCarriedModelAuth(appConfig) ? { harnessCarriedModelAuth: harnessCarriedModelAuth(appConfig) } : {}),
     providerKeys: providerKeysPresent(appConfig),
     admin: built.admin,
@@ -592,6 +593,18 @@ test("a claude harness without any token stays unconfigured", async () => {
     const providers = await fetch(`${srv.base}/v1/admin/model-providers`, { headers: ADMIN });
     assert.equal(providers.status, 200);
     assert.equal("harnessAuth" in ((await providers.json()) as Record<string, unknown>), false);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("a claude harness with a subscription token saved in admin counts as configured", async () => {
+  const srv = start({ harness: "claude" });
+  try {
+    await srv.built.harnessAuth.set("claude", "sk-ant-oat01-saved-in-admin", "admin-alice@default-org");
+    const surface = await fetch(`${srv.base}/v1/surface-config`);
+    assert.equal(surface.status, 200);
+    assert.equal(((await surface.json()) as { modelProviderConfigured?: boolean }).modelProviderConfigured, true);
   } finally {
     await srv.close();
   }
