@@ -76,6 +76,8 @@ function install(opts: {
   attachFails?: boolean;
   foreignFrames?: number[];
   stubbornFrames?: number[];
+  framesWhileAttached?: number[];
+  framesStayAfter?: number[];
   canDrive?: boolean;
   storageFailures?: number;
   activeTab?: number;
@@ -87,6 +89,8 @@ function install(opts: {
   );
   const attached: Array<{ tabId: number }> = [];
   const guarded: number[] = [];
+  const poisoned = new Set<number>();
+  const frameShown = new Set<number>();
   const detached: Array<{ tabId: number }> = [];
   const created: Harness["created"] = [];
   const removed: number[] = [];
@@ -152,15 +156,20 @@ function install(opts: {
     },
     webNavigation: { onCreatedNavigationTarget: on("opened") },
     debugger: {
+      getTargets: async () => [...live].map((tabId) => ({ tabId, attached: true })),
       attach: async ({ tabId }: { tabId: number }) => {
         if (opts.attachFails) throw new Error("Cannot access a chrome:// URL");
         if (opts.stubbornFrames?.includes(tabId) || (opts.foreignFrames?.includes(tabId) && !guarded.includes(tabId))) {
           throw new Error("Cannot access a chrome-extension:// URL of different extension");
         }
         if (live.has(tabId)) throw new Error(`Another debugger is already attached to the tab with id: ${tabId}.`);
+        if (poisoned.has(tabId) && opts.framesStayAfter?.includes(tabId)) {
+          throw new Error("Cannot access a chrome-extension:// URL of different extension");
+        }
         await attachGate;
         live.add(tabId);
         attached.push({ tabId });
+        if (!opts.framesStayAfter?.includes(tabId)) poisoned.delete(tabId);
       },
       detach: async ({ tabId }: { tabId: number }) => {
         if (!live.delete(tabId)) throw new Error(`Debugger is not attached to the tab with id: ${tabId}.`);
@@ -171,6 +180,15 @@ function install(opts: {
           throw new Error(`Debugger is not attached to the tab with id: ${tabId}`);
         }
         if (method === "Runtime.evaluate" && opts.hangs?.includes(tabId)) return new Promise(() => {});
+        if (poisoned.has(tabId) && method !== "Page.getFrameTree") {
+          throw new Error("Cannot access a chrome-extension:// URL of different extension");
+        }
+        if (method === "Page.enable" && opts.framesWhileAttached?.includes(tabId) && !frameShown.has(tabId)) {
+          frameShown.add(tabId);
+          poisoned.add(tabId);
+          commands.push({ tabId, method });
+          return {};
+        }
         commands.push({ tabId, method });
         sentParams.push({ method, params });
         const tab = tabs[tabId]!;
@@ -234,7 +252,7 @@ function install(opts: {
     runtime: {
       id: "test",
       getURL: (p: string) => `chrome-extension://test/${p}`,
-      getManifest: () => ({ version: "0.2.4" }),
+      getManifest: () => ({ version: "0.2.5" }),
       onMessage: on("message"),
       onStartup: on("startup"),
       onInstalled: on("installed"),
@@ -1519,7 +1537,7 @@ test("each browser connects with its own lasting identity, so two browsers never
   const id = first.searchParams.get("browser") ?? "";
   assert.match(id, /^[A-Za-z0-9-]{8,64}$/);
   assert.equal(h.store.browserId, id, "kept, so a restart is the same browser");
-  assert.equal(first.searchParams.get("v"), "0.2.4");
+  assert.equal(first.searchParams.get("v"), "0.2.5");
   assert.ok(first.searchParams.get("name"));
 
   h.sockets.at(-1)!.close();
@@ -1604,4 +1622,37 @@ test("a blank tab left from before is reused instead of opening another", async 
   await h.command(77, "Runtime.evaluate", { expression: "1" });
   assert.ok(await until(() => h.store.attachedTabId === 12));
   assert.equal(h.created.length, 0);
+});
+
+test("a frame that appears while attached is cleared, the agent's domains are restored, and the command goes through", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD, framesWhileAttached: [7] });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+  await h.command(80, "Page.enable", {});
+
+  const reply = await h.command(81, "Runtime.evaluate", { expression: "1" });
+
+  assert.ok(!reply.error, JSON.stringify(reply.error));
+  assert.ok(h.guarded.includes(7), "the frames were cleared");
+  const enables = h.commands.filter((c) => c.method === "Page.enable").length;
+  assert.ok(enables >= 2, "Page.enable was sent again on the new session");
+});
+
+test("a reconnect that cannot get back in lets go of the tab instead of leaving it half alive", async () => {
+  const h = install({
+    store: { ...PAIRED, attachedTabId: 7 },
+    tabs: DASHBOARD,
+    framesWhileAttached: [7],
+    framesStayAfter: [7],
+  });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+
+  await h.command(83, "Page.enable", {});
+  const reply = await h.command(82, "Runtime.evaluate", { expression: "1" });
+
+  assert.ok(reply.error, "the command fails");
+  assert.ok(await until(() => h.store.attachedTabId !== 7), "and the tab is not left looking driven");
 });

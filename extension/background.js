@@ -54,6 +54,7 @@ function refusalOf(error) {
 let socket = null;
 let attachedTabId = null;
 let lastRefusal = null;
+let attachments = 0;
 const enabledDomains = new Map();
 let previousTabId = null;
 let stopped = false;
@@ -325,12 +326,16 @@ function clearForeignFrames(tabId) {
 }
 
 async function attachTo(tabId) {
-  try {
-    await chrome.debugger.attach({ tabId }, PROTOCOL_VERSION);
-  } catch (e) {
-    if (!FOREIGN_FRAME.test(String((e && e.message) || e))) throw e;
-    await clearForeignFrames(tabId);
-    await chrome.debugger.attach({ tabId }, PROTOCOL_VERSION);
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await chrome.debugger.attach({ tabId }, PROTOCOL_VERSION);
+      attachments += 1;
+      return;
+    } catch (e) {
+      if (!FOREIGN_FRAME.test(String((e && e.message) || e)) || attempt >= 3) throw e;
+      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
+      await clearForeignFrames(tabId);
+    }
   }
 }
 
@@ -509,6 +514,41 @@ async function targetInfo() {
   };
 }
 
+function insertText(params) {
+  return settle(async () => {
+    const tabId = attachedTabId;
+    const want = originOf(String(params?.origin ?? ""));
+    const refuse = new Error(`refusing to type: the tab in use is not on ${params?.origin}`);
+    if (tabId === null || !want) throw refuse;
+    const here = await tabUrl(tabId);
+    const tree = await withTimeout(chrome.debugger.sendCommand({ tabId }, "Page.getFrameTree"), DRIVE_CHECK_MS);
+    const top = tree?.frameTree?.frame;
+    if (originOf(here ?? "") !== want || top?.securityOrigin !== want) throw refuse;
+    const world = await withTimeout(
+      chrome.debugger.sendCommand({ tabId }, "Page.createIsolatedWorld", {
+        frameId: top.id,
+        worldName: "qm-fill-check",
+      }),
+      DRIVE_CHECK_MS,
+    );
+    const probe = await withTimeout(
+      chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
+        expression: "document.activeElement ? document.activeElement.tagName : ''",
+        contextId: world?.executionContextId,
+        returnByValue: true,
+      }),
+      DRIVE_CHECK_MS,
+    );
+    if (/^(IFRAME|FRAME|OBJECT|EMBED)$/i.test(String(probe?.result?.value ?? ""))) throw refuse;
+    if (stopped) throw new Error(STOPPED_MESSAGE);
+    await withTimeout(
+      chrome.debugger.sendCommand({ tabId }, "Input.insertText", { text: String(params?.text ?? "") }),
+      DRIVE_CHECK_MS,
+    );
+    return {};
+  });
+}
+
 const LOCAL = {
   "Target.getTargets": async () => ({ targetInfos: [await targetInfo()] }),
   "Target.attachToTarget": async () => ({ sessionId: SESSION_ID }),
@@ -534,39 +574,16 @@ const LOCAL = {
     await release();
     return {};
   },
-  "qm.insertText": async (params) =>
-    settle(async () => {
-      const tabId = attachedTabId;
-      const want = originOf(String(params?.origin ?? ""));
-      const refuse = new Error(`refusing to type: the tab in use is not on ${params?.origin}`);
-      if (tabId === null || !want) throw refuse;
-      const here = await tabUrl(tabId);
-      const tree = await withTimeout(chrome.debugger.sendCommand({ tabId }, "Page.getFrameTree"), DRIVE_CHECK_MS);
-      const top = tree?.frameTree?.frame;
-      if (originOf(here ?? "") !== want || top?.securityOrigin !== want) throw refuse;
-      const world = await withTimeout(
-        chrome.debugger.sendCommand({ tabId }, "Page.createIsolatedWorld", {
-          frameId: top.id,
-          worldName: "qm-fill-check",
-        }),
-        DRIVE_CHECK_MS,
-      );
-      const probe = await withTimeout(
-        chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
-          expression: "document.activeElement ? document.activeElement.tagName : ''",
-          contextId: world?.executionContextId,
-          returnByValue: true,
-        }),
-        DRIVE_CHECK_MS,
-      );
-      if (/^(IFRAME|FRAME|OBJECT|EMBED)$/i.test(String(probe?.result?.value ?? ""))) throw refuse;
-      if (stopped) throw new Error(STOPPED_MESSAGE);
-      await withTimeout(
-        chrome.debugger.sendCommand({ tabId }, "Input.insertText", { text: String(params?.text ?? "") }),
-        DRIVE_CHECK_MS,
-      );
-      return {};
-    }),
+  "qm.insertText": async (params) => {
+    const seen = attachments;
+    try {
+      return await insertText(params);
+    } catch (e) {
+      if (!retryable(e) || attachedTabId === null) throw e;
+      await reattach(attachedTabId, seen);
+      return insertText(params);
+    }
+  },
 };
 
 async function onCommand(frame) {
@@ -692,25 +709,42 @@ function connect() {
   })();
 }
 
-async function reattach(tabId) {
+async function reattach(tabId, seen) {
   await settle(async () => {
-    if (attachedTabId !== tabId) return;
+    if (attachedTabId !== tabId || attachments !== seen) return;
     await chrome.debugger.detach({ tabId }).catch(() => {});
     await clearForeignFrames(tabId);
-    await attachTo(tabId);
+    try {
+      await attachTo(tabId);
+    } catch (e) {
+      if (await debuggerOn(tabId)) return;
+      attachedTabId = null;
+      await fallBack(tabId);
+      throw e;
+    }
     for (const [method, params] of [...enabledDomains]) {
       await chrome.debugger.sendCommand({ tabId }, method, params).catch(() => {});
     }
   });
 }
 
+async function debuggerOn(tabId) {
+  const targets = await chrome.debugger.getTargets().catch(() => []);
+  return targets.some((target) => target.tabId === tabId && target.attached);
+}
+
+function retryable(error) {
+  return /not attached|URL of different extension/i.test(String((error && error.message) || error));
+}
+
 async function sendToDriven(tabId, method, params) {
+  const seen = attachments;
   try {
     return await chrome.debugger.sendCommand({ tabId }, method, params);
   } catch (e) {
     const reason = String((e && e.message) || e);
-    if (!/not attached|URL of different extension/i.test(reason)) throw e;
-    if (FOREIGN_FRAME.test(reason)) await reattach(tabId).catch(() => {});
+    if (!retryable(e)) throw e;
+    if (FOREIGN_FRAME.test(reason)) await reattach(tabId, seen).catch(() => {});
     else await new Promise((resolve) => setTimeout(resolve, 300));
     while (pending) await pending;
     if (attachedTabId !== tabId) throw e;
@@ -772,11 +806,18 @@ chrome.debugger.onDetach.addListener((source, reason) => {
     await settle(async () => {
       if (tabId !== attachedTabId) return;
       attachedTabId = null;
-      if (reason !== "replaced_with_devtools" && (await claim(tabId))) {
-        for (const [method, params] of [...enabledDomains]) {
-          await chrome.debugger.sendCommand({ tabId }, method, params).catch(() => {});
+      if (reason !== "replaced_with_devtools") {
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 300 * attempt));
+          if (!(await chrome.tabs.get(tabId).catch(() => null))) break;
+          if (await claim(tabId)) {
+            for (const [method, params] of [...enabledDomains]) {
+              await chrome.debugger.sendCommand({ tabId }, method, params).catch(() => {});
+            }
+            return;
+          }
+          await clearForeignFrames(tabId);
         }
-        return;
       }
       await fallBack(tabId);
     });

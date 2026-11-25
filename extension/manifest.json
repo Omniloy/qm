@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "QM Browser Bridge",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Lets your QM agent use the tabs in this browser, so it works with your own sign-ins.",
   "permissions": ["debugger", "storage", "tabs", "alarms", "scripting", "webNavigation"],
   "host_permissions": ["<all_urls>"],
