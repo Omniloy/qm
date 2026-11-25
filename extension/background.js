@@ -40,9 +40,18 @@ const STOPPED_MESSAGE =
   "they stopped QM using their Chrome — it stays off until they press Share this tab in the Browser Bridge extension";
 const OFF_LIMITS_MESSAGE =
   "that tab cannot be driven — only web pages are; Chrome's own pages, extensions and local files stay off limits";
+const FOREIGN_FRAME_MESSAGE =
+  "Chrome will not let the Browser Bridge control that tab because another extension has put its own frame into the page — usually a password manager's autofill menu (Bitwarden, 1Password) or Chrome's PDF viewer";
+
+function refusalOf(error) {
+  const reason = String((error && error.message) || error || "");
+  if (/chrome-extension:\/\/ URL of different extension/i.test(reason)) return FOREIGN_FRAME_MESSAGE;
+  return reason ? `${OFF_LIMITS_MESSAGE} (Chrome said: ${reason})` : OFF_LIMITS_MESSAGE;
+}
 
 let socket = null;
 let attachedTabId = null;
+let lastRefusal = null;
 let previousTabId = null;
 let stopped = false;
 let ownOrigins = [];
@@ -286,6 +295,31 @@ function withTimeout(promise, ms) {
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
+function keepForeignFramesOut() {
+  if (globalThis.__qmForeignFrames) return globalThis.__qmForeignFrames();
+  const own = chrome.runtime.getURL("");
+  const foreign = (frame) => /^chrome-extension:\/\//i.test(frame.src || "") && !frame.src.startsWith(own);
+  const strip = (node) => {
+    if (!(node instanceof Element)) return;
+    if (node.tagName === "IFRAME" && foreign(node)) return node.remove();
+    const root = chrome.dom?.openOrClosedShadowRoot?.(node);
+    if (root) for (const inner of root.querySelectorAll("*")) strip(inner);
+    for (const child of node.children) strip(child);
+  };
+  globalThis.__qmForeignFrames = () => strip(document.documentElement);
+  new MutationObserver((changes) => {
+    for (const change of changes) for (const added of change.addedNodes) strip(added);
+  }).observe(document.documentElement, { childList: true, subtree: true });
+  return globalThis.__qmForeignFrames();
+}
+
+function clearForeignFrames(tabId) {
+  return withTimeout(
+    chrome.scripting.executeScript({ target: { tabId }, func: keepForeignFramesOut }),
+    DRIVE_CHECK_MS,
+  ).catch(() => {});
+}
+
 function settle(work) {
   const run = (pending ?? Promise.resolve()).then(work);
   const tracked = run
@@ -313,7 +347,9 @@ async function claim(tabId, chosen = false) {
   }
   let attachError = null;
   let attachedHere = false;
+  lastRefusal = null;
   if (tabId !== attachedTabId) {
+    await clearForeignFrames(tabId);
     try {
       await chrome.debugger.attach({ tabId }, PROTOCOL_VERSION);
       attachedHere = true;
@@ -324,7 +360,8 @@ async function claim(tabId, chosen = false) {
   const probe = await canDrive(tabId);
   if (probe === false || (probe === "busy" && /^about:/i.test(url)) || (!chosen && stopped)) {
     if (attachedHere && tabId !== attachedTabId) await chrome.debugger.detach({ tabId }).catch(() => {});
-    if (chosen && attachError) throw attachError;
+    if (attachError) lastRefusal = refusalOf(attachError);
+    if (chosen && attachError) throw new Error(lastRefusal);
     return false;
   }
   const old = attachedTabId;
@@ -412,7 +449,7 @@ async function openTab(url) {
   if (typeof tab?.id !== "number") throw new Error("could not open a tab to work in");
   if (await claim(tab.id)) return tab.id;
   await chrome.tabs.remove(tab.id).catch(() => {});
-  throw new Error(stopped ? STOPPED_MESSAGE : "could not open a tab to work in");
+  throw new Error(stopped ? STOPPED_MESSAGE : (lastRefusal ?? "could not open a tab to work in"));
 }
 
 async function drivenTab() {
@@ -469,7 +506,7 @@ const LOCAL = {
       if (!(await chrome.tabs.get(wanted).catch(() => null))) throw new Error("there is no open tab with that id");
       return claim(wanted);
     });
-    if (!moved) throw new Error(stopped ? STOPPED_MESSAGE : OFF_LIMITS_MESSAGE);
+    if (!moved) throw new Error(stopped ? STOPPED_MESSAGE : (lastRefusal ?? OFF_LIMITS_MESSAGE));
     const now = await chrome.tabs.get(wanted);
     return { tabId: wanted, title: now.title || "", url: now.url || "" };
   },
@@ -559,7 +596,7 @@ async function onCommand(frame) {
     }
     if (stopped) throw new Error(STOPPED_MESSAGE);
     const sent = method === "Network.getCookies" && !params?.urls?.length ? { ...params, urls: [url] } : params || {};
-    const result = await chrome.debugger.sendCommand({ tabId }, method, sent);
+    const result = await sendToDriven(tabId, method, sent);
     if (BOUND_TO_REQUEST.has(method) && !seenRequests.has(String(params?.requestId))) {
       throw new Error("that request is not one this tab showed you");
     }
@@ -631,6 +668,18 @@ function connect() {
     };
     ws.onerror = () => ws.close();
   })();
+}
+
+async function sendToDriven(tabId, method, params) {
+  try {
+    return await chrome.debugger.sendCommand({ tabId }, method, params);
+  } catch (e) {
+    if (!/not attached|URL of different extension/i.test(String((e && e.message) || e))) throw e;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    while (pending) await pending;
+    if (attachedTabId !== tabId) throw e;
+    return chrome.debugger.sendCommand({ tabId }, method, params);
+  }
 }
 
 function hostOf(origin) {

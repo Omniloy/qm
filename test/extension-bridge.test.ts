@@ -24,6 +24,7 @@ interface Harness {
   removed: number[];
   live: Set<number>;
   worlds: string[];
+  guarded: number[];
   commands: Array<{ tabId: number; method: string }>;
   sentParams: Array<{ method: string; params: unknown }>;
   store: Record<string, unknown>;
@@ -73,6 +74,7 @@ function install(opts: {
   config?: Record<string, string>;
   noWindow?: boolean;
   attachFails?: boolean;
+  foreignFrames?: number[];
   canDrive?: boolean;
   storageFailures?: number;
   activeTab?: number;
@@ -83,6 +85,7 @@ function install(opts: {
     Object.entries(opts.tabs ?? {}).map(([id, tab]) => [id, { ...tab }]),
   );
   const attached: Array<{ tabId: number }> = [];
+  const guarded: number[] = [];
   const detached: Array<{ tabId: number }> = [];
   const created: Harness["created"] = [];
   const removed: number[] = [];
@@ -150,6 +153,9 @@ function install(opts: {
     debugger: {
       attach: async ({ tabId }: { tabId: number }) => {
         if (opts.attachFails) throw new Error("Cannot access a chrome:// URL");
+        if (opts.foreignFrames?.includes(tabId)) {
+          throw new Error("Cannot access a chrome-extension:// URL of different extension");
+        }
         if (live.has(tabId)) throw new Error(`Another debugger is already attached to the tab with id: ${tabId}.`);
         await attachGate;
         live.add(tabId);
@@ -206,12 +212,18 @@ function install(opts: {
         target,
         args,
         world,
+        func,
       }: {
         target: { tabId: number };
         args: unknown[];
         world?: string;
+        func?: { name?: string };
       }) => {
         if (opts.hangs?.includes(target.tabId)) return new Promise(() => {});
+        if (func?.name === "keepForeignFramesOut") {
+          guarded.push(target.tabId);
+          return [];
+        }
         banners.push({ tabId: target.tabId, on: Boolean(args?.[0]) });
         worlds.push(world ?? "ISOLATED");
         return [];
@@ -221,7 +233,7 @@ function install(opts: {
     runtime: {
       id: "test",
       getURL: (p: string) => `chrome-extension://test/${p}`,
-      getManifest: () => ({ version: "0.2.3" }),
+      getManifest: () => ({ version: "0.2.4" }),
       onMessage: on("message"),
       onStartup: on("startup"),
       onInstalled: on("installed"),
@@ -238,6 +250,7 @@ function install(opts: {
   const harness: Harness = {
     canDrive: opts.canDrive !== false,
     sockets: FakeSocket.all,
+    guarded,
     tabs,
     attached,
     detached,
@@ -1505,7 +1518,7 @@ test("each browser connects with its own lasting identity, so two browsers never
   const id = first.searchParams.get("browser") ?? "";
   assert.match(id, /^[A-Za-z0-9-]{8,64}$/);
   assert.equal(h.store.browserId, id, "kept, so a restart is the same browser");
-  assert.equal(first.searchParams.get("v"), "0.2.3");
+  assert.equal(first.searchParams.get("v"), "0.2.4");
   assert.ok(first.searchParams.get("name"));
 
   h.sockets.at(-1)!.close();
@@ -1521,4 +1534,33 @@ test("the popup says when QM uses another browser", async () => {
   assert.equal((await h.message({ type: "status" })).activeHere, false);
   h.sockets.at(-1)!.onmessage?.({ data: JSON.stringify({ qm: "active", active: true }) });
   assert.equal((await h.message({ type: "status" })).activeHere, true);
+});
+
+test("a tab another extension has put a frame into is refused with that reason, not a generic one", async () => {
+  const h = install({
+    store: { ...PAIRED, attachedTabId: 7 },
+    tabs: { ...DASHBOARD, 8: { title: "Log in | Tavily", url: "https://auth.tavily.com/u/login" } },
+    foreignFrames: [8],
+  });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+
+  const reply = await h.command(70, "qm.switchTab", { tabId: 8 });
+
+  assert.match((reply.error as { message: string }).message, /password manager's autofill menu/);
+  assert.equal(h.store.attachedTabId, 7, "and the agent stays where it was");
+});
+
+test("other extensions' frames are cleared from a tab before the bridge attaches to it", async () => {
+  const h = install({
+    store: { ...PAIRED, attachedTabId: 7 },
+    tabs: { ...DASHBOARD, 8: { title: "Log in", url: "https://login.example/" } },
+  });
+  await bootWorker();
+  await booted(h);
+  assert.ok(await until(() => h.store.attachedTabId === 7));
+  const reply = await h.command(71, "qm.switchTab", { tabId: 8 });
+  assert.ok(!reply.error, JSON.stringify(reply.error));
+  assert.ok(h.guarded.includes(8), "the frame guard ran on the tab before attaching");
 });
