@@ -382,6 +382,17 @@ test("env assembly precedence: caller > login shell > dev.env > worktree .env; h
   assert.equal(claude.harness, "claude");
   assert.equal(claude.env.HARNESS, "claude");
 
+  writeFileSync(liveEnv, "HARNESS=claude\n");
+  const claudeFromLiveEnv = await assembleEnv({
+    worktree,
+    callerEnv: {},
+    allowMock: false,
+    log,
+    probeLoginShell: async () => "",
+  });
+  assert.equal(claudeFromLiveEnv.harness, "claude", "dev.env selects the harness like a shell export");
+  writeFileSync(liveEnv, "ANTHROPIC_API_KEY=from-liveenv\nLIVE_ONLY=live\n");
+
   const fromLiveEnv = await assembleEnv({
     worktree,
     callerEnv: {},
