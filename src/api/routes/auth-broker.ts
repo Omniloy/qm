@@ -120,6 +120,83 @@ async function brokerSession(ctx: ApiCtx): Promise<void> {
   return sendJson(res, 200, await deps.brokerSessions.create(email, idleS, absoluteS));
 }
 
+const SESSION_ID = /^[A-Za-z0-9_-]{43}$/;
+const MAX_PORTAL_SESSION_MS = 90 * 86400 * 1000;
+
+function boundedInt(value: unknown, min: number, max: number): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
+}
+
+function grantExpiry(value: unknown): value is number {
+  const now = Date.now();
+  return typeof value === "number" && Number.isFinite(value) && value > now && value <= now + MAX_PORTAL_SESSION_MS;
+}
+
+function validToken(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 4096;
+}
+
+async function portalSession(ctx: ApiCtx): Promise<void> {
+  const { res, deps, body } = ctx;
+  const store = deps.portalSessions;
+  if (!store?.durable) {
+    return sendJson(res, 503, {
+      error: "not_configured",
+      message: "portal sessions need the Postgres-backed store; set DATABASE_URL so every instance sees a sign-out",
+    });
+  }
+  const b = isObj(body) ? body : {};
+  if (typeof b.sessionId !== "string" || !SESSION_ID.test(b.sessionId))
+    return sendJson(res, 400, { error: "invalid_session" });
+  const sessionId = b.sessionId;
+  const action = ctx.pathname.slice("/v1/auth/portal-sessions".length);
+  if (action === "") {
+    if (
+      typeof b.principal !== "string" ||
+      !b.principal ||
+      b.principal.length > 320 ||
+      !validToken(b.refreshToken) ||
+      !grantExpiry(b.expiresAtMs) ||
+      !boundedInt(b.refreshAfterMs, 60_000, 3_600_000)
+    )
+      return sendJson(res, 400, { error: "invalid_grant" });
+    await store.start(sessionId, {
+      principal: b.principal,
+      refreshToken: b.refreshToken,
+      expiresAtMs: b.expiresAtMs,
+      refreshAfterMs: b.refreshAfterMs,
+    });
+    return sendJson(res, 200, { ok: true });
+  }
+  if (action === "/claim") {
+    if (!boundedInt(b.leaseMs, 1000, 300_000)) return sendJson(res, 400, { error: "invalid_claim" });
+    return sendJson(res, 200, await store.claim(sessionId, b.leaseMs));
+  }
+  if (action === "/settle") {
+    if (typeof b.lease !== "string" || !b.lease || b.lease.length > 64)
+      return sendJson(res, 400, { error: "invalid_lease" });
+    if (b.outcome === "rotated") {
+      if (!validToken(b.refreshToken) || !grantExpiry(b.expiresAtMs))
+        return sendJson(res, 400, { error: "invalid_grant" });
+      return sendJson(res, 200, {
+        settled: await store.settle(sessionId, b.lease, {
+          kind: "rotated",
+          refreshToken: b.refreshToken,
+          expiresAtMs: b.expiresAtMs,
+        }),
+      });
+    }
+    if (b.outcome === "revoked")
+      return sendJson(res, 200, { settled: await store.settle(sessionId, b.lease, { kind: "revoked" }) });
+    if (b.outcome !== "unavailable" || !boundedInt(b.retryAfterMs, 0, 900_000))
+      return sendJson(res, 400, { error: "invalid_outcome" });
+    return sendJson(res, 200, {
+      settled: await store.settle(sessionId, b.lease, { kind: "unavailable", retryAfterMs: b.retryAfterMs }),
+    });
+  }
+  return sendJson(res, 200, { refreshToken: await store.end(sessionId) });
+}
+
 async function trustedAdmin(ctx: ApiCtx): Promise<void> {
   const { deps, res, body } = ctx;
   const secret = deps.portalIdentitySecret;
@@ -221,4 +298,8 @@ export const authBrokerRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "POST", path: "/v1/auth/broker/sessions/revoke", auth: "source", handle: brokerSession },
   { method: "POST", path: "/v1/auth/broker/claim", auth: "source", handle: claimBrokerNonce },
   { method: "GET", path: "/v1/auth/broker/email-allowed", auth: "source", handle: emailAllowed },
+  { method: "POST", path: "/v1/auth/portal-sessions", auth: "source", handle: portalSession },
+  { method: "POST", path: "/v1/auth/portal-sessions/claim", auth: "source", handle: portalSession },
+  { method: "POST", path: "/v1/auth/portal-sessions/settle", auth: "source", handle: portalSession },
+  { method: "POST", path: "/v1/auth/portal-sessions/end", auth: "source", handle: portalSession },
 ];

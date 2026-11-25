@@ -14,6 +14,7 @@ import type { createSuggestedActivityService } from "../suggestions/activities.t
 import type { ManagedSlack } from "../surfaces/slack-managed.ts";
 import type { InboxSourceRefresh } from "../loops/inbox-source-refresh.ts";
 import type { BrokerSessionStore } from "../auth/broker-sessions.ts";
+import type { PortalSessionStore } from "../auth/portal-sessions.ts";
 import type { DirectFileUploads } from "../files/direct-file-upload.ts";
 import type { DiskService } from "../disk/disk-service.ts";
 import type { ProjectStore } from "../projects/project-store.ts";
@@ -114,6 +115,7 @@ export interface ServerDeps {
   replayDedupe?: ReplayDedupe;
   deploymentLiveSmoke?: () => Promise<void>;
   brokerSessions?: BrokerSessionStore;
+  portalSessions?: PortalSessionStore;
   connectorTokens?: ConnectorTokenStore;
   managedSlack?: ManagedSlack;
   slackInstallation?: SlackInstallationStore;

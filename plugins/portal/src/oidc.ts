@@ -1,6 +1,6 @@
 import type { EmailAdmission } from "../../chassis/src/external-members.ts";
 import { createHash, randomBytes } from "node:crypto";
-import { createRemoteJWKSet, customFetch, jwtVerify, type JWTPayload } from "jose";
+import { createRemoteJWKSet, customFetch, errors, jwtVerify, type JWTPayload } from "jose";
 
 type FetchLike = typeof fetch;
 
@@ -96,6 +96,15 @@ export async function fetchUserinfo(
 
 const remoteKeySets = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
+function keySetFor(jwksUri: string, fetchImpl: FetchLike): ReturnType<typeof createRemoteJWKSet> {
+  if (fetchImpl !== fetch) return createRemoteJWKSet(new URL(jwksUri), { [customFetch]: fetchImpl });
+  const cached = remoteKeySets.get(jwksUri);
+  if (cached) return cached;
+  const created = createRemoteJWKSet(new URL(jwksUri));
+  remoteKeySets.set(jwksUri, created);
+  return created;
+}
+
 export async function verifyIdToken(
   cfg: OidcConfig,
   idToken: string | null,
@@ -103,16 +112,7 @@ export async function verifyIdToken(
   fetchImpl: FetchLike = fetch,
 ): Promise<Record<string, unknown>> {
   if (!idToken) throw new Error("token response missing id_token");
-  const keySet =
-    fetchImpl === fetch
-      ? (remoteKeySets.get(cfg.jwksUri) ??
-        (() => {
-          const created = createRemoteJWKSet(new URL(cfg.jwksUri));
-          remoteKeySets.set(cfg.jwksUri, created);
-          return created;
-        })())
-      : createRemoteJWKSet(new URL(cfg.jwksUri), { [customFetch]: fetchImpl });
-  const { payload } = await jwtVerify(idToken, keySet, {
+  const { payload } = await jwtVerify(idToken, keySetFor(cfg.jwksUri, fetchImpl), {
     issuer: cfg.issuer,
     audience: cfg.clientId,
     algorithms: ["RS256", "ES256", "EdDSA"],
@@ -128,6 +128,175 @@ export async function verifyIdToken(
     throw new Error("authorized party mismatch");
   }
   return payload as JWTPayload & Record<string, unknown>;
+}
+
+export interface IalabsConfig {
+  baseUrl: string;
+  issuer: string;
+  audience: string;
+  clientId: string;
+  redirectUri: string;
+  timeoutMs?: number;
+}
+
+interface IalabsTokens {
+  accessToken: string;
+  refreshToken: string;
+  refreshExpiresAtMs: number;
+}
+
+interface IalabsIdentity {
+  sub: string;
+  email: string;
+  name: string;
+  roles: string[];
+  claims: Record<string, unknown>;
+}
+
+export class IalabsRejectedError extends Error {}
+
+export class IalabsUnavailableError extends Error {
+  readonly retryAfterMs: number;
+  constructor(message: string, retryAfterMs: number) {
+    super(message);
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+export class IalabsInvalidTokenError extends Error {}
+
+export const IALABS_TIMEOUT_MS = 25_000;
+const IALABS_RETRY_AFTER_MS = 60_000;
+const UNSENT_CODES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"]);
+const AMBIGUOUS_STATUSES = new Set([500, 502, 504]);
+const TIMING_CLAIMS = new Set(["nbf", "iat", "exp"]);
+const MISMATCH_ERRORS = [
+  errors.JWSSignatureVerificationFailed,
+  errors.JWSInvalid,
+  errors.JWTInvalid,
+  errors.JOSEAlgNotAllowed,
+  errors.JOSENotSupported,
+];
+
+function definiteMismatch(error: unknown): boolean {
+  if (error instanceof errors.JWTClaimValidationFailed) return !TIMING_CLAIMS.has(error.claim);
+  return MISMATCH_ERRORS.some((kind) => error instanceof kind);
+}
+
+function retryAfterMs(header: string | null): number {
+  const seconds = Number(header);
+  if (header?.trim() && Number.isFinite(seconds)) return Math.min(Math.max(seconds * 1000, 1000), 900_000);
+  const date = header ? Date.parse(header) : NaN;
+  return Number.isFinite(date) ? Math.min(Math.max(date - Date.now(), 1000), 900_000) : IALABS_RETRY_AFTER_MS;
+}
+
+export function buildIalabsAuthorizeUrl(cfg: IalabsConfig, args: { state: string; challenge: string }): string {
+  const u = new URL(`${cfg.baseUrl}/api/auth/authorize`);
+  u.searchParams.set("client_id", cfg.clientId);
+  u.searchParams.set("redirect_uri", cfg.redirectUri);
+  u.searchParams.set("code_challenge", args.challenge);
+  u.searchParams.set("code_challenge_method", "S256");
+  u.searchParams.set("state", args.state);
+  return u.toString();
+}
+
+async function postIalabs(
+  cfg: IalabsConfig,
+  path: string,
+  body: Record<string, string>,
+  fetchImpl: FetchLike,
+): Promise<Response> {
+  let r: Response;
+  try {
+    r = await fetchImpl(`${cfg.baseUrl}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(cfg.timeoutMs ?? IALABS_TIMEOUT_MS),
+    });
+  } catch (error) {
+    const cause = error instanceof Error ? error.cause : undefined;
+    const code = cause && typeof cause === "object" && "code" in cause ? cause.code : undefined;
+    if (typeof code === "string" && UNSENT_CODES.has(code))
+      throw new IalabsUnavailableError(`ialabs auth unreachable: ${code}`, IALABS_RETRY_AFTER_MS);
+    throw error;
+  }
+  if (r.ok) return r;
+  const json = await readJson(r, "ialabs auth").catch(() => ({}) as Record<string, unknown>);
+  const detail = typeof json.code === "string" && json.code ? json.code : `HTTP ${r.status}`;
+  if (r.status === 401 || r.status === 403) throw new IalabsRejectedError(`ialabs auth refused: ${detail}`);
+  if (AMBIGUOUS_STATUSES.has(r.status)) throw new Error(`ialabs auth failed mid-request: ${detail}`);
+  throw new IalabsUnavailableError(`ialabs auth declined: ${detail}`, retryAfterMs(r.headers.get("retry-after")));
+}
+
+async function ialabsTokens(r: Response): Promise<IalabsTokens> {
+  const json = await readJson(r, "ialabs token endpoint");
+  const refreshExpiresAtMs = Date.parse(String(json.refresh_token_expires_at));
+  if (
+    typeof json.access_token !== "string" ||
+    !json.access_token ||
+    typeof json.refresh_token !== "string" ||
+    !json.refresh_token ||
+    !Number.isFinite(refreshExpiresAtMs)
+  )
+    throw new Error("ialabs token response is incomplete");
+  return { accessToken: json.access_token, refreshToken: json.refresh_token, refreshExpiresAtMs };
+}
+
+export async function exchangeIalabsCode(
+  cfg: IalabsConfig,
+  args: { code: string; codeVerifier: string },
+  fetchImpl: FetchLike = fetch,
+): Promise<IalabsTokens> {
+  const body = { code: args.code, code_verifier: args.codeVerifier, redirect_uri: cfg.redirectUri };
+  return ialabsTokens(await postIalabs(cfg, "/api/tokens", body, fetchImpl));
+}
+
+export async function refreshIalabsTokens(
+  cfg: IalabsConfig,
+  refreshToken: string,
+  fetchImpl: FetchLike = fetch,
+): Promise<IalabsTokens> {
+  return ialabsTokens(await postIalabs(cfg, "/api/tokens/refresh", { refresh_token: refreshToken }, fetchImpl));
+}
+
+export async function revokeIalabsToken(
+  cfg: IalabsConfig,
+  refreshToken: string,
+  fetchImpl: FetchLike = fetch,
+): Promise<void> {
+  await postIalabs(cfg, "/api/tokens/revoke", { refresh_token: refreshToken }, fetchImpl);
+}
+
+export async function verifyIalabsAccessToken(
+  cfg: IalabsConfig,
+  accessToken: string,
+  fetchImpl: FetchLike = fetch,
+): Promise<IalabsIdentity> {
+  let payload: JWTPayload;
+  try {
+    ({ payload } = await jwtVerify(accessToken, keySetFor(`${cfg.baseUrl}/.well-known/jwks.json`, fetchImpl), {
+      issuer: cfg.issuer,
+      audience: cfg.audience,
+      algorithms: ["RS256"],
+      requiredClaims: ["sub", "exp"],
+      clockTolerance: 5,
+    }));
+  } catch (error) {
+    if (definiteMismatch(error)) throw new IalabsInvalidTokenError((error as Error).message);
+    throw error;
+  }
+  if (payload.pty !== "user") throw new IalabsInvalidTokenError("the token was not issued to a person");
+  if (payload.client_id !== cfg.clientId) throw new IalabsInvalidTokenError("the token was issued to another app");
+  if (typeof payload.email !== "string" || !payload.email.includes("@"))
+    throw new IalabsInvalidTokenError("identity provider returned no email");
+  return {
+    sub: payload.sub!,
+    email: payload.email.trim().toLowerCase(),
+    name: typeof payload.name === "string" ? payload.name.trim().slice(0, 200) : "",
+    roles: Array.isArray(payload.roles) ? payload.roles.filter((role): role is string => typeof role === "string") : [],
+    claims: payload as JWTPayload & Record<string, unknown>,
+  };
 }
 
 export interface PrincipalRule {

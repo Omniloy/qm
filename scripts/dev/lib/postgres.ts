@@ -22,8 +22,9 @@ export async function ensureDockerDaemon(log: (msg: string) => void): Promise<bo
   return (await docker(["info"])).code === 0;
 }
 
-function worktreeDbName(worktree: string): string {
-  return `qm_dev_${createHash("sha1").update(worktree).digest("hex").slice(0, 12)}`;
+export function worktreeDbName(worktree: string, orgId: string): string {
+  const key = orgId === "acme" ? worktree : `${worktree}\0${orgId}`;
+  return `qm_dev_${createHash("sha1").update(key).digest("hex").slice(0, 12)}`;
 }
 
 async function pgQuery(
@@ -67,13 +68,17 @@ export interface LocalPostgres {
   url: string;
 }
 
-export async function ensureLocalPostgres(worktree: string, log: (msg: string) => void): Promise<LocalPostgres> {
+export async function ensureLocalPostgres(
+  worktree: string,
+  orgId: string,
+  log: (msg: string) => void,
+): Promise<LocalPostgres> {
   const container = process.env.DEV_INSTANCE_POSTGRES_CONTAINER || "qm-dev-postgres";
   const port = process.env.DEV_INSTANCE_POSTGRES_PORT || "55432";
   const image = process.env.DEV_INSTANCE_POSTGRES_IMAGE || POSTGRES_IMAGE;
   const password = process.env.DEV_INSTANCE_POSTGRES_PASSWORD || "qm-dev";
   const volume = process.env.DEV_INSTANCE_POSTGRES_VOLUME || "qm-dev-postgres-data";
-  const dbName = worktreeDbName(worktree);
+  const dbName = worktreeDbName(worktree, orgId);
 
   if (!(await ensureDockerDaemon(log))) throw new Error("docker daemon unavailable");
   const exists = (

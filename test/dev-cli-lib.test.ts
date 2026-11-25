@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -35,6 +36,7 @@ import {
   writeMeta,
 } from "../scripts/dev/lib/lease.ts";
 import { assembleEnv, completeDevSecuritySecrets } from "../scripts/dev/lib/envctx.ts";
+import { worktreeDbName } from "../scripts/dev/lib/postgres.ts";
 import { buildChildSpecs, type SpecInputs } from "../scripts/dev/supervisor/specs.ts";
 import { loadConfig, OPENCODE_RUNTIME_VERSION, providerKeysPresent } from "../src/config.ts";
 import type { LeaseInfo } from "../scripts/dev/lib/types.ts";
@@ -382,6 +384,17 @@ test("env assembly precedence: caller > login shell > dev.env > worktree .env; h
   assert.equal(claude.harness, "claude");
   assert.equal(claude.env.HARNESS, "claude");
 
+  writeFileSync(liveEnv, "HARNESS=claude\n");
+  const claudeFromLiveEnv = await assembleEnv({
+    worktree,
+    callerEnv: {},
+    allowMock: false,
+    log,
+    probeLoginShell: async () => "",
+  });
+  assert.equal(claudeFromLiveEnv.harness, "claude", "dev.env selects the harness like a shell export");
+  writeFileSync(liveEnv, "ANTHROPIC_API_KEY=from-liveenv\nLIVE_ONLY=live\n");
+
   const fromLiveEnv = await assembleEnv({
     worktree,
     callerEnv: {},
@@ -628,4 +641,14 @@ test("dev CLI rejects invalid or conflicting surface selection before startup", 
     assert.equal(result.status, 2, result.stderr);
     assert.match(result.stderr, /surface/);
   }
+});
+
+test("each org gets its own dev database and acme keeps its existing name", () => {
+  const worktree = "/work/qm";
+  assert.equal(
+    worktreeDbName(worktree, "acme"),
+    "qm_dev_" + createHash("sha1").update(worktree).digest("hex").slice(0, 12),
+  );
+  assert.notEqual(worktreeDbName(worktree, "laberit"), worktreeDbName(worktree, "acme"));
+  assert.match(worktreeDbName(worktree, "laberit"), /^qm_dev_[0-9a-f]{12}$/);
 });

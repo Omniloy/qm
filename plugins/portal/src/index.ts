@@ -42,7 +42,13 @@ import {
   type OidcConfig,
   type PrincipalRule,
   hostedDomainHint,
+  buildIalabsAuthorizeUrl,
+  exchangeIalabsCode,
+  revokeIalabsToken,
+  verifyIalabsAccessToken,
+  type IalabsConfig,
 } from "./oidc.ts";
+import { createIalabsSessions, newSessionId, type IalabsSessions, type IalabsSessionState } from "./ialabs-session.ts";
 import {
   proxyToSurface,
   proxyToDeployment,
@@ -179,6 +185,20 @@ const OIDC: OidcConfig = {
   hostedDomain: hostedDomainHint(process.env.OIDC_ISSUER ?? "https://slack.com", process.env.OIDC_ALLOWED_EMAIL_DOMAIN),
 };
 const OIDC_JWKS_CONFIGURED = Boolean(process.env.OIDC_JWKS_URI?.trim());
+const PORTAL_IDP = process.env.PORTAL_IDP?.trim() || "oidc";
+const IALABS_CLIENT_ID = "laberbrain";
+const IALABS: IalabsConfig | null =
+  PORTAL_IDP === "ialabs"
+    ? {
+        baseUrl: (process.env.IALABS_AUTH_URL ?? "").trim().replace(/\/$/, ""),
+        issuer: process.env.IALABS_AUTH_ISSUER?.trim() ?? "",
+        audience: process.env.IALABS_AUTH_AUDIENCE?.trim() || IALABS_CLIENT_ID,
+        clientId: IALABS_CLIENT_ID,
+        redirectUri: OIDC.redirectUri,
+      }
+    : null;
+const IALABS_REFRESH_AFTER_S = Number(process.env.IALABS_REFRESH_AFTER_S ?? 900);
+const IALABS_REAUTH_BEFORE_S = Number(process.env.IALABS_REAUTH_BEFORE_S ?? 86400);
 
 const AUTH_BROKER_UPSTREAM = (process.env.AUTH_BROKER_UPSTREAM ?? "").replace(/\/$/, "");
 const AUTH_BROKER_PREFIX = (process.env.AUTH_BROKER_PREFIX ?? "/idp").replace(/\/$/, "");
@@ -244,9 +264,25 @@ const trustedEntry = trustedOidc
     )
   : null;
 const IMPERSONATE_TTL_S = Number(process.env.PORTAL_IMPERSONATE_TTL_S ?? 3600);
+const ialabsSessions = IALABS
+  ? createIalabsSessions({
+      core: CORE,
+      signingSecret: CORE_SIGNING_SECRET,
+      ialabs: IALABS,
+      refreshAfterMs: IALABS_REFRESH_AFTER_S * 1000,
+      reauthBeforeMs: IALABS_REAUTH_BEFORE_S * 1000,
+    })
+  : null;
+
+async function ialabsSessionState(req: IncomingMessage, session: SessionClaims | null): Promise<IalabsSessionState> {
+  if (!ialabsSessions || !session?.sid || session.anon) return "ok";
+  const page = req.method === "GET" && wantsHtml(req);
+  return ialabsSessions.state(session.sid, session.sub, page, (session.auth ?? session.iat) * 1000);
+}
 
 const TMP_TTL_S = 600;
 const LOCAL_LOGOUT_COOKIE = "portal_local_logout";
+const SIGNED_OUT_COOKIE = "portal_signed_out";
 const CONSUMED_STATES_MAX = 10_000;
 export const consumedStates = new LRUCache<string, number>({ max: CONSUMED_STATES_MAX, ttl: 2 * TMP_TTL_S * 1000 });
 export function consumeState(state: string): boolean {
@@ -585,6 +621,18 @@ export function signInErrorHtml(
   });
 }
 
+export function signedOutHtml(returnTo: string): string {
+  const again = `/auth/login?again=1&returnTo=${encodeURIComponent(returnTo)}`;
+  return cardPage({
+    title: "Signed out",
+    heading: "You're signed out",
+    msg: "You signed out of this browser. Sign in again whenever you're ready.",
+    icon: LOCK_ICON,
+    actions: `<a class="btn primary" href="${escapeHtml(again)}">Sign in</a>`,
+    help: "Signing in again may not ask for your password while your Microsoft session is still open.",
+  });
+}
+
 export function nonAdminDeniedHtml(o: { sub: string; org: string }): string {
   return cardPage({
     title: "No admin access",
@@ -877,6 +925,16 @@ function sessionCookieSet(value: string, sub: string): string[] {
   return [...sessionCookieHeaders(value, attrs), ...loginProviderCookie(sub)];
 }
 
+function clearedSessionCookies(): string[] {
+  return [
+    clearCookie("portal_session", "/", SECURE_COOKIES, COOKIE_DOMAIN),
+    clearCookie(FRAME_SESSION_COOKIE, "/", SECURE_COOKIES, COOKIE_DOMAIN),
+    ...(COOKIE_DOMAIN
+      ? [clearCookie("portal_session", "/", SECURE_COOKIES), clearCookie(FRAME_SESSION_COOKIE, "/", SECURE_COOKIES)]
+      : []),
+  ];
+}
+
 function setSession(res: ServerResponse, headers: string[]): void {
   res.setHeader("set-cookie", headers);
 }
@@ -1015,7 +1073,13 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   const brokerPath = brokerRouteFor(method, pathname);
   const reauthentication =
     (method === "GET" &&
-      ["/auth/login", "/auth/callback", "/auth/trusted/login", "/auth/trusted/callback"].includes(pathname)) ||
+      [
+        "/auth/login",
+        "/auth/callback",
+        "/auth/trusted/login",
+        "/auth/trusted/callback",
+        "/auth/session/check",
+      ].includes(pathname)) ||
     (method === "POST" && pathname === "/auth/logout") ||
     brokerPath !== null;
   if (currentSession(req)?.appOnly && !reauthentication) {
@@ -1038,6 +1102,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   if (pathname === "/auth/login" && method === "GET") return authLogin(req, res, url);
+  if (pathname === "/auth/session/check" && method === "GET") return sessionCheck(req, res, url);
   if (pathname === "/auth/callback" && method === "GET") return authCallback(req, res, url);
   if (pathname.startsWith("/auth/trusted/") && method === "GET") return trustedAuth(req, res, url);
   if (pathname === "/auth/desktop" || pathname === "/auth/desktop/redeem") return desktopLogin(req, res, url);
@@ -1070,17 +1135,21 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       }
     }
     const signedOutSession = currentSession(req);
+    if (ialabsSessions && signedOutSession?.sid) {
+      await ialabsSessions.end(signedOutSession.sid).catch((error: unknown) => {
+        console.warn(`[portal] could not end the ialabs session: ${errMessage(error)}`);
+      });
+    }
     setSession(res, [
       ...(signedOutSession ? loginProviderCookie(signedOutSession.sub) : []),
-      clearCookie("portal_session", "/", SECURE_COOKIES, COOKIE_DOMAIN),
-      clearCookie(FRAME_SESSION_COOKIE, "/", SECURE_COOKIES, COOKIE_DOMAIN),
-      ...(COOKIE_DOMAIN
-        ? [clearCookie("portal_session", "/", SECURE_COOKIES), clearCookie(FRAME_SESSION_COOKIE, "/", SECURE_COOKIES)]
-        : []),
+      ...clearedSessionCookies(),
       clearCookie("portal_oidc_tmp", "/auth", SECURE_COOKIES),
       ...(AUTH_BROKER_UPSTREAM ? [clearCookie("qm_idp_session", AUTH_BROKER_PREFIX, true)] : []),
       ...(LOCAL_AUTH_BYPASS && isLoopbackAddress(req.socket.remoteAddress)
         ? [setCookie(LOCAL_LOGOUT_COOKIE, "1", { path: "/", maxAge: SESSION_TTL_S, secure: SECURE_COOKIES })]
+        : []),
+      ...(IALABS
+        ? [setCookie(SIGNED_OUT_COOKIE, "1", { path: "/", maxAge: SESSION_TTL_S, secure: SECURE_COOKIES })]
         : []),
     ]);
     if (wantsHtml(req)) {
@@ -1110,6 +1179,21 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
 
   let session = renewSessionCookie(req, res) ?? currentSession(req);
+  if (session && !session.anon && (!pathname.startsWith("/auth/") || pathname.startsWith("/auth/impersonate"))) {
+    const ialabsState = await ialabsSessionState(req, session);
+    if (ialabsState === "unavailable") return identityUnavailable(req, res);
+    if (ialabsState === "reauth") {
+      res.writeHead(302, {
+        location: `/auth/login?returnTo=${encodeURIComponent(`${pathname}${url.search}`)}`,
+        "cache-control": "no-store",
+      });
+      return void res.end();
+    }
+    if (ialabsState === "gone") {
+      setSession(res, clearedSessionCookies());
+      session = null;
+    }
+  }
   const authenticatedPrincipal = session?.sub;
   if (session && !session.anon && (!pathname.startsWith("/auth/") || pathname.startsWith("/auth/impersonate"))) {
     const canonical = await canonicalPrincipal(session.sub);
@@ -1447,7 +1531,9 @@ async function desktopLogin(req: IncomingMessage, res: ServerResponse, url: URL)
     return json(res, 400, { error: "invalid_desktop_request" });
   if (req.method === "POST" && !sameOriginRequest(req)) return json(res, 403, { error: "forbidden" });
   const session = renewSessionCookie(req, res) ?? currentSession(req);
-  if (!session || session.anon) {
+  const ialabsState = await ialabsSessionState(req, session);
+  if (ialabsState === "unavailable") return identityUnavailable(req, res);
+  if (!session || session.anon || ialabsState !== "ok") {
     res.writeHead(303, {
       location: `/auth/login?returnTo=${encodeURIComponent(`${url.pathname}${url.search}`)}`,
       "cache-control": "no-store",
@@ -1643,7 +1729,47 @@ async function trustedAuth(req: IncomingMessage, res: ServerResponse, url: URL):
   }
 }
 
-function setAuthenticatedSession(res: ServerResponse, sub: string, name = "", appOnly = false): void {
+async function sessionCheck(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+  const returnTo = sanitizeReturnTo(url.searchParams.get("returnTo"), PUBLIC_URL, APPS_DOMAIN);
+  const framed = req.headers["sec-fetch-dest"] === "iframe";
+  const session =
+    renewSessionCookie(req, res) ??
+    currentSession(req) ??
+    (framed
+      ? openSession(
+          readCookie(req.headers.cookie, FRAME_SESSION_COOKIE),
+          sessionKey,
+          Date.now(),
+          ORG,
+          SESSION_MAX_TTL_S,
+        )
+      : null);
+  const state = session && !session.anon ? await ialabsSessionState(req, session) : "gone";
+  if (state === "unavailable") return identityUnavailable(req, res);
+  if (state === "ok") {
+    res.writeHead(302, { location: returnTo, "cache-control": "no-store" });
+    return void res.end();
+  }
+  if (session && state === "gone") setSession(res, clearedSessionCookies());
+  if (framed) {
+    return sendHtml(
+      res,
+      401,
+      signInErrorHtml(
+        "Your session could not be confirmed inside this embedded app. Open it in its own tab to sign in.",
+      ),
+    );
+  }
+  const loginPath =
+    trustedEntry && url.searchParams.get("login") === "/auth/trusted/login" ? "/auth/trusted/login" : "/auth/login";
+  res.writeHead(302, {
+    location: `${loginPath}?returnTo=${encodeURIComponent(returnTo)}`,
+    "cache-control": "no-store",
+  });
+  res.end();
+}
+
+function setAuthenticatedSession(res: ServerResponse, sub: string, name = "", appOnly = false, sid = ""): void {
   const now = Math.floor(Date.now() / 1000);
   const session: SessionClaims = {
     k: "session",
@@ -1654,6 +1780,7 @@ function setAuthenticatedSession(res: ServerResponse, sub: string, name = "", ap
     exp: now + SESSION_TTL_S,
     ...(name ? { name } : {}),
     ...(appOnly ? { appOnly: true } : {}),
+    ...(sid ? { sid } : {}),
   };
   setSession(res, [
     ...sessionCookieSet(seal(session, sessionKey), session.sub),
@@ -1690,6 +1817,10 @@ function authLogin(req: IncomingMessage, res: ServerResponse, url: URL): void {
     res.writeHead(302, { location: returnTo, "cache-control": "no-store" });
     return void res.end();
   }
+  const signedOut = readCookie(req.headers.cookie, SIGNED_OUT_COOKIE) === "1";
+  if (IALABS && signedOut && url.searchParams.get("again") !== "1") {
+    return sendHtml(res, 200, signedOutHtml(returnTo));
+  }
   const state = randomToken();
   const nonce = randomToken();
   const { verifier, challenge } = pkcePair();
@@ -1697,8 +1828,12 @@ function authLogin(req: IncomingMessage, res: ServerResponse, url: URL): void {
   const tmp: TmpClaims = { k: "tmp", state, nonce, pkceVerifier: verifier, returnTo, iat: now, exp: now + TMP_TTL_S };
   setSession(res, [
     setCookie("portal_oidc_tmp", seal(tmp, tmpKey), { path: "/auth", maxAge: TMP_TTL_S, secure: SECURE_COOKIES }),
+    ...(signedOut ? [clearCookie(SIGNED_OUT_COOKIE, "/", SECURE_COOKIES)] : []),
   ]);
-  res.writeHead(302, { location: buildAuthorizeUrl(OIDC, { state, nonce, challenge }), "cache-control": "no-store" });
+  const location = IALABS
+    ? buildIalabsAuthorizeUrl(IALABS, { state, challenge })
+    : buildAuthorizeUrl(OIDC, { state, nonce, challenge });
+  res.writeHead(302, { location, "cache-control": "no-store" });
   res.end();
 }
 
@@ -1717,29 +1852,23 @@ async function authCallback(req: IncomingMessage, res: ServerResponse, url: URL)
   if (!code || !stateParam || !safeEqual(stateParam, tmp.state)) return fail("invalid login state");
   if (!consumeState(tmp.state)) return fail("login already used, please try again");
 
-  let principal: { sub: string; appOnly?: true };
-  let name = "";
+  let signedIn: SignedIn;
   try {
-    const { accessToken, idToken } = await exchangeCode(OIDC, { code, codeVerifier: tmp.pkceVerifier });
-    const claims = await verifyIdToken(OIDC, idToken, tmp.nonce);
-    if (OIDC.expectedTeamId) {
-      const team = claims["https://slack.com/team_id"];
-      if (team !== OIDC.expectedTeamId) throw new Error("workspace not permitted");
-    }
-    const info = await fetchUserinfo(OIDC, accessToken);
-    const infoSub = typeof info.sub === "string" ? info.sub : "";
-    if (!infoSub) throw new Error("userinfo missing sub");
-    if (typeof claims.sub === "string" && claims.sub !== infoSub) throw new Error("subject mismatch");
-    principal = await resolvePrincipal(PRINCIPAL_RULE, { sub: infoSub, claims, userinfo: info }, (email) =>
-      coreEmailAdmission(CORE, CORE_SIGNING_SECRET, email, "portal"),
-    );
-    const rawName = info.name ?? claims.name;
-    if (typeof rawName === "string") name = rawName.trim().slice(0, 200);
+    signedIn =
+      IALABS && ialabsSessions
+        ? await ialabsIdentity(IALABS, ialabsSessions, code, tmp)
+        : await oidcIdentity(code, tmp);
   } catch (e) {
     return fail(errMessage(e, "sign-in failed"));
   }
 
-  setAuthenticatedSession(res, principal.sub, name, principal.appOnly);
+  const previous = currentSession(req)?.sid;
+  if (ialabsSessions && previous && previous !== signedIn.sid) {
+    void ialabsSessions.end(previous).catch((error: unknown) => {
+      console.warn(`[portal] could not end the previous ialabs session: ${errMessage(error)}`);
+    });
+  }
+  setAuthenticatedSession(res, signedIn.principal.sub, signedIn.name, signedIn.principal.appOnly, signedIn.sid);
   res.writeHead(302, {
     location: sanitizeReturnTo(tmp.returnTo, PUBLIC_URL, APPS_DOMAIN),
     "cache-control": "no-store",
@@ -1747,9 +1876,63 @@ async function authCallback(req: IncomingMessage, res: ServerResponse, url: URL)
   res.end();
 }
 
+interface SignedIn {
+  principal: { sub: string; appOnly?: true };
+  name: string;
+  sid?: string;
+}
+
+function coreAdmission(email: string) {
+  return coreEmailAdmission(CORE, CORE_SIGNING_SECRET, email, "portal");
+}
+
+async function oidcIdentity(code: string, tmp: TmpClaims): Promise<SignedIn> {
+  const { accessToken, idToken } = await exchangeCode(OIDC, { code, codeVerifier: tmp.pkceVerifier });
+  const claims = await verifyIdToken(OIDC, idToken, tmp.nonce);
+  if (OIDC.expectedTeamId) {
+    const team = claims["https://slack.com/team_id"];
+    if (team !== OIDC.expectedTeamId) throw new Error("workspace not permitted");
+  }
+  const info = await fetchUserinfo(OIDC, accessToken);
+  const infoSub = typeof info.sub === "string" ? info.sub : "";
+  if (!infoSub) throw new Error("userinfo missing sub");
+  if (typeof claims.sub === "string" && claims.sub !== infoSub) throw new Error("subject mismatch");
+  const principal = await resolvePrincipal(PRINCIPAL_RULE, { sub: infoSub, claims, userinfo: info }, coreAdmission);
+  const rawName = info.name ?? claims.name;
+  return { principal, name: typeof rawName === "string" ? rawName.trim().slice(0, 200) : "" };
+}
+
+async function ialabsIdentity(
+  cfg: IalabsConfig,
+  sessions: IalabsSessions,
+  code: string,
+  tmp: TmpClaims,
+): Promise<SignedIn> {
+  const tokens = await exchangeIalabsCode(cfg, { code, codeVerifier: tmp.pkceVerifier });
+  try {
+    const identity = await verifyIalabsAccessToken(cfg, tokens.accessToken);
+    const principal = await resolvePrincipal(
+      PRINCIPAL_RULE,
+      { sub: identity.sub, claims: identity.claims, userinfo: { email: identity.email, email_verified: true } },
+      coreAdmission,
+    );
+    const sid = newSessionId();
+    await sessions.start(sid, principal.sub, tokens.refreshToken, tokens.refreshExpiresAtMs);
+    return { principal, name: identity.name, sid };
+  } catch (error) {
+    void revokeIalabsToken(cfg, tokens.refreshToken).catch(() => undefined);
+    throw error;
+  }
+}
+
 export function bootChecks(): void {
   const problems: string[] = [];
-  if (!AUTH_BROKER_UPSTREAM && originOf(OIDC.authEndpoint) && originOf(OIDC.authEndpoint) === originOf(PUBLIC_URL)) {
+  if (
+    !IALABS &&
+    !AUTH_BROKER_UPSTREAM &&
+    originOf(OIDC.authEndpoint) &&
+    originOf(OIDC.authEndpoint) === originOf(PUBLIC_URL)
+  ) {
     problems.push(
       "OIDC_AUTH_ENDPOINT is on the portal's own origin but AUTH_BROKER_UPSTREAM is unset — every sign-in would redirect from /auth/login back into the portal forever; wire AUTH_BROKER_UPSTREAM to the auth service or point OIDC_AUTH_ENDPOINT at a real identity provider",
     );
@@ -1797,6 +1980,21 @@ export function bootChecks(): void {
   if (APPS_DOMAIN && COOKIE_DOMAIN && !hostIsWithinDomain(APPS_DOMAIN, COOKIE_DOMAIN)) {
     problems.push(`PORTAL_COOKIE_DOMAIN (${COOKIE_DOMAIN}) must cover PORTAL_APPS_DOMAIN (${APPS_DOMAIN})`);
   }
+  if (PORTAL_IDP !== "oidc" && PORTAL_IDP !== "ialabs") {
+    problems.push(`PORTAL_IDP must be "oidc" or "ialabs" (got "${PORTAL_IDP}")`);
+  }
+  if (IALABS) {
+    if (!originOf(IALABS.baseUrl)) problems.push("IALABS_AUTH_URL is required when PORTAL_IDP=ialabs");
+    if (isMissingOrPlaceholder(IALABS.issuer)) problems.push("IALABS_AUTH_ISSUER is required when PORTAL_IDP=ialabs");
+    if (PRINCIPAL_RULE.claim !== "email") problems.push("PORTAL_IDP=ialabs requires OIDC_PRINCIPAL_CLAIM=email");
+    if (OIDC.expectedTeamId !== undefined) problems.push("PORTAL_EXPECTED_TEAM_ID applies only to Slack OIDC");
+    if (!Number.isInteger(IALABS_REFRESH_AFTER_S) || IALABS_REFRESH_AFTER_S < 60 || IALABS_REFRESH_AFTER_S > 3600) {
+      problems.push("IALABS_REFRESH_AFTER_S must be an integer between 60 and 3600");
+    }
+    if (!Number.isInteger(IALABS_REAUTH_BEFORE_S) || IALABS_REAUTH_BEFORE_S < 0 || IALABS_REAUTH_BEFORE_S > 259200) {
+      problems.push("IALABS_REAUTH_BEFORE_S must be an integer between 0 and 259200");
+    }
+  }
   if (PRINCIPAL_RULE.claim !== "sub" && PRINCIPAL_RULE.claim !== "email") {
     problems.push(`OIDC_PRINCIPAL_CLAIM must be "sub" or "email" (got "${PRINCIPAL_RULE.claim}")`);
   }
@@ -1816,9 +2014,9 @@ export function bootChecks(): void {
       problems.push("PORTAL_SESSION_SECRET is required and may not be a placeholder in production");
     if (isMissingOrPlaceholder(CORE_SIGNING_SECRET))
       problems.push("CORE_SIGNING_SECRET is required and may not be a placeholder in production");
-    if (isMissingOrPlaceholder(OIDC.clientId))
+    if (!IALABS && isMissingOrPlaceholder(OIDC.clientId))
       problems.push("OIDC_CLIENT_ID is required and may not be a placeholder in production");
-    if (isMissingOrPlaceholder(OIDC.clientSecret))
+    if (!IALABS && isMissingOrPlaceholder(OIDC.clientSecret))
       problems.push("OIDC_CLIENT_SECRET is required and may not be a placeholder in production");
     if (
       PRINCIPAL_RULE.allowedEmailDomain &&
@@ -1846,19 +2044,22 @@ export function bootChecks(): void {
     if (OIDC.expectedTeamId !== undefined && isMissingOrPlaceholder(OIDC.expectedTeamId)) {
       problems.push("PORTAL_EXPECTED_TEAM_ID is optional, but may not be a placeholder when configured");
     }
-    if (!isSlackIssuer(OIDC.issuer) && !OIDC_JWKS_CONFIGURED) {
+    if (!IALABS && !isSlackIssuer(OIDC.issuer) && !OIDC_JWKS_CONFIGURED) {
       problems.push("OIDC_JWKS_URI is required for a non-Slack issuer");
     }
     if (SESSION_SECRET && CORE_SIGNING_SECRET && SESSION_SECRET === CORE_SIGNING_SECRET) {
       problems.push("PORTAL_SESSION_SECRET must differ from CORE_SIGNING_SECRET");
     }
     if (!PUBLIC_URL.startsWith("https://")) problems.push("PORTAL_PUBLIC_URL must be https in production");
-    if (!OIDC.authEndpoint.startsWith("https://")) {
+    if (IALABS && !IALABS.baseUrl.startsWith("https://")) {
+      problems.push(`IALABS_AUTH_URL must be https, since the browser is sent there: ${IALABS.baseUrl}`);
+    }
+    if (!IALABS && !OIDC.authEndpoint.startsWith("https://")) {
       problems.push(`OIDC_AUTH_ENDPOINT must be https, since the browser is sent there: ${OIDC.authEndpoint}`);
     }
     const brokerOrigin =
       AUTH_BROKER_UPSTREAM && isPrivateNetworkUrl(AUTH_BROKER_UPSTREAM) ? originOf(AUTH_BROKER_UPSTREAM) : "";
-    for (const ep of [OIDC.tokenEndpoint, OIDC.userinfoEndpoint, OIDC.jwksUri]) {
+    for (const ep of IALABS ? [] : [OIDC.tokenEndpoint, OIDC.userinfoEndpoint, OIDC.jwksUri]) {
       if (!ep.startsWith("https://") && !(brokerOrigin && originOf(ep) === brokerOrigin)) {
         problems.push(`OIDC endpoint must be https unless it is the built-in broker on the private network: ${ep}`);
       }
@@ -1869,10 +2070,10 @@ export function bootChecks(): void {
           "AUTH_BROKER_UPSTREAM must address a private-network host, since the broker is never exposed directly",
         );
       }
-      if (OIDC.issuer !== `${PUBLIC_URL}${AUTH_BROKER_PREFIX}`) {
+      if (!IALABS && OIDC.issuer !== `${PUBLIC_URL}${AUTH_BROKER_PREFIX}`) {
         problems.push(`OIDC_ISSUER must be ${PUBLIC_URL}${AUTH_BROKER_PREFIX} when the built-in broker is wired`);
       }
-      if (OIDC.authEndpoint !== `${PUBLIC_URL}${AUTH_BROKER_PREFIX}/authorize`) {
+      if (!IALABS && OIDC.authEndpoint !== `${PUBLIC_URL}${AUTH_BROKER_PREFIX}/authorize`) {
         problems.push(
           `OIDC_AUTH_ENDPOINT must be ${PUBLIC_URL}${AUTH_BROKER_PREFIX}/authorize when the built-in broker is wired`,
         );

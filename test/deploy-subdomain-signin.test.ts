@@ -16,6 +16,7 @@ import { createIdentityService } from "../src/identity/identity-service.ts";
 import { createMemorySessionStore } from "../src/sessions/memory-session-store.ts";
 import { PORTAL_IDENTITY_HEADER } from "../src/auth/portal-identity.ts";
 import { portalSession } from "../src/deploy/viewer-session.ts";
+import { createMemoryPortalSessions } from "../src/auth/portal-sessions.ts";
 import { scopeId } from "../src/types.ts";
 
 const auditLog = { record() {}, events: async () => [], tail: async () => [] };
@@ -395,5 +396,114 @@ test("subdomain ingress: without the session config the domain has no door — a
     );
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+function mintSessionClaims(claims: Record<string, unknown>): string {
+  const key = createHmac("sha256", SESSION_SECRET).update("portal.session.v1").digest();
+  const now = Math.floor(Date.now() / 1000);
+  const body = Buffer.from(
+    JSON.stringify({ k: "session", org: "acme", iat: now, exp: now + 3600, ...claims }),
+  ).toString("base64url");
+  return `${body}.${createHmac("sha256", key).update(body).digest("base64url")}`;
+}
+
+test("portalSession carries an ialabs session id and refuses a malformed one", () => {
+  const sid = "s".repeat(43);
+  assert.deepEqual(
+    portalSession(`portal_session=${mintSessionClaims({ sub: "ana@example.com", sid })}`, SESSION_SECRET),
+    {
+      sub: "ana@example.com",
+      appOnly: false,
+      sid,
+    },
+  );
+  assert.equal(
+    portalSession(`portal_session=${mintSessionClaims({ sub: "ana@example.com", sid: 7 })}`, SESSION_SECRET),
+    null,
+  );
+});
+
+test("subdomain ingress admits an ialabs session only while its record is recently checked", async () => {
+  const upstream = createHttpServer((_req, res) => res.end("UPSTREAM OK"));
+  upstream.listen(0);
+  const upstreamPort = (upstream.address() as AddressInfo).port;
+  const deploy = createDeployService({
+    deployStore: createDeployStore(),
+    provider: {
+      profile: { managedScaleToZero: false },
+      apply: async () => ({ host: "127.0.0.1", port: upstreamPort }),
+      destroy: async () => {},
+    },
+    auditLog,
+    acl: createAclStore(),
+    deployDir: mkdtempSync(join(tmpdir(), "signin-sid-")),
+  });
+  const app = createApp({
+    deploy,
+    acl: createAclStore(),
+    directory: createDirectoryStore(),
+    sessions: createMemorySessionStore(),
+    identity: createIdentityService(),
+  } as unknown as Parameters<typeof createApp>[0]);
+  await app.deploy({
+    ownerScopeId: scopeId("personal", "alice@example.com"),
+    createdBy: "alice@example.com",
+    entrypoint: "x",
+    files: [],
+    name: "sidsite",
+  });
+  let now = Date.now();
+  const portalSessions = createMemoryPortalSessions(() => now);
+  const server = createInsecureTestServer(app, {
+    deployAppsDomain: "apps.example.com",
+    deployGateSecret: "gate-secret",
+    deployAppsSessionSecret: SESSION_SECRET,
+    deployAppsLoginUrl: LOGIN_URL,
+    portalSessions,
+  });
+  server.listen(0);
+  const port = (server.address() as AddressInfo).port;
+  const sid = "t".repeat(43);
+  const get = () =>
+    httpGet(port, "/data", {
+      Host: "sidsite.apps.example.com",
+      Accept: "application/json",
+      Cookie: `portal_session=${mintSessionClaims({ sub: "alice@example.com", sid })}`,
+    });
+  try {
+    assert.equal((await get()).status, 401, "no record means signed out");
+    await portalSessions.start(sid, {
+      principal: "alice@example.com",
+      refreshToken: "rt",
+      expiresAtMs: now + 86_400_000,
+      refreshAfterMs: 900_000,
+    });
+    assert.equal((await get()).status, 200, "a recently checked record admits the session");
+    now += 1_900_000;
+    const stale = await get();
+    assert.equal(stale.status, 401, "a record not checked for two refresh intervals is not admitted");
+    const loginUrl = String((JSON.parse(stale.body) as { loginUrl?: unknown }).loginUrl);
+    assert.ok(
+      loginUrl.startsWith(`${LOGIN_URL}/auth/session/check?login=%2Fauth%2Flogin&returnTo=`),
+      "a stale ialabs session is rechecked by the portal instead of signing in again",
+    );
+    const claim = await portalSessions.claim(sid, 60_000);
+    assert.equal(claim.state, "claimed");
+    await portalSessions.settle(sid, claim.state === "claimed" ? claim.lease : "", {
+      kind: "unavailable",
+      retryAfterMs: 60_000,
+    });
+    assert.equal((await get()).status, 200, "a session in its MS-AUTH outage backoff stays admitted");
+    now += 61_000;
+    assert.equal((await get()).status, 401);
+    const signedOut = await httpGet(port, "/data", {
+      Host: "sidsite.apps.example.com",
+      Accept: "application/json",
+    });
+    assert.ok(String(JSON.parse(signedOut.body).loginUrl).startsWith(`${LOGIN_URL}/auth/login?`));
+  } finally {
+    server.close();
+    upstream.close();
   }
 });

@@ -217,3 +217,11 @@ test("app-only sessions cannot mint desktop sessions", async () => {
     assert.equal(response.headers.get("set-cookie"), null);
   }
 });
+
+test("desktop handoff keeps the ialabs session id so revocation reaches the desktop", () => {
+  const sid = randomBytes(32).toString("base64url");
+  const code = mintDesktopLogin({ ...browser, sid }, secret, origin, challenge, state);
+  assert.equal(openDesktopLogin(code, verifier, state, secret, origin, browser.org, 86400)?.session.sid, sid);
+  const plain = mintDesktopLogin(browser, secret, origin, challenge, state);
+  assert.equal(openDesktopLogin(plain, verifier, state, secret, origin, browser.org, 86400)?.session.sid, undefined);
+});
