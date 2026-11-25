@@ -43,15 +43,18 @@ const OFF_LIMITS_MESSAGE =
 const FOREIGN_FRAME_MESSAGE =
   "Chrome will not let the Browser Bridge control that tab because another extension has put its own frame into the page — usually a password manager's autofill menu (Bitwarden, 1Password) or Chrome's PDF viewer";
 
+const FOREIGN_FRAME = /chrome-extension:\/\/ URL of different extension/i;
+
 function refusalOf(error) {
   const reason = String((error && error.message) || error || "");
-  if (/chrome-extension:\/\/ URL of different extension/i.test(reason)) return FOREIGN_FRAME_MESSAGE;
+  if (FOREIGN_FRAME.test(reason)) return FOREIGN_FRAME_MESSAGE;
   return reason ? `${OFF_LIMITS_MESSAGE} (Chrome said: ${reason})` : OFF_LIMITS_MESSAGE;
 }
 
 let socket = null;
 let attachedTabId = null;
 let lastRefusal = null;
+const enabledDomains = new Map();
 let previousTabId = null;
 let stopped = false;
 let ownOrigins = [];
@@ -295,29 +298,40 @@ function withTimeout(promise, ms) {
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
-function keepForeignFramesOut() {
-  if (globalThis.__qmForeignFrames) return globalThis.__qmForeignFrames();
+function removeForeignFrames() {
   const own = chrome.runtime.getURL("");
-  const foreign = (frame) => /^chrome-extension:\/\//i.test(frame.src || "") && !frame.src.startsWith(own);
-  const strip = (node) => {
-    if (!(node instanceof Element)) return;
-    if (node.tagName === "IFRAME" && foreign(node)) return node.remove();
-    const root = chrome.dom?.openOrClosedShadowRoot?.(node);
-    if (root) for (const inner of root.querySelectorAll("*")) strip(inner);
-    for (const child of node.children) strip(child);
+  let removed = 0;
+  const visit = (node) => {
+    for (const child of Array.from(node.children)) {
+      if (child.tagName === "IFRAME" && /^chrome-extension:\/\//i.test(child.src || "") && !child.src.startsWith(own)) {
+        child.remove();
+        removed += 1;
+        continue;
+      }
+      const root = chrome.dom?.openOrClosedShadowRoot?.(child);
+      if (root) visit(root);
+      visit(child);
+    }
   };
-  globalThis.__qmForeignFrames = () => strip(document.documentElement);
-  new MutationObserver((changes) => {
-    for (const change of changes) for (const added of change.addedNodes) strip(added);
-  }).observe(document.documentElement, { childList: true, subtree: true });
-  return globalThis.__qmForeignFrames();
+  visit(document);
+  return removed;
 }
 
 function clearForeignFrames(tabId) {
   return withTimeout(
-    chrome.scripting.executeScript({ target: { tabId }, func: keepForeignFramesOut }),
+    chrome.scripting.executeScript({ target: { tabId, allFrames: true }, func: removeForeignFrames }),
     DRIVE_CHECK_MS,
   ).catch(() => {});
+}
+
+async function attachTo(tabId) {
+  try {
+    await chrome.debugger.attach({ tabId }, PROTOCOL_VERSION);
+  } catch (e) {
+    if (!FOREIGN_FRAME.test(String((e && e.message) || e))) throw e;
+    await clearForeignFrames(tabId);
+    await chrome.debugger.attach({ tabId }, PROTOCOL_VERSION);
+  }
 }
 
 function settle(work) {
@@ -332,13 +346,16 @@ function settle(work) {
 }
 
 async function forget(tabId) {
+  enabledDomains.clear();
   await chrome.storage.local.remove("attachedTabId").catch(() => {});
+  if ((await tabUrl(tabId)) === BLANK) await chrome.tabs.remove(tabId).catch(() => {});
   await badge(tabId, false);
   void showBanner(tabId, false);
   await chrome.debugger.detach({ tabId }).catch(() => {});
 }
 
 async function claim(tabId, chosen = false) {
+  lastRefusal = null;
   if (!chosen && (await isStopped())) return false;
   const url = await tabUrl(tabId);
   if (url === null || !drivable(url)) {
@@ -347,11 +364,9 @@ async function claim(tabId, chosen = false) {
   }
   let attachError = null;
   let attachedHere = false;
-  lastRefusal = null;
   if (tabId !== attachedTabId) {
-    await clearForeignFrames(tabId);
     try {
-      await chrome.debugger.attach({ tabId }, PROTOCOL_VERSION);
+      await attachTo(tabId);
       attachedHere = true;
     } catch (e) {
       attachError = e;
@@ -455,7 +470,12 @@ async function openTab(url) {
 async function drivenTab() {
   while (pending) await pending;
   if (attachedTabId !== null) return attachedTabId;
-  return settle(() => (attachedTabId !== null ? attachedTabId : openTab(BLANK)));
+  return settle(async () => {
+    if (attachedTabId !== null) return attachedTabId;
+    const spare = (await chrome.tabs.query({}).catch(() => [])).find((tab) => tab.url === BLANK && !tab.pendingUrl);
+    if (spare && (await claim(spare.id))) return spare.id;
+    return openTab(BLANK);
+  });
 }
 
 async function everyTab() {
@@ -597,6 +617,8 @@ async function onCommand(frame) {
     if (stopped) throw new Error(STOPPED_MESSAGE);
     const sent = method === "Network.getCookies" && !params?.urls?.length ? { ...params, urls: [url] } : params || {};
     const result = await sendToDriven(tabId, method, sent);
+    if (method.endsWith(".enable")) enabledDomains.set(method, sent);
+    if (method === "Fetch.disable") enabledDomains.delete("Fetch.enable");
     if (BOUND_TO_REQUEST.has(method) && !seenRequests.has(String(params?.requestId))) {
       throw new Error("that request is not one this tab showed you");
     }
@@ -670,14 +692,31 @@ function connect() {
   })();
 }
 
+async function reattach(tabId) {
+  await settle(async () => {
+    if (attachedTabId !== tabId) return;
+    await chrome.debugger.detach({ tabId }).catch(() => {});
+    await clearForeignFrames(tabId);
+    await attachTo(tabId);
+    for (const [method, params] of [...enabledDomains]) {
+      await chrome.debugger.sendCommand({ tabId }, method, params).catch(() => {});
+    }
+  });
+}
+
 async function sendToDriven(tabId, method, params) {
   try {
     return await chrome.debugger.sendCommand({ tabId }, method, params);
   } catch (e) {
-    if (!/not attached|URL of different extension/i.test(String((e && e.message) || e))) throw e;
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    const reason = String((e && e.message) || e);
+    if (!/not attached|URL of different extension/i.test(reason)) throw e;
+    if (FOREIGN_FRAME.test(reason)) await reattach(tabId).catch(() => {});
+    else await new Promise((resolve) => setTimeout(resolve, 300));
     while (pending) await pending;
     if (attachedTabId !== tabId) throw e;
+    if (READS_THE_PAGE.has(method) && (await framesOffLimits(tabId))) {
+      throw new Error("this page has QM itself open inside it, so the Browser Bridge will not act on it", { cause: e });
+    }
     return chrome.debugger.sendCommand({ tabId }, method, params);
   }
 }
@@ -733,7 +772,12 @@ chrome.debugger.onDetach.addListener((source, reason) => {
     await settle(async () => {
       if (tabId !== attachedTabId) return;
       attachedTabId = null;
-      if (reason !== "replaced_with_devtools" && (await claim(tabId))) return;
+      if (reason !== "replaced_with_devtools" && (await claim(tabId))) {
+        for (const [method, params] of [...enabledDomains]) {
+          await chrome.debugger.sendCommand({ tabId }, method, params).catch(() => {});
+        }
+        return;
+      }
       await fallBack(tabId);
     });
   })();

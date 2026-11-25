@@ -75,6 +75,7 @@ function install(opts: {
   noWindow?: boolean;
   attachFails?: boolean;
   foreignFrames?: number[];
+  stubbornFrames?: number[];
   canDrive?: boolean;
   storageFailures?: number;
   activeTab?: number;
@@ -153,7 +154,7 @@ function install(opts: {
     debugger: {
       attach: async ({ tabId }: { tabId: number }) => {
         if (opts.attachFails) throw new Error("Cannot access a chrome:// URL");
-        if (opts.foreignFrames?.includes(tabId)) {
+        if (opts.stubbornFrames?.includes(tabId) || (opts.foreignFrames?.includes(tabId) && !guarded.includes(tabId))) {
           throw new Error("Cannot access a chrome-extension:// URL of different extension");
         }
         if (live.has(tabId)) throw new Error(`Another debugger is already attached to the tab with id: ${tabId}.`);
@@ -220,7 +221,7 @@ function install(opts: {
         func?: { name?: string };
       }) => {
         if (opts.hangs?.includes(target.tabId)) return new Promise(() => {});
-        if (func?.name === "keepForeignFramesOut") {
+        if (func?.name === "removeForeignFrames") {
           guarded.push(target.tabId);
           return [];
         }
@@ -1540,7 +1541,7 @@ test("a tab another extension has put a frame into is refused with that reason, 
   const h = install({
     store: { ...PAIRED, attachedTabId: 7 },
     tabs: { ...DASHBOARD, 8: { title: "Log in | Tavily", url: "https://auth.tavily.com/u/login" } },
-    foreignFrames: [8],
+    stubbornFrames: [8],
   });
   await bootWorker();
   await booted(h);
@@ -1552,15 +1553,55 @@ test("a tab another extension has put a frame into is refused with that reason, 
   assert.equal(h.store.attachedTabId, 7, "and the agent stays where it was");
 });
 
-test("other extensions' frames are cleared from a tab before the bridge attaches to it", async () => {
+test("a tab Chrome refuses because of another extension's frame is cleared and then taken", async () => {
   const h = install({
     store: { ...PAIRED, attachedTabId: 7 },
-    tabs: { ...DASHBOARD, 8: { title: "Log in", url: "https://login.example/" } },
+    tabs: {
+      ...DASHBOARD,
+      8: { title: "Log in", url: "https://login.example/" },
+      9: { title: "Plain", url: "https://plain.example/" },
+    },
+    foreignFrames: [8],
   });
   await bootWorker();
   await booted(h);
   assert.ok(await until(() => h.store.attachedTabId === 7));
-  const reply = await h.command(71, "qm.switchTab", { tabId: 8 });
-  assert.ok(!reply.error, JSON.stringify(reply.error));
-  assert.ok(h.guarded.includes(8), "the frame guard ran on the tab before attaching");
+
+  const toLogin = await h.command(71, "qm.switchTab", { tabId: 8 });
+  assert.ok(!toLogin.error, JSON.stringify(toLogin.error));
+  assert.ok(h.guarded.includes(8), "the frames were cleared after Chrome refused");
+
+  const toPlain = await h.command(72, "qm.switchTab", { tabId: 9 });
+  assert.ok(!toPlain.error, JSON.stringify(toPlain.error));
+  assert.ok(!h.guarded.includes(9), "a tab Chrome accepts is left alone");
+});
+
+test("the extension's own blank tab never piles up: letting go or moving on closes it", async () => {
+  const h = install({ store: { ...PAIRED }, tabs: DASHBOARD });
+  await bootWorker();
+  await booted(h);
+  await h.command(73, "Runtime.evaluate", { expression: "1" });
+  assert.ok(await until(() => h.created.length === 1), "one blank tab of its own");
+  const first = h.created[0]!.tabId;
+
+  await h.command(74, "qm.release");
+  assert.ok(await until(() => h.removed.includes(first)), "letting go closes it");
+
+  await h.command(75, "Runtime.evaluate", { expression: "1" });
+  assert.ok(await until(() => h.created.length === 2));
+  const second = h.created[1]!.tabId;
+  await h.command(76, "qm.switchTab", { tabId: 7 });
+  assert.ok(await until(() => h.removed.includes(second)), "moving to a real tab closes it too");
+});
+
+test("a blank tab left from before is reused instead of opening another", async () => {
+  const h = install({
+    store: { ...PAIRED },
+    tabs: { ...DASHBOARD, 12: { title: "QM", url: "data:text/html,%3Ctitle%3EQM%3C%2Ftitle%3E" } },
+  });
+  await bootWorker();
+  await booted(h);
+  await h.command(77, "Runtime.evaluate", { expression: "1" });
+  assert.ok(await until(() => h.store.attachedTabId === 12));
+  assert.equal(h.created.length, 0);
 });
