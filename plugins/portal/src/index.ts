@@ -191,7 +191,7 @@ const IALABS: IalabsConfig | null =
     ? {
         baseUrl: (process.env.IALABS_AUTH_URL ?? "").trim().replace(/\/$/, ""),
         issuer: process.env.IALABS_AUTH_ISSUER?.trim() ?? "",
-        audience: process.env.IALABS_AUTH_AUDIENCE?.trim() || "qm",
+        audience: process.env.IALABS_AUTH_AUDIENCE?.trim() || OIDC.clientId,
         clientId: OIDC.clientId,
         redirectUri: OIDC.redirectUri,
       }

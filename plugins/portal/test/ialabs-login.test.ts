@@ -43,7 +43,7 @@ const exchanges: unknown[] = [];
 async function accessToken(): Promise<string> {
   return new SignJWT({
     pty: "user",
-    client_id: "qm",
+    client_id: "laberbrain",
     email: "Ana.Garcia@laberit.com",
     name: "Ana García",
     roles: ["member"],
@@ -52,7 +52,7 @@ async function accessToken(): Promise<string> {
   })
     .setProtectedHeader({ alg: "RS256", kid: tokenKid, typ: "at+jwt" })
     .setIssuer(issuer)
-    .setAudience((claims.aud as string[] | undefined) ?? ["qm"])
+    .setAudience((claims.aud as string[] | undefined) ?? ["laberbrain"])
     .setSubject("user:7")
     .setIssuedAt()
     .setExpirationTime(accessTtl)
@@ -188,7 +188,7 @@ Object.assign(process.env, {
   PORTAL_IDP: "ialabs",
   IALABS_AUTH_URL: `${upstreamUrl}/auth`,
   IALABS_AUTH_ISSUER: issuer,
-  OIDC_CLIENT_ID: "qm",
+  OIDC_CLIENT_ID: "laberbrain",
   OIDC_CLIENT_SECRET: "",
   OIDC_ALLOWED_EMAILS: "",
   OIDC_ALLOWED_EMAIL_DOMAIN: "laberit.com",
@@ -259,7 +259,7 @@ test("sign-in goes to the MS-AUTH authorize endpoint with PKCE and no OIDC param
   const login = await fetch(`${base}/auth/login`, { redirect: "manual" });
   const location = new URL(login.headers.get("location")!);
   assert.equal(`${location.origin}${location.pathname}`, `${upstreamUrl}/auth/api/auth/authorize`);
-  assert.equal(location.searchParams.get("client_id"), "qm");
+  assert.equal(location.searchParams.get("client_id"), "laberbrain");
   assert.equal(location.searchParams.get("redirect_uri"), `${origin}/auth/callback`);
   assert.equal(location.searchParams.get("code_challenge_method"), "S256");
   assert.ok(location.searchParams.get("code_challenge"));
@@ -406,7 +406,13 @@ test("concurrent requests across tabs and instances send the refresh token once"
     const other = createIalabsSessions({
       core: upstreamUrl,
       signingSecret: "ialabs-login-core-secret",
-      ialabs: { baseUrl: `${upstreamUrl}/auth`, issuer, audience: "qm", clientId: "qm", redirectUri: "" },
+      ialabs: {
+        baseUrl: `${upstreamUrl}/auth`,
+        issuer,
+        audience: "laberbrain",
+        clientId: "laberbrain",
+        redirectUri: "",
+      },
       refreshAfterMs: 900_000,
       reauthBeforeMs: 86400_000,
       pollMs: 20,
@@ -435,8 +441,8 @@ function instance(timeoutMs?: number) {
     ialabs: {
       baseUrl: `${upstreamUrl}/auth`,
       issuer,
-      audience: "qm",
-      clientId: "qm",
+      audience: "laberbrain",
+      clientId: "laberbrain",
       redirectUri: "",
       ...(timeoutMs ? { timeoutMs } : {}),
     },

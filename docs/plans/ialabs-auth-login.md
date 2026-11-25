@@ -33,19 +33,19 @@ own session cookie.
 
 ```yaml
 services:
-  - audience: qm
-    name: qm
+  - audience: laberbrain
+    name: laberbrain
 apps:
-  - app_id: qm
+  - app_id: laberbrain
     access: assigned
     redirect_uris:
       - https://<qm-portal-host>/auth/callback
       - http://localhost:<portal-port>/auth/callback
-    services: [qm]
+    services: [laberbrain]
     roles: [member, admin]
 ```
 
-Then `ialabs-auth access grant <email> qm --role member`.
+Then `ialabs-auth access grant <email> laberbrain --role member`.
 
 ### 2. Portal: an `ialabs` sign-in mode (`plugins/portal/src/oidc.ts`, `index.ts`)
 
@@ -61,8 +61,8 @@ provider mode selected by config, keeping the rest of the portal (temp cookie, `
 - **Exchange:** `POST {IALABS_AUTH_URL}/api/tokens` as JSON
   `{code, code_verifier, redirect_uri}`; no client secret (public client, like people).
 - **Verify:** `jose.jwtVerify(access_token, JWKS)` with `issuer` = MS-AUTH `TOKEN_ISSUER`,
-  `audience` = `qm`, `algorithms: ["RS256"]`; then require `pty === "user"` and
-  `client_id === "qm"`. This is exactly what people's backend checks.
+  `audience` = `laberbrain`, `algorithms: ["RS256"]`; then require `pty === "user"` and
+  `client_id === "laberbrain"`. This is exactly what people's backend checks.
 - **Identity:** `email` (lowercased) is the principal, `name` the display name. It reuses
   `resolvePrincipal` for the allowlist/domain/invite rules. Since there is no
   `email_verified`, the ialabs mode treats the email as verified: MS-AUTH only issues tokens
@@ -89,7 +89,7 @@ provider mode selected by config, keeping the rest of the portal (temp cookie, `
     usually silent through Entra SSO. Do it before the cap expires, so an API call never hits
     it.
   - **Sign-out:** `POST /api/tokens/revoke` and delete the stored token.
-  - **Cut-off time:** someone removed from the qm app is caught within 15 minutes.
+  - **Cut-off time:** someone removed from the laberbrain app is caught within 15 minutes.
     Someone disabled in Entra is caught within MS-AUTH `ENTRA_CHECK_INTERVAL_MINUTES` (60)
     plus 15. Lower that MS-AUTH setting if an hour is too long, and keep Entra's "Assignment
     required" on the MS-AUTH enterprise app so a removed user cannot sign in again.
@@ -107,7 +107,7 @@ and in `bootChecks`. `trusted-entry.ts` uses the same helpers and is left on gen
 PORTAL_IDP=ialabs
 IALABS_AUTH_URL=https://labs.laberit.ai/auth
 IALABS_AUTH_ISSUER=<MS-AUTH TOKEN_ISSUER>
-OIDC_CLIENT_ID=qm
+OIDC_CLIENT_ID=laberbrain
 OIDC_PRINCIPAL_CLAIM=email
 OIDC_ALLOWED_EMAIL_DOMAIN=laberit.com
 ```
