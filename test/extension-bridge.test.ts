@@ -254,7 +254,7 @@ function install(opts: {
     runtime: {
       id: "test",
       getURL: (p: string) => `chrome-extension://test/${p}`,
-      getManifest: () => ({ version: "0.2.7" }),
+      getManifest: () => ({ version: "0.2.8" }),
       onMessage: on("message"),
       onStartup: on("startup"),
       onInstalled: on("installed"),
@@ -1539,7 +1539,7 @@ test("each browser connects with its own lasting identity, so two browsers never
   const id = first.searchParams.get("browser") ?? "";
   assert.match(id, /^[A-Za-z0-9-]{8,64}$/);
   assert.equal(h.store.browserId, id, "kept, so a restart is the same browser");
-  assert.equal(first.searchParams.get("v"), "0.2.7");
+  assert.equal(first.searchParams.get("v"), "0.2.8");
   assert.ok(first.searchParams.get("name"));
 
   h.sockets.at(-1)!.close();

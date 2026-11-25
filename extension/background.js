@@ -47,7 +47,10 @@ const FOREIGN_FRAME = /chrome-extension:\/\/ URL of different extension/i;
 
 function refusalOf(error) {
   const reason = String((error && error.message) || error || "");
-  if (FOREIGN_FRAME.test(reason)) return FOREIGN_FRAME_MESSAGE;
+  if (FOREIGN_FRAME.test(reason)) {
+    const found = /\[extension frames: ([^\]]+)\]/.exec(reason)?.[1];
+    return found ? `${FOREIGN_FRAME_MESSAGE} (extension frames: ${found})` : FOREIGN_FRAME_MESSAGE;
+  }
   return reason ? `${OFF_LIMITS_MESSAGE} (Chrome said: ${reason})` : OFF_LIMITS_MESSAGE;
 }
 
@@ -302,12 +305,12 @@ function withTimeout(promise, ms) {
 
 function removeForeignFrames() {
   const own = chrome.runtime.getURL("");
-  let removed = 0;
+  const removed = [];
   const visit = (node) => {
     for (const child of Array.from(node.children)) {
       if (child.tagName === "IFRAME" && /^chrome-extension:\/\//i.test(child.src || "") && !child.src.startsWith(own)) {
+        removed.push(new URL(child.src).host);
         child.remove();
-        removed += 1;
         continue;
       }
       const root = chrome.dom?.openOrClosedShadowRoot?.(child);
@@ -327,19 +330,27 @@ function clearForeignFrames(tabId) {
       injectImmediately: true,
     }),
     DRIVE_CHECK_MS,
-  ).catch(() => {});
+  )
+    .then((results) => (results ?? []).flatMap((frame) => (Array.isArray(frame?.result) ? frame.result : [])))
+    .catch(() => []);
 }
 
 async function attachTo(tabId) {
+  const from = new Set();
   for (let attempt = 0; ; attempt += 1) {
     try {
       await chrome.debugger.attach({ tabId }, PROTOCOL_VERSION);
       attachments += 1;
       return;
     } catch (e) {
-      if (!FOREIGN_FRAME.test(String((e && e.message) || e)) || attempt >= 3) throw e;
+      const reason = String((e && e.message) || e);
+      if (!FOREIGN_FRAME.test(reason)) throw e;
+      if (attempt >= 3) {
+        const found = from.size ? [...from].join(", ") : "none found in the page";
+        throw new Error(`${reason} [extension frames: ${found}]`, { cause: e });
+      }
       if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
-      await clearForeignFrames(tabId);
+      for (const id of await clearForeignFrames(tabId)) from.add(id);
     }
   }
 }
