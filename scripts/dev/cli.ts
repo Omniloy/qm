@@ -5,6 +5,7 @@ import { parseArgs } from "node:util";
 import {
   ensureStore,
   listSlots,
+  liveEnvPath,
   poolStore,
   readSlotFlag,
   slotFlagged,
@@ -40,7 +41,7 @@ import {
 } from "./lib/client.ts";
 import { sweepSlackTokenOrphans } from "./lib/orphans.ts";
 import { destroyLocalDevSandboxes } from "./lib/sandbox.ts";
-import { bestEffort, errMessage, formatAge, nowEpoch, sleep } from "./lib/util.ts";
+import { bestEffort, errMessage, formatAge, nowEpoch, readEnvFile, sleep } from "./lib/util.ts";
 import { runDoctor } from "./commands/doctor.ts";
 import type { BootPhaseEvent, BootResult, DevSandboxChoice, LeaseInfo } from "./lib/types.ts";
 import { CHILD_ORDER, EXIT } from "./lib/types.ts";
@@ -117,7 +118,7 @@ function emitJson(payload: unknown): void {
   if (opts.json) console.log(JSON.stringify(payload, null, 2));
 }
 
-const orgId = opts.org ?? process.env.DEV_INSTANCE_ORG_ID ?? "acme";
+const orgId = opts.org || process.env.DEV_INSTANCE_ORG_ID || readEnvFile(liveEnvPath()).DEV_INSTANCE_ORG_ID || "acme";
 const requestedSurface =
   opts.surface ?? (opts["no-slack"] || process.env.DEV_INSTANCE_NO_SLACK === "1" ? "web" : undefined);
 if (requestedSurface !== undefined && !["web", "slack", "both"].includes(requestedSurface)) {
