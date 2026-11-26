@@ -184,12 +184,12 @@ import {
   turnFailureMessage,
   type TurnFailurePayload,
 } from "./turn-error.ts";
-import { personKey, samePerson } from "../directory/person.ts";
+import { ownsPersonalScope, personKey, samePerson } from "../directory/person.ts";
 import { sleep } from "../util/async.ts";
 import { hashId } from "../util/crypto.ts";
 import { randomUUID } from "node:crypto";
 import { LRUCache } from "lru-cache";
-import type { SkillResolution } from "../skills/skill-store.ts";
+import { skillIdentity, type SkillResolution } from "../skills/skill-store.ts";
 import type { Orchestrator, OrchestratorDeps, OrchestratorInput } from "./orchestrator/types.ts";
 import { isHarnessId, resolveModel, CODEX_SUBSCRIPTION_PROVIDER } from "../model/pi-models.ts";
 import type { ProviderKeys } from "../harness/pi-harness.ts";
@@ -1230,7 +1230,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       const personalConnectorAccess =
         !external &&
         !strictReadOnly &&
-        (scopeId === personalScope(actor.id) || openSpeakerKeychain || openAutomationKeychain);
+        (ownsPersonalScope(actor.id, scopeId) || openSpeakerKeychain || openAutomationKeychain);
       const connectorInventory =
         personalConnectorAccess && deps.connectorTokens?.listConnectorsByOwners
           ? deps.connectorTokens
@@ -1645,7 +1645,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           );
         }
         const ownAllowed =
-          scopeId === personalScope(actor.id) ||
+          ownsPersonalScope(actor.id, scopeId) ||
           isolateOwnerKeychain ||
           (input.origin.kind === "automation" && input.origin.useOwnerKeychain === true);
         if (ownAllowed) {
@@ -1792,7 +1792,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           aud: CONTROL_PLANE_AUD,
           ...(!external &&
           allInternal &&
-          (scopeId === personalScope(actor.id) ||
+          (ownsPersonalScope(actor.id, scopeId) ||
             openSpeakerKeychain ||
             (input.origin.kind === "automation" && input.origin.useOwnerKeychain === true))
             ? { ownerConnections: true }
@@ -1831,7 +1831,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           !("QM_RELAY_URL" in connectorEnv) &&
           liveTurn &&
           !automatedTurn &&
-          scopeId === personalScope(actor.id)
+          ownsPersonalScope(actor.id, scopeId)
         ) {
           const chosen = await deps.config?.getBrowserProviderDurable(memoryScopeId);
           if (chosen === "extension") {
@@ -2310,7 +2310,25 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               };
             }
             if (p.screenedOutput && quarantineRelease) {
-              const label = p.screenedOutput.sourceScopeId ?? scopeId;
+              const heldSource = p.securityHold?.source;
+              const heldSkill =
+                heldSource?.kind === "skill"
+                  ? (await context.listSkills()).find(
+                      (entry) =>
+                        entry.skill?.id === heldSource.skillId &&
+                        skillIdentity(entry.skill).contentHash === heldSource.contentHash,
+                    )?.skill
+                  : undefined;
+              const grantLabel = heldSkill
+                ? context
+                    .skillGrantScopes(heldSkill.id, heldSkill.scopeId)
+                    .find((grantee) =>
+                      conversation.audience.every((principal) =>
+                        principalEntitledToScope(principal, grantee, scopeId, resolution.orgScopeId),
+                      ),
+                    )
+                : undefined;
+              const label = grantLabel ?? p.screenedOutput.sourceScopeId ?? scopeId;
               if (
                 !conversation.audience.every((principal) =>
                   principalEntitledToScope(principal, label, scopeId, resolution.orgScopeId),

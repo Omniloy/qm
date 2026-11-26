@@ -1,6 +1,6 @@
 import type { RuntimePurpose, ScopedConfigStore } from "../resolution/config-store.ts";
-import { peopleListAllows, type PersonLookup } from "../directory/person.ts";
-import { parseScopeId, type ScopeId } from "../types.ts";
+import { ownsPersonalScope, peopleListAllows, type PersonLookup } from "../directory/person.ts";
+import type { ScopeId } from "../types.ts";
 import {
   defaultWebuiModelIds,
   THINKING_LEVELS,
@@ -46,8 +46,7 @@ export async function scopeFastModeAllowed(
   actorId: string,
   scope: ScopeId,
 ): Promise<boolean> {
-  const parsed = parseScopeId(scope);
-  return (parsed.kind === "personal" && parsed.ref === actorId) || fastModeAllowed(config, directory, actorId);
+  return ownsPersonalScope(actorId, scope) || fastModeAllowed(config, directory, actorId);
 }
 
 export function turnModelOptions(input: {

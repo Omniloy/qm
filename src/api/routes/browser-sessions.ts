@@ -1,8 +1,8 @@
 import type { ApiCtx, Route } from "./route.ts";
 import { sendJson } from "../http.ts";
 import { audit, isObj } from "./shared.ts";
-import { scopeId } from "../../types.ts";
 import type { ControlMode, LiveBrowserSession } from "../../connectors/browser-live-session-store.ts";
+import { ownsPersonalScope } from "../../directory/person.ts";
 
 /**
  * The browser a person has open: registering it, finding it, and arbitrating
@@ -35,7 +35,7 @@ const callerOf = (ctx: ApiCtx): string | null => ctx.capability?.actorId ?? ctx.
 function ownScopeViolation(ctx: ApiCtx, principalId: string): string | null {
   const claimed = ctx.capability?.scopeId;
   if (!claimed) return null; // A portal identity carries no scope; the principal is the boundary.
-  return claimed === scopeId("personal", principalId) ? null : "a browser belongs to one person, not to a room";
+  return ownsPersonalScope(principalId, claimed) ? null : "a browser belongs to one person, not to a room";
 }
 
 function refuseTriggered(ctx: ApiCtx): string | null {

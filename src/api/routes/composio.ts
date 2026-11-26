@@ -1,7 +1,7 @@
 import { isBackendCredential } from "../../credentials/keychain.ts";
 import { livePersonCapability } from "../artifact-share.ts";
 import { mintSignedPayload, verifySignedPayload } from "../../auth/signed-token.ts";
-import { canonicalPerson, personIds, samePerson } from "../../directory/person.ts";
+import { canonicalPerson, ownsPersonalScope, personIds, samePerson } from "../../directory/person.ts";
 import { PrincipalLinkError } from "../../identity/principal-links.ts";
 import { createHash } from "node:crypto";
 import { scopeId } from "../../types.ts";
@@ -59,7 +59,7 @@ async function credential(ctx: ApiCtx): Promise<{ key: string; principal: string
   const personal = scopeId("personal", principal);
   if (ctx.capability) {
     const cap = ctx.capability;
-    const shared = cap.scopeId !== personal;
+    const shared = !ownsPersonalScope(principal, cap.scopeId);
     if (
       cap.ownerConnections !== true ||
       cap.deployment ||
@@ -95,7 +95,10 @@ async function credential(ctx: ApiCtx): Promise<{ key: string; principal: string
   }
   const org = scopeId("org", orgId());
   const identity = ctx.deps.identity?.classify(principal) ?? { id: principal, type: "internal" as const };
-  const audience = ctx.capability && ctx.capability.scopeId !== personal ? ctx.capability.keychainMembers : [identity];
+  const audience =
+    ctx.capability && !ownsPersonalScope(principal, ctx.capability.scopeId)
+      ? ctx.capability.keychainMembers
+      : [identity];
   if (!audience?.length || audience.some((member) => member.type !== "internal")) {
     sendJson(ctx.res, 403, { error: "unknown_audience" });
     return null;

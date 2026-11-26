@@ -5,6 +5,7 @@ import type { SessionStore } from "../sessions/session-store.ts";
 import type { CronStore } from "../cron/cron-store.ts";
 import type { Scheduler } from "../cron/scheduler.ts";
 import { scopeId, type Cron, type CronSchedule } from "../types.ts";
+import { ownsPersonalScope, samePerson } from "../directory/person.ts";
 
 const DAY = 24 * 60 * 60_000;
 const SUGGESTED_ACTIVITIES_TASK = `Generate three useful suggested activities for the owner of this personal session's new-chat screen.
@@ -50,7 +51,7 @@ export function createSuggestedActivityService(deps: {
     timezone,
   });
   const owned = (cron: Cron | null, principalId: string): cron is Cron =>
-    !!cron && cron.owner === principalId && cron.ownerScopeId === scopeId("personal", principalId);
+    !!cron && samePerson(cron.owner, principalId) && ownsPersonalScope(principalId, cron.ownerScopeId);
 
   const actionFor = (seeds: SuggestedActivity[]) =>
     `${SUGGESTED_ACTIVITIES_TASK}\n\nDeployment guidance:\n${deps.context ?? "No special deployment context."}\n\nFallback seed activities:\n${JSON.stringify(seeds)}`;
@@ -97,7 +98,7 @@ export function createSuggestedActivityService(deps: {
       .filter(
         (session) =>
           session.type === "dm" &&
-          session.scopeId === scopeId("personal", principalId) &&
+          ownsPersonalScope(principalId, session.scopeId) &&
           (session.lastActivityAt ?? session.createdAt) > now() - DAY,
       )
       .slice(0, 6)) {
@@ -156,7 +157,7 @@ export function createSuggestedActivityService(deps: {
       for (const run of runs) {
         if (run.status !== "ok" || !run.sessionId) continue;
         const session = await deps.sessions.get(run.sessionId);
-        if (!session || session.scopeId !== scopeId("personal", principalId) || session.threadRef !== run.threadRef)
+        if (!session || !ownsPersonalScope(principalId, session.scopeId) || session.threadRef !== run.threadRef)
           continue;
         const seq = await deps.sessions.latestEntrySeq(session.id);
         const entries = await deps.sessions.getEntries(session.id, { sinceSeq: Math.max(0, seq - 20), limit: 20 });

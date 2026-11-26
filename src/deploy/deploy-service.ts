@@ -11,7 +11,7 @@ import { isManageableCreationScope, parseScopeId, scopeId } from "../types.ts";
 import type { AclStore } from "../acl/acl-store.ts";
 import { deployRef, encodeRef } from "../acl/resource-ref.ts";
 import { normalizeRelPath } from "./deploy-fs.ts";
-import { samePerson } from "../directory/person.ts";
+import { ownsPersonalScope, samePerson } from "../directory/person.ts";
 import type { AuditLog } from "../audit/audit-log.ts";
 import {
   currentVersionOf,
@@ -446,11 +446,11 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
 
   async function canWriteScope(callerId: string, scope: ScopeId, actingScopeId?: ScopeId): Promise<boolean> {
     if (deps.canWriteScope) return deps.canWriteScope(callerId, scope);
-    return scope === `personal:${callerId}` || scope === actingScopeId;
+    return ownsPersonalScope(callerId, scope) || scope === actingScopeId;
   }
 
   async function managesHome(d: Deployment, callerId: string, actingScopeId?: ScopeId): Promise<boolean> {
-    if (d.ownerScopeId === `personal:${callerId}`) return true;
+    if (ownsPersonalScope(callerId, d.ownerScopeId)) return true;
     if (deps.managesArtifactHome && (await deps.managesArtifactHome(d.ownerScopeId, d.createdBy, callerId)))
       return true;
     if (
@@ -751,7 +751,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
     async setDeploymentPublic(idOrName, isPublic, actor) {
       const d = (await deps.deployStore.get(idOrName)) ?? (await deps.deployStore.getByName(idOrName));
       if (!d) throw new Error(`no such app: ${idOrName}`);
-      if (d.ownerScopeId !== scopeId("personal", actor.createdBy)) {
+      if (!ownsPersonalScope(actor.createdBy, d.ownerScopeId)) {
         throw new Error(`only the owner can change who can reach "${d.name ?? d.id}"`);
       }
       await deps.deployStore.setPublic(d.id, isPublic);
@@ -1103,7 +1103,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
     async shareDeployment(idOrName, grantee, permission, actor) {
       const d = (await deps.deployStore.get(idOrName)) ?? (await deps.deployStore.getByName(idOrName));
       if (!d) throw new Error(`no such app: ${idOrName}`);
-      if (d.ownerScopeId !== scopeId("personal", actor.createdBy)) {
+      if (!ownsPersonalScope(actor.createdBy, d.ownerScopeId)) {
         throw new Error(`only the owner can change who can reach "${d.name ?? d.id}"`);
       }
       grantee = await deploymentShareScope(grantee, permission, deps.canManageEmail);

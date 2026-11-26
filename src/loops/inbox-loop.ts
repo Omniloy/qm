@@ -2,6 +2,7 @@ import type { Loop } from "../types.ts";
 import { scopeId } from "../types.ts";
 import type { LoopStore } from "./loop-store.ts";
 import { SOURCE_IDS } from "./sources/index.ts";
+import { ownsPersonalScope } from "../directory/person.ts";
 
 const INBOX_LOOP_NAME = "Inbox";
 
@@ -38,7 +39,7 @@ export async function ensureDefaultInboxLoops(store: LoopStore, owner: string): 
     ["slack", "Slack"],
   ]) {
     const existing = (await store.list()).find(
-      (loop) => loop.ownerScopeId === scopeId("personal", owner) && loop.surface === `inbox:${source}`,
+      (loop) => ownsPersonalScope(owner, loop.ownerScopeId) && loop.surface === `inbox:${source}`,
     );
     if (existing) {
       loops.push(existing);
