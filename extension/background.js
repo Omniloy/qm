@@ -309,8 +309,13 @@ function removeForeignFrames() {
   const visit = (node) => {
     for (const child of Array.from(node.children)) {
       if (child.tagName === "IFRAME" && /^chrome-extension:\/\//i.test(child.src || "") && !child.src.startsWith(own)) {
-        removed.push(new URL(child.src).host);
+        const src = child.src;
         child.remove();
+        try {
+          removed.push(new URL(src).host);
+        } catch {
+          removed.push("");
+        }
         continue;
       }
       const root = chrome.dom?.openOrClosedShadowRoot?.(child);
@@ -322,6 +327,10 @@ function removeForeignFrames() {
   return removed;
 }
 
+function isExtensionId(value) {
+  return typeof value === "string" && /^[a-p]{32}$/.test(value);
+}
+
 function clearForeignFrames(tabId) {
   return withTimeout(
     chrome.scripting.executeScript({
@@ -331,12 +340,15 @@ function clearForeignFrames(tabId) {
     }),
     DRIVE_CHECK_MS,
   )
-    .then((results) => (results ?? []).flatMap((frame) => (Array.isArray(frame?.result) ? frame.result : [])))
-    .catch(() => []);
+    .then((results) =>
+      (results ?? []).flatMap((frame) => (Array.isArray(frame?.result) ? frame.result : [])).filter(isExtensionId),
+    )
+    .catch(() => null);
 }
 
 async function attachTo(tabId) {
   const from = new Set();
+  let unchecked = false;
   for (let attempt = 0; ; attempt += 1) {
     try {
       await chrome.debugger.attach({ tabId }, PROTOCOL_VERSION);
@@ -346,11 +358,14 @@ async function attachTo(tabId) {
       const reason = String((e && e.message) || e);
       if (!FOREIGN_FRAME.test(reason)) throw e;
       if (attempt >= 3) {
-        const found = from.size ? [...from].join(", ") : "none found in the page";
+        const ids = [...from].slice(0, 5).join(", ");
+        const found = ids || (unchecked ? "the page could not be checked" : "none found in the page");
         throw new Error(`${reason} [extension frames: ${found}]`, { cause: e });
       }
       if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
-      for (const id of await clearForeignFrames(tabId)) from.add(id);
+      const ids = await clearForeignFrames(tabId);
+      if (ids === null) unchecked = true;
+      else for (const id of ids) from.add(id);
     }
   }
 }
@@ -442,19 +457,22 @@ function release() {
   });
 }
 
-async function resume() {
+async function liftStopIfChosenAfter(chosenAt) {
   await settle(async () => {
+    const stored = await chrome.storage.local.get(["stopped", "stoppedAt"]).catch(() => ({}));
+    if (stored.stopped !== true || typeof stored.stoppedAt !== "number" || chosenAt <= stored.stoppedAt) return;
     stopped = false;
-    await chrome.storage.local.remove(["stopped", "pendingDetach"]).catch(() => {});
+    await chrome.storage.local.remove(["stopped", "stoppedAt", "pendingDetach"]).catch(() => {});
   });
 }
 
 async function stop() {
+  const stoppedAt = Date.now();
   stopped = true;
-  await chrome.storage.local.set({ stopped: true }).catch(() => {});
+  await chrome.storage.local.set({ stopped: true, stoppedAt }).catch(() => {});
   await settle(async () => {
     stopped = true;
-    await chrome.storage.local.set({ stopped: true }).catch(() => {});
+    await chrome.storage.local.set({ stopped: true, stoppedAt }).catch(() => {});
     const stored = await chrome.storage.local.get("attachedTabId").catch(() => ({}));
     const tabId = attachedTabId ?? (typeof stored.attachedTabId === "number" ? stored.attachedTabId : null);
     attachedTabId = null;
@@ -689,14 +707,13 @@ function connect() {
 
     ws.onopen = () => {
       reconnectDelay = 1000;
-      void (async () => {
+      void settle(async () => {
         const stored = await chrome.storage.local.get("pendingDetach").catch(() => ({}));
         if (stored.pendingDetach) {
           send({ qm: "detached" });
           await chrome.storage.local.remove("pendingDetach").catch(() => {});
         }
-        await announce(attachedTabId, true);
-      })();
+      }).then(() => announce(attachedTabId, true));
     };
     ws.onmessage = (event) => {
       let frame;
@@ -709,12 +726,10 @@ function connect() {
         void learnApp(frame.app);
         return;
       }
-      if (frame?.qm === "resume" && frame.id === undefined) {
-        if (socket === ws) void resume();
-        return;
-      }
       if (frame?.qm === "active" && frame.id === undefined && typeof frame.active === "boolean") {
-        if (socket === ws) activeHere = frame.active;
+        if (socket !== ws) return;
+        activeHere = frame.active;
+        if (frame.active && typeof frame.at === "number") void liftStopIfChosenAfter(frame.at);
         return;
       }
       if (frame?.qm === "token" && frame.id === undefined && typeof frame.token === "string" && frame.token) {
@@ -891,7 +906,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         const shared = await settle(async () => {
           if (!(await claim(tab.id, true))) return false;
           stopped = false;
-          await chrome.storage.local.remove("stopped").catch(() => {});
+          await chrome.storage.local.remove(["stopped", "stoppedAt"]).catch(() => {});
           return true;
         });
         if (!shared) throw new Error("that tab cannot be driven");

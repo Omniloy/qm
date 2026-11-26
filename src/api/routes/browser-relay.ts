@@ -137,10 +137,7 @@ async function chooseBrowser(ctx: ApiCtx): Promise<void> {
       message: "a newer browser choice was made a moment ago — check the list and choose again",
       browsers: await bridgeBrowsers(deps, principalId),
     });
-  if (wanted) {
-    config.setBrowserProvider(scope, EXTENSION_BROWSER_ID);
-    deps.browserRelay?.resume(principalId);
-  }
+  if (wanted) config.setBrowserProvider(scope, EXTENSION_BROWSER_ID);
   audit(deps, {
     principalId,
     action: "browser-relay.choose",

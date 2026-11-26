@@ -43,7 +43,6 @@ export interface RelayHub {
   disconnect(principalId: string, reason: string): void;
   deliver(principalId: string, side: RelaySide, raw: string, socket?: RelaySocket): void;
   setActive(principalId: string, browserId: string | null | undefined, at: number): void;
-  resume(principalId: string): void;
   connected(principalId: string): { extension: boolean; cdp: boolean; sharing: boolean };
   describe(principalId: string): { title?: string; url?: string } | null;
   browsers(principalId: string): { active: string | null | undefined; live: LiveBrowser[] };
@@ -137,7 +136,9 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
   const tellActive = (pair: Pair): void => {
     const target = targetOf(pair);
     for (const ext of pair.extensions.values()) {
-      ext.socket.send(JSON.stringify({ qm: "active", active: ext === target }));
+      ext.socket.send(
+        JSON.stringify({ qm: "active", active: ext === target, ...(pair.activeAt ? { at: pair.activeAt } : {}) }),
+      );
     }
   };
   const dropAgent = (pair: Pair, reason: string): void => {
@@ -258,15 +259,11 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
     setActive(principalId, browserId, at) {
       const pair = pairOf(principalId);
       if (at < (pair.activeAt ?? 0)) return;
+      const newer = at > (pair.activeAt ?? 0);
       pair.activeAt = at;
       if (pair.active !== browserId) choose(pair, browserId);
+      else if (newer) tellActive(pair);
       prune(principalId, pair);
-    },
-
-    resume(principalId) {
-      const pair = pairs.get(principalId);
-      const target = pair ? targetOf(pair) : undefined;
-      target?.socket.send(JSON.stringify({ qm: "resume" }));
     },
 
     connected(principalId) {

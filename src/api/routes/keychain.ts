@@ -276,7 +276,14 @@ async function handleKeychain(ctx: ApiCtx): Promise<void> {
         }
       }
       deps.config.setBrowserProvider(personalScope(actorId), wanted);
-      if (wanted === EXTENSION_BROWSER_ID) deps.browserRelay?.resume(actorId);
+      if (wanted === EXTENSION_BROWSER_ID) {
+        const scope = personalScope(actorId);
+        const current = await deps.config.getBridgeBrowsers(scope);
+        if (current.active !== undefined) {
+          const saved = await deps.config.setActiveBridgeBrowser(scope, current.active, Date.now());
+          deps.browserRelay?.setActive(actorId, saved.active, saved.at);
+        }
+      }
       audit(deps, {
         principalId: actorId,
         action: "keychain.browser",
