@@ -3,9 +3,9 @@ import { Archive, Pause, Pencil, Play, Plus, RotateCcw, Trash2 } from "lucide";
 import { api, userSendMessage } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
 import { icon } from "./ui";
-import { listBackLink, listPageTpl } from "./list-page";
+import { contextEmptyTpl, listBackLink, listPageTpl } from "./list-page";
 import { contextsState, ensureContexts, scopeChip } from "./contexts";
-import { scopedSession, scopedViewTopbar } from "./session-scope";
+import { scopedSession, scopedViewTopbar, setScopedSession } from "./session-scope";
 import { appState } from "./shell";
 import { startNewChat } from "./sessions";
 import { deepLinkPath, isPlainLeftClick, UI_BASE } from "./deep-link";
@@ -193,8 +193,10 @@ function cronStatusText(c: CronView): string {
 
 export async function renderCronsPage(): Promise<void> {
   if (appState.currentView !== "crons") return;
-  if (scopedSession.active) cronsScope = scopedSession.active.scopeId;
-  else if (contextsState.selected) {
+  if (scopedSession.active) {
+    cronsScope = scopedSession.active.scopeId;
+    contextsState.selected = null;
+  } else if (contextsState.selected) {
     cronsScope = contextsState.selected;
     contextsState.selected = null;
   } else cronsScope = null;
@@ -215,6 +217,12 @@ export async function renderCronsPage(): Promise<void> {
   else drawCronsPage();
 }
 
+function showAllCrons(): void {
+  setScopedSession(null);
+  cronsScope = null;
+  drawCronsPage();
+}
+
 function drawCronsPage(): void {
   if (appState.currentView !== "crons" || !appState.mainEl) return;
   activeCronId = null;
@@ -224,8 +232,11 @@ function drawCronsPage(): void {
     cronsPageHost.className = "pane crons-page";
     appState.mainEl.replaceChildren(cronsPageHost);
   }
-  const all = [...cronList.map((c) => ({ c, mine: true })), ...visibleCronList.map((c) => ({ c, mine: false }))]
-    .filter(({ c }) => (cronsScope ? c.ownerScopeId === cronsScope : true))
+  const inContext = [
+    ...cronList.map((c) => ({ c, mine: true })),
+    ...visibleCronList.map((c) => ({ c, mine: false })),
+  ].filter(({ c }) => (cronsScope ? c.ownerScopeId === cronsScope : true));
+  const all = inContext
     .filter(
       ({ c }) =>
         !cronsSearch.trim() ||
@@ -265,9 +276,12 @@ function drawCronsPage(): void {
     rows.push(...archived.map(({ c, mine }) => cronPageRow(c, mine)));
     if (!archived.length) rows.push(cronEmptyRow("Nothing archived."));
   }
-  let empty = "No crons yet.";
+  let empty: string | TemplateResult = "No crons yet.";
   if (cronsNotice) empty = cronsNotice;
   else if (cronsLoading && cronList.length === 0 && visibleCronList.length === 0) empty = "Loading crons…";
+  else if (cronsSearch.trim() && inContext.length) empty = "No crons match your search.";
+  else if (cronsScope && [...cronList, ...visibleCronList].some((c) => c.ownerScopeId !== cronsScope))
+    empty = contextEmptyTpl("No crons in this context.", "Show all crons", showAllCrons);
   else if (cronsScope) empty = "No crons in this context.";
   const scoped = Boolean(scopedSession.active);
   cronsPageHost.classList.toggle("scoped-view", scoped);
