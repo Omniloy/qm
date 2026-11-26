@@ -193,8 +193,10 @@ function cronStatusText(c: CronView): string {
 
 export async function renderCronsPage(): Promise<void> {
   if (appState.currentView !== "crons") return;
-  if (scopedSession.active) cronsScope = scopedSession.active.scopeId;
-  else if (contextsState.selected) {
+  if (scopedSession.active) {
+    cronsScope = scopedSession.active.scopeId;
+    contextsState.selected = null;
+  } else if (contextsState.selected) {
     cronsScope = contextsState.selected;
     contextsState.selected = null;
   } else cronsScope = null;
@@ -230,8 +232,11 @@ function drawCronsPage(): void {
     cronsPageHost.className = "pane crons-page";
     appState.mainEl.replaceChildren(cronsPageHost);
   }
-  const all = [...cronList.map((c) => ({ c, mine: true })), ...visibleCronList.map((c) => ({ c, mine: false }))]
-    .filter(({ c }) => (cronsScope ? c.ownerScopeId === cronsScope : true))
+  const inContext = [
+    ...cronList.map((c) => ({ c, mine: true })),
+    ...visibleCronList.map((c) => ({ c, mine: false })),
+  ].filter(({ c }) => (cronsScope ? c.ownerScopeId === cronsScope : true));
+  const all = inContext
     .filter(
       ({ c }) =>
         !cronsSearch.trim() ||
@@ -274,6 +279,7 @@ function drawCronsPage(): void {
   let empty: string | TemplateResult = "No crons yet.";
   if (cronsNotice) empty = cronsNotice;
   else if (cronsLoading && cronList.length === 0 && visibleCronList.length === 0) empty = "Loading crons…";
+  else if (cronsSearch.trim() && inContext.length) empty = "No crons match your search.";
   else if (cronsScope && [...cronList, ...visibleCronList].some((c) => c.ownerScopeId !== cronsScope))
     empty = contextEmptyTpl("No crons in this context.", "Show all crons", showAllCrons);
   else if (cronsScope) empty = "No crons in this context.";

@@ -214,9 +214,9 @@ function drawDeploysPage(): void {
   if (!deployList.length && deployNotices.list) empty = deployNotices.list;
   else if (deployLoading && deployList.length === 0) empty = "Loading apps…";
   else if (deployQuery && allForTab.length) empty = "No apps match your search.";
-  else if (deployScope && deployList.some((d) => !deploymentInScope(d, deployScope)))
+  else if (deployScope && deployList.length && !deployList.some((d) => deploymentInScope(d, deployScope)))
     empty = contextEmptyTpl("No apps in this context.", "Show all apps", showAllApps);
-  else if (deployScope) empty = "No apps in this context.";
+  else if (deployScope && !deployList.length) empty = "No apps in this context.";
   const content = deployList.length
     ? [
         deployTabs(),

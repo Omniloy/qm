@@ -442,7 +442,10 @@ test("deleting a copy confirms with its size and re-checks the target before red
 
 test("an empty context offers every app instead of a dead end", () => {
   const draw = bodyOf("drawDeploysPage");
-  assert.match(draw, /deployList\.some\(\(d\) => !deploymentInScope\(d, deployScope\)\)/);
+  assert.match(
+    draw,
+    /deployScope && deployList\.length && !deployList\.some\(\(d\) => deploymentInScope\(d, deployScope\)\)/,
+  );
   assert.match(draw, /contextEmptyTpl\("No apps in this context\.", "Show all apps", showAllApps\)/);
   const leave = bodyOf("showAllApps");
   assert.match(leave, /setScopedSession\(null\);\s*deployScope = null;\s*drawDeploysPage\(\);/);
@@ -455,4 +458,13 @@ test("an empty context offers every cron the same way", () => {
     crons,
     /function showAllCrons\(\): void \{\s*setScopedSession\(null\);\s*cronsScope = null;\s*drawCronsPage\(\);/,
   );
+});
+
+test("a scoped crons visit leaves no context selection behind for the next visit", () => {
+  const crons = readFileSync(new URL("../src/crons.ts", import.meta.url), "utf8");
+  assert.match(
+    crons,
+    /if \(scopedSession\.active\) \{\s*cronsScope = scopedSession\.active\.scopeId;\s*contextsState\.selected = null;/,
+  );
+  assert.match(crons, /cronsSearch\.trim\(\) && inContext\.length\) empty = "No crons match your search\."/);
 });
