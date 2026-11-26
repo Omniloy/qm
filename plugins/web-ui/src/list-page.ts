@@ -16,6 +16,10 @@ export function listRowsTpl(rows: TemplateResult[], className = ""): TemplateRes
   </div>`;
 }
 
+export function contextEmptyTpl(text: string, label: string, onAll: () => void): TemplateResult {
+  return html`<span>${text}</span> <button class="btn list-empty-all" type="button" @click=${onAll}>${label}</button>`;
+}
+
 export interface ListPageOpts {
   title: string;
   subtitle?: string;

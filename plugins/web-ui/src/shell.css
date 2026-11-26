@@ -4978,6 +4978,10 @@ summary.stopped-head:focus-visible {
   padding: 24px;
 }
 
+.list-empty-all {
+  margin-left: 10px;
+}
+
 .kc-download {
   display: inline;
 }

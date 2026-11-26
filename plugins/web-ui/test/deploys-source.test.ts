@@ -439,3 +439,20 @@ test("deleting a copy confirms with its size and re-checks the target before red
     /deployVersionNotice = \{ id: d\.id, text: errMessage\(error, "Could not delete this copy\."\) \}/,
   );
 });
+
+test("an empty context offers every app instead of a dead end", () => {
+  const draw = bodyOf("drawDeploysPage");
+  assert.match(draw, /deployList\.some\(\(d\) => !deploymentInScope\(d, deployScope\)\)/);
+  assert.match(draw, /contextEmptyTpl\("No apps in this context\.", "Show all apps", showAllApps\)/);
+  const leave = bodyOf("showAllApps");
+  assert.match(leave, /setScopedSession\(null\);\s*deployScope = null;\s*drawDeploysPage\(\);/);
+});
+
+test("an empty context offers every cron the same way", () => {
+  const crons = readFileSync(new URL("../src/crons.ts", import.meta.url), "utf8");
+  assert.match(crons, /contextEmptyTpl\("No crons in this context\.", "Show all crons", showAllCrons\)/);
+  assert.match(
+    crons,
+    /function showAllCrons\(\): void \{\s*setScopedSession\(null\);\s*cronsScope = null;\s*drawCronsPage\(\);/,
+  );
+});

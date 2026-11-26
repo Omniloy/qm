@@ -3,9 +3,9 @@ import { Archive, Pause, Pencil, Play, Plus, RotateCcw, Trash2 } from "lucide";
 import { api, userSendMessage } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
 import { icon } from "./ui";
-import { listBackLink, listPageTpl } from "./list-page";
+import { contextEmptyTpl, listBackLink, listPageTpl } from "./list-page";
 import { contextsState, ensureContexts, scopeChip } from "./contexts";
-import { scopedSession, scopedViewTopbar } from "./session-scope";
+import { scopedSession, scopedViewTopbar, setScopedSession } from "./session-scope";
 import { appState } from "./shell";
 import { startNewChat } from "./sessions";
 import { deepLinkPath, isPlainLeftClick, UI_BASE } from "./deep-link";
@@ -215,6 +215,12 @@ export async function renderCronsPage(): Promise<void> {
   else drawCronsPage();
 }
 
+function showAllCrons(): void {
+  setScopedSession(null);
+  cronsScope = null;
+  drawCronsPage();
+}
+
 function drawCronsPage(): void {
   if (appState.currentView !== "crons" || !appState.mainEl) return;
   activeCronId = null;
@@ -265,9 +271,11 @@ function drawCronsPage(): void {
     rows.push(...archived.map(({ c, mine }) => cronPageRow(c, mine)));
     if (!archived.length) rows.push(cronEmptyRow("Nothing archived."));
   }
-  let empty = "No crons yet.";
+  let empty: string | TemplateResult = "No crons yet.";
   if (cronsNotice) empty = cronsNotice;
   else if (cronsLoading && cronList.length === 0 && visibleCronList.length === 0) empty = "Loading crons…";
+  else if (cronsScope && [...cronList, ...visibleCronList].some((c) => c.ownerScopeId !== cronsScope))
+    empty = contextEmptyTpl("No crons in this context.", "Show all crons", showAllCrons);
   else if (cronsScope) empty = "No crons in this context.";
   const scoped = Boolean(scopedSession.active);
   cronsPageHost.classList.toggle("scoped-view", scoped);

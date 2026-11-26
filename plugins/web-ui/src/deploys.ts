@@ -5,9 +5,9 @@ import { Archive, Check, Copy, ExternalLink, Plus, RotateCcw, Trash2, X } from "
 import { api, withBase } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
 import { copyText, formatBytes, icon, relTime } from "./ui";
-import { listBackLink, listPageTpl } from "./list-page";
+import { contextEmptyTpl, listBackLink, listPageTpl } from "./list-page";
 import { contextsState, ensureContexts, scopeChip } from "./contexts";
-import { scopedSession, scopedViewTopbar } from "./session-scope";
+import { scopedSession, scopedViewTopbar, setScopedSession } from "./session-scope";
 import { appState } from "./shell";
 import { focusDialogCancel, restoreDialogFocus, trapDialogFocus } from "./dialog-focus";
 import {
@@ -185,6 +185,12 @@ function deploymentRow(d: DeploymentView): TemplateResult {
   `;
 }
 
+function showAllApps(): void {
+  setScopedSession(null);
+  deployScope = null;
+  drawDeploysPage();
+}
+
 function drawDeploysPage(): void {
   if (appState.currentView !== "deploys" || !appState.mainEl) return;
   activeDeploy = null;
@@ -204,10 +210,12 @@ function drawDeploysPage(): void {
   const allForTab = deployList.filter(
     (d) => deploymentTab(d, viewer) === deployTab && deploymentInScope(d, deployScope),
   );
-  let empty = deploymentTabEmptyMessage(deployTab);
+  let empty: string | TemplateResult = deploymentTabEmptyMessage(deployTab);
   if (!deployList.length && deployNotices.list) empty = deployNotices.list;
   else if (deployLoading && deployList.length === 0) empty = "Loading apps…";
   else if (deployQuery && allForTab.length) empty = "No apps match your search.";
+  else if (deployScope && deployList.some((d) => !deploymentInScope(d, deployScope)))
+    empty = contextEmptyTpl("No apps in this context.", "Show all apps", showAllApps);
   else if (deployScope) empty = "No apps in this context.";
   const content = deployList.length
     ? [
