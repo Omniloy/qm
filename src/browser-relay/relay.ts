@@ -137,7 +137,12 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
     const target = targetOf(pair);
     for (const ext of pair.extensions.values()) {
       ext.socket.send(
-        JSON.stringify({ qm: "active", active: ext === target, ...(pair.activeAt ? { at: pair.activeAt } : {}) }),
+        JSON.stringify({
+          qm: "active",
+          active: ext === target,
+          now: Date.now(),
+          ...(pair.activeAt ? { at: pair.activeAt } : {}),
+        }),
       );
     }
   };

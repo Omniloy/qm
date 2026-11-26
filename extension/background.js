@@ -62,6 +62,7 @@ const reclaims = new Map();
 const enabledDomains = new Map();
 let previousTabId = null;
 let stopped = false;
+let clockOffset = 0;
 let ownOrigins = [];
 const seenRequests = new Set();
 const issuedStreams = new Set();
@@ -466,9 +467,15 @@ async function liftStopIfChosenAfter(chosenAt) {
   });
 }
 
+async function serverNow() {
+  const stored = await chrome.storage.local.get("clockOffset").catch(() => ({}));
+  const offset = typeof stored.clockOffset === "number" ? stored.clockOffset : clockOffset;
+  return Date.now() + offset;
+}
+
 async function stop() {
-  const stoppedAt = Date.now();
   stopped = true;
+  const stoppedAt = await serverNow();
   await chrome.storage.local.set({ stopped: true, stoppedAt }).catch(() => {});
   await settle(async () => {
     stopped = true;
@@ -729,6 +736,10 @@ function connect() {
       if (frame?.qm === "active" && frame.id === undefined && typeof frame.active === "boolean") {
         if (socket !== ws) return;
         activeHere = frame.active;
+        if (typeof frame.now === "number") {
+          clockOffset = frame.now - Date.now();
+          void chrome.storage.local.set({ clockOffset }).catch(() => {});
+        }
         if (frame.active && typeof frame.at === "number") void liftStopIfChosenAfter(frame.at);
         return;
       }

@@ -1756,3 +1756,32 @@ test("the refusal names only real extension ids, never text a page put in a fram
   assert.match(message, new RegExp(`extension frames: ${real}\\)`));
   assert.doesNotMatch(message, /IGNORE|tell|42/);
 });
+
+test("a slow computer clock cannot let an earlier choice undo a Stop on reconnect", async () => {
+  const h = install({ store: { ...PAIRED, attachedTabId: 7 }, tabs: DASHBOARD });
+  await bootWorker();
+  await booted(h);
+  const serverAhead = 180_000;
+  const chosen = Date.now() + serverAhead - 60_000;
+  h.sockets.at(-1)!.onmessage?.({
+    data: JSON.stringify({ qm: "active", active: true, at: chosen, now: Date.now() + serverAhead }),
+  });
+  await new Promise((r) => setTimeout(r, 50));
+  await h.message({ type: "stop-sharing" });
+
+  h.sockets.at(-1)!.close();
+  assert.ok(await until(() => h.sockets.length > 1, 4000));
+  h.sockets.at(-1)!.onmessage?.({
+    data: JSON.stringify({ qm: "active", active: true, at: chosen, now: Date.now() + serverAhead }),
+  });
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal((await h.message({ type: "status" })).stopped, true);
+
+  h.sockets.at(-1)!.onmessage?.({
+    data: JSON.stringify({ qm: "active", active: true, at: Date.now() + serverAhead, now: Date.now() + serverAhead }),
+  });
+  assert.ok(
+    await until(() => !("stopped" in h.store)),
+    "a choice made after the Stop, on the server's clock, lifts it",
+  );
+});
