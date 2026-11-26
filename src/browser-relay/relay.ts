@@ -136,7 +136,14 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
   const tellActive = (pair: Pair): void => {
     const target = targetOf(pair);
     for (const ext of pair.extensions.values()) {
-      ext.socket.send(JSON.stringify({ qm: "active", active: ext === target }));
+      ext.socket.send(
+        JSON.stringify({
+          qm: "active",
+          active: ext === target,
+          now: Date.now(),
+          ...(pair.activeAt ? { at: pair.activeAt } : {}),
+        }),
+      );
     }
   };
   const dropAgent = (pair: Pair, reason: string): void => {
@@ -257,8 +264,10 @@ export function createRelayHub(opts: RelayHubOptions = {}): RelayHub {
     setActive(principalId, browserId, at) {
       const pair = pairOf(principalId);
       if (at < (pair.activeAt ?? 0)) return;
+      const newer = at > (pair.activeAt ?? 0);
       pair.activeAt = at;
       if (pair.active !== browserId) choose(pair, browserId);
+      else if (newer) tellActive(pair);
       prune(principalId, pair);
     },
 

@@ -40,11 +40,29 @@ const STOPPED_MESSAGE =
   "they stopped QM using their Chrome — it stays off until they press Share this tab in the Browser Bridge extension";
 const OFF_LIMITS_MESSAGE =
   "that tab cannot be driven — only web pages are; Chrome's own pages, extensions and local files stay off limits";
+const FOREIGN_FRAME_MESSAGE =
+  "Chrome will not let the Browser Bridge control that tab because another extension has put its own frame into the page — usually a password manager's autofill menu (Bitwarden, 1Password) or Chrome's PDF viewer";
+
+const FOREIGN_FRAME = /chrome-extension:\/\/ URL of different extension/i;
+
+function refusalOf(error) {
+  const reason = String((error && error.message) || error || "");
+  if (FOREIGN_FRAME.test(reason)) {
+    const found = /\[extension frames: ([^\]]+)\]/.exec(reason)?.[1];
+    return found ? `${FOREIGN_FRAME_MESSAGE} (extension frames: ${found})` : FOREIGN_FRAME_MESSAGE;
+  }
+  return reason ? `${OFF_LIMITS_MESSAGE} (Chrome said: ${reason})` : OFF_LIMITS_MESSAGE;
+}
 
 let socket = null;
 let attachedTabId = null;
+let lastRefusal = null;
+let attachments = 0;
+const reclaims = new Map();
+const enabledDomains = new Map();
 let previousTabId = null;
 let stopped = false;
+let clockOffset = 0;
 let ownOrigins = [];
 const seenRequests = new Set();
 const issuedStreams = new Set();
@@ -286,6 +304,73 @@ function withTimeout(promise, ms) {
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
+function removeForeignFrames() {
+  const own = chrome.runtime.getURL("");
+  const removed = [];
+  const visit = (node) => {
+    for (const child of Array.from(node.children)) {
+      if (child.tagName === "IFRAME" && /^chrome-extension:\/\//i.test(child.src || "") && !child.src.startsWith(own)) {
+        const src = child.src;
+        child.remove();
+        try {
+          removed.push(new URL(src).host);
+        } catch {
+          removed.push("");
+        }
+        continue;
+      }
+      const root = chrome.dom?.openOrClosedShadowRoot?.(child);
+      if (root) visit(root);
+      visit(child);
+    }
+  };
+  visit(document);
+  return removed;
+}
+
+function isExtensionId(value) {
+  return typeof value === "string" && /^[a-p]{32}$/.test(value);
+}
+
+function clearForeignFrames(tabId) {
+  return withTimeout(
+    chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: removeForeignFrames,
+      injectImmediately: true,
+    }),
+    DRIVE_CHECK_MS,
+  )
+    .then((results) =>
+      (results ?? []).flatMap((frame) => (Array.isArray(frame?.result) ? frame.result : [])).filter(isExtensionId),
+    )
+    .catch(() => null);
+}
+
+async function attachTo(tabId) {
+  const from = new Set();
+  let unchecked = false;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await chrome.debugger.attach({ tabId }, PROTOCOL_VERSION);
+      attachments += 1;
+      return;
+    } catch (e) {
+      const reason = String((e && e.message) || e);
+      if (!FOREIGN_FRAME.test(reason)) throw e;
+      if (attempt >= 3) {
+        const ids = [...from].slice(0, 5).join(", ");
+        const found = ids || (unchecked ? "the page could not be checked" : "none found in the page");
+        throw new Error(`${reason} [extension frames: ${found}]`, { cause: e });
+      }
+      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
+      const ids = await clearForeignFrames(tabId);
+      if (ids === null) unchecked = true;
+      else for (const id of ids) from.add(id);
+    }
+  }
+}
+
 function settle(work) {
   const run = (pending ?? Promise.resolve()).then(work);
   const tracked = run
@@ -298,13 +383,16 @@ function settle(work) {
 }
 
 async function forget(tabId) {
+  enabledDomains.clear();
   await chrome.storage.local.remove("attachedTabId").catch(() => {});
+  if ((await tabUrl(tabId)) === BLANK) await chrome.tabs.remove(tabId).catch(() => {});
   await badge(tabId, false);
   void showBanner(tabId, false);
   await chrome.debugger.detach({ tabId }).catch(() => {});
 }
 
 async function claim(tabId, chosen = false) {
+  lastRefusal = null;
   if (!chosen && (await isStopped())) return false;
   const url = await tabUrl(tabId);
   if (url === null || !drivable(url)) {
@@ -315,7 +403,7 @@ async function claim(tabId, chosen = false) {
   let attachedHere = false;
   if (tabId !== attachedTabId) {
     try {
-      await chrome.debugger.attach({ tabId }, PROTOCOL_VERSION);
+      await attachTo(tabId);
       attachedHere = true;
     } catch (e) {
       attachError = e;
@@ -324,7 +412,8 @@ async function claim(tabId, chosen = false) {
   const probe = await canDrive(tabId);
   if (probe === false || (probe === "busy" && /^about:/i.test(url)) || (!chosen && stopped)) {
     if (attachedHere && tabId !== attachedTabId) await chrome.debugger.detach({ tabId }).catch(() => {});
-    if (chosen && attachError) throw attachError;
+    if (attachError) lastRefusal = refusalOf(attachError);
+    if (chosen && attachError) throw new Error(lastRefusal);
     return false;
   }
   const old = attachedTabId;
@@ -369,12 +458,28 @@ function release() {
   });
 }
 
+async function liftStopIfChosenAfter(chosenAt) {
+  await settle(async () => {
+    const stored = await chrome.storage.local.get(["stopped", "stoppedAt"]).catch(() => ({}));
+    if (stored.stopped !== true || typeof stored.stoppedAt !== "number" || chosenAt <= stored.stoppedAt) return;
+    stopped = false;
+    await chrome.storage.local.remove(["stopped", "stoppedAt", "pendingDetach"]).catch(() => {});
+  });
+}
+
+async function serverNow() {
+  const stored = await chrome.storage.local.get("clockOffset").catch(() => ({}));
+  const offset = typeof stored.clockOffset === "number" ? stored.clockOffset : clockOffset;
+  return Date.now() + offset;
+}
+
 async function stop() {
   stopped = true;
-  await chrome.storage.local.set({ stopped: true }).catch(() => {});
+  const stoppedAt = await serverNow();
+  await chrome.storage.local.set({ stopped: true, stoppedAt }).catch(() => {});
   await settle(async () => {
     stopped = true;
-    await chrome.storage.local.set({ stopped: true }).catch(() => {});
+    await chrome.storage.local.set({ stopped: true, stoppedAt }).catch(() => {});
     const stored = await chrome.storage.local.get("attachedTabId").catch(() => ({}));
     const tabId = attachedTabId ?? (typeof stored.attachedTabId === "number" ? stored.attachedTabId : null);
     attachedTabId = null;
@@ -412,13 +517,18 @@ async function openTab(url) {
   if (typeof tab?.id !== "number") throw new Error("could not open a tab to work in");
   if (await claim(tab.id)) return tab.id;
   await chrome.tabs.remove(tab.id).catch(() => {});
-  throw new Error(stopped ? STOPPED_MESSAGE : "could not open a tab to work in");
+  throw new Error(stopped ? STOPPED_MESSAGE : (lastRefusal ?? "could not open a tab to work in"));
 }
 
 async function drivenTab() {
   while (pending) await pending;
   if (attachedTabId !== null) return attachedTabId;
-  return settle(() => (attachedTabId !== null ? attachedTabId : openTab(BLANK)));
+  return settle(async () => {
+    if (attachedTabId !== null) return attachedTabId;
+    const spare = (await chrome.tabs.query({}).catch(() => [])).find((tab) => tab.url === BLANK && !tab.pendingUrl);
+    if (spare && (await claim(spare.id))) return spare.id;
+    return openTab(BLANK);
+  });
 }
 
 async function everyTab() {
@@ -452,6 +562,41 @@ async function targetInfo() {
   };
 }
 
+function insertText(params) {
+  return settle(async () => {
+    const tabId = attachedTabId;
+    const want = originOf(String(params?.origin ?? ""));
+    const refuse = new Error(`refusing to type: the tab in use is not on ${params?.origin}`);
+    if (tabId === null || !want) throw refuse;
+    const here = await tabUrl(tabId);
+    const tree = await withTimeout(chrome.debugger.sendCommand({ tabId }, "Page.getFrameTree"), DRIVE_CHECK_MS);
+    const top = tree?.frameTree?.frame;
+    if (originOf(here ?? "") !== want || top?.securityOrigin !== want) throw refuse;
+    const world = await withTimeout(
+      chrome.debugger.sendCommand({ tabId }, "Page.createIsolatedWorld", {
+        frameId: top.id,
+        worldName: "qm-fill-check",
+      }),
+      DRIVE_CHECK_MS,
+    );
+    const probe = await withTimeout(
+      chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
+        expression: "document.activeElement ? document.activeElement.tagName : ''",
+        contextId: world?.executionContextId,
+        returnByValue: true,
+      }),
+      DRIVE_CHECK_MS,
+    );
+    if (/^(IFRAME|FRAME|OBJECT|EMBED)$/i.test(String(probe?.result?.value ?? ""))) throw refuse;
+    if (stopped) throw new Error(STOPPED_MESSAGE);
+    await withTimeout(
+      chrome.debugger.sendCommand({ tabId }, "Input.insertText", { text: String(params?.text ?? "") }),
+      DRIVE_CHECK_MS,
+    );
+    return {};
+  });
+}
+
 const LOCAL = {
   "Target.getTargets": async () => ({ targetInfos: [await targetInfo()] }),
   "Target.attachToTarget": async () => ({ sessionId: SESSION_ID }),
@@ -469,7 +614,7 @@ const LOCAL = {
       if (!(await chrome.tabs.get(wanted).catch(() => null))) throw new Error("there is no open tab with that id");
       return claim(wanted);
     });
-    if (!moved) throw new Error(stopped ? STOPPED_MESSAGE : OFF_LIMITS_MESSAGE);
+    if (!moved) throw new Error(stopped ? STOPPED_MESSAGE : (lastRefusal ?? OFF_LIMITS_MESSAGE));
     const now = await chrome.tabs.get(wanted);
     return { tabId: wanted, title: now.title || "", url: now.url || "" };
   },
@@ -477,39 +622,16 @@ const LOCAL = {
     await release();
     return {};
   },
-  "qm.insertText": async (params) =>
-    settle(async () => {
-      const tabId = attachedTabId;
-      const want = originOf(String(params?.origin ?? ""));
-      const refuse = new Error(`refusing to type: the tab in use is not on ${params?.origin}`);
-      if (tabId === null || !want) throw refuse;
-      const here = await tabUrl(tabId);
-      const tree = await withTimeout(chrome.debugger.sendCommand({ tabId }, "Page.getFrameTree"), DRIVE_CHECK_MS);
-      const top = tree?.frameTree?.frame;
-      if (originOf(here ?? "") !== want || top?.securityOrigin !== want) throw refuse;
-      const world = await withTimeout(
-        chrome.debugger.sendCommand({ tabId }, "Page.createIsolatedWorld", {
-          frameId: top.id,
-          worldName: "qm-fill-check",
-        }),
-        DRIVE_CHECK_MS,
-      );
-      const probe = await withTimeout(
-        chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
-          expression: "document.activeElement ? document.activeElement.tagName : ''",
-          contextId: world?.executionContextId,
-          returnByValue: true,
-        }),
-        DRIVE_CHECK_MS,
-      );
-      if (/^(IFRAME|FRAME|OBJECT|EMBED)$/i.test(String(probe?.result?.value ?? ""))) throw refuse;
-      if (stopped) throw new Error(STOPPED_MESSAGE);
-      await withTimeout(
-        chrome.debugger.sendCommand({ tabId }, "Input.insertText", { text: String(params?.text ?? "") }),
-        DRIVE_CHECK_MS,
-      );
-      return {};
-    }),
+  "qm.insertText": async (params) => {
+    const seen = attachments;
+    try {
+      return await insertText(params);
+    } catch (e) {
+      if (!retryable(e) || attachedTabId === null) throw e;
+      await reattach(attachedTabId, seen);
+      return insertText(params);
+    }
+  },
 };
 
 async function onCommand(frame) {
@@ -559,7 +681,9 @@ async function onCommand(frame) {
     }
     if (stopped) throw new Error(STOPPED_MESSAGE);
     const sent = method === "Network.getCookies" && !params?.urls?.length ? { ...params, urls: [url] } : params || {};
-    const result = await chrome.debugger.sendCommand({ tabId }, method, sent);
+    const result = await sendToDriven(tabId, method, sent);
+    if (method.endsWith(".enable")) enabledDomains.set(method, sent);
+    if (method === "Fetch.disable") enabledDomains.delete("Fetch.enable");
     if (BOUND_TO_REQUEST.has(method) && !seenRequests.has(String(params?.requestId))) {
       throw new Error("that request is not one this tab showed you");
     }
@@ -590,14 +714,13 @@ function connect() {
 
     ws.onopen = () => {
       reconnectDelay = 1000;
-      void (async () => {
+      void settle(async () => {
         const stored = await chrome.storage.local.get("pendingDetach").catch(() => ({}));
         if (stored.pendingDetach) {
           send({ qm: "detached" });
           await chrome.storage.local.remove("pendingDetach").catch(() => {});
         }
-        await announce(attachedTabId, true);
-      })();
+      }).then(() => announce(attachedTabId, true));
     };
     ws.onmessage = (event) => {
       let frame;
@@ -611,7 +734,13 @@ function connect() {
         return;
       }
       if (frame?.qm === "active" && frame.id === undefined && typeof frame.active === "boolean") {
-        if (socket === ws) activeHere = frame.active;
+        if (socket !== ws) return;
+        activeHere = frame.active;
+        if (typeof frame.now === "number") {
+          clockOffset = frame.now - Date.now();
+          void chrome.storage.local.set({ clockOffset }).catch(() => {});
+        }
+        if (frame.active && typeof frame.at === "number") void liftStopIfChosenAfter(frame.at);
         return;
       }
       if (frame?.qm === "token" && frame.id === undefined && typeof frame.token === "string" && frame.token) {
@@ -631,6 +760,53 @@ function connect() {
     };
     ws.onerror = () => ws.close();
   })();
+}
+
+async function reattach(tabId, seen) {
+  await settle(async () => {
+    if (attachedTabId !== tabId || attachments !== seen) return;
+    await chrome.debugger.detach({ tabId }).catch(() => {});
+    await clearForeignFrames(tabId);
+    try {
+      await attachTo(tabId);
+    } catch (e) {
+      if (await debuggerOn(tabId)) return;
+      attachedTabId = null;
+      await fallBack(tabId);
+      throw new Error(refusalOf(e), { cause: e });
+    }
+    for (const [method, params] of [...enabledDomains]) {
+      await chrome.debugger.sendCommand({ tabId }, method, params).catch(() => {});
+    }
+  });
+}
+
+async function debuggerOn(tabId) {
+  return withTimeout(chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", { expression: "1" }), DRIVE_CHECK_MS)
+    .then(() => true)
+    .catch(() => false);
+}
+
+function retryable(error) {
+  return /not attached|URL of different extension/i.test(String((error && error.message) || error));
+}
+
+async function sendToDriven(tabId, method, params) {
+  const seen = attachments;
+  try {
+    return await chrome.debugger.sendCommand({ tabId }, method, params);
+  } catch (e) {
+    const reason = String((e && e.message) || e);
+    if (!retryable(e)) throw e;
+    if (FOREIGN_FRAME.test(reason)) await reattach(tabId, seen).catch(() => {});
+    else await new Promise((resolve) => setTimeout(resolve, 300));
+    while (pending) await pending;
+    if (attachedTabId !== tabId) throw e;
+    if (READS_THE_PAGE.has(method) && (await framesOffLimits(tabId))) {
+      throw new Error("this page has QM itself open inside it, so the Browser Bridge will not act on it", { cause: e });
+    }
+    return chrome.debugger.sendCommand({ tabId }, method, params);
+  }
 }
 
 function hostOf(origin) {
@@ -684,7 +860,20 @@ chrome.debugger.onDetach.addListener((source, reason) => {
     await settle(async () => {
       if (tabId !== attachedTabId) return;
       attachedTabId = null;
-      if (reason !== "replaced_with_devtools" && (await claim(tabId))) return;
+      const recent = (reclaims.get(tabId) ?? []).filter((at) => Date.now() - at < 30_000);
+      reclaims.set(tabId, [...recent, Date.now()]);
+      if (reason !== "replaced_with_devtools" && recent.length < 5) {
+        for (let attempt = 0; attempt < 4 && !stopped; attempt += 1) {
+          if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 300 * attempt));
+          if (!(await chrome.tabs.get(tabId).catch(() => null))) break;
+          if (await claim(tabId)) {
+            for (const [method, params] of [...enabledDomains]) {
+              await chrome.debugger.sendCommand({ tabId }, method, params).catch(() => {});
+            }
+            return;
+          }
+        }
+      }
       await fallBack(tabId);
     });
   })();
@@ -705,6 +894,7 @@ chrome.webNavigation.onCreatedNavigationTarget.addListener(({ sourceTabId, tabId
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   openedBy.delete(tabId);
+  reclaims.delete(tabId);
   void (async () => {
     await ready;
     await lose(tabId);
@@ -727,7 +917,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         const shared = await settle(async () => {
           if (!(await claim(tab.id, true))) return false;
           stopped = false;
-          await chrome.storage.local.remove("stopped").catch(() => {});
+          await chrome.storage.local.remove(["stopped", "stoppedAt"]).catch(() => {});
           return true;
         });
         if (!shared) throw new Error("that tab cannot be driven");

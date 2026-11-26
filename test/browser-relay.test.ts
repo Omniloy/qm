@@ -7,19 +7,24 @@ const PERSON = "someone@example.com";
 function fake(): RelaySocket & {
   sent: string[];
   told: boolean[];
+  toldAt: Array<number | undefined>;
   closed: Array<{ code?: number; reason?: string }>;
 } {
   const sent: string[] = [];
   const told: boolean[] = [];
+  const toldAt: Array<number | undefined> = [];
   const closed: Array<{ code?: number; reason?: string }> = [];
   return {
     sent,
     told,
+    toldAt,
     closed,
     send: (data) => {
-      const frame = JSON.parse(data) as { qm?: string; active?: boolean };
-      if (frame.qm === "active") told.push(frame.active === true);
-      else sent.push(data);
+      const frame = JSON.parse(data) as { qm?: string; active?: boolean; at?: number };
+      if (frame.qm === "active") {
+        told.push(frame.active === true);
+        toldAt.push(frame.at);
+      } else sent.push(data);
     },
     close: (code, reason) => void closed.push({ ...(code ? { code } : {}), ...(reason ? { reason } : {}) }),
   };
@@ -495,4 +500,24 @@ test("the browser the agent uses reconnecting keeps the agent's connection", () 
 
   assert.deepEqual(cdp.closed, [], "a worker restart mid-task does not end the task");
   assert.equal(again.sent.length, 1);
+});
+
+test("a newer choice of the same browser tells it when, so it can lift a Stop pressed earlier", () => {
+  const hub = createRelayHub();
+  const chrome = fake();
+  const dia = fake();
+  hub.attach(PERSON, "extension", chrome, CHROME);
+  hub.attach(PERSON, "extension", dia, DIA);
+  hub.setActive(PERSON, CHROME.id, 1000);
+  chrome.told.length = 0;
+  chrome.toldAt.length = 0;
+  dia.told.length = 0;
+
+  hub.setActive(PERSON, CHROME.id, 2000);
+  assert.deepEqual(chrome.told, [true]);
+  assert.deepEqual(chrome.toldAt, [2000]);
+  assert.deepEqual(dia.told, [false]);
+
+  hub.setActive(PERSON, CHROME.id, 2000);
+  assert.equal(chrome.told.length, 1, "the same choice again is not news");
 });

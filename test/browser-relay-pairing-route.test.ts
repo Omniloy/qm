@@ -239,3 +239,21 @@ test("an agent's live personal turn token cannot disconnect the person's Chrome"
   assert.equal(r.status, 403);
   assert.equal(await built.config.getBrowserPairingGenerationDurable(personalScope("U11")), 1);
 });
+
+test("choosing the person's own Chrome in Keychain dates the choice, so a Stop pressed before it lifts", async () => {
+  await built.config.noteBridgeBrowser(personalScope("U9"), "chrome-u9-0001", { name: "Chrome" });
+  const before = (await built.config.getBridgeBrowsers(personalScope("U9"))).at;
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(await choose(await asPerson("U9"), "extension"), 200);
+  const after = await built.config.getBridgeBrowsers(personalScope("U9"));
+  assert.equal(after.active, "chrome-u9-0001", "the same browser stays chosen");
+  assert.ok(after.at > before, "with a newer time than any Stop pressed before the choice");
+});
+
+test("choosing another provider does not date a browser choice", async () => {
+  await built.config.noteBridgeBrowser(personalScope("U10"), "chrome-u10-001", { name: "Chrome" });
+  const before = (await built.config.getBridgeBrowsers(personalScope("U10"))).at;
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(await choose(await asPerson("U10"), ""), 200);
+  assert.equal((await built.config.getBridgeBrowsers(personalScope("U10"))).at, before);
+});
